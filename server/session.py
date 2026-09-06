@@ -187,27 +187,19 @@ class SessionManager:
         # padrão de registro-em-set-de-módulo já usado alhures no
         # projeto, aqui como atributo de instância por ser por-conexão.
         self._dispatch_tasks: set = set()
-        # Serializa toda escrita real no SQLite (save_character) — sem isso,
-        # uma desconexão em massa (ex.: fim de teste de carga com 250 bots
-        # quase juntos) dispara ~250 `_persist_character` concorrentes, cada
-        # um em sua própria thread do executor padrão do asyncio
-        # (run_in_executor(None, ...), server/auth.py::save_character).
-        # SQLite só aceita 1 escritor por vez mesmo em WAL — sem serializar
-        # aqui, cada thread pode bloquear até 5s (timeout default de
-        # sqlite3.connect) disputando o lock de escrita do arquivo, e
-        # medido (script de carga real, 250 saves concorrentes) que WAL
-        # sozinho SEM este lock piora a contenção (mais overhead de
-        # coordenação sem eliminar o gargalo de 1-escritor) — os dois
-        # precisam andar juntos, nunca um sem o outro. `_autosave_all` já
-        # era seguro por acidente (itera `await`-ando um save de cada vez);
-        # este lock estende a mesma garantia pro caminho de disconnect, que
-        # dispara em paralelo (1 task por conexão websocket, `server/
-        # main.py::handle_connection`). NÃO é a causa do "tick lento com
-        # zero jogadores" investigado em 06/09/2026 (essa causa real era
-        # outra, em `SpawnZoneSystem._get_occupied()` — ver
-        # PROBLEMAS_ARQUITETURA.md) — este lock é uma correção de
-        # concorrência válida por si só, mantida por mérito próprio.
-        self._save_lock = asyncio.Lock()
+        # Serialização de escrita SQLite (accounts/characters) NÃO mora mais
+        # aqui — 06/09/2026 (PROBLEMAS_ARQUITETURA.md §113/§118): convergida
+        # pra `server.auth._write_lock` (módulo que de fato abre a conexão),
+        # acionado DE DENTRO de save_character/register/create_character/
+        # delete_character. Um lock aqui em `SessionManager` só protegeria
+        # quem lembrasse de usá-lo neste arquivo — `tools/loadtest/
+        # provision.py` bate em register/create_character pelo protocolo de
+        # rede real (passa pelos MESMOS handlers, então ainda se beneficia),
+        # mas qualquer script/teste que chame os wrappers async direto (fora
+        # de uma sessão) ficaria descoberto por um lock preso à classe de
+        # sessão — por isso o ponto único de verdade vive em `auth.py`, não
+        # aqui. Ver comentário completo (racional de latência de LOGIN,
+        # WAL+lock precisarem andar juntos, etc.) no topo de `server/auth.py`.
         self.world_server.register_on_tick(self._on_tick)
 
     # ── Ciclo de vida ─────────────────────────────────────────────────────────
@@ -276,12 +268,9 @@ class SessionManager:
         if patch_fn is not None:
             patch_fn(merged)
         try:
-            # Lock serializa a escrita real no SQLite — ver comentário em
-            # __init__ (`self._save_lock`). Só a chamada de I/O fica dentro
-            # do lock; a montagem de `merged` acima (leitura do ECS ao vivo)
-            # não precisa esperar nenhum outro save terminar.
-            async with self._save_lock:
-                await save_character(session.char_data["id"], merged)
+            # Serialização de escrita SQLite mora dentro de `save_character`
+            # (server/auth.py::_write_lock) — não precisa lock aqui.
+            await save_character(session.char_data["id"], merged)
             return merged
         except Exception as e:
             log.error(f"[Session] ERRO ao persistir {session.username!r} ({context}): {e}")
@@ -581,6 +570,9 @@ class SessionManager:
             await session.send(MsgType.REGISTER_ERROR, {"reason": "invalid_input"})
             return
         from server.auth import register as _auth_register
+        # Serialização de escrita SQLite mora dentro de `register`
+        # (server/auth.py::_write_lock, PROBLEMAS_ARQUITETURA.md §113/§118)
+        # — não precisa lock aqui.
         ok = await _auth_register(username, password)
         if ok:
             await session.send(MsgType.REGISTER_OK, {})
@@ -1914,6 +1906,8 @@ class SessionManager:
         if char_id < 0:
             return
         from server.auth import delete_character as _del_char
+        # Serialização de escrita SQLite mora dentro de `delete_character`
+        # (server/auth.py::_write_lock) — não precisa lock aqui.
         await _del_char(session.account_id, char_id)
         await session.send(MsgType.DELETE_CHARACTER_OK, {})
 
@@ -1932,6 +1926,8 @@ class SessionManager:
             class_id = "guerreiro"
 
         from server.auth import create_character as _create_char, _get_conn as _gc
+        # Serialização de escrita SQLite mora dentro de `create_character`
+        # (server/auth.py::_write_lock) — não precisa lock aqui.
         reason = await _create_char(session.account_id, name, class_id)
         if reason != "ok":
             await session.send(MsgType.CHARACTER_ERROR, {"reason": reason})

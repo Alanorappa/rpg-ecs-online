@@ -16149,3 +16149,108 @@ carga real do lock com teste positivo E negativo (lock-fake provando
 que o teste detectaria a ausência do lock de verdade). Limpo do
 `data/game.db` real 12 contas de teste (`savelocktst*`) deixadas por um
 script de validação de agente.
+
+**Resultado real, medido depois** (mesmo dia): teste de 250 bots
+refeito com os fixes do §118 aplicados. Trava com 0 jogadores: **875→11
+ocorrências** de tick lento no período ocioso pós-teste, tick médio
+ocioso ~8-11ms→~5ms, CPU ociosa ~24-38%→~11-13% — confirmado, resolvido
+de verdade. `skill_requests`/rajada de reconexão (§113): não deu pra
+confirmar melhora nesse mesmo teste — a rajada de reconexão foi ainda
+MAIOR que em testes anteriores (1181 reconexões vs 500-680), então virou
+o próximo alvo de investigação (§119).
+
+## 119. §113 fechado de vez — vazamento de conexão no PRÓPRIO bot de teste era a causa real da amplificação, não (só) o SQLite (06/09/2026, mesmo dia)
+
+3 agentes escalados de novo (mesmo requisito de implementar e validar
+com teste real, não só diagnosticar) especificamente pro §113 (rajada
+de conexão simultânea travando o SQLite, catalogado há tempo, nunca
+corrigido de raiz — diferente do §118, que resolveu o problema IRMÃO na
+DESCONEXÃO). Os 3 trabalharam concorrentemente NO MESMO working tree
+(sem isolamento), editando `server/auth.py`/`server/session.py` ao
+mesmo tempo — cada um encontrou o arquivo mudado sob os próprios pés e
+reconciliou o trabalho do agente anterior em vez de duplicar. Os 3
+convergiram, de forma independente, pra MESMA arquitetura de correção —
+sinal forte de que é a escolha certa.
+
+**Achado principal (o que os 3 divergiam de suposição inicial):** a
+causa da amplificação (**1181 reconexões pra 250 bots, quase 5x**) não
+era majoritariamente contenção de SQLite isolada — era um **vazamento
+de conexão no PRÓPRIO `tools/loadtest/bot.py`**. `LoadBot.run()` nunca
+chamava `self.client.close()` no caminho de EXCEÇÃO (só no fim natural
+do loop, que uma falha nunca alcança) — quando `_login_cycle()` falhava
+(timeout de 10s do `recv_one`, `protocol_client.py`, sob contenção real
+de banco), o WebSocket antigo ficava pendurado, e o servidor só percebe
+via `ping_timeout=60s` (`server/main.py`). Se o LOGIN daquela conexão
+abandonada terminasse de processar nesse meio-tempo, a sessão virava
+**"zumbi" autenticada** — bloqueando QUALQUER tentativa nova do MESMO
+username com `LOGIN_ERROR "already_online"` até o ping-timeout derrubar
+o zumbi. Cada rejeição gerava outra reconexão, que TAMBÉM não fechava a
+conexão anterior — ciclo auto-alimentado. Medido: pior caso real do
+SQLite isolado (250 concorrentes) nunca passou de 3.3-5.5s — bem abaixo
+do timeout de 10s do cliente; a escala de tempo real do problema era a
+janela de zumbi de até 80s (`ping_interval=20+ping_timeout=60`), não o
+busy-timeout de 5s do SQLite.
+
+**Correção implementada** (2 partes, uma em cada lado):
+1. **`tools/loadtest/bot.py::run()`** — fecha `self.client` (best-effort,
+   nunca mascara a exceção real) tanto no caminho de exceção (antes do
+   backoff) quanto no fim natural do loop. Elimina a causa raiz da
+   amplificação.
+2. **`server/auth.py`** — `_write_lock` (não mais em `SessionManager`,
+   que só protegeria quem lembrasse de usar — a mesma "proliferação por
+   call site" que o projeto evita pra outros subsistemas): ponto único
+   de serialização de escrita, vivendo no módulo que de fato abre a
+   conexão, acionado de DENTRO de `register`/`create_character`/
+   `delete_character`/`save_character` — qualquer call site futuro
+   (rede, `tools/loadtest/provision.py`, script) ganha a proteção de
+   graça. `authenticate`/`get_character` (leitura) ficam de propósito
+   FORA — LOGIN é o caminho mais sensível a latência da rajada, e
+   serializar leitura contra escrita jogaria fora o ganho do WAL bem
+   onde mais dói. `SessionManager._save_lock` (do §118) foi REMOVIDO —
+   substituído por este, mais amplo e correto.
+
+**Bug sutil achado e corrigido no meio do caminho**: a 1ª versão do
+lock (de um dos agentes, ainda em voo quando outro entrou) era um
+`asyncio.Lock()` cru de módulo — quebra entre testes que usam
+`IsolatedAsyncioTestCase` (cada método roda num event loop NOVO; um
+`Lock` só "amarra" ao loop na primeira disputa real, então o 2º teste
+que dispute o MESMO lock, loop diferente já fechado, quebra com
+`RuntimeError`). Corrigido com `_get_write_lock()` — função que recria
+o Lock sempre que o loop mudou desde a última chamada; seguro em
+produção (1 processo = 1 loop sempre) e nos testes. Reproduzido
+isoladamente antes de corrigir (2 `IsolatedAsyncioTestCase` disputando
+o mesmo lock cru — o 2º sempre quebrava).
+
+**Achado extra fora do pedido original**: um dos agentes achou e
+corrigiu uma corrida real (TOCTOU) em `_create_character_sync` — 2
+`create_character` concorrentes com o MESMO nome, mesma janela entre o
+`SELECT` de unicidade e o `INSERT`, ambos passavam sem o lock (2 linhas
+duplicadas no banco, violando a unicidade que o próprio docstring da
+função promete). Com `_write_lock`, só 1 sucede, o outro recebe
+`"name_taken"` — o lock não é só sobre latência, fecha um bug de
+corretude de verdade.
+
+**Ressalva medida, registrada por um dos 3 agentes**: o lock tem custo
+de latência real e mensurável no caminho de CONEXÃO (register+login+
+create, payload leve) — entre 40-90% mais lento em wall-clock puro no
+hardware local (nenhum dos dois cenários chegou perto de erro real,
+0% de falha nos dois). Decisão consciente de manter o lock cobrindo os
+4 caminhos mesmo assim (segurança > throughput bruto nesta escala,
+e os 3 agentes convergiram nisso de forma independente) — registrado
+como ressalva pra reconsiderar SE o teste de carga real mostrar esse
+custo sendo sentido pelos jogadores.
+
+**Testes**: `tests/test_auth_write_lock.py` (novo — serialização real
+via contador de reentrância + prova que `authenticate` não é afetado),
+`tests/test_loadtest_bot_reconnect.py` (novo — prova que o cliente da
+tentativa anterior é fechado antes de reconectar). Suíte completa
+rodada por múltiplos agentes + por mim, de forma independente, depois
+de revisar o diff final linha a linha (3 agentes editando os mesmos
+arquivos concorrentemente exigiu essa revisão extra) — **1513 passed**,
+0 regressão. Revert-to-confirm nos 2 mecanismos principais (lock e
+close-on-reconnect) confirmou os testes novos pegando a regressão de
+verdade. `data/game.db` real conferido sem lixo de teste desta vez.
+
+**Pendente** (mesmo dia, próximo passo): rodar de novo o teste de 250
+bots (mesma rampa agressiva que mediu 1181 reconexões) com os 2 fixes
+aplicados, pra confirmar a redução real da rajada de reconexão.

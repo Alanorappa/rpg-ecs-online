@@ -14,6 +14,86 @@ from shared.constants import RESPAWN_TILE
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "game.db")
 
+# Ponto único de serialização de ESCRITA real no SQLite do processo inteiro
+# (06/09/2026, §113/§118, PROBLEMAS_ARQUITETURA.md) — cobre TODO caminho que
+# faz INSERT/UPDATE/DELETE de verdade: save_character (disconnect/autosave/
+# save periódico), register (INSERT conta), create_character (INSERT
+# personagem) e delete_character (DELETE personagem). SQLite só aceita 1
+# escritor por vez mesmo com WAL (`_get_conn` liga WAL só pra permitir
+# LEITOR concorrente durante um escritor — não elimina "1 escritor por
+# vez"); sem serializar, uma rajada de conexão (REGISTER+LOGIN+
+# CREATE_CHARACTER de várias contas quase juntas — teste de carga real, ou
+# pico de patch day/reinício de servidor em produção) faz cada
+# `run_in_executor` competir pelo lock de escrita do arquivo, com
+# `sqlite3.connect(...)`'s timeout default de 5s por tentativa — medido em
+# §113: rampa agressiva do teste de carga gerava até 1181 reconexões em
+# 500s, bot entrando em loop de backoff exponencial re-tentando
+# REGISTER/LOGIN por minutos.
+#
+# Vive AQUI (módulo que de fato abre a conexão) e é acionado DE DENTRO de
+# cada wrapper async (register/create_character/delete_character/
+# save_character), não pelo chamador — assim qualquer call site futuro
+# (rede, ferramenta, script) ganha a serialização de graça, sem precisar
+# lembrar de envolver a chamada manualmente. Isso importa de verdade: além
+# de `session.py`, `tools/loadtest/provision.py` Fase A chama
+# register/create_character via protocolo de rede real (passa por aqui);
+# um lock preso a `SessionManager` (como `_save_lock`, que corrigiu o
+# problema IRMÃO de desconexão em massa, §118) cobriria só os handlers que
+# lembrassem de usá-lo — replicar lock por call site é exatamente a
+# proliferação que este projeto evita pra outros subsistemas (dano,
+# teleporte, etc.) via "ponto único de verdade"; persistência merece a
+# mesma disciplina. (`_register_account_sync`/`_create_character_sync`
+# chamados direto e SÍNCRONOS por testes/seed de startup ficam fora de
+# propósito — não são concorrentes entre si.)
+#
+# NUNCA usado por `authenticate`/`get_character` (LEITURA pura no caso
+# comum) — LOGIN é o caminho mais sensível a latência da rajada de conexão
+# (jogador esperando entrar no jogo percebe atraso como "travou", diferente
+# de alguém que já desconectou) e é predominantemente SELECT; serializar
+# leitura contra escrita jogaria fora o ganho do WAL (leitor concorrente
+# durante escritor) bem na rajada que mais dói. Padrão de mercado (MMOs
+# sob rajada de patch day/restart): autenticação fica no caminho rápido de
+# leitura, só a escrita de fato (criar conta/personagem) é serializada.
+# Exceção conhecida e aceita: o upgrade transparente de salt legado dentro
+# de `_authenticate_sync` faz 1 UPDATE — não passa por este lock de
+# propósito (só afeta contas pré-salt, nenhuma delas existe nas contas de
+# bot/teste, que já nascem com salt via `_register_account_sync`); pior
+# caso de colisão é raríssimo e não-destrutivo (login não migra desta vez,
+# migra no próximo).
+#
+# `_get_write_lock()` (função, não um `asyncio.Lock()` de módulo usado
+# direto) por um motivo concreto, não estético: um `asyncio.Lock` só é
+# "amarrado" ao event loop em que roda na PRIMEIRA vez que alguém DISPUTA
+# ele de verdade — `Lock.acquire()` só chama `_get_loop()` no caminho onde
+# já está locked/tem esperando (`asyncio/locks.py`); se ninguém nunca
+# disputou, nunca amarra. Um lock de módulo criado 1x e reusado por vários
+# testes (`unittest.IsolatedAsyncioTestCase` cria um event loop NOVO por
+# método de teste) funciona sem erro enquanto nenhum teste gerar disputa
+# real nele — mas o PRIMEIRO teste que gerar disputa de verdade amarra o
+# lock ao loop DAQUELE teste, e qualquer teste POSTERIOR que também
+# dispute o MESMO lock (loop diferente, já fechado) quebra com
+# "RuntimeError: ... is bound to a different event loop" — reproduzido
+# isoladamente ao escrever esta correção (2 `IsolatedAsyncioTestCase`
+# triviais gerando disputa real no mesmo `asyncio.Lock()` de módulo; o 2º
+# sempre quebra, o 1º sempre passa). Em produção nunca importa (1 processo
+# = 1 loop pra sempre, criado 1x no boot), mas quebraria a suíte de testes
+# de forma imprevisível — só no dia em que 2+ testes futuros chegarem a
+# disputar o lock de verdade ao mesmo tempo (ex.: um teste de concorrência
+# pra validar esta própria correção). `_get_write_lock()` recria o Lock
+# sempre que o loop em execução mudou desde a última chamada — seguro nos
+# dois casos, sem custo extra no caso comum (1 comparação de objeto).
+_write_lock: "asyncio.Lock | None" = None
+_write_lock_loop = None
+
+
+def _get_write_lock() -> asyncio.Lock:
+    global _write_lock, _write_lock_loop
+    loop = asyncio.get_running_loop()
+    if _write_lock is None or _write_lock_loop is not loop:
+        _write_lock = asyncio.Lock()
+        _write_lock_loop = loop
+    return _write_lock
+
 
 def _hash(password: str) -> str:
     """SHA-256 simples — é o que o CLIENTE calcula e manda na rede
@@ -62,9 +142,10 @@ def _get_conn() -> sqlite3.Connection:
             pass  # coluna já existe (ou tabela ainda não existe — init_db cria com ela)
         # WAL: persiste no header do arquivo .db (1x por arquivo, sobrevive
         # a restart do processo) — permite leitor concorrente durante
-        # escrita, complementar ao `SessionManager._save_lock` (que
-        # serializa ESCRITOR contra escritor; SQLite só aceita 1 escritor
-        # por vez mesmo em WAL). Sem WAL o modo default (DELETE) exige lock
+        # escrita, complementar ao `_write_lock` deste módulo (que serializa
+        # ESCRITOR contra escritor: register/create_character/
+        # delete_character/save_character — SQLite só aceita 1 escritor por
+        # vez mesmo em WAL). Sem WAL o modo default (DELETE) exige lock
         # exclusivo do arquivo até pra leitura durante um write em voo.
         try:
             conn.execute("PRAGMA journal_mode=WAL")
@@ -252,8 +333,9 @@ def _authenticate_sync(username: str, password: str) -> "dict | None":
 
 async def register(username: str, password: str) -> bool:
     """Cria conta (sem personagem). password já vem hasheado pelo cliente."""
-    return await asyncio.get_running_loop().run_in_executor(
-        None, _register_account_sync, username, password)
+    async with _get_write_lock():
+        return await asyncio.get_running_loop().run_in_executor(
+            None, _register_account_sync, username, password)
 
 
 def _register_account_sync(username: str, password: str) -> bool:
@@ -276,8 +358,9 @@ async def create_character(account_id: int, name: str,
     """Cria personagem para a conta. Retorna "ok" ou um motivo de rejeição
     ("invalid_name_format", "name_taken", "limit_reached", "creation_failed")
     — ver _create_character_sync."""
-    return await asyncio.get_running_loop().run_in_executor(
-        None, _create_character_sync, account_id, name, class_id)
+    async with _get_write_lock():
+        return await asyncio.get_running_loop().run_in_executor(
+            None, _create_character_sync, account_id, name, class_id)
 
 
 def _create_character_sync(account_id: int, name: str,
@@ -348,8 +431,9 @@ def _suggest_character_name_sync() -> str:
 
 async def delete_character(account_id: int, char_id: int) -> bool:
     """Remove personagem verificando que pertence à conta."""
-    return await asyncio.get_running_loop().run_in_executor(
-        None, _delete_character_sync, account_id, char_id)
+    async with _get_write_lock():
+        return await asyncio.get_running_loop().run_in_executor(
+            None, _delete_character_sync, account_id, char_id)
 
 
 def _delete_character_sync(account_id: int, char_id: int) -> bool:
@@ -380,9 +464,12 @@ def _get_character_sync(account_id: int, char_id: int) -> "dict | None":
 
 
 async def save_character(char_id: int, data: dict) -> None:
-    """Persiste estado do personagem. Chamado ao desconectar e periodicamente."""
-    await asyncio.get_running_loop().run_in_executor(
-        None, _save_character_sync, char_id, data)
+    """Persiste estado do personagem. Chamado ao desconectar e periodicamente.
+    Serializado por `_write_lock` (ver topo do módulo) — mesmo ponto único
+    de verdade usado por register/create_character/delete_character."""
+    async with _get_write_lock():
+        await asyncio.get_running_loop().run_in_executor(
+            None, _save_character_sync, char_id, data)
 
 
 def _save_character_sync(char_id: int, data: dict) -> None:

@@ -145,6 +145,26 @@ class LoadBot:
                 raise
             except Exception as e:
                 self.stats["errors"] = self.stats.get("errors", 0) + 1
+                # Fecha a conexão desta tentativa ANTES de reconectar — sem
+                # isso (achado real 06/09/2026, ver PROBLEMAS_ARQUITETURA.md
+                # §113) o WebSocket velho fica pendurado (o servidor só
+                # percebe via ping_timeout=60s, `server/main.py`) enquanto o
+                # REGISTER/LOGIN que ainda estava em voo nele (atrasado por
+                # contenção de SQLite) continua processando. Se completar,
+                # essa sessão "zumbi" fica autenticada e bloqueia CADA
+                # reconexão seguinte com o MESMO username via LOGIN_ERROR
+                # "already_online" (`server/session.py::_handle_login`) até
+                # o ping-timeout derrubar o zumbi — cada rejeição gera outra
+                # reconexão que TAMBÉM não fechava a própria conexão, criando
+                # um novo zumbi e piorando a mesma contenção que causou o
+                # timeout original (efeito medido: 1181 reconexões pra 250
+                # bots, quase 5x). `close()` é best-effort (a conexão pode já
+                # estar quebrada) — nunca deixa uma falha de close() mascarar
+                # a exceção real que causou a reconexão.
+                try:
+                    await self.client.close()
+                except Exception:
+                    pass
                 if self._stop.is_set():
                     break
                 self.bot_eids.discard(self.eid)
@@ -152,7 +172,10 @@ class LoadBot:
                 self.state = "RECONNECTING"
                 await self._reconnect_backoff(e)
         self.bot_eids.discard(self.eid)
-        await self.client.close()
+        try:
+            await self.client.close()
+        except Exception:
+            pass
 
     async def _reconnect_backoff(self, exc: Exception) -> None:
         self._reconnect_attempt += 1
