@@ -15840,3 +15840,128 @@ quiser): teste em escala maior (50-250 bots) combinando tudo, seguindo
 o resto do plano de fases desenhado pelos 3 agentes (fases 1-2 e 5
 já cobertas pelos testes de 3, 5 e 10 bots acima; fases de escala maior
 e "todos os comportamentos ao mesmo tempo" ainda não rodadas).
+
+## 116. Rampa de conexão mais lenta expõe `skill_requests` a ~50% do tick — auditoria de 3 agentes acha e corrige a causa raiz (06/09/2026)
+
+Depois do §115 (bots lutando de verdade, espalhados, com skill de longo
+alcance), usuário pediu um novo teste de 250 bots com rampa MAIS LENTA
+(5 bots a cada 15s, em vez de 5 a cada 1s) — objetivo: mais tempo pra
+comparar desempenho em cada faixa de contagem de jogadores. Usuário
+interrompeu o teste no meio (bots todos acumulados no cemitério — causa
+identificada como grades no mapa, corrigida pelo próprio usuário via
+edição direta do mapa) e pediu análise dos dados coletados.
+
+**Achado real, mais grave que o teto de `EnemyAISystem:prefiltro` já
+catalogado (§113/114)**: no patamar de 250 jogadores, tick médio subiu
+pra ~60,5ms (orçamento é 33ms) — 73% dos ticks "lentos", bem pior que os
+33,57% medidos no §114. Breakdown por sistema (top-10, consistente em 4
+blocos de 300 ticks): `skill_requests` sozinho é **49,9% do tick**
+(avg=30,2ms, p99=100ms) — o dobro do 2º colocado (`ai_bundles`/prefiltro,
+21,9%, já catalogado, sem mudança). Nunca tinha aparecido antes porque os
+bots de teste, até o §115, ficavam presos lutando só contra o boneco de
+treino — volume de skill usada em paralelo era baixo. Agora que lutam de
+verdade, espalhados, com skill de longo alcance, o volume de CAST_SKILL
+por tick no servidor inteiro disparou, e um padrão que sempre existiu
+(mas nunca doeu) virou o gargalo dominante.
+
+**Metodologia** (pedido explícito do usuário, mesmo padrão de rigor do
+§114): montar a tabela top-10 primeiro; escalar 3 agentes especialistas
+em paralelo — arquitetura (comparação com Veloren/AzerothCore),
+qualidade de código (achar bug de eficiência concreto, código citado) e
+coesão de sistemas vs. mercado (o padrão está alinhado com o resto do
+PRÓPRIO projeto?) — cada um lendo o código de verdade antes de concluir;
+notar cada diagnóstico e mandar de volta pra aprofundar se não fosse nota
+máxima. Os 3 agentes voltaram com diagnóstico de profundidade real
+(código citado linha a linha) na primeira passada — nenhum precisou de
+retrabalho.
+
+**Causa raiz confirmada pelos 3, com camadas diferentes**: toda vez que
+uma skill era usada, `_process_skill_requests`/`_process_spell_cast_
+completions` chamavam `_snapshot_combat_targets()` (`server/
+world_server.py`) — tirava uma "foto" de HP/StatusEffects de TODO
+combatente do mapa do caster, só pra comparar com o "depois" e descobrir
+quanto de dano/efeito a skill causou. Achados específicos:
+- **Agente de qualidade de código**: pra TODA skill com `cast_time > 0`
+  (quase toda magia de mago/arqueiro), essa foto é 100% desperdiçada — o
+  handler nessa fase só ENFILEIRA a conclusão, nunca aplica dano. Pior:
+  as 4 skills de projétil (Bola de Fogo, Flecha Reiterada, Picada de
+  Escorpião, Tiro Repulsivo) pagavam esse custo **2 vezes** (request +
+  completion) e o dano de verdade só acontecia numa 3ª chamada
+  (`_apply_spell_on_projectile_hit`, disparada por `PROJECTILE_HIT_CS`),
+  nunca coberta pelas duas primeiras fotos.
+- **Agente de arquitetura + coesão**: o mecanismo certo já existe em
+  parte no próprio projeto — `LAST_DAMAGE_OUTCOMES` (`engine/
+  core_systems.py`, dict de módulo populado por `apply_damage_core` NO
+  MOMENTO em que aplica, técnica de Veloren/AzerothCore já adotada em
+  10/08/2026 pro OUTCOME por alvo) só faltava um irmão pro VALOR do
+  dano. Comparação com `_resolve_auto_attack` (`server/
+  combat_processor.py`) — mesmo diff antes/depois, mas O(1) num único
+  alvo já conhecido — prova que "diffar" não é o problema, "diffar
+  contra o universo inteiro do servidor" é.
+- **Agente de arquitetura**: o próprio `index_build()` já monta, 1x por
+  tick, ANTES de `skill_requests` rodar, um índice de combatentes por
+  mapa (`_combatants_by_map`) que nunca era reaproveitado.
+
+**5 correções implementadas** (todas aprovadas explicitamente pelo
+usuário antes de mexer, 2 delas — itens 4/5 abaixo — por tocarem
+mecanismo estrutural/ponto único de verdade):
+
+1. **Pular a foto quando é 100% desperdiçada** — `_process_skill_
+   requests` (skill com `cast_time>0`) e `_process_spell_cast_
+   completions` (spell de projétil/`tiro_multiplo`) não tiram mais
+   snapshot nenhum nesses casos (risco zero, confirmado handler a
+   handler que nunca era usado).
+2. **`eid in self._player_eids.values()` → checagem de componente O(1)**
+   — 8 pontos (`combat_processor.py`, `skill_processor.py` ×2,
+   `spell_completion_processor.py` ×4, `world_server.py`) que ainda
+   faziam essa checagem O(n) sem o fix já aplicado em outro lugar do
+   projeto (05/09/2026, §113) — mesmo padrão `PlayerControlled`
+   replicado.
+3. **`_combat_targets()` ganhou fast path por mapa** — reusa
+   `_combatants_by_map`/`_players_by_map` (promovidos a atributo de
+   instância, `None` até o 1º tick real rodar) em vez de varrer
+   `_mob_eids`/`_player_eids` do SERVIDOR INTEIRO. A EXISTÊNCIA do
+   atributo (não seu conteúdo) é o sinal de "veio de um tick real" —
+   fixture de teste que popula `_mob_eids` na mão sem rodar `_tick()`
+   (`test_combat_targets_exclui_npc_amigavel_de_aoe`, já frágil numa
+   tentativa anterior revertida) nunca vê os índices e cai no caminho
+   antigo, sem quebrar.
+4. **`LAST_DAMAGE_AMOUNTS`/`LAST_EFFECTS_APPLIED`** (novos, `engine/
+   core_systems.py`) — irmãos de `LAST_DAMAGE_OUTCOMES`, populados por
+   `apply_damage_core`/`apply_effect` NO MOMENTO em que aplicam.
+   `_snapshot_combat_targets()` foi REMOVIDA por completo (0 call sites
+   restantes) — os 3 pontos que a usavam (`_process_skill_requests`,
+   `_process_spell_cast_completions`, `_apply_spell_on_projectile_hit`)
+   agora leem só os alvos REALMENTE tocados, nunca o mapa inteiro.
+5. **`_collect_player_effects()` virou dict** (`{eid: [effects]}`, igual
+   `_collect_mob_effects` já era) — `server/session.py` fazia 2
+   varreduras O(P) POR SESSÃO só pra achar "qual é a minha entrada" e
+   "quais são de quem eu vejo"; virou O(1) + O(known_eids) (bounded pelo
+   AOI da sessão, não pelo total de jogadores do servidor).
+
+**Gaps de cobertura achados DURANTE a implementação (não pelos 3
+agentes)**: revert-to-confirm no item 4 achou 2 buracos reais na suíte —
+a suíte inteira passava mesmo com `LAST_EFFECTS_APPLIED` completamente
+quebrado (nenhum teste cobria `applied_effects` num alvo NORMAL, só via
+um alvo imune que aparecia por outro canal) e mesmo com o dano
+REPORTADO de Bola de Fogo sempre 0 no SKILL_RESULT (só existia teste do
+HP real da vítima, nunca do valor que o protocolo manda pro cliente).
+Novos testes adicionados: `TestNovaCongelanteReportaDanoEEfeitoAplicado`
+(`tests/test_immunity_feedback.py`) e
+`test_bola_de_fogo_reporta_dano_correto_no_skill_result`
+(`tests/test_bg_bot.py`) — os dois confirmados via revert-to-confirm
+antes de aceitar.
+
+**Testes**: 3 testes novos de fast-path em `tests/test_faction.py`
+(`TestCombatTargetsFastPathAfterRealTick` — índices começam `None`,
+resultado idêntico ao caminho antigo, e um bug injetado de propósito
+confirmou que os testes pegam regressão de verdade) + os 2 acima.
+Suíte completa (1507 testes) verde. Revert-to-confirm em `LAST_DAMAGE_
+AMOUNTS`, `LAST_EFFECTS_APPLIED` (2x) e no dano reportado de projétil —
+todos os 4 bugs injetados foram pegos por algum teste antes do commit.
+
+**Pendente** (fora do escopo desta sessão): rodar de novo o teste de 250
+bots (rampa lenta) que motivou esta investigação, agora com os 5 fixes
+aplicados — servidor precisa reiniciar pra carregar o código novo.
+Comparação justa (mesma contagem de jogadores, mesmo comportamento de
+bot) fica pro usuário decidir quando rodar.

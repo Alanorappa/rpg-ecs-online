@@ -232,6 +232,53 @@ class TestOutcomeImuneNoDanoMagicoDoServidor(unittest.TestCase):
             self.assertEqual(t["damage"], 0)
 
 
+class TestNovaCongelanteReportaDanoEEfeitoAplicado(unittest.TestCase):
+    """Regressão de cobertura (06/09/2026, ver PROBLEMAS_ARQUITETURA.md) —
+    a suíte inteira passava mesmo com LAST_EFFECTS_APPLIED completamente
+    quebrado (confirmado via revert-to-confirm: nenhum teste falhava),
+    porque a única cobertura de `applied_effects`/`effect_durations` era
+    indireta, via um alvo IMUNE (que também aparece no relatório por causa
+    de `_magic_blocked_immune_eids`, um canal separado). Este teste cobre
+    o caso comum — alvo NORMAL, sem imunidade — onde `applied_effects` só
+    pode vir de LAST_EFFECTS_APPLIED (populado por apply_effect no momento
+    em que aplica, ver engine/core_systems.py)."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.mage   = spawn_player(self.ws, "nc_mage", 130, 374, class_id="mago")
+        self.victim = spawn_player(self.ws, "nc_victim", 131, 374, class_id="guerreiro")
+        self.assertIsNone(self.ws.request_duel(self.mage, self.victim))
+        self.ws.respond_duel_invite(self.victim, accept=True)
+        authorize_skill(self.ws, self.mage, "nova_congelante")
+        char = self.ws.world.get_component(self.mage, CharacterStats)
+        char.mana = 999
+
+    def test_alvo_normal_reporta_dano_e_root_aplicado(self):
+        from content.skill_config import SKILL_CATALOG
+        _expected_root_dur = (SKILL_CATALOG.get("nova_congelante", {})
+                              .get("effect_durations", {}).get("root", 5.0))
+
+        sid = self.ws._player_eid_to_sid[self.mage]
+        self.ws.queue_skill(sid, "nova_congelante", -1, 0.0, 0.0, 0)
+        all_results = []
+        for _ in range(40):  # tempo suficiente pro cast completar
+            self.ws._tick(0.05)
+            all_results.extend(self.ws.consume_skill_results())
+
+        targets_hit = [t for r in all_results for t in r.get("targets", [])
+                       if t.get("eid") == self.victim]
+        self.assertTrue(targets_hit, "nenhum resultado chegou pro alvo normal")
+        t = targets_hit[0]
+        self.assertGreater(t["damage"], 0, "Nova Congelante deveria causar dano real")
+        self.assertIn("root", t["applied_effects"],
+                      "root deveria aparecer em applied_effects pro alvo atingido")
+        self.assertAlmostEqual(t["effect_durations"]["root"], _expected_root_dur, places=1)
+
+        # Confirma que o efeito realmente foi aplicado no ECS também (não só reportado)
+        sfx = self.ws.world.get_component(self.victim, StatusEffects)
+        self.assertTrue(sfx and sfx.has("root"), "root deveria estar ativo no alvo de verdade")
+
+
 class TestOutcomePorAlvoEmAoeSemTid(unittest.TestCase):
     """Pirofagia (cone self-centered, sem "tid" explícito — não precisa de
     alvo pra usar) contra 2 mobs no cone, 1 imune e 1 normal — cada um

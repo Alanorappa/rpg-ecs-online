@@ -271,7 +271,8 @@ class CombatProcessorMixin:
                 # players são amigáveis por default, 16/07/2026). Antes:
                 # flag global pvp_enabled ("mundo inteiro é zona PvP").
                 from engine.faction_system import can_engage as _can_engage_pvp
-                if (target_eid in self._player_eids.values()
+                from engine.components import PlayerControlled as _PCcombp
+                if (self.world.get_component(target_eid, _PCcombp) is not None
                         and _can_engage_pvp(self.world, player_eid, target_eid)):
                     # Suprime auto-attack PvP se uma skill disparou neste tick para este player:
                     # evita FLT duplicado (skill + auto em simultâneo) quando o player

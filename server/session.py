@@ -3507,24 +3507,33 @@ class SessionManager:
                                   n_events=len(_evs_all), n_sent=len(_evs_sent))
 
         # ── Effects: próprio player ───────────────────────────────────
-        my_effects = [
-            e for e in deltas.get("effects", [])
-            if e.get("eid") == session.entity_id
-        ]
+        # `deltas["effects"]` é {eid: [effects_list]} (06/09/2026, ver
+        # PROBLEMAS_ARQUITETURA.md) — antes era uma lista de
+        # {"eid":.., "effects":[...]}, varrida por inteiro 2x POR SESSÃO
+        # (O(P) cada, P = todos os players online, não só os visíveis
+        # desta sessão) só pra achar "qual entrada é a minha" e "quais
+        # entradas são de players que eu vejo". Formato de saída pro
+        # cliente (wire, `payload["effects"]`) não muda — só a estrutura
+        # INTERNA entre _collect_deltas e aqui.
+        _effects_by_eid = deltas.get("effects", {})
+        my_effects = [{"eid": session.entity_id,
+                       "effects": _effects_by_eid.get(session.entity_id, [])}]
 
         # ── Mob effects: mobs no AOI + outros players no AOI (PvP) ───
         # Inclui efeitos de outros players no mob_effects para que o
         # cliente possa exibi-los (enraged, root, etc.) nos players remotos.
-        _raw_mob_efx = dict(
-            (k, v) for k, v in deltas.get("mob_effects", {}).items()
-            if int(k) in session.known_eids
-        )
-        for _pfx_entry in deltas.get("effects", []):
-            _pfx_eid = _pfx_entry.get("eid")
-            if (_pfx_eid is not None
-                    and _pfx_eid != session.entity_id
-                    and _pfx_eid in session.known_eids):
-                _raw_mob_efx[str(_pfx_eid)] = _pfx_entry.get("effects", [])
+        # Itera session.known_eids (bounded pelo AOI desta sessão, tipicamente
+        # bem menor que o total de players/mobs do servidor) em vez de varrer
+        # os dicts inteiros do servidor — mesmo resultado, custo O(known_eids)
+        # por sessão em vez de O(mobs_com_efeito + players_online).
+        _mob_fx_by_eid = deltas.get("mob_effects", {})
+        _raw_mob_efx = {}
+        for _known_eid in session.known_eids:
+            _k = str(_known_eid)
+            if _k in _mob_fx_by_eid:
+                _raw_mob_efx[_k] = _mob_fx_by_eid[_k]
+            elif _known_eid != session.entity_id and _known_eid in _effects_by_eid:
+                _raw_mob_efx[_k] = _effects_by_eid[_known_eid]
         mob_effects = _raw_mob_efx
 
         # ── Monta resultado ───────────────────────────────────────────

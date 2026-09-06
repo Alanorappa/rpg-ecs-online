@@ -744,6 +744,45 @@ class TestBotProjectileAutohit(unittest.TestCase):
         self.assertLess(enemy_cs.current_hp, hp_before,
                         "Bola de Fogo do bot deveria ter causado dano real ao alvo")
 
+    def test_bola_de_fogo_reporta_dano_correto_no_skill_result(self):
+        """Regressão de cobertura (06/09/2026, ver PROBLEMAS_ARQUITETURA.md
+        — auditoria de 3 agentes especialistas + eliminação do snapshot em
+        `_apply_spell_on_projectile_hit`). O teste acima só confere o HP
+        real da vítima, nunca o valor de `damage` que vai no SKILL_RESULT
+        (o canal que o CLIENTE de verdade usa pra floating text/animação)
+        — confirmado via revert-to-confirm que a suíte inteira passava
+        mesmo com esse valor sempre reportando 0 (LAST_DAMAGE_AMOUNTS
+        quebrado só nesse call site nunca derrubava nenhum teste)."""
+        from tests.helpers import clear_login_immunity
+        from engine.utils import snap_to_tile
+        from engine.components import CombatStats
+
+        mago = self.ws._spawn_bot_player(class_id="mago")
+        clear_login_immunity(self.ws, mago)
+        self.ws.world.add_component(mago, Faction(faction_id="arena_time_a"))
+        snap_to_tile(self.ws.world, mago, 20, 20, carry_prev=False)
+
+        enemy = spawn_player(self.ws, "bdf_target2", 22, 20, hp=500)
+        clear_login_immunity(self.ws, enemy)
+        self.ws.world.add_component(enemy, Faction(faction_id="arena_time_b"))
+        enemy_cs = self.ws.world.get_component(enemy, CombatStats)
+        hp_before = enemy_cs.current_hp
+
+        all_results = []
+        for _ in range(60):  # mesmo orçamento de tempo do teste acima
+            self.ws._tick(0.05)
+            all_results.extend(self.ws.consume_skill_results())
+
+        real_damage = hp_before - enemy_cs.current_hp
+        self.assertGreater(real_damage, 0, "pré-condição: precisa ter causado dano real")
+
+        hits = [t for r in all_results if r.get("sid") == "bola_de_fogo"
+               for t in r.get("targets", []) if t.get("eid") == enemy]
+        self.assertTrue(hits, "SKILL_RESULT nao reportou nenhum acerto de Bola de Fogo no alvo")
+        reported_damage = sum(t["damage"] for t in hits)
+        self.assertEqual(reported_damage, real_damage,
+                         "dano reportado no SKILL_RESULT deveria bater com o dano real aplicado")
+
     def test_schedule_bot_projectile_autohit_generico_por_spell_id(self):
         """Mesma mecânica de agendamento, mas testada isolada (sem
         depender de autorização/equipamento de arqueiro) pra provar que

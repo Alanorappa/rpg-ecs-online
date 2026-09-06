@@ -962,5 +962,86 @@ class TestCombatTargetsScopedByMap(unittest.TestCase):
         self.assertIn(bandit_no_map, targets)
 
 
+class TestCombatTargetsFastPathAfterRealTick(unittest.TestCase):
+    """`_combat_targets()` ganhou um fast path (06/09/2026, ver
+    PROBLEMAS_ARQUITETURA.md — auditoria de 3 agentes especialistas
+    depois do teste de carga de 250 bots expor `skill_requests` como
+    ~50% do custo do tick) que reusa os índices por mapa já montados em
+    `index_build()` (`_combatants_by_map`/`_players_by_map`) em vez de
+    varrer `_mob_eids`/`_player_eids` do SERVIDOR INTEIRO a cada skill.
+
+    Esses índices começam `None` (só existem depois do 1º tick real) —
+    por isso `TestCombatTargetsScopedByMap` (que nunca roda `_tick()`,
+    de propósito, pra testar `_combat_targets` isolado) continua caindo
+    no caminho antigo sem qualquer mudança de comportamento. Esta classe
+    cobre o caminho NOVO: depois de um tick real, o resultado tem que
+    ser idêntico ao caminho antigo — tentativa anterior de reusar esse
+    índice (mesma ideia) tinha sido revertida por quebrar
+    `test_combat_targets_exclui_npc_amigavel_de_aoe`; a diferença agora é
+    que o fast path só ativa quando os índices EXISTEM (pós-tick), nunca
+    força o teste antigo (sem tick) a passar por ele."""
+
+    def setUp(self):
+        from tests.helpers import make_world_server, spawn_player
+        from engine.components import MapLocation
+        self.ws = make_world_server()
+        self.peid = spawn_player(self.ws, "s1", 130, 374, class_id="guerreiro")
+        self.MapLocation = MapLocation
+        self.map_a = self.ws.get_entity_map(self.peid)
+        self.assertIsNotNone(self.map_a,
+                             "player recem-spawnado precisa ter MapLocation real "
+                             "(spawn_player já registra isso) pro fast path fazer sentido")
+
+    def _hostile_on_map(self, map_file: str, tx: int, ty: int) -> int:
+        from engine.entity_factory import create_combat_npc
+        eid = create_combat_npc(self.ws.world, tx, ty, faction="bandidos")
+        self.ws.world.add_component(eid, self.MapLocation(map_file))
+        return eid
+
+    def test_indices_por_mapa_comecam_none_e_populam_apos_1_tick_real(self):
+        self.assertIsNone(self.ws._combatants_by_map,
+                          "antes do 1o tick real, o indice deve ser None (cai no caminho antigo)")
+        self.assertIsNone(self.ws._players_by_map)
+        self.ws._tick(0.05)
+        self.assertIsNotNone(self.ws._combatants_by_map)
+        self.assertIsNotNone(self.ws._players_by_map)
+
+    def test_fast_path_inclui_hostil_do_mesmo_mapa_e_exclui_de_outro_mapa(self):
+        bandit_same  = self._hostile_on_map(self.map_a, 131, 374)
+        bandit_other = self._hostile_on_map(MAP_B, 78, 19)
+        self.ws._tick(0.05)  # popula _combatants_by_map/_players_by_map via index_build
+
+        targets = self.ws._combat_targets(exclude_eid=self.peid)
+
+        self.assertIn(bandit_same, targets)
+        self.assertNotIn(bandit_other, targets)
+
+    def test_fast_path_da_exatamente_o_mesmo_resultado_que_o_caminho_antigo(self):
+        """Comparação direta: mesmo caster/mundo, os dois caminhos (índice
+        por mapa vs. scan global com filtro por mapa) têm que concordar."""
+        bandit_same  = self._hostile_on_map(self.map_a, 131, 374)
+        bandit_other = self._hostile_on_map(MAP_B, 78, 19)
+        self.ws._tick(0.05)  # popula os índices E registra os NPCs em _mob_eids
+                              # (post_tick_bookkeeping detecta Combatant novo)
+
+        fast = self.ws._combat_targets(exclude_eid=self.peid)
+
+        # Desliga os índices temporariamente pra forçar o caminho antigo —
+        # _mob_eids/_player_eids já foram atualizados pelo tick real acima,
+        # então o caminho antigo tem os mesmos dados pra comparar de igual
+        # pra igual.
+        saved_c, saved_p = self.ws._combatants_by_map, self.ws._players_by_map
+        self.ws._combatants_by_map = None
+        self.ws._players_by_map    = None
+        try:
+            old = self.ws._combat_targets(exclude_eid=self.peid)
+        finally:
+            self.ws._combatants_by_map, self.ws._players_by_map = saved_c, saved_p
+
+        self.assertEqual(fast, old,
+                         "fast path deveria dar exatamente o mesmo conjunto de "
+                         "alvos que o scan global antigo, pro mesmo estado do mundo")
+
+
 if __name__ == "__main__":
     unittest.main()

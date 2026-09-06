@@ -33,10 +33,8 @@ from engine.core_systems import grant_visible_buff
 
 
 def _effects_for(ws, eid) -> dict:
-    for entry in ws._collect_player_effects():
-        if entry["eid"] == eid:
-            return {e["type"]: e["duration"] for e in entry["effects"]}
-    return {}
+    effects_list = ws._collect_player_effects().get(eid, [])
+    return {e["type"]: e["duration"] for e in effects_list}
 
 
 class TestItemProcGrantsVisibleBuff(unittest.TestCase):

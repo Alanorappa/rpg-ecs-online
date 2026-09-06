@@ -130,11 +130,18 @@ class SpellCompletionMixin:
                 if not (_conc_free and getattr(_conc_free, "concentration_free", False)):
                     char.concentration = max(0, char.concentration - _conc_cost)
 
-            # Snapshot unificado: mobs + players PvP (padrão ECS — _combat_targets)
-            hp_before, sfx_before = self._snapshot_combat_targets(exclude_eid=player_eid)
-
             # Spells com projétil: aguardam PROJECTILE_HIT_CS antes de aplicar dano
             _PROJECTILE_SPELLS = {"bola_de_fogo", "flecha_reiterada", "picada_escorpiao", "tiro_repulsivo"}
+
+            # Snapshot de "todo combatente do mapa" (_snapshot_combat_targets)
+            # ELIMINADO por completo (06/09/2026, ver PROBLEMAS_ARQUITETURA.md
+            # — mesmo achado de _process_skill_requests): pra projétil/
+            # tiro_multiplo o dano nunca acontecia aqui mesmo (só em
+            # _apply_spell_on_projectile_hit); pras demais (Nova Congelante,
+            # Polimorfia, etc.), o relatório agora lê direto de
+            # LAST_DAMAGE_AMOUNTS/LAST_EFFECTS_APPLIED (populados por
+            # apply_damage_core/apply_effect no momento em que aplicam) — ver
+            # limpeza antes do dispatch e leitura no loop de resultados abaixo.
             _dispatch = {
                 "nova_congelante":  self._server_nova_congelante,
                 "polimorfia":       self._server_polimorfia,
@@ -152,6 +159,7 @@ class SpellCompletionMixin:
             from server.spell_debug_log import splog as _splog2
             _tiro_multiplo_targets: list = []
             _remaining = 1
+            results: list = []  # só populado no branch `else` (spell sem projétil) abaixo
             if spell_id == "tiro_multiplo":
                 # Múltiplos alvos, não um target_id fixo: cada alvo selecionado no cone
                 # recebe sua PRÓPRIA flecha (1 entrada em _spells_in_flight_queue cada),
@@ -215,6 +223,14 @@ class SpellCompletionMixin:
                 if fn:
                     self._last_magic_is_crit = False
                     self._magic_blocked_immune_eids = set()
+                    # Limpa ANTES do handler (mesma disciplina de
+                    # _process_skill_requests) — sem isso uma entrada de
+                    # outra completion mais cedo no mesmo tick vazaria pro
+                    # relatório desta.
+                    from engine.core_systems import (LAST_DAMAGE_AMOUNTS as _last_dmg_amt_cc,
+                                                      LAST_EFFECTS_APPLIED as _last_fx_cc)
+                    _last_dmg_amt_cc.clear()
+                    _last_fx_cc.clear()
                     try:
                         fn(player_eid, target_id, entry)
                     except Exception as _err:
@@ -223,40 +239,47 @@ class SpellCompletionMixin:
                         log.error(f"[SpellCompletion] ERRO {spell_id}: {_err}")
                         traceback.print_exc()
 
-            # Coleta dano e efeitos aplicados (apenas para spells sem projétil)
-            results = []
-            for mob_eid, hp_pre in hp_before.items():
-                _cs2 = self.world.get_component(mob_eid, _CS)
-                if not _cs2:
-                    continue
-                hp_real  = _cs2.current_hp
-                hp_after = max(0, hp_real)
-                damage   = max(0, hp_pre - hp_real)
-                if damage > 0:
-                    _splog2(f"  dano mob={mob_eid} dmg={damage} hp_pre={hp_pre} hp_now={hp_after}")
-                _sfx2    = self.world.get_component(mob_eid, _SFX)
-                eff_now  = set(_sfx2.effects.keys()) if _sfx2 else set()
-                applied  = list(eff_now - sfx_before.get(mob_eid, set()))
-                _blocked = mob_eid in (self._magic_blocked_immune_eids or ())
-                if damage > 0 or applied or _blocked:
-                    _res = {
-                        "eid":             mob_eid,
-                        "damage":          damage,
-                        "outcome":         "immune" if _blocked else ("crit" if self._last_magic_is_crit else "hit"),
-                        "hp_after":        hp_after,
-                        "applied_effects": applied,
-                    }
-                    if applied and _sfx2:
-                        _res["effect_durations"] = {
-                            ef: round(_sfx2.effects[ef].duration, 2)
-                            for ef in applied if ef in _sfx2.effects
-                        }
-                    # Sincroniza slow_mult ao cliente para evitar desync visual do mob
-                    if _sfx2:
-                        _slow_eff = _sfx2.get("slow")
-                        if _slow_eff:
-                            _res["mob_slow_mult"] = _slow_eff.magnitude
-                    results.append(_res)
+                    # Coleta dano e efeitos aplicados (só entra aqui pra spell
+                    # sem projétil, dentro do próprio `if fn:` — dano de
+                    # verdade já aconteceu na chamada acima). Inclui também
+                    # `_magic_blocked_immune_eids` — um alvo bloqueado por
+                    # imunidade não aparece em `_last_dmg_amt_cc` (dano nunca
+                    # chega a ser aplicado) nem necessariamente em
+                    # `_last_fx_cc` (se a skill não tentar nenhum efeito
+                    # nele), mas ainda precisa ser reportado como "immune".
+                    _touched_cc = (set(_last_dmg_amt_cc.keys()) | set(_last_fx_cc.keys())
+                                  | (self._magic_blocked_immune_eids or set()))
+                    if target_id != -1:
+                        _touched_cc.add(target_id)
+                    for mob_eid in _touched_cc:
+                        _cs2 = self.world.get_component(mob_eid, _CS)
+                        if not _cs2:
+                            continue
+                        hp_real  = _cs2.current_hp
+                        hp_after = max(0, hp_real)
+                        damage   = _last_dmg_amt_cc.get(mob_eid, 0)
+                        if damage > 0:
+                            _splog2(f"  dano mob={mob_eid} dmg={damage} hp_now={hp_after}")
+                        _fx_list_cc = _last_fx_cc.get(mob_eid, [])
+                        applied  = [e["type"] for e in _fx_list_cc]
+                        _blocked = mob_eid in (self._magic_blocked_immune_eids or ())
+                        if damage > 0 or applied or _blocked:
+                            _res = {
+                                "eid":             mob_eid,
+                                "damage":          damage,
+                                "outcome":         "immune" if _blocked else ("crit" if self._last_magic_is_crit else "hit"),
+                                "hp_after":        hp_after,
+                                "applied_effects": applied,
+                            }
+                            if applied:
+                                _res["effect_durations"] = {e["type"]: e["duration"] for e in _fx_list_cc}
+                            # Sincroniza slow_mult ao cliente para evitar desync visual do mob
+                            _sfx2 = self.world.get_component(mob_eid, _SFX)
+                            if _sfx2:
+                                _slow_eff = _sfx2.get("slow")
+                                if _slow_eff:
+                                    _res["mob_slow_mult"] = _slow_eff.magnitude
+                            results.append(_res)
 
             # PvP: HP + efeitos sync. Rastreio de _pvp_damage_this_tick
             # (evita FLT duplo via mob_delta) é centralizado em
@@ -264,7 +287,8 @@ class SpellCompletionMixin:
             # (23/07/2026) — apply_damage_core já registra isso.
             for _r in results:
                 _r_eid = _r["eid"]
-                if _r_eid in self._player_eids.values():
+                from engine.components import PlayerControlled as _PCvicC
+                if self.world.get_component(_r_eid, _PCvicC) is not None:
                     from engine.components import CombatStats as _CSvicC, CharacterStats as _CSvcC
                     _vcs = self.world.get_component(_r_eid, _CSvicC)
                     _vch = self.world.get_component(_r_eid, _CSvcC)
@@ -406,8 +430,17 @@ class SpellCompletionMixin:
         if not fn:
             return
 
-        # Snapshot unificado: mobs + players PvP
-        hp_before, sfx_before = self._snapshot_combat_targets(exclude_eid=player_eid)
+        # Snapshot de "todo combatente do mapa" (_snapshot_combat_targets)
+        # ELIMINADO (06/09/2026, ver PROBLEMAS_ARQUITETURA.md — este é o
+        # call site de MAIOR volume real: todo acerto de Bola de
+        # Fogo/Flecha Reiterada/Picada de Escorpião passava por aqui).
+        # Relatório agora lê LAST_DAMAGE_AMOUNTS/LAST_EFFECTS_APPLIED,
+        # populados por apply_damage_core/apply_effect no momento em que
+        # aplicam — limpos logo abaixo, ANTES do handler rodar.
+        from engine.core_systems import (LAST_DAMAGE_AMOUNTS as _last_dmg_amt_ph,
+                                          LAST_EFFECTS_APPLIED as _last_fx_ph)
+        _last_dmg_amt_ph.clear()
+        _last_fx_ph.clear()
 
         # Serviços globais no bundle do mapa do caster (knockback do Tiro
         # Repulsivo valida colisão via tilemap — ver register_map_services_for)
@@ -426,18 +459,23 @@ class SpellCompletionMixin:
         _proj_is_crit  = self._proj_spell_result["is_crit"]
         _lapso_proc    = self._proj_spell_result["lapso_proc"]
 
-        # Coleta dano
+        # Coleta dano — inclui `_magic_blocked_immune_eids` pelo mesmo motivo
+        # do branch sem projétil acima (alvo bloqueado por imunidade pode não
+        # aparecer nem em dano nem em efeito, mas precisa ser reportado).
+        _touched_ph = (set(_last_dmg_amt_ph.keys()) | set(_last_fx_ph.keys())
+                      | (self._magic_blocked_immune_eids or set()))
+        if target_id != -1:
+            _touched_ph.add(target_id)
         results = []
-        for mob_eid, hp_pre in hp_before.items():
+        for mob_eid in _touched_ph:
             _cs2 = self.world.get_component(mob_eid, _CS)
             if not _cs2:
                 continue
             hp_real  = _cs2.current_hp
             hp_after = max(0, hp_real)
-            damage   = max(0, hp_pre - hp_real)
-            _sfx2    = self.world.get_component(mob_eid, _SFX)
-            eff_now  = set(_sfx2.effects.keys()) if _sfx2 else set()
-            applied  = list(eff_now - sfx_before.get(mob_eid, set()))
+            damage   = _last_dmg_amt_ph.get(mob_eid, 0)
+            _fx_list_ph = _last_fx_ph.get(mob_eid, [])
+            applied  = [e["type"] for e in _fx_list_ph]
             _blocked = mob_eid in (self._magic_blocked_immune_eids or ())
             if damage > 0 or applied or _blocked:
                 _res2 = {
@@ -447,11 +485,9 @@ class SpellCompletionMixin:
                     "hp_after":        hp_after,
                     "applied_effects": applied,
                 }
-                if applied and _sfx2:
-                    _res2["effect_durations"] = {
-                        ef: round(_sfx2.effects[ef].duration, 2)
-                        for ef in applied if ef in _sfx2.effects
-                    }
+                if applied:
+                    _res2["effect_durations"] = {e["type"]: e["duration"] for e in _fx_list_ph}
+                _sfx2 = self.world.get_component(mob_eid, _SFX)
                 if _sfx2:
                     _slow2 = _sfx2.get("slow")
                     if _slow2:
@@ -459,9 +495,10 @@ class SpellCompletionMixin:
                 results.append(_res2)
 
         # PvP: HP + efeitos sync para vítimas players (BdF)
+        from engine.components import PlayerControlled as _PCvic2
         for _r2 in results:
             _r2_eid = _r2["eid"]
-            if _r2_eid in self._player_eids.values() and _r2["damage"] > 0:
+            if _r2["damage"] > 0 and self.world.get_component(_r2_eid, _PCvic2) is not None:
                 _vcs2 = self.world.get_component(_r2_eid, _CS)
                 from engine.components import CharacterStats as _CSv2
                 _vch2 = self.world.get_component(_r2_eid, _CSv2)
@@ -844,7 +881,8 @@ class SpellCompletionMixin:
                 "source":   "skill",
             })
             # PvP: HP sync para vítima player
-            if target_id in self._player_eids.values():
+            from engine.components import PlayerControlled as _PCmagv
+            if self.world.get_component(target_id, _PCmagv) is not None:
                 from engine.components import CharacterStats as _CHS_mag
                 _vch = self.world.get_component(target_id, _CHS_mag)
                 self.queue_stats_update({
@@ -1492,7 +1530,8 @@ class SpellCompletionMixin:
         # Alvo é um player conectado (PvP): AOI_UPDATE.moved não chega até ele
         # mesmo (cliente ignora eid==self._my_eid no array de moved) — precisa
         # do canal de correção direta também.
-        _target_is_player = target_id in self._player_eids.values()
+        from engine.components import PlayerControlled as _PCkbv
+        _target_is_player = self.world.get_component(target_id, _PCkbv) is not None
 
         # Cancela qualquer movimento normal em andamento (ex: alvo estava no meio
         # de um passo de chase da IA quando a flecha acertou). O empurrão escreve

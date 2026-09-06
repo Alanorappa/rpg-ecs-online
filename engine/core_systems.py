@@ -65,6 +65,22 @@ def register_damage_tracker(fn) -> None:
 # resetava `last_outcome = "hit"` antes de cada handler.
 LAST_DAMAGE_OUTCOMES: dict[int, str] = {}
 
+# ── Dano/efeito por alvo (por-tick) — irmãos de LAST_DAMAGE_OUTCOMES ─────────
+# Estende o mesmo mecanismo (06/09/2026, ver PROBLEMAS_ARQUITETURA.md —
+# auditoria de 3 agentes especialistas depois do teste de carga de 250 bots
+# expor `skill_requests`/`spell_completions` gastando ~50% do tick com
+# `_snapshot_combat_targets` tirando uma "foto" de HP/efeitos de TODO
+# combatente do mapa só pra comparar antes/depois e descobrir quanto de dano
+# uma skill causou). `apply_damage_core`/`apply_effect` já SABEM o valor no
+# momento em que aplicam — registrar aqui de graça, sem custo de scan.
+# Mesmo lifecycle de LAST_DAMAGE_OUTCOMES: o CHAMADOR limpa os 3 dicts juntos
+# ANTES de disparar a resolução (request/completion/projectile-hit), lê
+# DEPOIS do handler rodar. `LAST_DAMAGE_AMOUNTS` ACUMULA (não sobrescreve) —
+# um alvo atingido 2x na MESMA resolução (raro, mas não impossível) soma,
+# igual o diff antes/depois somaria naturalmente.
+LAST_DAMAGE_AMOUNTS: dict[int, int] = {}
+LAST_EFFECTS_APPLIED: dict[int, list] = {}
+
 
 # ── apply_damage_core ─────────────────────────────────────────────────────────
 
@@ -143,6 +159,7 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
             return _finish("blocked_friendly")
 
     cs.current_hp -= dmg  # overkill preservado por contrato
+    LAST_DAMAGE_AMOUNTS[target_id] = LAST_DAMAGE_AMOUNTS.get(target_id, 0) + dmg
 
     if dmg > 0:
         if on_damage_dealt is not None and killer_eid != -1:
@@ -417,6 +434,13 @@ def apply_effect(
     # engine/effect_order.py.
     from engine.effect_order import mark_activated
     mark_activated(world, entity_id, effect_type)
+    # Registro por-alvo pra relatório de skill sem snapshot (06/09/2026,
+    # ver LAST_DAMAGE_AMOUNTS acima) — só na aplicação NOVA (este ponto,
+    # não no refresh acima), mesmo critério que já valia pro diff antigo
+    # (`set(effects.keys())` antes/depois só detectava CHAVE nova, nunca
+    # refresh de uma já ativa).
+    LAST_EFFECTS_APPLIED.setdefault(entity_id, []).append(
+        {"type": effect_type, "duration": round(duration, 2)})
 
 
 def grant_visible_buff(world, entity_id: int, effect_type: str, duration: float,

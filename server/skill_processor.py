@@ -139,8 +139,20 @@ class SkillProcessorMixin:
             # Aponta o SkillSystem para este player
             self._skill_system.player_entity_id = player_eid
 
-            # Snapshot unificado: mobs + players PvP (padrão _combat_targets)
-            hp_snapshot, effects_snapshot = self._snapshot_combat_targets(exclude_eid=player_eid)
+            # offensive=True + cast_time==0 → enter_combat + is_pursuing=True
+            # offensive=True + cast_time>0  → só enter_combat (evita aggro prematuro)
+            _is_offensive = getattr(skill_obj, "offensive", True)
+            _has_cast     = getattr(skill_obj, "cast_time", 0.0) > 0
+
+            # Snapshot de "quem existe no mapa" (_snapshot_combat_targets)
+            # ELIMINADO por completo (06/09/2026, ver PROBLEMAS_ARQUITETURA.md
+            # — auditoria de 3 agentes especialistas depois do teste de carga
+            # de 250 bots expor `skill_requests` como ~50% do custo do tick).
+            # O relatório de dano/efeito do handler agora lê direto de
+            # LAST_DAMAGE_AMOUNTS/LAST_EFFECTS_APPLIED (engine/core_systems.py)
+            # — populados por apply_damage_core/apply_effect NO MOMENTO em
+            # que aplicam, sem precisar tirar foto de todo combatente do mapa
+            # antes pra comparar depois. Ver limpeza + leitura logo abaixo.
 
             # Obtém componentes necessários para os handlers
             combat_stats = self.world.get_component(player_eid, CombatStats)
@@ -178,8 +190,10 @@ class SkillProcessorMixin:
             tid = req.get("tid", -1)
             if tid != -1 and combat_state:
                 from engine.faction_system import can_engage as _can_engage_sk
+                from engine.components import PlayerControlled as _PCskr
                 _tid_is_mob    = tid in self._mob_eids
-                _tid_is_player = tid in self._player_eids.values() and tid != player_eid
+                _tid_is_player = (tid != player_eid
+                                  and self.world.get_component(tid, _PCskr) is not None)
                 if (_tid_is_mob or _tid_is_player) and not _can_engage_sk(self.world, player_eid, tid):
                     self._skill_results_this_tick.append({
                         "caster_eid": player_eid,
@@ -282,10 +296,7 @@ class SkillProcessorMixin:
                             _lc_tm.current_tile_y = _lc_ty
 
             # Skills ofensivas: enter_combat + is_pursuing (copiado de _use_skill:5299-5305)
-            # offensive=True + cast_time==0 → enter_combat + is_pursuing=True
-            # offensive=True + cast_time>0  → só enter_combat (evita aggro prematuro)
-            _is_offensive = getattr(skill_obj, "offensive", True)
-            _has_cast     = getattr(skill_obj, "cast_time", 0.0) > 0
+            # _is_offensive/_has_cast já calculados antes do snapshot, acima.
             if _is_offensive and combat_state:
                 from engine.stat_fns import enter_combat as _ec2
                 _ec2(combat_state)
@@ -313,15 +324,20 @@ class SkillProcessorMixin:
             _combat_svc_reset = getattr(_sys_reset, "_svc", {}).get("combat")
             if _combat_svc_reset:
                 _combat_svc_reset.last_outcome = "hit"
-            # Mesmo motivo, por-alvo: LAST_DAMAGE_OUTCOMES (engine/core_systems.py)
-            # é populado por apply_damage_core a cada chamada — sem limpar antes
+            # Mesmo motivo, por-alvo: LAST_DAMAGE_OUTCOMES/LAST_DAMAGE_AMOUNTS/
+            # LAST_EFFECTS_APPLIED (engine/core_systems.py) são populados por
+            # apply_damage_core/apply_effect a cada chamada — sem limpar antes
             # desta resolução, uma entrada de um alvo atingido por OUTRA skill/
-            # request mais cedo no mesmo tick vazaria pro relatório deste cast se
-            # esse mesmo eid aparecer em hp_snapshot sem ter sido tocado agora
+            # request mais cedo no mesmo tick vazaria pro relatório deste cast
             # (10/08/2026, ver PROBLEMAS_ARQUITETURA.md §14 — outcome por alvo em
-            # AOE, referências Veloren/AzerothCore).
-            from engine.core_systems import LAST_DAMAGE_OUTCOMES as _last_dmg_outcomes
+            # AOE, referências Veloren/AzerothCore; os 2 dicts novos entraram
+            # 06/09/2026, mesma disciplina de limpar sempre antes de resolver).
+            from engine.core_systems import (LAST_DAMAGE_OUTCOMES as _last_dmg_outcomes,
+                                              LAST_DAMAGE_AMOUNTS as _last_dmg_amounts,
+                                              LAST_EFFECTS_APPLIED as _last_fx_applied)
             _last_dmg_outcomes.clear()
+            _last_dmg_amounts.clear()
+            _last_fx_applied.clear()
 
             # Chama o handler diretamente (mesmo mecanismo do SkillSystem offline)
             handler_fn = getattr(self._skill_system, f"_skill_{sid}", None)
@@ -449,15 +465,29 @@ class SkillProcessorMixin:
             import engine.world_systems as _sys
             _combat_svc = getattr(_sys, "_svc", {}).get("combat")
             _skill_outcome = getattr(_combat_svc, "last_outcome", "hit")
-            # LAST_DAMAGE_OUTCOMES: outcome REAL por alvo (populado por
-            # apply_damage_core a cada chamada) — diferente de _skill_outcome
-            # acima, que é 1 valor só compartilhado pro cast inteiro (correto
-            # só pro caso físico de alvo único, ver PROBLEMAS_ARQUITETURA.md
-            # §14). Usado abaixo pra imune/evadiu por alvo em AOE.
-            from engine.core_systems import LAST_DAMAGE_OUTCOMES as _last_dmg_outcomes
+            # LAST_DAMAGE_OUTCOMES/LAST_DAMAGE_AMOUNTS/LAST_EFFECTS_APPLIED:
+            # populados por apply_damage_core/apply_effect NO MOMENTO em que
+            # aplicam (06/09/2026, ver PROBLEMAS_ARQUITETURA.md) — substitui
+            # o antigo diff de snapshot (varria TODO combatente do mapa só
+            # pra comparar antes/depois). `_last_dmg_outcomes` diferente de
+            # `_skill_outcome` acima: é 1 valor por ALVO (correto pra AOE),
+            # `_skill_outcome` é 1 valor só compartilhado pro cast inteiro
+            # (correto só pro físico de alvo único).
+            from engine.core_systems import (LAST_DAMAGE_OUTCOMES as _last_dmg_outcomes,
+                                              LAST_DAMAGE_AMOUNTS as _last_dmg_amounts,
+                                              LAST_EFFECTS_APPLIED as _last_fx_applied)
+
+            # Conjunto de alvos a reportar: quem apply_damage_core tocou
+            # (outcome sempre registrado, mesmo quando bloqueado) + quem
+            # recebeu efeito novo + o alvo explícito do cast (tid) — este
+            # último precisa entrar mesmo sem dano/efeito, pra cobrir
+            # miss/dodge/parry/block do ataque físico de alvo único.
+            _touched = set(_last_dmg_outcomes.keys()) | set(_last_fx_applied.keys())
+            if tid != -1:
+                _touched.add(tid)
 
             results_targets = []
-            for mob_eid, hp_before in hp_snapshot.items():
+            for mob_eid in _touched:
                 cs = self.world.get_component(mob_eid, _comp.CombatStats)
                 if not cs:
                     continue
@@ -465,7 +495,7 @@ class SkillProcessorMixin:
                 # para mostrar dano real no floating text, não o HP restante
                 hp_real  = cs.current_hp               # pode ser negativo se matou
                 hp_after = max(0, hp_real)             # para display da barra
-                damage   = max(0, hp_before - hp_real) # dano real (inclui overkill)
+                damage   = _last_dmg_amounts.get(mob_eid, 0)  # já é o dano real (inclui overkill)
 
                 # Outcome deste alvo específico: blocked_immune/blocked_evade
                 # (apply_damage_core, por alvo, sempre confiável) tem
@@ -479,17 +509,11 @@ class SkillProcessorMixin:
                 else:
                     _this_outcome = _skill_outcome
 
-                # Efeitos aplicados por esta skill neste mob
-                _sfx_post  = self.world.get_component(mob_eid, _comp.StatusEffects)
-                _eff_after = set(_sfx_post.effects.keys()) if _sfx_post else set()
-                _applied   = list(_eff_after - effects_snapshot.get(mob_eid, set()))
-                # Duração real de cada efeito novo — lida do StatusEffects que o handler acabou de
-                # popular. Cliente usa isso para aplicar visualmente com o tempo correto.
-                _eff_durs  = {
-                    ef: round(_sfx_post.effects[ef].duration, 2)
-                    for ef in _applied
-                    if _sfx_post and ef in _sfx_post.effects
-                } if _applied else {}
+                # Efeitos aplicados por esta skill neste mob (já vem com a
+                # duração exata que apply_effect usou, sem reler o componente)
+                _fx_list  = _last_fx_applied.get(mob_eid, [])
+                _applied  = [e["type"] for e in _fx_list]
+                _eff_durs = {e["type"]: e["duration"] for e in _fx_list} if _fx_list else {}
 
                 def _make_result(outcome):
                     r = {"eid": mob_eid, "damage": damage, "outcome": outcome,
@@ -516,10 +540,10 @@ class SkillProcessorMixin:
             # (23/07/2026) — os handlers de skill já aplicam dano via
             # apply_damage_core com killer_eid válido, que já registra isso.
             import engine.components as _comp_pvp
-            from engine.components import CharacterStats as _CSvic
+            from engine.components import CharacterStats as _CSvic, PlayerControlled as _PCvic
             for _pvp_r in results_targets:
                 _pvp_eid = _pvp_r["eid"]
-                if _pvp_eid in self._player_eids.values():
+                if self.world.get_component(_pvp_eid, _PCvic) is not None:
                     _vic_cs   = self.world.get_component(_pvp_eid, _comp_pvp.CombatStats)
                     _vic_char = self.world.get_component(_pvp_eid, _CSvic)
                     if _vic_cs:

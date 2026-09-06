@@ -198,6 +198,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Eids de mobs gerenciados pelo servidor
         self._mob_eids: set[int] = set()
+        # Índices por mapa, montados em index_build() a cada tick real —
+        # None até o 1º tick rodar (sinal usado por _combat_targets() pra
+        # saber se pode usar o fast path ou se deve cair no scan global de
+        # sempre; ver comentário em index_build/_combat_targets, 06/09/2026,
+        # PROBLEMAS_ARQUITETURA.md).
+        self._combatants_by_map: "dict | None" = None
+        self._players_by_map: "dict | None" = None
         # Harvestable (Fase M1, revisão 2, 25/07/2026) — entidades reais,
         # paradas, SEM Combatant (por isso um set PRÓPRIO, não misturado
         # em _mob_eids — evita quebrar os ~12 outros usos de _mob_eids
@@ -3071,7 +3078,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # com (TIMESTAMP, seq) — não soma — pra saber quem bateu por
         # ÚLTIMO, não só quem bateu mais. Ver _player_damage_log no
         # __init__ (seq é o desempate pra hits no mesmo tick).
-        if attacker_eid in self._player_eids.values() and target_id in self._player_eids.values():
+        from engine.components import PlayerControlled as _PCpdmg
+        if (self.world.get_component(attacker_eid, _PCpdmg) is not None
+                and self.world.get_component(target_id, _PCpdmg) is not None):
             import time as _t_pdmg
             self._player_damage_seq += 1
             self._player_damage_log.setdefault(target_id, {})[attacker_eid] = (
@@ -4980,9 +4989,42 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         `create_combat_npc`) nunca é excluído só por isso — só exclui quando
         o mapa do candidato é CONHECIDO e diferente do caster; entidade sem
         essa informação cai no comportamento antigo (inclusiva), nunca no
-        novo filtro."""
+        novo filtro.
+
+        Fast path por índice de mapa (06/09/2026, ver
+        PROBLEMAS_ARQUITETURA.md): quando `caster_map` é conhecido E os
+        índices de `index_build()` já existem (não-None — só acontece
+        depois do 1º tick real rodar), usa `_combatants_by_map`/
+        `_players_by_map[caster_map]` em vez de varrer `_mob_eids`/
+        `_player_eids` do SERVIDOR INTEIRO — mesmo resultado (mesmo crivo
+        can_engage), custo O(combatentes do mapa do caster) em vez de
+        O(combatentes do realm inteiro). `_combatants_by_map` só cobre
+        mob/NPC (gate `Combatant`, que player nunca tem — `spawn_player`
+        não adiciona); `_players_by_map` cobre o lado do player. Fixture
+        de teste que popula `_mob_eids`/`_player_eids` na mão sem nunca
+        rodar `_tick()` (ex.: `test_combat_targets_exclui_npc_amigavel_
+        de_aoe`) nunca tem os índices populados (`None`) e cai no
+        caminho antigo abaixo, idêntico ao de antes desta mudança."""
         from engine.faction_system import can_engage as _can_engage_ct
         caster_map = self.get_entity_map(exclude_eid) if exclude_eid != -1 else None
+
+        if (caster_map is not None and self._combatants_by_map is not None
+                and self._players_by_map is not None):
+            targets = set()
+            for _c_eid, *_c_rest in self._combatants_by_map.get(caster_map, ()):
+                if exclude_eid != -1 and not _can_engage_ct(self.world, exclude_eid, _c_eid):
+                    continue
+                targets.add(_c_eid)
+            for _p_eid, *_p_rest in self._players_by_map.get(caster_map, ()):
+                if _p_eid == exclude_eid:
+                    continue
+                if exclude_eid != -1 and not _can_engage_ct(self.world, exclude_eid, _p_eid):
+                    continue
+                targets.add(_p_eid)
+            return targets
+
+        # Caminho antigo: sem mapa de referência (exclude_eid==-1) ou sem
+        # índice por mapa disponível ainda (fora de um tick real).
         targets = set()
         for m_eid in self._mob_eids:
             if caster_map is not None:
@@ -5004,21 +5046,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             targets.add(p_eid)
         return targets
 
-    def _snapshot_combat_targets(self, exclude_eid: int = -1) -> tuple[dict, dict]:
-        """HP e StatusEffects antes de processar uma skill (para coletar diff depois).
-
-        Retorna (hp_before, sfx_before) incluindo mobs + players PvP.
-        """
-        from engine.components import CombatStats as _CSsnap, StatusEffects as _SFXsnap
-        hp_before: dict[int, int] = {}
-        sfx_before: dict[int, set] = {}
-        for eid in self._combat_targets(exclude_eid):
-            cs = self.world.get_component(eid, _CSsnap)
-            if cs:
-                hp_before[eid] = cs.current_hp
-            sfx = self.world.get_component(eid, _SFXsnap)
-            sfx_before[eid] = set(sfx.effects.keys()) if sfx else set()
-        return hp_before, sfx_before
+    # `_snapshot_combat_targets` (tirava HP/StatusEffects de TODO combatente
+    # do mapa antes de uma skill rodar, só pra comparar depois) foi REMOVIDA
+    # em 06/09/2026 (ver PROBLEMAS_ARQUITETURA.md) — último call site
+    # eliminado; o relatório de dano/efeito de skill agora lê
+    # LAST_DAMAGE_AMOUNTS/LAST_EFFECTS_APPLIED (engine/core_systems.py),
+    # populados por apply_damage_core/apply_effect no momento em que
+    # aplicam, sem custo de varrer o mapa inteiro por skill usada.
 
     # ── Loop de ticks ─────────────────────────────────────────────────────────
 
@@ -5493,6 +5527,21 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 _tvm_is_npc = self.world.get_component(_tvm_eid, _NPCbm) is not None
                 _combatants_by_map.setdefault(_tvm_map, []).append(
                     (_tvm_eid, _tvm_pos, _tvm_tm, _tvm_cs, _tvm_is_npc))
+
+        # Promovidos a atributo de instância (06/09/2026, ver
+        # PROBLEMAS_ARQUITETURA.md) — `_combat_targets()` reusa como fast
+        # path em vez de varrer `_mob_eids`/`_player_eids` do servidor
+        # inteiro a cada skill. `_combatants_by_map` só cobre mob/NPC
+        # (gate é `Combatant`, que player NUNCA tem — `spawn_player` não
+        # adiciona); `_players_by_map` (gate `PlayerControlled`) cobre o
+        # lado do player. A EXISTÊNCIA do atributo (não o conteúdo) é o
+        # sinal de "isto veio de um tick real" — fixture de teste que
+        # popula `_mob_eids`/`_player_eids` na mão sem nunca rodar
+        # `_tick()` nunca vê este atributo, cai no caminho antigo
+        # (global + filtro por mapa), preservando o comportamento já
+        # testado pra esses casos.
+        self._combatants_by_map = _combatants_by_map
+        self._players_by_map    = _players_by_map
         self._perf_pop()
 
         self._perf_push("ai_bundles")
@@ -6351,26 +6400,28 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 ]
         return result
 
-    def _collect_player_effects(self) -> list[dict]:
-        """Returns active status effects for all online players (for client sync).
+    def _collect_player_effects(self) -> dict[int, list]:
+        """Returns active status effects for all online players (for client sync),
+        como {eid: [effects_list]} — mesmo shape de `_collect_mob_effects` (chave
+        indexável O(1), 06/09/2026, ver PROBLEMAS_ARQUITETURA.md).
 
         Always includes every player (even with empty effects) so the client can
         clear stale effects that were removed server-side (e.g. polymorph broken
         by damage). Without this, the client never calls _sync_player_effects when
-        the server clears all effects, and CC icons/state persist indefinitely.
+        the server clears all effects, and CC icons/state persist indefinitely —
+        por isso, diferente de `_collect_mob_effects`, NUNCA pula player com lista
+        vazia (o consumidor em session.py precisa da entrada mesmo vazia pra
+        detectar "efeitos zeraram").
         """
         from engine.components import StatusEffects as _SE, PlayerControlled as _PC
-        result = []
+        result: dict[int, list] = {}
         for eid, sfx in self.world.get_entities_with(_SE):
             if not self.world.get_component(eid, _PC):
                 continue
-            result.append({
-                "eid": eid,
-                "effects": [
-                    {"type": k, "duration": round(v.duration, 2)}
-                    for k, v in sfx.effects.items()
-                ],
-            })
+            result[eid] = [
+                {"type": k, "duration": round(v.duration, 2)}
+                for k, v in sfx.effects.items()
+            ]
         return result
 
     def _collect_deltas(self) -> dict:
