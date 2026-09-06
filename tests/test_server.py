@@ -1800,6 +1800,60 @@ class TestPreMobTargetSurvivesFusionWithIndexBuild(unittest.TestCase):
         self.assertTrue(moved, "mob normal deveria continuar sendo detectado ao mudar de alvo")
 
 
+class TestSkillRequestRateLimitPorPlayer(unittest.TestCase):
+    """Rate-limit de CAST_SKILL por player, por tick (06/09/2026, ver
+    PROBLEMAS_ARQUITETURA.md — auditoria de 3 agentes depois de um teste
+    de carga de 250 bots expor uma rajada de 242 CAST_SKILL no MESMO
+    tick, 79ms de custo — não por bug de código (custo por request já
+    era baixo, ~0,3ms), mas por falta de qualquer teto no lado do
+    servidor). `queue_skill()` agora descarta silenciosamente o excesso
+    ANTES de enfileirar (nunca paga custo de processar), com um teto
+    generoso por CONEXÃO — nunca um teto global (que penalizaria N
+    jogadores legítimos agindo juntos igual a 1 cliente malicioso)."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.p1 = spawn_player(self.ws, "s1", 130, 374, class_id="guerreiro")
+        self.p2 = spawn_player(self.ws, "s2", 131, 374, class_id="guerreiro")
+
+    def test_excesso_do_mesmo_player_no_mesmo_tick_e_descartado(self):
+        limite = self.ws.MAX_SKILL_REQUESTS_PER_PLAYER_PER_TICK
+        for _ in range(limite + 5):
+            self.ws.queue_skill("s1", "impacto", -1, 0.0, 0.0, 0)
+
+        self.assertEqual(len(self.ws._pending_skill_requests), limite,
+                         "só os primeiros N pedidos do MESMO player no MESMO "
+                         "tick deveriam entrar na fila, N = "
+                         "MAX_SKILL_REQUESTS_PER_PLAYER_PER_TICK")
+
+    def test_outro_player_nao_e_afetado_pelo_limite_do_primeiro(self):
+        limite = self.ws.MAX_SKILL_REQUESTS_PER_PLAYER_PER_TICK
+        for _ in range(limite + 5):
+            self.ws.queue_skill("s1", "impacto", -1, 0.0, 0.0, 0)
+        self.ws.queue_skill("s2", "impacto", -1, 0.0, 0.0, 0)
+
+        by_player = [r["player_eid"] for r in self.ws._pending_skill_requests]
+        self.assertEqual(by_player.count(self.p1), limite)
+        self.assertEqual(by_player.count(self.p2), 1,
+                         "player 2 nunca pediu skill antes — não deveria "
+                         "ser penalizado pelo volume do player 1")
+
+    def test_contador_reseta_a_cada_tick(self):
+        limite = self.ws.MAX_SKILL_REQUESTS_PER_PLAYER_PER_TICK
+        for _ in range(limite + 5):
+            self.ws.queue_skill("s1", "impacto", -1, 0.0, 0.0, 0)
+        self.assertEqual(len(self.ws._pending_skill_requests), limite)
+
+        self.ws._tick(0.05)  # drena a fila e reseta o contador por player
+
+        for _ in range(limite + 5):
+            self.ws.queue_skill("s1", "impacto", -1, 0.0, 0.0, 0)
+        self.assertEqual(len(self.ws._pending_skill_requests), limite,
+                         "depois de um tick real rodar, o player deveria "
+                         "poder pedir skill de novo até o mesmo teto — "
+                         "contador não pode ficar preso pra sempre")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────

@@ -100,7 +100,15 @@ async def _run(count: int, host: str, port: int, ratio: "tuple[int, int, int]",
         pass  # Windows: Ctrl+C ainda funciona via KeyboardInterrupt, só sem handler custom.
 
     async def _staggered_run(i: int, bot: LoadBot):
-        await asyncio.sleep((i // batch_size) * batch_interval_s)
+        # Jitter dentro do próprio lote (06/09/2026, ver PROBLEMAS_ARQUITETURA.md)
+        # — sem isso, todo bot do MESMO lote acorda no exato mesmo instante de
+        # wall-clock (mesmo `(i // batch_size) * batch_interval_s` pra todos),
+        # o que já nasce sincronizado antes de qualquer reconexão. Usa a RNG
+        # do PRÓPRIO bot (mesma seed determinística de sempre), não uma nova
+        # fonte de aleatoriedade solta.
+        base_delay = (i // batch_size) * batch_interval_s
+        jitter = bot.rng.uniform(0, batch_interval_s)
+        await asyncio.sleep(base_delay + jitter)
         await bot.run()
 
     print(f"Subindo {count} bot(s) contra {host}:{port} — "

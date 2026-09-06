@@ -162,6 +162,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                    SpellCompletionMixin, TradeProcessorMixin, DuelProcessorMixin, PartyProcessorMixin,
                    PvpZoneProcessorMixin, MatchProcessorMixin, BgQueueProcessorMixin,
                    BushZoneProcessorMixin, TileLosProcessorMixin):
+    # Rate-limit de CAST_SKILL por player, por tick (06/09/2026, ver
+    # PROBLEMAS_ARQUITETURA.md) — folga bem acima de qualquer sequência
+    # legítima real de auto-attack+skill+skill de um humano num tick de
+    # 33ms; mesmo padrão de "orçamento" já usado por
+    # `EnemyAISystem.MAX_PATHFINDS_PER_FRAME`, só que por CONEXÃO em vez
+    # de por tick do servidor inteiro — um teto global penalizaria N
+    # jogadores legítimos agindo juntos tanto quanto 1 cliente malicioso.
+    MAX_SKILL_REQUESTS_PER_PLAYER_PER_TICK = 3
 
     MAP_FILE = "maps/map_1.csv"   # mapa padrão carregado pelo servidor
 
@@ -533,6 +541,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Fila de skill requests recebidas dos clientes (processada em _tick)
         self._pending_skill_requests: list[dict] = []
+        # Rate-limit por player, por tick (06/09/2026, ver PROBLEMAS_ARQUITETURA.md
+        # — auditoria de 3 agentes depois de um teste de carga expor rajada de
+        # 242 CAST_SKILL no mesmo tick). Contador zerado no início de cada
+        # tick (mesmo ponto em que _pending_skill_requests é drenada) —
+        # protege contra cliente com bug/malicioso mandando CAST_SKILL em
+        # loop apertado, SEM penalizar N jogadores legítimos agindo juntos
+        # (o teto é por CONEXÃO, não um teto global do servidor).
+        self._skill_requests_this_tick_by_player: dict[int, int] = {}
         # Spells com cast_time pendentes de conclusão (gerenciadas por SpellCompletionMixin)
         self._pending_spell_completions: list[dict] = []
         # Pousos de knockback pendentes (stun + feedback de colisão só disparam
@@ -3123,6 +3139,16 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         player_eid = self._player_eids.get(session_id, -1)
         if player_eid == -1:
             return
+        # Rate-limit por player (ver MAX_SKILL_REQUESTS_PER_PLAYER_PER_TICK) —
+        # descarta ANTES de enfileirar, pra nem pagar o custo de processar
+        # (cada request custa CPU real mesmo quando rejeitado por cooldown
+        # dentro do loop). Silencioso de propósito: cliente legítimo nunca
+        # deveria bater nesse teto; se bater, é sinal de bug/trapaça, não
+        # de uso normal que mereça um SKILL_RESULT de erro.
+        _n_this_tick = self._skill_requests_this_tick_by_player.get(player_eid, 0)
+        if _n_this_tick >= self.MAX_SKILL_REQUESTS_PER_PLAYER_PER_TICK:
+            return
+        self._skill_requests_this_tick_by_player[player_eid] = _n_this_tick + 1
         self._pending_skill_requests.append({
             "player_eid": player_eid,
             "sid":        sid,

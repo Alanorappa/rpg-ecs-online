@@ -156,7 +156,16 @@ class LoadBot:
 
     async def _reconnect_backoff(self, exc: Exception) -> None:
         self._reconnect_attempt += 1
-        delay = min(30.0, 2 ** min(self._reconnect_attempt, 5))
+        # "Full jitter" (padrão AWS/gRPC, 06/09/2026 — ver
+        # PROBLEMAS_ARQUITETURA.md, achado real: 250 bots que falham juntos
+        # (ex: contenção de SQLite numa rajada de conexão, §113) tentavam
+        # reconectar TODOS no mesmo segundo — `2**tentativa` sem jitter é
+        # determinístico, então o "rebanho" nunca se desincronizava sozinho,
+        # e a próxima reconexão em massa virava uma rajada sincronizada de
+        # CAST_SKILL (todo bot "pensa imediato" ao reconectar). `uniform(0, teto)`
+        # em vez do teto fixo espalha as tentativas de verdade.
+        _teto = min(30.0, 2 ** min(self._reconnect_attempt, 5))
+        delay = self.rng.uniform(0, _teto)
         self.stats["reconnects"] = self.stats.get("reconnects", 0) + 1
         try:
             await asyncio.wait_for(self._stop.wait(), timeout=delay)

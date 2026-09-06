@@ -27,6 +27,12 @@ class SkillProcessorMixin:
         from engine.components import PlayerSkills as _PS
         requests = list(self._pending_skill_requests)
         self._pending_skill_requests.clear()
+        # Zera o rate-limit por player pro PRÓXIMO tick (ver
+        # MAX_SKILL_REQUESTS_PER_PLAYER_PER_TICK/queue_skill em
+        # world_server.py) — precisa ser aqui, não em queue_skill, pra
+        # contar certo mesmo com múltiplos requests do mesmo player
+        # chegando entre 2 ticks consecutivos.
+        self._skill_requests_this_tick_by_player.clear()
 
         for req in requests:
             player_eid = req["player_eid"]

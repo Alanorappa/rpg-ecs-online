@@ -15965,3 +15965,95 @@ bots (rampa lenta) que motivou esta investigação, agora com os 5 fixes
 aplicados — servidor precisa reiniciar pra carregar o código novo.
 Comparação justa (mesma contagem de jogadores, mesmo comportamento de
 bot) fica pro usuário decidir quando rodar.
+
+**Resultado real, medido depois** (mesmo dia): reiniciado o servidor e
+refeito o teste de 250 bots (rampa de 5 a cada 15s). Tick médio caiu de
+60,5ms pra 19-23ms (dentro do orçamento de 33ms), % de ticks lentos caiu
+de 73% pra 6,1%, `skill_requests` caiu de 49,9% do tick pra 1,7% em
+MÉDIA — as 5 correções funcionaram como esperado. Restaram picos
+severos ocasionais especificamente em `skill_requests` (até 197ms,
+6x o orçamento, 78 ocorrências em ~22 minutos) — investigados no §117.
+
+## 117. Rajada de 242 `CAST_SKILL` no mesmo tick — thundering herd na ferramenta de teste + lacuna real de rate-limit no servidor (06/09/2026, mesmo dia)
+
+Usuário notou que os picos residuais de `skill_requests` (§116) mereciam
+investigação (não só aceitar como "resíduo aceitável"). Instrumentação
+temporária em `_process_skill_requests` (contagem de `len(requests)` +
+tempo total, removida depois de confirmar) mediu, num pico real:
+
+```
+tick#3984 n_requests=242 dt=79.4ms avg_por_req=0.33ms
+```
+
+**Custo por pedido individual confirmado ótimo (0,2-0,4ms) — o problema
+é volume: até 242 dos 250 bots mandando `CAST_SKILL` no MESMO tick de
+33ms.** Auditoria de 3 agentes especialistas (arquitetura/qualidade de
+código/coesão vs mercado), mesmo padrão de rigor do §114/§116, achou a
+cadeia causal completa, nota máxima nos 3 relatórios sem retrabalho:
+
+1. **Gatilho raiz — recorrência do §113, ainda aberto**: contenção de
+   escrita no SQLite numa rajada de conexão faz bots falharem login.
+2. **`tools/loadtest/bot.py::_reconnect_backoff`** usava
+   `2 ** tentativa` **sem jitter nenhum** — todo bot que falha junto
+   reconecta no MESMO segundo, sempre, em toda tentativa seguinte
+   (thundering herd clássico — o motivo de "exponential backoff with
+   jitter" existir em qualquer SDK de rede maduro, AWS/gRPC inclusive).
+3. **`tools/loadtest/swarm.py::_staggered_run`** também não tinha jitter
+   DENTRO do lote — bots do mesmo lote (`(i // batch_size) *
+   batch_interval_s`, idêntico pra todos) já nascem sincronizados.
+4. **A mudança "pensar imediato ao (re)conectar"** (mesma sessão, §115/
+   commit `a10dfe3`) transforma reconexão sincronizada em AÇÃO
+   sincronizada — inclusive `CAST_SKILL`.
+5. Achado extra dos agentes (não pedido, correlacionado): `server/
+   session.py::_spawn_and_start`/`WorldServer.spawn_player` fazem
+   trabalho 100% síncrono (parse de JSON, loop O(sessões) de AOI) sem
+   nenhum `await` no meio — numa rajada de login, isso atrasa o próprio
+   loop principal, deixando a fila de skill_requests acumular ainda
+   mais antes do tick processar. Não mexido agora (mudança arquitetural
+   — ECS não é thread-safe, precisaria de aprovação separada).
+6. `_process_skill_requests` em si CONFIRMADO limpo — O(n) puro, sem
+   nada quadrático, sem snapshot residual. O código de hoje nunca foi o
+   problema; a causa é 100% volume concentrado por sincronização
+   externa ao servidor.
+
+**Veredito dos 3 agentes, convergente**: a causa IMEDIATA (78 picos)
+é majoritariamente artefato da ferramenta de teste (itens 2+3+4) — um
+jogador humano de verdade nunca reconectaria com essa correlação de
+relógio. MAS existe uma lacuna arquitetural real e independente:
+`_process_skill_requests`/`queue_skill` não tinham NENHUM orçamento ou
+limite, ao contrário de `MAX_PATHFINDS_PER_FRAME` (já existe pra IA de
+mob/minion, mesmo princípio documentado em CLAUDE.md — "throttling
+reduz frequência mas não impede uma chamada pesada travar tudo"). Um
+cliente malicioso hoje poderia inflar a fila sozinho, sem depender de
+reconexão nenhuma.
+
+**2 correções implementadas, ambas aprovadas explicitamente pelo
+usuário**:
+
+1. **Jitter na ferramenta de teste** — `tools/loadtest/swarm.py::
+   _staggered_run` (jitter uniforme dentro do lote, usa a RNG do
+   PRÓPRIO bot) e `tools/loadtest/bot.py::_reconnect_backoff` ("full
+   jitter" estilo AWS: `uniform(0, teto)` em vez do teto fixo). Deixa o
+   teste mais realista, sem tocar código de jogo.
+2. **Rate-limit por PLAYER (nunca por tick global) em `_process_skill_
+   requests`** — `WorldServer.MAX_SKILL_REQUESTS_PER_PLAYER_PER_TICK =
+   3` (folga generosa acima de qualquer sequência humana legítima num
+   tick de 33ms), contador `_skill_requests_this_tick_by_player`
+   (dict de instância, zerado no início de `_process_skill_requests`,
+   junto do dreno de `_pending_skill_requests`). `queue_skill()`
+   descarta o excesso ANTES de enfileirar — nunca paga o custo de
+   processar um pedido que já sabe que vai estourar o teto. Teto POR
+   CONEXÃO, nunca global — um teto global penalizaria N jogadores
+   legítimos agindo juntos (raid, início de BG) tanto quanto 1 cliente
+   malicioso sozinho; essa distinção foi o ponto central do veredito
+   dos 3 agentes.
+
+**Fora de escopo, decisão do usuário se quiser revisitar**: §113
+(contenção SQLite) continua aberto — hoje foi só mais uma recorrência,
+não uma resolução; e o achado extra do item 5 (`_spawn_and_start`
+síncrono) não foi mexido (mudança arquitetural que toca ECS).
+
+**Testes**: `tests/test_server.py::TestSkillRequestRateLimitPorPlayer`
+(3 testes — excesso do mesmo player é descartado, outro player não é
+afetado, contador reseta a cada tick real), revert-to-confirm confirmou
+os 3 pegando a regressão. Suíte completa (1510 testes) verde.

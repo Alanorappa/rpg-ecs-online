@@ -87,6 +87,15 @@ ver `PROBLEMAS_ARQUITETURA.md` §115) também:
   sortear uma excursão. Detectado via `is_dummy` (payload de spawn,
   `WorldServer._build_mob_spawn_payload`), nunca por nome/raça na mão.
 
+**Reconexão e rampa de conexão têm jitter de propósito** (06/09/2026,
+ver `PROBLEMAS_ARQUITETURA.md` §117) — sem isso, bots do MESMO lote (ou
+que falham reconexão juntos, ex: numa rajada real de conexão) acordam/
+retentam exatamente no mesmo instante, sincronizando ações (inclusive
+`CAST_SKILL`) no mesmo tick do servidor de um jeito que um jogador
+humano de verdade nunca replicaria. `_reconnect_backoff` usa "full
+jitter" (`uniform(0, teto)`, não o teto fixo); a rampa de conexão soma
+um jitter uniforme dentro de cada lote.
+
 **Achado importante que embasa isso tudo**: o SERVIDOR nunca calcula
 rota pro player (só valida passo-a-passo) — pathfinding de bot roda no
 PRÓPRIO processo do swarm, nunca compete com o orçamento de
