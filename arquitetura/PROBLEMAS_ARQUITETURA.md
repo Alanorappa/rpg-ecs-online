@@ -15713,9 +15713,21 @@ Revert-to-confirm em TODOS os 4 (cada um confirmado: teste falha sem o
 fix, exatamente como esperado). Suíte completa: 1502 passed (1490 +
 12 novos).
 
-**Verificação de ganho real pendente** (decisão do usuário): teste de
-carga dedicado — 250 bots espalhados pelos 3 mapas de mundo + volume
-real de cast de skill em arena/BG simultânea (o teste de 50 bots já
-feito hoje não teve escala suficiente pra exercitar os itens 3/4 de
-verdade). Ver `arquitetura/medicao_antes_depois_fixes.md` pra tabela
-de medição antes/depois e comando exato do teste recomendado.
+**Verificação de ganho real CONCLUÍDA** (250 bots, `--ratio 230:10:10`,
+rampa gradual) — comparação justa na mesma escala de jogadores (~250-267)
+entre o log antigo (sem nenhum fix) e o novo: `skill_requests` −99,6%,
+`bush_target_clear` −99,7%, `pre_tick_snapshots` −79%,
+`regen_and_status_ticks` −59%, `post_tick_bookkeeping` −15%,
+`index_build` −12% (esperado — absorveu o trabalho que
+`pre_tick_snapshots` perdeu). Tempo médio de tick a ~250-267 players:
+40.27ms (acima do orçamento) → 25.1-25.7ms (dentro do orçamento). %
+de ticks travados a 225-250 players: 60.33% → 4.33%. A 250-275 players
+o travamento ainda sobe bastante (33.57%) — confirma o teto do
+prefiltro de IA já sinalizado pelo Agente Arquiteto (Rodada 1), não é
+regressão nova. Achado ao vivo durante o teste (fora do plano): usuário
+relatou travamento real enquanto os 250 bots estavam ativos — investigado
+na hora, causa confirmada foi o teto do prefiltro (não um bug novo); um
+segundo sintoma (ping alto persistindo mesmo depois dos bots saírem) não
+teve causa server-side encontrada, resolveu com reconecte limpo do
+client. Ver `arquitetura/medicao_antes_depois_fixes.md` (tabela completa)
+e o dashboard visual: https://claude.ai/code/artifact/24895768-ecf9-4256-98d9-c18c882f11bc

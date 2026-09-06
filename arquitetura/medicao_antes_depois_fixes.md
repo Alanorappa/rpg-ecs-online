@@ -1,9 +1,10 @@
 # Medição antes/depois — 4 fixes de performance (05/09/2026)
 
 > Ver `arquitetura/analise_performance_rodada1.md` pra análise completa
-> (2 rodadas de auditoria multi-agente) que motivou estes 4 fixes.
-> Este documento é só de MEDIÇÃO — preencher a coluna "Depois" após
-> rodar o teste de carga descrito no final.
+> (2 rodadas de auditoria multi-agente) que motivou estes fixes.
+> Este documento é só de MEDIÇÃO. Teste de 250 bots já rodado e
+> resultado preenchido — ver seção final. Dashboard visual:
+> https://claude.ai/code/artifact/24895768-ecf9-4256-98d9-c18c882f11bc
 
 ## Os 4 fixes implementados (05/09/2026)
 
@@ -77,6 +78,58 @@ py -3.10 tools/loadtest/provision.py --count 250
 py -3.10 tools/loadtest/swarm.py --count 250 --ratio 230:10:10 --batch-size 5 --batch-interval-s 10 --duration-s 400
 ```
 
-## Resultado da medição (preencher após rodar o teste acima)
+## Resultado da medição — teste de 250 bots rodado (05/09/2026)
 
-_(pendente)_
+> **Dashboard visual com os mesmos dados**: https://claude.ai/code/artifact/24895768-ecf9-4256-98d9-c18c882f11bc
+> (gráficos antes/depois por sistema + escala de travamento por número de jogadores)
+
+Teste rodado exatamente como planejado (250 bots, `--ratio 230:10:10`,
+`--batch-size 5 --batch-interval-s 10`), com uma ressalva: bots não
+ficaram de fato espalhados pelos 3 mapas de mundo (provisionamento não
+varia mapa por conta) — mesmo assim, o volume de skill/arena/BG foi
+suficiente pra confirmar o fix do item 4 com sobra.
+
+### Comparação justa — mesma escala de jogadores (~250-267) nos 2 logs
+
+| Sistema | Antes (267 players) | Depois (251 players) | Redução |
+|---|---|---|---|
+| `skill_requests` | 4.041ms | 0.018ms | **99,6%** |
+| `bush_target_clear` | 2.456ms | 0.007ms | **99,7%** |
+| `pre_tick_snapshots` | 1.435ms | 0.300ms | 79% |
+| `regen_and_status_ticks` | 1.756ms | 0.711ms | 59% |
+| `post_tick_bookkeeping` | 1.256ms | 1.065ms | 15% |
+| `index_build` | 2.565ms | 2.254ms | 12% |
+
+`index_build`/`post_tick_bookkeeping` tiveram redução menor de propósito
+— `index_build` absorveu o trabalho que `pre_tick_snapshots` perdeu (a
+fusão realoca custo, não cria do nada), e `post_tick_bookkeeping` só
+recebeu o fix #2 (checagem O(1)), não a fusão de varredura (fica pra
+uma 2ª fase, ver `analise_performance_rodada1.md`).
+
+### Resultado geral do tick
+
+| Métrica | Antes (267 players) | Depois (251 players) |
+|---|---|---|
+| Tempo médio por tick | 40.27ms (**acima** do orçamento de 33ms) | 25.1-25.7ms (**dentro** do orçamento) |
+| % de ticks travados (225-250 players) | 60.33% | 4.33% |
+| % de ticks travados (250-275 players) | 47.33% | 33.57% |
+
+O último ponto (250-275 players) mostra o PRÓXIMO teto real: mesmo com
+os 6 fixes, travamento ainda sobe bastante no extremo de escala — isso
+bate com o achado do Agente Arquiteto (Rodada 1): o prefiltro de IA
+(`EnemyAISystem:prefiltro`) já está no limite da técnica atual pra esse
+volume de jogadores. Não é regressão nem bug novo — é o próximo item a
+discutir (redesenho tipo Grid/Cell do AzerothCore), não decidido nesta
+sessão.
+
+### Achado ao vivo durante o teste (não estava no plano)
+
+Durante o teste de 250, o usuário relatou travamento real jogando —
+investigado ao vivo: CPU 67%, tick 35-60ms, dominado por
+`EnemyAISystem:prefiltro` (16-24ms) — exatamente o teto acima, não um
+bug novo dos 6 fixes (nenhum deles aparecia pesando no momento). Depois
+de parar os bots, um segundo sintoma separado apareceu (ping alto,
+60-80ms, mesmo com só 1 jogador e servidor ocioso) — investigado e
+não teve causa server-side encontrada (CPU/tick/rede todos normais);
+resolveu sozinho com um reconecte limpo do jogador, sugerindo resíduo
+de conexão/estado do client, não do servidor.
