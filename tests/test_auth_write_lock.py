@@ -45,6 +45,12 @@ class TestAuthWriteLockSerializes(unittest.TestCase):
         # por que um Lock de módulo cru quebraria entre testes).
         auth._write_lock = None
         auth._write_lock_loop = None
+        # register/create_character/delete_character passaram a serializar
+        # em `_identity_lock` (fila rápida, separada de `_write_lock` -
+        # §120, ver topo de server/auth.py), nao mais `_write_lock` - reset
+        # pelo mesmo motivo de hygiene.
+        auth._identity_lock = None
+        auth._identity_lock_loop = None
 
     def tearDown(self):
         auth.DB_PATH         = self._orig_db
@@ -111,6 +117,47 @@ class TestAuthWriteLockSerializes(unittest.TestCase):
 
         results = asyncio.run(run_logins())
         self.assertTrue(all(r is not None for r in results), "algum login concorrente falhou")
+
+    def test_register_conta_existente_usa_fast_path_sem_disputar_lock(self):
+        """Sec. 120 (06/09/2026) - teste de carga sustentada achou que
+        register() de reconexao (conta JA existente, o caso comum de
+        verdade: todo bot/cliente manda REGISTER de novo a cada LOGIN)
+        pagava uma aquisicao inteira de `_identity_lock` + thread de
+        executor + tentativa de INSERT so pra descobrir via IntegrityError
+        que nao tinha nada a escrever - sob rajada de reconexao, isso
+        competia por fila com `_write_lock` de saves pesados de OUTROS
+        jogadores. Fast-path: SELECT de existencia ANTES do lock. Prova
+        aqui que `_register_account_sync` (caminho de ESCRITA de verdade)
+        nunca e chamado quando a conta ja existe."""
+        ch = auth._hash("senha_existente")
+        auth._register_account_sync("conta_ja_existe", ch)
+
+        orig_sync = auth._register_account_sync
+        called = {"n": 0}
+
+        def spy_sync(username, password):
+            called["n"] += 1
+            return orig_sync(username, password)
+
+        auth._register_account_sync = spy_sync
+        try:
+            result = asyncio.run(auth.register("conta_ja_existe", ch))
+        finally:
+            auth._register_account_sync = orig_sync
+
+        self.assertFalse(result, "register() devia recusar username ja existente")
+        self.assertEqual(called["n"], 0,
+                         "fast-path falhou: _register_account_sync (caminho de escrita) "
+                         "foi chamado mesmo com a conta ja existindo")
+
+    def test_register_conta_nova_ainda_escreve_de_verdade(self):
+        """Contrapartida do teste acima - garante que o fast-path nao vira
+        um jeito de nunca escrever nada: conta genuinamente NOVA continua
+        chamando o caminho de escrita real e persistindo no banco."""
+        ch = auth._hash("senha_nova")
+        result = asyncio.run(auth.register("conta_totalmente_nova", ch))
+        self.assertTrue(result, "register() devia aceitar username novo")
+        self.assertIsNotNone(auth._get_account_id_sync("conta_totalmente_nova"))
 
 
 if __name__ == "__main__":

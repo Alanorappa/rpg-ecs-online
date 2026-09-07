@@ -6,13 +6,45 @@ SQLite com hashes SHA-256. Fácil migrar para PostgreSQL depois.
 from __future__ import annotations
 from server.log import log
 import asyncio
+import concurrent.futures
 import hashlib
 import sqlite3
+import threading
 import os
 
 from shared.constants import RESPAWN_TILE
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "game.db")
+
+# Executores dedicados de 1 worker cada (nunca o executor padrão do
+# asyncio, que despacharia cada chamada pra uma thread DIFERENTE do pool —
+# até min(32, cpu+4) threads — impedindo `_get_conn()` de convergir numa
+# única conexão persistente reaproveitada por fila, ver `_get_conn`).
+# 2 FILAS separadas por PESO da operação, não 1 fila única (06/09/2026 (2),
+# §119→§120, PROBLEMAS_ARQUITETURA.md — achado ao investigar por que o
+# teste de carga SUSTENTADA, chegada contínua ~2 bots/s por 500s, mediu o
+# `_write_lock` único do §119 piorando o sintoma que devia resolver:
+# reconexões 1181→2768, bots conectados no fim ~225/250→109/250).
+# `save_character` roda em TODO disconnect (`SessionManager.
+# _persist_character`, contexto "disconnect") além de autosave/SAVE_STATE/
+# talento/quest, com payload JSON pesado (mediana ~1KB, cauda real até
+# ~600KB de fog-of-war). Sob rajada de RECONEXÃO — não só conexão nova —
+# cada disconnect gera 1 save pesado que, numa fila FIFO única, entra na
+# MESMA fila que o `register` do bot tentando voltar: um register atrás de
+# N saves pesados já enfileirados espera todos os N antes de rodar, mesmo
+# sendo quase instantâneo — o disconnect que causou a reconexão é, ele
+# mesmo, quem atrasa a reconexão seguinte. É a classe clássica de fila
+# heterogênea sem prioridade; mercado nunca mistura requisição rápida e job
+# pesado numa fila FIFO só, separa por fila/prioridade (fila rápida pra
+# metadata/identidade, fila lenta pra payload grande) — exatamente o
+# desenho abaixo: `_identity_executor`+`_identity_lock` (register/
+# create_character/delete_character, leves, sensíveis a latência de
+# CONEXÃO) nunca esperam atrás de `_write_executor`+`_write_lock`
+# (save_character, pesado, tolera fila).
+_write_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="sqlite-writer")
+_identity_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="sqlite-identity")
 
 # Ponto único de serialização de ESCRITA real no SQLite do processo inteiro
 # (06/09/2026, §113/§118, PROBLEMAS_ARQUITETURA.md) — cobre TODO caminho que
@@ -29,6 +61,17 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "game.db")
 # §113: rampa agressiva do teste de carga gerava até 1181 reconexões em
 # 500s, bot entrando em loop de backoff exponencial re-tentando
 # REGISTER/LOGIN por minutos.
+#
+# ATUALIZADO NO §120: este lock (`_write_lock`) agora cobre SÓ
+# `save_character` (fila LENTA) — register/create_character/
+# delete_character passaram pra `_identity_lock` (fila RÁPIDA, ver
+# `_get_identity_lock()` logo abaixo e comentário completo acima dos 2
+# executores). Medido nesta máquina (script de benchmark ad-hoc, ver
+# PROBLEMAS_ARQUITETURA.md §120): INSERT leve sequencial ≈1000-1700
+# escritas/s (fsync-bound, teto real); UPDATE pesado (~1KB-50KB JSON) por
+# rowid ≈30000-80000 escritas/s — ambos MUITO acima da demanda real (~2
+# conexões novas/s sustentado); o SQLite em si NÃO é o gargalo nesta
+# escala, era o acoplamento leve+pesado numa fila só.
 #
 # Vive AQUI (módulo que de fato abre a conexão) e é acionado DE DENTRO de
 # cada wrapper async (register/create_character/delete_character/
@@ -84,15 +127,30 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "game.db")
 # dois casos, sem custo extra no caso comum (1 comparação de objeto).
 _write_lock: "asyncio.Lock | None" = None
 _write_lock_loop = None
+_identity_lock: "asyncio.Lock | None" = None
+_identity_lock_loop = None
 
 
 def _get_write_lock() -> asyncio.Lock:
+    """Fila LENTA — só `save_character` (payload JSON pesado). Ver §120."""
     global _write_lock, _write_lock_loop
     loop = asyncio.get_running_loop()
     if _write_lock is None or _write_lock_loop is not loop:
         _write_lock = asyncio.Lock()
         _write_lock_loop = loop
     return _write_lock
+
+
+def _get_identity_lock() -> asyncio.Lock:
+    """Fila RÁPIDA — register/create_character/delete_character (payload
+    leve, sensível a latência de conexão). Separada de `_get_write_lock()`
+    de propósito — ver comentário acima dos executores (§120)."""
+    global _identity_lock, _identity_lock_loop
+    loop = asyncio.get_running_loop()
+    if _identity_lock is None or _identity_lock_loop is not loop:
+        _identity_lock = asyncio.Lock()
+        _identity_lock_loop = loop
+    return _identity_lock
 
 
 def _hash(password: str) -> str:
@@ -124,9 +182,43 @@ def _new_salt() -> str:
 # passar por init_db() (que também migra, mas só roda no startup do servidor).
 _schema_ensured = False
 
+# Conexão PERSISTENTE por thread do SO, reaproveitada entre chamadas — nunca
+# um `sqlite3.connect()` novo por operação (06/09/2026, §120,
+# PROBLEMAS_ARQUITETURA.md). Achado por medição, não suposição: um teste de
+# carga sustentada (chegada contínua de conexão, não um burst único) contra
+# `server.auth` de verdade mostrou o arquivo `-wal` CRESCENDO SEM PARAR
+# (nunca fazia checkpoint de volta pro `.db` principal) enquanto havia
+# conexões novas sendo abertas/fechadas em volume alto e concorrente —
+# SQLite só consegue fazer checkpoint de verdade (WAL "auto_checkpoint",
+# >1000 páginas por padrão) quando NENHUMA conexão está segurando uma
+# leitura em andamento; um fluxo de "abre conexão nova, lê/escreve
+# 1 linha, fecha" o tempo todo em paralelo (register+authenticate+
+# save_character disputando a mesma rajada de reconexão) nunca dá essa
+# janela — o WAL cresce sem limite e CADA operação (leitura E escrita) fica
+# mais lenta à medida que o arquivo cresce (precisa escanear mais páginas de
+# WAL), até o checkpoint forçado (limite físico) travar tudo por vários
+# segundos com 100% de CPU. Reduzir pra 1 conexão por thread, reaberta só
+# quando `DB_PATH` muda (testes trocam por um banco temporário a cada
+# `setUp`) elimina esse padrão de abre/fecha em massa. Cache é
+# thread-local de propósito: sqlite3.Connection não é thread-safe pra
+# compartilhar entre threads (default `check_same_thread=True`) — cada
+# thread dos 2 executores dedicados (`_write_executor`/`_identity_executor`,
+# 1 worker cada) e cada thread do pool padrão (`authenticate`/
+# `get_character`, leitura) precisa da sua própria conexão cacheada.
+_conn_cache = threading.local()
+
 
 def _get_conn() -> sqlite3.Connection:
     global _schema_ensured
+    cached = getattr(_conn_cache, "conn", None)
+    cached_path = getattr(_conn_cache, "path", None)
+    if cached is not None and cached_path == DB_PATH:
+        return cached
+    if cached is not None:
+        try:
+            cached.close()
+        except Exception:
+            pass  # best-effort — troca de DB_PATH em teste, conexão velha pode já estar solta
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -151,6 +243,20 @@ def _get_conn() -> sqlite3.Connection:
             conn.execute("PRAGMA journal_mode=WAL")
         except Exception:
             pass  # :memory: (usado em teste) não suporta WAL — no-op inofensivo
+    # synchronous=NORMAL (não persiste no arquivo — precisa ser setado por
+    # CONEXÃO nova, ao contrário de journal_mode) — seguro com WAL (doc
+    # oficial SQLite: WAL+NORMAL nunca corrompe o banco, só pode perder as
+    # últimas transações num crash de SO/queda de energia, não num crash da
+    # aplicação). FULL (default) força fsync em todo commit; medido neste
+    # projeto: com conexão persistente, FULL≈0.8ms/commit vs NORMAL≈0.04ms/
+    # commit no disco de dev — ganho real sob a MESMA garantia de
+    # durabilidade que já era aceita (dev/SQLite, sem replicação).
+    try:
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except Exception:
+        pass
+    _conn_cache.conn = conn
+    _conn_cache.path = DB_PATH
     return conn
 
 
@@ -332,10 +438,30 @@ def _authenticate_sync(username: str, password: str) -> "dict | None":
 
 
 async def register(username: str, password: str) -> bool:
-    """Cria conta (sem personagem). password já vem hasheado pelo cliente."""
-    async with _get_write_lock():
+    """Cria conta (sem personagem). password já vem hasheado pelo cliente.
+    Fast-path (§120): SELECT de existência (leitura pura, nunca disputa
+    fila de escrita) ANTES de `_identity_lock` — caso comum de verdade é
+    reconexão de conta já existente (todo cliente/bot manda REGISTER de
+    novo a cada LOGIN), não registro de conta nova. Sem isso, cada
+    reconexão pagava uma aquisição inteira de fila + INSERT que falha via
+    IntegrityError só pra descobrir que não tinha nada a escrever. Corrida
+    rara (2 registros do MESMO username NOVO ao mesmo tempo) ainda cai
+    corretamente no IntegrityError dentro da fila — sem brecha de
+    corretude, só menos disputa no caminho comum."""
+    if await asyncio.get_running_loop().run_in_executor(
+            None, _account_exists_sync, username):
+        return False
+    async with _get_identity_lock():
         return await asyncio.get_running_loop().run_in_executor(
-            None, _register_account_sync, username, password)
+            _identity_executor, _register_account_sync, username, password)
+
+
+def _account_exists_sync(username: str) -> bool:
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM accounts WHERE username=? LIMIT 1", (username,)
+        ).fetchone()
+        return row is not None
 
 
 def _register_account_sync(username: str, password: str) -> bool:
@@ -358,9 +484,9 @@ async def create_character(account_id: int, name: str,
     """Cria personagem para a conta. Retorna "ok" ou um motivo de rejeição
     ("invalid_name_format", "name_taken", "limit_reached", "creation_failed")
     — ver _create_character_sync."""
-    async with _get_write_lock():
+    async with _get_identity_lock():
         return await asyncio.get_running_loop().run_in_executor(
-            None, _create_character_sync, account_id, name, class_id)
+            _identity_executor, _create_character_sync, account_id, name, class_id)
 
 
 def _create_character_sync(account_id: int, name: str,
@@ -431,9 +557,9 @@ def _suggest_character_name_sync() -> str:
 
 async def delete_character(account_id: int, char_id: int) -> bool:
     """Remove personagem verificando que pertence à conta."""
-    async with _get_write_lock():
+    async with _get_identity_lock():
         return await asyncio.get_running_loop().run_in_executor(
-            None, _delete_character_sync, account_id, char_id)
+            _identity_executor, _delete_character_sync, account_id, char_id)
 
 
 def _delete_character_sync(account_id: int, char_id: int) -> bool:
@@ -465,11 +591,14 @@ def _get_character_sync(account_id: int, char_id: int) -> "dict | None":
 
 async def save_character(char_id: int, data: dict) -> None:
     """Persiste estado do personagem. Chamado ao desconectar e periodicamente.
-    Serializado por `_write_lock` (ver topo do módulo) — mesmo ponto único
-    de verdade usado por register/create_character/delete_character."""
+    Serializado por `_write_lock` (fila LENTA, §120) — separada de
+    `_identity_lock` (register/create_character/delete_character) de
+    propósito: este save roda em TODO disconnect (além de autosave/
+    SAVE_STATE/talento/quest) com payload JSON pesado, e não pode atrasar
+    a reconexão de outro jogador."""
     async with _get_write_lock():
         await asyncio.get_running_loop().run_in_executor(
-            None, _save_character_sync, char_id, data)
+            _write_executor, _save_character_sync, char_id, data)
 
 
 def _save_character_sync(char_id: int, data: dict) -> None:
