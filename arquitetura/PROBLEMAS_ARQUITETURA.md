@@ -16645,5 +16645,26 @@ adiados processam de verdade no tick seguinte. Revert-to-confirm
 (corte desabilitado na mão) confirmou 2 dos 3 testes pegando a
 regressão. Suíte completa: 1527 passed (1524 + 3 novos), 0 regressão.
 
-**Pendente**: medir com teste de carga real se o pico de 350ms some/
-diminui de verdade — não feito ainda nesta sessão.
+**Resultado real, medido depois** (mesmo teste de 250 bots/500s,
+`logs/server_perf_com_players_top5.log` ANTES vs. `logs/
+server_perf_apos_skillbudget.log` DEPOIS, mesma janela players>100):
+
+| | ANTES | DEPOIS |
+|---|---|---|
+| Pico de `skill_requests` isolado | **350,5ms** | **25,1ms** (−93%) |
+| Pior tick do teste inteiro | 365,8ms | 105,4ms (e esse já não é mais `skill_requests` — é `ai_bundles`, sistema diferente, já catalogado) |
+| Tick lento (players>100) | 10,85% dos ticks | **4,75%** (menos da metade) |
+| Ticks severos (>100ms) | 0,24% | **0,04%** (6x menos) |
+
+O orçamento de tempo funcionou exatamente como desenhado: nenhum tick
+do teste novo teve `skill_requests` acima de ~25ms — o corte em 10ms
+(mais a folga de checar a cada 20 pedidos, não a cada 1) segura o pico
+numa faixa previsível em vez de deixar a fila inteira estourar. O
+evento que motivou esta correção (365,8ms travando tudo pra 240
+jogadores) não se repetiu; o pior caso do teste novo (105,4ms) é
+`EnemyAISystem`, já catalogado no §121 como trabalho genuíno que escala
+com número de mapas ativos, não uma regressão nova.
+
+Conexão/reconexão neste teste ficou saudável (239-247/250 conectados o
+tempo todo, ~500 reconexões totais, sem rajada) — não interfere na
+comparação de `skill_requests`.
