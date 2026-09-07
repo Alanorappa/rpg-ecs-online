@@ -16254,3 +16254,130 @@ verdade. `data/game.db` real conferido sem lixo de teste desta vez.
 **Pendente** (mesmo dia, próximo passo): rodar de novo o teste de 250
 bots (mesma rampa agressiva que mediu 1181 reconexões) com os 2 fixes
 aplicados, pra confirmar a redução real da rajada de reconexão.
+
+## 120. §119 regrediu sob carga SUSTENTADA (não burst) — fila FIFO única acoplando leve+pesado, corrigido com 2 filas por peso (06-07/09/2026)
+
+O "pendente" do §119 foi executado: rodar de novo o mesmo teste de 250
+bots, mas agora com carga SUSTENTADA (chegada contínua de ~2 bots
+novos/s por 500s via `--batch-size 10 --batch-interval-s 5`, diferente
+do burst único medido em §119) contra o `_write_lock` único. Resultado
+foi o OPOSTO do esperado: reconexões **1181→2768** (quase o dobro),
+bots conectados no fim **~225/250→109/250**, CPU **99-100% sustentado
+por 40s+**. Notavelmente, **zero erros reais de "database is locked"**
+e o tick do jogo continuou rápido (só 6 ticks lentos em 500s, ~11ms
+avg) — provando que a regressão estava inteira no caminho de conexão/
+auth, não na simulação.
+
+3 agentes escalados de novo, mesma exigência de implementar e validar
+com teste real (regra do usuário, sem exceção): **2 dos 3 (arquitetura,
+coesão vs. mercado) atingiram o rate limit da sessão da API a meio
+caminho** — falha externa (`HTTP 429`), não um veredito sobre a
+abordagem de nenhum dos dois. O 3º (qualidade de código) terminou e
+**mediu de verdade, não teorizou**: script instrumentado provou que
+sob rajada simultânea (thundering herd, não a chegada sustentada) a
+fila FIFO do `_write_lock` único cresce **O(n) com o tamanho da
+rajada** — burst de 600 gerou fila máxima de ~8.9s, ACIMA do timeout
+de 10s do `recv_one()` do bot (`tools/loadtest/protocol_client.py`);
+o cliente trata isso como falha, reconecta, e a nova tentativa entra
+na MESMA fila já congestionada — efeito avalanche que explica
+mecanicamente 1181→2768. Também mediu, como fatores secundários mas
+reais: `sqlite3.connect()` repetido custa 7-17% do tempo total sob
+carga concorrente (0.145ms isolado → 0.85-1.3ms sob contenção), e
+logging síncrono do `RotatingFileHandler` (~0.22ms/call) roda FORA do
+`_tick()` (não capturado pelo perf log baseado em tick), então é
+invisível ao instrumento que catalogou o problema original.
+
+Antes de atingir o rate limit, o agente de arquitetura já tinha
+avançado o design certo (recuperado de um `git stash` após a falha,
+aplicado e validado por mim — não pelo agente, já que ele não chegou
+a terminar):
+
+1. **`_write_lock` estreitado pra cobrir SÓ `save_character`**
+   (`server/auth.py`) — payload pesado (mediana ~1KB, cauda real até
+   ~600KB de fog-of-war), dispara em TODO disconnect (além de
+   autosave/SAVE_STATE/talento/quest). Novo **`_identity_lock`** cobre
+   `register`/`create_character`/`delete_character` — leves, sensíveis
+   a latência de CONEXÃO, nunca esperam atrás de um save gordo de
+   outro jogador. Causa raiz do §119: 1 fila FIFO só misturando
+   requisição rápida (register de quem tenta voltar) com job pesado
+   (save de quem acabou de cair) — o próprio disconnect que gerou a
+   reconexão era, ele mesmo, quem atrasava a reconexão seguinte.
+   Antipadrão clássico de mercado (nunca 1 fila só pra latência baixa
+   e job pesado).
+2. **Fast-path em `register()`**: `SELECT` de existência (leitura
+   pura, WAL nunca disputa lock de escrita, medido ≈160000
+   consultas/s) ANTES de tentar `_identity_lock` — todo bot/cliente
+   manda REGISTER de novo em TODA reconexão mesmo já tendo conta (é o
+   fluxo real do bot, não bug), então o caso comum nem precisa tentar
+   escrever. Corrida rara (2 registros do MESMO username NOVO ao mesmo
+   tempo) ainda cai certo no `IntegrityError` dentro do lock — sem
+   brecha de corretude.
+3. **Conexão SQLite persistente por thread** (`_conn_cache =
+   threading.local()`, chaveado por `DB_PATH` pra não quebrar teste
+   que troca de banco) — nunca mais 1 `sqlite3.connect()` por chamada.
+   Achado por medição: o arquivo `-wal` crescia SEM checkpoint
+   enquanto havia abre/fecha de conexão em volume alto e concorrente
+   (SQLite só faz checkpoint quando NENHUMA conexão está com leitura
+   em andamento — um fluxo de "abre, lê/escreve 1 linha, fecha" o
+   tempo todo em paralelo nunca dá essa janela). 2 executores dedicados
+   de 1 worker cada (`_write_executor`/`_identity_executor`, nunca o
+   executor padrão do asyncio — que espalharia cada chamada numa
+   thread DIFERENTE, até 8 no hardware local, impedindo a conexão
+   persistente de convergir) garantem que cada fila usa sempre a MESMA
+   conexão cacheada.
+4. **`PRAGMA synchronous=NORMAL`** — seguro com WAL (garantia oficial
+   do SQLite: nunca corrompe, só pode perder a última transação num
+   crash de SO/energia, não de aplicação). Medido: fsync por commit
+   caiu de ~0.8ms (FULL, default) pra ~0.04ms com conexão persistente.
+
+Medido nesta máquina (script de benchmark ad-hoc): INSERT leve
+sequencial ≈1000-1700 escritas/s (fsync-bound, teto real); UPDATE
+pesado (~1KB-50KB JSON) por rowid ≈30000-80000 escritas/s — ambos MUITO
+acima da demanda real (~2 conexões novas/s sustentado). **O SQLite em
+si nunca foi o gargalo nesta escala** — era 100% o acoplamento leve+
+pesado numa fila só.
+
+**Validação feita por mim** (não só pelo agente, que não terminou):
+recuperei o `git stash` (o mais avançado dos 2 stashes deixados —
+`stash@{0}`, superset do `stash@{1}`), rodei a suíte completa
+(**1515 passed**, 0 regressão), fiz revert-to-confirm no fast-path do
+`register()` (desabilitei temporariamente, confirmei que
+`test_register_conta_existente_usa_fast_path_sem_disputar_lock` quebra
+de verdade, restaurei — suíte volta a passar), conferi `data/game.db`
+real sem conta de teste vazada. Comitado (`e9cd9bd`).
+
+**Resultado real, medido depois** (mesmo teste de 250 bots, mesma
+rampa sustentada de 500s, servidor reiniciado, `data/game.db` real):
+reconexões **2768→652** (baseline pré-§119 era 1181 — ficou BEM abaixo
+até desse baseline), bots conectados no fim **109/250→242/250**
+(melhor que o próprio baseline pré-§119, ~225/250). Tick do jogo
+continuou saudável (102 ticks lentos em 500s de rampa agressiva,
+nenhum acima do padrão já visto em `ai_bundles`/`skill_requests`).
+Checagem de idle pós-desconexão (o sintoma original do §118): só **1**
+ocorrência de tick lento com `players=0` em toda a janela pós-teste
+(era 875 antes do §118) — um único pico de 107ms no exato momento da
+desconexão em massa (`SpawnZoneSystem` processando respawn de várias
+zonas de uma vez quando 246→0 players caem juntos), recuperando
+imediatamente pro padrão saudável (~11ms/tick) na janela seguinte —
+não é um lockup sustentado, é um custo pontual do evento de massa em
+si.
+
+**Causa residual não resolvida, honestamente registrada**: ainda houve
+uma rajada real de reconexões no MEIO do teste (t≈110s-290s, saltando
+de 0 pra 538 reconexões antes de estabilizar) — bem menor que a
+regressão do §119, mas não zero. Não investigada a fundo nesta rodada
+(fora do escopo do que os 3 agentes foram escalados pra resolver, que
+era a regressão sustentada vs. o baseline §119, não zerar reconexão
+por completo). Hipótese não confirmada: pode ser o momento em que
+partidas de arena/BG começam a decidir (times formando/dissolvendo
+perto de t=100-110s) somado à rampa de conexão ainda em andamento —
+candidato a investigação futura SE o padrão persistir sendo sentido
+como problema real em produção.
+
+**Testes**: `tests/test_auth_write_lock.py` ganhou 2 casos novos
+(fast-path chama ou não `_register_account_sync` de verdade,
+conforme conta já existe ou não). Nenhum teste novo pro
+`_conn_cache`/executores dedicados especificamente (cobertos
+indiretamente pela suíte completa passando e pelo teste de carga real
+— comportamento observável, não uma unidade isolada testável sem
+concorrência real de thread).
