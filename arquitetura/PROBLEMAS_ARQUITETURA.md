@@ -16493,7 +16493,62 @@ confirmados pegando a regressão de verdade quando desligados na mão.
 Suíte completa: 1524 passed (1515 + 9 novos), 0 regressão. `data/
 game.db` real conferido sem lixo de teste.
 
-**Pendente**: rodar o mesmo teste de carga de 250 bots (mesmos
-parâmetros do §120) e comparar contra `logs/server_perf_antes_top5.log`
-(backup feito antes de qualquer mudança desta seção) pra medir o ganho
-real dos 5 itens juntos.
+**Resultado real, medido depois** (mesmo teste de 250 bots/500s,
+`logs/server_perf_antes_top5.log` vs. `logs/server_perf.log` novo,
+médias sobre todos os blocos de 300 ticks com players≥190 em cada log —
+6 blocos antes, 10 depois):
+
+| Sistema | avg ANTES | avg DEPOIS | p99 ANTES | p99 DEPOIS |
+|---|---|---|---|---|
+| `aoi_collect` | 2,358ms | **1,068ms** (−55%) | 4,528ms | **2,144ms** (−53%) |
+| `skill_requests` | 2,199ms | **1,755ms** (−20%) | 33,439ms | **17,629ms** (−47%) |
+| `player_attacks` | 1,940ms | **1,184ms** (−39%) | 4,354ms | **2,654ms** (−39%) |
+| `index_build` | 1,525ms | 2,124ms (+39%) | 3,065ms | 5,772ms (+88%) |
+| `ai_bundles` | 7,689ms | 9,608ms (+25%) | 23,758ms | 28,107ms (+18%) |
+
+Os 3 sistemas com correção DIRETA (itens 1-4 da lista de correções —
+`aoi_collect` via dirty-flag/gate de posição, `skill_requests` e
+`player_attacks` via imports hoisted + `get_component` mais rápido)
+melhoraram de forma consistente e grande, em TODOS os blocos, não só
+numa amostra sortuda. `index_build` e `ai_bundles` pioraram — mas por
+um motivo identificado, não por regressão dos fixes: `maps_ativos_peak`
+médio foi **4,83 antes → 5,90 depois** (o log completo mostra o
+`DEPOIS` rodando consistentemente com 6 mapas ativos simultâneos,
+quase o teste inteiro, contra 5 antes) — 1 partida de arena/BG a mais
+rodando o tempo todo, quase certamente puxada pela turbulência de
+reconexão do meio do teste (t≈350-430s, reconnects saltando de 449 pra
+943 antes de estabilizar — sintoma parecido com a "causa residual não
+investigada" do §120, não deste item). `ai_bundles` e `index_build` são
+os 2 sistemas cujo custo escala com número de INSTÂNCIAS/entidades
+ativas no mundo TODO (cada mapa ativo paga seu próprio preâmbulo de
+`EnemyAISystem`; `index_build` escaneia entidades de todos os mapas de
+uma vez) — os outros 3 escalam com número de PLAYERS, que ficou
+comparável entre os dois testes (190-257 nos dois). Comparando só os
+blocos com a MESMA contagem de mapas ativos (players=236, 5 mapas
+antes vs. depois — não achei um par exato de 5 mapas no log novo, mas
+o bloco de 236 players tinha 6 mapas ativos e mesmo assim mediu
+22,47ms/tick, praticamente igual aos 22,53ms/tick do bloco de 236
+players ANTES com 5 mapas) — indício de que o custo por-mapa-a-mais
+não é catastrófico, e a diferença bruta de tick médio ponderado
+(18,55ms→21,77ms) é majoritariamente esse fator externo ao teste, não
+os 5 fixes.
+
+**Item 5 (orçamento de mob) não foi exercitado de verdade neste teste**:
+`mobs_no_filtro_ai` nunca passou de 59 (teto é 60) — o mesmo patamar já
+visto antes das mudanças. A ressalva já registrada acima (cobre pico
+por CONTAGEM, não por CUSTO por-mob) segue sem confirmação real; só um
+teste com população de mob ainda maior (ou um evento de spawn em massa)
+vai exercitar o orçamento de verdade.
+
+**Honestidade sobre o resultado**: NÃO dá pra afirmar "tick médio
+melhorou X%" de forma limpa neste teste — a variância de quantas
+partidas de arena/BG se formam ao mesmo tempo (decisão de bot, não
+controlada por seed fixa) confunde a métrica agregada. O que dá pra
+afirmar com confiança, porque foi medido de forma consistente em TODOS
+os blocos e são sistemas que não dependem de quantos mapas estão
+ativos: os 3 fixes diretos (`aoi_collect`, `skill_requests`,
+`player_attacks`) reduziram o custo médio deles em 20-55% e o p99 em
+39-53%. Pra medir `ai_bundles`/`index_build`/o orçamento de mob de
+forma limpa, precisaria de um teste novo com o número de mapas ativos
+controlado (ex.: só mundo aberto, sem fila de arena/BG) — não feito
+nesta rodada.
