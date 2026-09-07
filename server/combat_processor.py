@@ -4,6 +4,20 @@ Mixin para WorldServer: auto-attacks (player→mob, mob→player).
 """
 from __future__ import annotations
 
+# Hoisted de dentro de `_process_player_attacks` (06/09/2026,
+# PROBLEMAS_ARQUITETURA.md §121) — `can_engage` (2 aliases: caminho PvP e
+# caminho player→mob) roda pra TODO player atacando, todo tick; um
+# `from x import y` repetido custa ~8,7x mais que a referência já resolvida
+# no topo (medido). Mecânico, mesmo objeto — só resolvido 1x no load do
+# módulo.
+from engine.world_systems import deal_damage
+from engine.components import (CombatState, CombatStats, TileMovement, Enemy,
+                                PendingDeath, GhostState,
+                                PlayerControlled as _PCcombp)
+from engine.utils import chebyshev, is_action_locked
+from engine.faction_system import can_engage as _can_engage_pvp
+from engine.faction_system import can_engage as _can_engage_paa
+
 
 class CombatProcessorMixin:
 
@@ -234,10 +248,6 @@ class CombatProcessorMixin:
         crit, dodge, parry. Mob→player é tratado detectando a variação de HP
         após EnemyAISystem rodar (EnemyAISystem chama deal_damage internamente).
         """
-        from engine.world_systems import deal_damage
-        from engine.components import CombatState, CombatStats, TileMovement, Enemy, PendingDeath, GhostState
-        from engine.utils import chebyshev, is_action_locked
-
         # ── Player → Mob ───────────────────────────────────────────────────
         for session_id, player_eid in list(self._player_eids.items()):
             cs = self.world.get_component(player_eid, CombatState)
@@ -270,8 +280,6 @@ class CombatProcessorMixin:
                 # (duelo/zona/arena, via can_engage → _pvp_allowed_between;
                 # players são amigáveis por default, 16/07/2026). Antes:
                 # flag global pvp_enabled ("mundo inteiro é zona PvP").
-                from engine.faction_system import can_engage as _can_engage_pvp
-                from engine.components import PlayerControlled as _PCcombp
                 if (self.world.get_component(target_eid, _PCcombp) is not None
                         and _can_engage_pvp(self.world, player_eid, target_eid)):
                     # Suprime auto-attack PvP se uma skill disparou neste tick para este player:
@@ -296,7 +304,6 @@ class CombatProcessorMixin:
             # Facção "amigavel" nunca é alvo de auto-attack — rede de segurança
             # além do gate em set_player_target() (já recusa o alvo na origem),
             # cobre qualquer forma de um target_entity_id amigavel chegar aqui.
-            from engine.faction_system import can_engage as _can_engage_paa
             if not _can_engage_paa(self.world, player_eid, target_eid):
                 cs.target_entity_id = -1
                 continue

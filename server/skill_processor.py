@@ -6,6 +6,17 @@ from __future__ import annotations
 from server.log import log
 
 from shared.constants import TILE_SIZE, TICK_RATE, LAG_COMP_WINDOW_MS
+# Imports abaixo eram locais DENTRO do loop por-request de
+# `_process_skill_requests` (06/09/2026, PROBLEMAS_ARQUITETURA.md §121) —
+# `is_action_locked`/`StatusEffects`/`is_skill_authorized` rodam pra TODO
+# request, todo tick; um `from x import y` repetido custa ~8,7x mais que a
+# referência já resolvida no topo (medido). Mecânico, mesmo objeto — só
+# resolvido 1x no load do módulo em vez de 1x por request.
+from engine.components import (CombatState, CombatStats, TileMovement, GhostState,
+                                PlayerSkills as _PS, StatusEffects as _SfxSkp)
+from content.skill_config import SKILL_CATALOG
+from engine.utils import is_action_locked as _is_action_locked_skp
+from engine.world_systems import is_skill_authorized as _is_auth
 
 # Skills cujo handler compartilhado (skill_handlers.py) move o player e que têm
 # uma predição visual correspondente no cliente (ver *_dash_visual em systems.py,
@@ -22,9 +33,6 @@ class SkillProcessorMixin:
 
     def _process_skill_requests(self) -> None:
         """Processa todas as skills enfileiradas para este tick."""
-        from engine.components import CombatState, CombatStats, TileMovement, GhostState
-        from content.skill_config import SKILL_CATALOG
-        from engine.components import PlayerSkills as _PS
         requests = list(self._pending_skill_requests)
         self._pending_skill_requests.clear()
         # Zera o rate-limit por player pro PRÓXIMO tick (ver
@@ -56,7 +64,6 @@ class SkillProcessorMixin:
             _cs_skp = self.world.get_component(player_eid, CombatState)
             if _cs_skp is not None and not _cs_skp.can_act():
                 continue
-            from engine.utils import is_action_locked as _is_action_locked_skp
             if _is_action_locked_skp(self.world, player_eid):
                 continue
             # Taunt (Brado Provocativo, Fase D 23/07/2026): bloqueio dedicado,
@@ -68,7 +75,6 @@ class SkillProcessorMixin:
             # stun/sleep acima — cliente já reflete StatusEffects.has(
             # "taunted") localmente via PlayerInputSystem, nunca deveria
             # sequer tentar mandar CAST_SKILL nesse estado.
-            from engine.components import StatusEffects as _SfxSkp
             _sfx_skp = self.world.get_component(player_eid, _SfxSkp)
             if _sfx_skp is not None and _sfx_skp.has("taunted"):
                 continue
@@ -93,7 +99,6 @@ class SkillProcessorMixin:
             # Classe + talento (TalentTree autoritativo) + aprendizado
             # (learned_skill_ids). Sem isso, qualquer sid do catálogo era
             # executado — o único gate real era o custo de recurso no handler.
-            from engine.world_systems import is_skill_authorized as _is_auth
             _auth_ok, _auth_reason = _is_auth(self.world, player_eid, sid)
             if not _auth_ok:
                 log.warning(f"[Skill] REJEITADO (autorizacao: {_auth_reason}) "

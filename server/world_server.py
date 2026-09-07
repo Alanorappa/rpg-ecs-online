@@ -196,9 +196,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # (01/09/2026, feedback visual de opacidade pro próprio jogador —
         # ver _sync_player_bush_dirty). eid → bool.
         self._player_bush_cache: dict[int, bool] = {}
-        # Cache de SkillLevels para dirty-check automático a cada tick (eid → snapshot
-        # hashable de levels+xp) — ver _sync_player_skill_levels_dirty().
-        self._player_skill_cache: dict[int, tuple] = {}
+        # Cache de "último tile visto" por player (06/09/2026,
+        # PROBLEMAS_ARQUITETURA.md §121) — gate BARATO antes de chamar
+        # `_is_on_bush_tile` (que resolve mapa+tilemap+bounds-check): bush é
+        # estado DERIVADO da posição, então se o tile não mudou desde o
+        # tick anterior, o resultado de `_is_on_bush_tile` não pode ter
+        # mudado — pula a chamada cara inteira. eid → (tile_x, tile_y).
+        self._player_bush_tile_cache: dict[int, tuple[int, int]] = {}
         self._skill_levels_broadcasts_this_tick: list[dict] = []
         # QuestLog: progresso/entrega de quest server-autoritativo — ver
         # _process_quest_events()/consume_quest_update_broadcasts().
@@ -4360,8 +4364,26 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         `bush_zones` pintado, então nunca disparava em jogo, só em teste
         sintético. `_is_on_bush_tile` lê o mesmo `tile_matrix` que
         `_has_tile_los` já usa pra tornar o jogador invisível de verdade
-        — ver PROBLEMAS_ARQUITETURA.md §91)."""
+        — ver PROBLEMAS_ARQUITETURA.md §91).
+
+        Gate de posição (06/09/2026, §121, medido no top-5 de custo do
+        tick): `_is_on_bush_tile` resolve mapa+tilemap+bounds-check toda
+        vez que é chamada — mas bush é estado DERIVADO da posição, não um
+        campo com "dono" que escreve nele (diferente de HP/skill_levels).
+        Sem um ponto de escrita natural pra um dirty-flag, o gate mais
+        seguro é comparar o TILE atual contra o do tick anterior
+        (`_player_bush_tile_cache`, 2 inteiros) — só chama a função cara
+        quando o player de fato mudou de tile; nenhum risco de esquecer de
+        marcar dirty em código futuro (não existe flag pra esquecer)."""
+        from engine.components import TileMovement as _TMbd
         for peid in list(self._player_eids.values()):
+            tm = self.world.get_component(peid, _TMbd)
+            if tm is None:
+                continue
+            tile_now = (tm.current_tile_x, tm.current_tile_y)
+            if self._player_bush_tile_cache.get(peid) == tile_now:
+                continue  # mesmo tile do tick anterior — bush não pode ter mudado
+            self._player_bush_tile_cache[peid] = tile_now
             in_bush = self._is_on_bush_tile(peid)
             if self._player_bush_cache.get(peid) == in_bush:
                 continue
@@ -4381,34 +4403,33 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         de xp (cast de magia, auto-attack, arco, DoT resistido) sem precisar
         de código por feature — ver stats_system.grant_skill_xp.
 
-        Também detecta level-ups (level novo > level antigo por skill_id) e
-        inclui em "leveled_up" — cliente usa isso pra mostrar o feedback de
-        "Parabéns, você subiu..." + som. Só reporta level-up quando já havia
-        um snapshot anterior em cache (cache vazio = primeiro tick após
-        login/spawn, não é um level-up real, é só o estado já salvo)."""
+        Também detecta level-ups e inclui em "leveled_up" — cliente usa
+        isso pra mostrar o feedback de "Parabéns, você subiu..." + som.
+
+        Dirty-flag em vez de recompute-then-diff (06/09/2026, §121, ver
+        docstring de `SkillLevels`): antes esta função recalculava
+        `tuple(sorted(...))` de levels+xp de TODO player TODO tick só pra
+        comparar contra `_player_skill_cache` e descobrir se algo mudou —
+        medido como parte do top-5 de custo do tick a 250 players.
+        `grant_skill_xp` (único escritor real) já marca `skl.dirty=True`
+        na hora da mutação e já registra `pending_level_ups` com o
+        skill/nível exato — aqui só lê os 2 campos, sem recalcular nada."""
         from engine.components import SkillLevels as _SKLd
         for peid in list(self._player_eids.values()):
             skl = self.world.get_component(peid, _SKLd)
-            if skl is None:
+            if skl is None or not skl.dirty:
                 continue
-            snapshot = (tuple(sorted(skl.levels.items())), tuple(sorted(skl.xp.items())))
-            cached = self._player_skill_cache.get(peid)
-            if snapshot != cached:
-                leveled_up = []
-                if cached is not None:
-                    _old_levels = dict(cached[0])
-                    for sid, new_lvl in skl.levels.items():
-                        if new_lvl > _old_levels.get(sid, 0):
-                            leveled_up.append({"skill_id": sid, "level": new_lvl})
-                self._player_skill_cache[peid] = snapshot
-                _entry = {
-                    "eid":    peid,
-                    "levels": dict(skl.levels),
-                    "xp":     dict(skl.xp),
-                }
-                if leveled_up:
-                    _entry["leveled_up"] = leveled_up
-                self._skill_levels_broadcasts_this_tick.append(_entry)
+            skl.dirty = False
+            leveled_up = skl.pending_level_ups
+            skl.pending_level_ups = []
+            _entry = {
+                "eid":    peid,
+                "levels": dict(skl.levels),
+                "xp":     dict(skl.xp),
+            }
+            if leveled_up:
+                _entry["leveled_up"] = leveled_up
+            self._skill_levels_broadcasts_this_tick.append(_entry)
 
     def consume_quest_update_broadcasts(self) -> list[dict]:
         """Retorna e limpa updates de QuestLog do tick atual (para o SessionManager)."""

@@ -395,6 +395,43 @@ class TestSyncPlayerBushDirty(unittest.TestCase):
         self.ws._sync_player_bush_dirty()   # continua no mesmo bush
         self.assertIsNone(self._entry_for(self.eid))
 
+    def test_tile_igual_ao_anterior_nem_chama_is_on_bush_tile(self):
+        """§121 (06/09/2026) — gate de posição (`_player_bush_tile_cache`):
+        se o tile não mudou desde o tick anterior, `_is_on_bush_tile`
+        (resolve mapa+tilemap+bounds-check, medido como custo real) nem é
+        chamada — prova a otimização de verdade, não só que o resultado
+        final continua certo (os 4 testes acima já cobrem isso)."""
+        self.ws._sync_player_bush_dirty()  # 1ª chamada: popula o cache de tile
+        _orig = self.ws._is_on_bush_tile
+        _calls = {"n": 0}
+        def _spy(eid):
+            _calls["n"] += 1
+            return _orig(eid)
+        self.ws._is_on_bush_tile = _spy
+        try:
+            self.ws._sync_player_bush_dirty()  # mesmo tile — não deveria chamar
+        finally:
+            self.ws._is_on_bush_tile = _orig
+        self.assertEqual(_calls["n"], 0,
+                         "tile igual ao tick anterior não deveria chamar _is_on_bush_tile")
+
+    def test_tile_diferente_chama_is_on_bush_tile(self):
+        """Contrapartida do teste acima — mudar de tile TEM que continuar
+        disparando a checagem real, senão o gate quebra a detecção."""
+        self.ws._sync_player_bush_dirty()  # popula o cache no tile inicial
+        set_entity_tile(self.ws, self.eid, *_IN_A)
+        _orig = self.ws._is_on_bush_tile
+        _calls = {"n": 0}
+        def _spy(eid):
+            _calls["n"] += 1
+            return _orig(eid)
+        self.ws._is_on_bush_tile = _spy
+        try:
+            self.ws._sync_player_bush_dirty()
+        finally:
+            self.ws._is_on_bush_tile = _orig
+        self.assertEqual(_calls["n"], 1, "tile mudou — tem que rechecar de verdade")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -372,6 +372,56 @@ class TestEnemyAISystemPrefiltroBreakdown(unittest.TestCase):
         sys_no_perf.update(dt=0.033, players_by_map={}, mobs_by_map={}, tick_count=0)
 
 
+class TestEnemyAISystemActiveMobBudget(unittest.TestCase):
+    """§121 (06/09/2026) — orçamento com carryover rotativo pro corpo do
+    loop_mobs, mesmo princípio de MAX_PATHFINDS_PER_FRAME (nunca descarta,
+    só adia). Testa `_apply_active_mob_budget` isolado (lista de tuplas
+    genéricas) — não precisa de 60+ mobs reais no ECS pra validar a
+    matemática de fatiamento/rotação."""
+
+    def setUp(self):
+        from engine.world_systems import EnemyAISystem
+        self.sys_ai = EnemyAISystem(None)
+
+    def test_populacao_abaixo_do_teto_devolve_lista_intacta(self):
+        pop = list(range(10))
+        self.sys_ai.MAX_ACTIVE_MOBS_PER_TICK = 60
+        result = self.sys_ai._apply_active_mob_budget(pop)
+        self.assertEqual(result, pop, "abaixo do teto, comportamento tem que ser idêntico ao de antes")
+        self.assertEqual(self.sys_ai._mob_loop_rotation_offset, 0,
+                          "offset não deveria avançar quando o orçamento nem entra em vigor")
+
+    def test_populacao_acima_do_teto_processa_subconjunto_do_tamanho_certo(self):
+        pop = list(range(100))
+        self.sys_ai.MAX_ACTIVE_MOBS_PER_TICK = 10
+        result = self.sys_ai._apply_active_mob_budget(pop)
+        self.assertEqual(len(result), 10)
+        self.assertEqual(result, pop[0:10])
+
+    def test_rotacao_avanca_e_nenhum_mob_fica_esquecido_pra_sempre(self):
+        """Roda ticks suficientes pra cobrir a população inteira e confirma
+        que TODO mob (0..99) apareceu em algum subconjunto processado —
+        prova que a rotação não "esquece" os últimos da lista, a
+        armadilha óbvia de um corte ingênuo nos N primeiros sempre."""
+        pop = list(range(100))
+        self.sys_ai.MAX_ACTIVE_MOBS_PER_TICK = 10
+        seen = set()
+        for _ in range(10):  # ceil(100/10) = 10 ticks cobre a população inteira 1x
+            seen.update(self.sys_ai._apply_active_mob_budget(pop))
+        self.assertEqual(seen, set(pop), "todo mob deveria ter sido processado ao menos 1x em 10 ticks")
+
+    def test_populacao_flutuante_nao_quebra_com_offset_grande(self):
+        """Regressão: se a população ATIVA encolher entre ticks (mobs
+        saindo do raio/morrendo), o offset acumulado de um tick anterior
+        não pode gerar IndexError nem comportamento indefinido — o `%% n`
+        precisa lidar com offset > tamanho da lista nova."""
+        self.sys_ai.MAX_ACTIVE_MOBS_PER_TICK = 5
+        self.sys_ai._apply_active_mob_budget(list(range(50)))  # offset vira 5
+        self.sys_ai._mob_loop_rotation_offset = 47  # simula offset "velho", maior que a lista nova
+        result = self.sys_ai._apply_active_mob_budget(list(range(8)))  # população encolheu
+        self.assertEqual(len(result), 5)
+
+
 class TestAsyncioLoggerWired(unittest.TestCase):
 
     def test_logger_asyncio_tem_handler_plugado(self):

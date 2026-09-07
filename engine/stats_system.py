@@ -358,6 +358,7 @@ def grant_skill_xp(skill_levels: SkillLevels, combat_stats: CombatStats,
     if level >= MAX_SKILL_LEVEL:
         return False
     skill_levels.xp[skill_id] += amount
+    skill_levels.dirty = True  # única mutação real de levels/xp — ver docstring de SkillLevels (§121)
     leveled = False
     while level < MAX_SKILL_LEVEL and skill_levels.xp[skill_id] >= skill_xp_for_level(level):
         skill_levels.xp[skill_id] -= skill_xp_for_level(level)
@@ -366,6 +367,7 @@ def grant_skill_xp(skill_levels: SkillLevels, combat_stats: CombatStats,
     skill_levels.levels[skill_id] = level
     if leveled:
         apply_skill_bonuses_to_combat(skill_levels, combat_stats)
+        skill_levels.pending_level_ups.append({"skill_id": skill_id, "level": level})
     return leveled
 
 

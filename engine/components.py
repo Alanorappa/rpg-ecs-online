@@ -1396,10 +1396,25 @@ class SkillLevels:
     resistências mágicas e magic. Server-autoritativo: só o servidor
     concede xp e persiste; cliente só exibe (ver stats_system.py e
     PROBLEMAS_ARQUITETURA.md, seção skill level).
-    """
+
+    `dirty`/`pending_level_ups` (06/09/2026, §121) — dirty-flag setado por
+    `stats_system.grant_skill_xp` (ÚNICO escritor real de levels/xp, ver
+    call sites) no PONTO da mutação, em vez de `WorldServer.
+    _sync_player_skill_levels_dirty` recalcular um snapshot
+    (`tuple(sorted(...))`) de TODO player TODO tick só pra comparar contra
+    cache e descobrir se mudou algo — mesmo princípio de `FogOfWar.version`
+    (PROBLEMAS_ARQUITETURA.md §53). `pending_level_ups` evita precisar
+    diferenciar "levels antigo vs novo" no lado do leitor: quem muta já
+    sabe exatamente qual skill subiu e pra qual nível, então registra
+    direto. Começa `dirty=True` (não `False`) de propósito: um
+    `SkillLevels` recém-criado (spawn ou load de personagem salvo) precisa
+    do 1º snapshot completo pro dono na entrada — igual ao comportamento
+    antigo (cache vazio comparava diferente de qualquer snapshot real)."""
     def __init__(self):
         self.levels: dict = {sid: 0 for sid in SKILL_IDS}
         self.xp:     dict = {sid: 0 for sid in SKILL_IDS}
+        self.dirty:  bool = True
+        self.pending_level_ups: list = []
 
 
 class ActiveRegen:

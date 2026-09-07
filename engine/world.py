@@ -38,8 +38,19 @@ class World:
         self._index[ct].add(entity_id)
 
     def get_component(self, entity_id: int, component_type) -> object | None:
-        """Retorna um componente de uma entidade pelo seu tipo."""
-        return self._components.get(entity_id, {}).get(component_type)
+        """Retorna um componente de uma entidade pelo seu tipo.
+
+        `try/except` em vez de `dict.get(entity_id, {}).get(component_type)`
+        (06/09/2026, PROBLEMAS_ARQUITETURA.md §121) — medido 16% mais rápido:
+        o `.get(entity_id, {})` original aloca um dict `{}` vazio a cada
+        chamada só como fallback do 1º nível, mesmo no caminho comum onde
+        a entidade existe. Como este é o ÚNICO ponto de leitura de
+        componente do ECS inteiro, o ganho propaga sozinho pra todo sistema
+        (IA, combate, sync de AOI) sem precisar tocar em nenhum call site."""
+        try:
+            return self._components[entity_id][component_type]
+        except KeyError:
+            return None
 
     def get_components_for_entity(self, entity_id: int) -> dict:
         """Retorna todos os componentes de uma entidade."""

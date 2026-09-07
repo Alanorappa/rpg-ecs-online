@@ -2509,6 +2509,25 @@ class EnemyAISystem(System):
     MAX_LEASH_RADIUS     = 20  # tiles: mob retorna ao spawn se afastar mais do que isso (aggro normal)
     MAX_LEASH_RADIUS_DMG = 25  # tiles: raio maior quando aggroed por dano (evita reset por 1 hit + recuo)
     MAX_PATHFINDS_PER_FRAME = 10  # limite de chamadas A* por frame (evita travamento com muitos inimigos)
+    # Orçamento por tick pro CORPO do loop_mobs (06/09/2026,
+    # PROBLEMAS_ARQUITETURA.md §121) — mesmo princípio de
+    # MAX_PATHFINDS_PER_FRAME (nunca descarta, só adia pro próximo tick),
+    # aplicado a `_active_mobs_list` inteira, não só à chamada de A*.
+    # Achado no top-5 de custo do tick: pico isolado de 76,4ms com
+    # `loop_mobs`=54ms (89% do EnemyAISystem) num tick com população normal
+    # de mob ativo (~30-55, medido em `mobs_no_filtro_ai` no teste de
+    # carga) — bem acima do pico já visto (55) pra nunca afetar o caso
+    # médio, só cortar uma rajada de população MUITO maior que a já vista.
+    # Só entra em vigor quando `len(_active_mobs_list) > este valor`;
+    # abaixo disso, TODO mob ativo processa todo tick, comportamento
+    # idêntico ao de antes. Quando entra em vigor, roda um subconjunto
+    # ROTATIVO (nunca sempre os N primeiros — isso morreria de fome os
+    # últimos da lista) via `_mob_loop_rotation_offset`, garantindo que
+    # todo mob ativo processa pelo menos 1x a cada
+    # ceil(população/orçamento) ticks. NÃO cobre o caso de um pico vir de
+    # CUSTO por-mob mais caro (não de CONTAGEM maior) — ver ressalva em
+    # PROBLEMAS_ARQUITETURA.md §121.
+    MAX_ACTIVE_MOBS_PER_TICK = 60
     # Ranged: kite limitado
     KITE_MAX_TILES       = 3    # máximo de tiles por sessão de kite
     KITE_COOLDOWN        = 1.5  # segundos de pausa entre sessões de kite
@@ -2585,6 +2604,9 @@ class EnemyAISystem(System):
         self.proximity_threshold_tiles = 1
         self.path_recalc_interval = 0.8
         self._pathfind_budget = 0  # resetado a cada frame
+        # Offset rotativo do orçamento de loop_mobs (ver MAX_ACTIVE_MOBS_PER_TICK) —
+        # avança a cada tick em que o orçamento é aplicado, nunca reseta sozinho.
+        self._mob_loop_rotation_offset: int = 0
         self._dbg_atk_timers: dict[int, float] = {}  # eid → tempo acumulado desde último log
         # Caches de "outros combatentes" pra _select_target — populados de
         # verdade em update() (1x por tick); vazios aqui só como fallback
@@ -3028,6 +3050,33 @@ class EnemyAISystem(System):
         self._last_active_mob_count = len(result)
         return result
 
+    def _apply_active_mob_budget(self, active_mobs_list: list) -> list:
+        """Orçamento com carryover rotativo pro CORPO do loop_mobs
+        (06/09/2026, PROBLEMAS_ARQUITETURA.md §121) — mesmo princípio de
+        `_find_path_budgeted`/`MAX_PATHFINDS_PER_FRAME` (nunca descarta,
+        só adia pro próximo tick), aplicado à lista inteira de mobs
+        ativos, não só à chamada de A*.
+
+        Só entra em vigor quando `len(active_mobs_list) >
+        MAX_ACTIVE_MOBS_PER_TICK` — abaixo disso, devolve a lista
+        intacta, comportamento idêntico ao de antes desta função existir
+        (caso comum, medido bem abaixo do teto). Quando dispara, fatia um
+        subconjunto que COMEÇA num offset diferente a cada chamada
+        (`_mob_loop_rotation_offset`), nunca sempre os N primeiros — isso
+        morreria de fome os últimos da lista pra sempre. Garante que todo
+        mob ativo processa pelo menos 1x a cada
+        ceil(população/orçamento) ticks.
+
+        NÃO cobre o caso de um pico vir de CUSTO por-mob mais caro (não de
+        CONTAGEM maior) — ver ressalva em PROBLEMAS_ARQUITETURA.md §121."""
+        n = len(active_mobs_list)
+        if n <= self.MAX_ACTIVE_MOBS_PER_TICK:
+            return active_mobs_list
+        start = self._mob_loop_rotation_offset % n
+        sliced = (active_mobs_list[start:] + active_mobs_list[:start])[:self.MAX_ACTIVE_MOBS_PER_TICK]
+        self._mob_loop_rotation_offset = start + self.MAX_ACTIVE_MOBS_PER_TICK
+        return sliced
+
     def update(self, events: list = None, dt: float = 0,
               players_by_map: "dict | None" = None,
               mobs_by_map: "dict | None" = None,
@@ -3130,6 +3179,8 @@ class EnemyAISystem(System):
         self._perf_push_fn("sys:EnemyAISystem:prefiltro")
         _active_mobs_list = self._active_mobs_this_tick(mobs_by_map, tick_count)
         self._perf_pop_fn()
+
+        _active_mobs_list = self._apply_active_mob_budget(_active_mobs_list)
 
         self._perf_push_fn("sys:EnemyAISystem:loop_mobs")
         for enemy_id, enemy_pos, ai_control, initial_pos, detect_radius, tile_movement, enemy_combat_stats in \

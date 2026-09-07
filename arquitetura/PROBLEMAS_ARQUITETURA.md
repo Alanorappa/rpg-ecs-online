@@ -16381,3 +16381,119 @@ conforme conta já existe ou não). Nenhum teste novo pro
 indiretamente pela suíte completa passando e pelo teste de carga real
 — comportamento observável, não uma unidade isolada testável sem
 concorrência real de thread).
+
+## 121. Top-5 gargalos de tick, 250 players — 5 correções propostas por 3 agentes, discutidas com o usuário e implementadas (06-07/09/2026)
+
+Análise do `logs/server_perf.log` do teste de carga do §120 (250 players
+de pico) achou o ranking real de custo por sistema: `ai_bundles`→
+`EnemyAISystem` (8,95ms médio, 40,6% do tick, pico isolado de 76,4ms),
+`skill_requests` (P99 de 35-73ms mesmo com rate-limit do §117),
+`aoi_collect` (2,7ms médio, 75% vindo de 2 sub-rotinas de dirty-check
+que recalculavam tudo todo tick), `player_attacks` (2,4-2,6ms estável)
+e `index_build` (1,5-1,7ms estável). 3 agentes escalados (arquitetura/
+qualidade de código/coesão vs. mercado), com instrução explícita de SÓ
+investigar e propor — nenhuma edição de arquivo — pra discutir as
+sugestões com o usuário ANTES de qualquer implementação (pedido
+explícito do usuário, decisão consciente de trazer o desenho pra
+aprovação prévia em vez de implementar direto).
+
+**Achados que os 3 convergiram** (aoi_collect): os 3 concordaram que
+`_sync_player_bush_dirty`/`_sync_player_skill_levels_dirty` são
+recompute-then-diff quando deviam ser invalidate-on-write (mesmo
+princípio de `FogOfWar.version`, §53) — mas divergiram em COMO: pra
+`skill_levels` (1 único escritor conhecido, `grant_skill_xp`) um
+dirty-flag é seguro; pra `bush` (estado DERIVADO da posição, sem
+"dono" que escreve nele) o agente de coesão/mercado apontou que um
+dirty-flag genérico arriscaria ficar esquecido num código futuro que
+move o player — sugeriu cache de `(tile_x, tile_y)` em vez disso.
+
+**Achados que os 3 DIVERGIRAM** (levado ao usuário pra decidir, não
+decidido sozinho): (1) `skill_requests` — orçamento agregado por tick
+(tipo `MAX_PATHFINDS_PER_FRAME`)? Arquitetura achou que valia
+considerar; coesão/mercado achou que NÃO valia, porque penalizaria
+justo o momento de ação coordenada legítima (raid/BG) e o §117 já
+tinha concluído que o pico residual era majoritariamente artefato da
+ferramenta de teste, não tráfego real. (2) `EnemyAISystem` — teto tipo
+pathfind-budget pro `loop_mobs`? Arquitetura sugeriu como mitigação só
+pro PICO isolado (76,4ms); coesão/mercado achou que os 3 pilares de
+mercado já implementados (LOD/throttle/spatial hash, §29) bastavam,
+sem precisar de mais nada nesta escala. Usuário, depois de perguntar
+sobre o mecanismo de cada um (incluindo se client já evita mandar
+CAST_SKILL em cooldown — SIM, já existe nos 2 lados, client E bot de
+teste — e se o "33 mobs ativos" do log batia com o que `loop_mobs`
+processa de verdade — NÃO, são 2 contadores diferentes: "ativos"
+[CHASING/ATTACKING/AGGRO_DELAY] é mais estrito que `mobs_no_filtro_ai`
+[população real processada, 41-55 na janela mais cheia]), decidiu
+implementar as 2 mitigações mesmo assim.
+
+**5 correções implementadas**:
+1. `World.get_component()` (`engine/world.py`) — `try/except` em vez
+   de `dict.get(entity_id, {}).get(component_type)`: medido 16% mais
+   rápido (o `.get(eid, {})` original aloca um dict vazio de fallback a
+   cada chamada, mesmo no caminho comum onde a entidade existe). Ponto
+   ÚNICO de leitura de componente do ECS — propaga sozinho pra todo
+   sistema, sem tocar em nenhum call site.
+2. Imports locais dentro de loop por-tick/por-request/por-player,
+   subidos pro topo do arquivo (medido: `from x import y` repetido
+   custa ~8,7x mais que a referência já resolvida) — `server/
+   bush_zone_processor.py` (2 imports), `server/skill_processor.py::
+   _process_skill_requests` (3 imports no caminho comum de TODO
+   request: `is_action_locked`/`StatusEffects`/`is_skill_authorized`),
+   `server/combat_processor.py::_process_player_attacks` (`can_engage`,
+   2 aliases — caminho PvP e caminho player→mob, este 2º roda pra TODO
+   player atacando um mob, todo tick). Mecânico, mesmo objeto, zero
+   mudança de comportamento.
+3. `SkillLevels.dirty`/`pending_level_ups` (`engine/components.py`,
+   novos campos) — `stats_system.grant_skill_xp` (único escritor real)
+   marca `dirty=True` na mutação e já registra qual skill/nível subiu,
+   em vez de `_sync_player_skill_levels_dirty` recalcular
+   `tuple(sorted(...))` de levels+xp de TODO player TODO tick só pra
+   comparar contra cache. `dirty` começa `True` (não `False`) de
+   propósito — um `SkillLevels` recém-criado (spawn/load) precisa do 1º
+   snapshot completo pro dono, igual ao comportamento antigo. Campo
+   `_player_skill_cache` (agora morto) removido.
+4. `_player_bush_tile_cache` (`server/world_server.py`, novo, eid→
+   (tile_x, tile_y)) — gate barato ANTES de `_is_on_bush_tile`
+   (resolve mapa+tilemap+bounds-check): se o tile não mudou desde o
+   tick anterior, bush não pode ter mudado, pula a chamada cara
+   inteira. Escolhido em vez de dirty-flag genérico por decisão
+   explícita (ver divergência acima) — sem "dono" único que escreve
+   bush, um flag seria fácil de esquecer marcar num código futuro; 2
+   inteiros comparados não têm esse risco.
+5. `EnemyAISystem._apply_active_mob_budget()` (`engine/
+   world_systems.py`, novo `MAX_ACTIVE_MOBS_PER_TICK=60`) — mesmo
+   princípio de `MAX_PATHFINDS_PER_FRAME`/`_find_path_budgeted` (nunca
+   descarta, só adia pro próximo tick), aplicado à lista inteira de
+   `_active_mobs_this_tick`, não só à chamada de A*. Só entra em vigor
+   quando a população ativa passa do teto (bem acima do pico já visto
+   no teste, 55) — abaixo disso, comportamento idêntico ao de antes.
+   Quando dispara, processa um subconjunto ROTATIVO (nunca sempre os N
+   primeiros — morreria de fome os últimos da lista), garantindo que
+   todo mob ativo roda pelo menos 1x a cada
+   ceil(população/orçamento) ticks.
+
+**Ressalva honesta, registrada por pedido explícito do usuário durante
+a discussão**: o item 5 cobre pico por CONTAGEM maior de mob ativo, não
+pico por CUSTO por-mob mais caro no mesmo tick (o pico real observado
+de 76,4ms com só ~30-55 mobs ativos pode ter sido causado por várias
+transições de estado caras acontecendo juntas naquele tick específico,
+não por população acima do normal) — um orçamento por CONTAGEM não
+necessariamente teria cortado ESSE pico específico. Só o próximo teste
+de carga com este fix aplicado vai confirmar se ajudou de verdade ou
+se o teto de 60 nunca chega a disparar nesta escala.
+
+**Testes**: 9 novos — `TestEnemyAISystemActiveMobBudget` (4, ver
+`tests/test_perf_log_improvements.py`, testa `_apply_active_mob_budget`
+isolado, sem precisar de 60+ mobs reais no ECS), `TestSkillLevelsDirtyFlag`
+(3, `tests/test_server.py`), 2 novos em `TestSyncPlayerBushDirty`
+(`tests/test_bush_stealth.py`, spy provando que `_is_on_bush_tile` só é
+chamada quando o tile muda). Revert-to-confirm nos 3 mecanismos com
+lógica nova (dirty-flag, gate de bush, orçamento de mob) — os 3
+confirmados pegando a regressão de verdade quando desligados na mão.
+Suíte completa: 1524 passed (1515 + 9 novos), 0 regressão. `data/
+game.db` real conferido sem lixo de teste.
+
+**Pendente**: rodar o mesmo teste de carga de 250 bots (mesmos
+parâmetros do §120) e comparar contra `logs/server_perf_antes_top5.log`
+(backup feito antes de qualquer mudança desta seção) pra medir o ganho
+real dos 5 itens juntos.

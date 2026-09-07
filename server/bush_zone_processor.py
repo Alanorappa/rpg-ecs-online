@@ -18,6 +18,8 @@ CC, ver CLAUDE.md).
 """
 from __future__ import annotations
 
+from engine.components import TileMovement
+
 
 class BushZoneProcessorMixin:
 
@@ -25,8 +27,6 @@ class BushZoneProcessorMixin:
         """Índice (posição na lista de zonas do mapa) do bush em que `eid`
         está agora, ou None se não está em nenhum. Sob demanda, sem cache
         — mesmo espírito de `_in_pvp_zone`."""
-        from engine.components import TileMovement
-
         map_file = self.get_entity_map(eid)
         zones = self._bush_zones_by_map.get(map_file, [])
         if not zones:
@@ -54,8 +54,6 @@ class BushZoneProcessorMixin:
         `TileLosProcessorMixin._tilemap_for_map` (mesmo lookup que
         `_has_tile_los` já usa) — dado ausente (sem TileMovement/Tilemap)
         → False, conservador."""
-        from engine.components import TileMovement
-
         map_file = self.get_entity_map(eid)
         tilemap_comp = self._tilemap_for_map(map_file)
         if tilemap_comp is None:

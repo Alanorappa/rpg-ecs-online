@@ -1854,6 +1854,66 @@ class TestSkillRequestRateLimitPorPlayer(unittest.TestCase):
                          "contador não pode ficar preso pra sempre")
 
 
+class TestSkillLevelsDirtyFlag(unittest.TestCase):
+    """§121 (06/09/2026) — `_sync_player_skill_levels_dirty` trocou
+    recompute-then-diff (recalculava `tuple(sorted(...))` de TODO player
+    TODO tick só pra comparar contra cache — medido no top-5 de custo do
+    tick a 250 players) por um dirty-flag setado por
+    `stats_system.grant_skill_xp` (único escritor real de levels/xp) no
+    ponto da mutação, mesmo princípio de `FogOfWar.version` (§53)."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.p1 = spawn_player(self.ws, "s1", 130, 374, class_id="guerreiro")
+
+    def _skl(self):
+        from engine.components import SkillLevels
+        return self.ws.world.get_component(self.p1, SkillLevels)
+
+    def test_grant_skill_xp_marca_dirty(self):
+        from engine.components import CombatStats
+        from engine.stats_system import grant_skill_xp
+        skl = self._skl()
+        skl.dirty = False  # simula já ter sido sincronizado neste tick
+        cs = self.ws.world.get_component(self.p1, CombatStats)
+        grant_skill_xp(skl, cs, "espada", 1)
+        self.assertTrue(skl.dirty, "grant_skill_xp deveria marcar dirty na mutação real")
+
+    def test_sync_so_enfileira_quando_dirty_e_limpa_a_flag_depois(self):
+        skl = self._skl()
+        skl.dirty = False
+        self.ws._skill_levels_broadcasts_this_tick.clear()
+
+        self.ws._sync_player_skill_levels_dirty()
+        self.assertEqual(self.ws._skill_levels_broadcasts_this_tick, [],
+                         "sem dirty, não deveria enfileirar nada (regressão do ganho de performance)")
+
+        skl.dirty = True
+        self.ws._sync_player_skill_levels_dirty()
+        self.assertEqual(len(self.ws._skill_levels_broadcasts_this_tick), 1)
+        self.assertFalse(skl.dirty, "flag deveria ser limpa depois de sincronizar")
+
+        # 2ª chamada no mesmo tick, sem nova mutação — não duplica o broadcast
+        self.ws._sync_player_skill_levels_dirty()
+        self.assertEqual(len(self.ws._skill_levels_broadcasts_this_tick), 1)
+
+    def test_level_up_reporta_skill_e_nivel_exatos_via_pending_level_ups(self):
+        from engine.components import CombatStats
+        from engine.stats_system import grant_skill_xp, skill_xp_for_level
+        skl = self._skl()
+        cs = self.ws.world.get_component(self.p1, CombatStats)
+        # amount grande o suficiente pra garantir 1 level-up real de nível 0
+        grant_skill_xp(skl, cs, "espada", skill_xp_for_level(0) + 1)
+        self.assertTrue(skl.dirty)
+        self.assertEqual(skl.pending_level_ups, [{"skill_id": "espada", "level": 1}])
+
+        self.ws._skill_levels_broadcasts_this_tick.clear()
+        self.ws._sync_player_skill_levels_dirty()
+        entry = self.ws._skill_levels_broadcasts_this_tick[0]
+        self.assertEqual(entry["leveled_up"], [{"skill_id": "espada", "level": 1}])
+        self.assertEqual(skl.pending_level_ups, [], "lista tem que ser limpa depois de consumida")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────
