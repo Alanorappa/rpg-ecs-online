@@ -16552,3 +16552,34 @@ ativos: os 3 fixes diretos (`aoi_collect`, `skill_requests`,
 forma limpa, precisaria de um teste novo com o número de mapas ativos
 controlado (ex.: só mundo aberto, sem fila de arena/BG) — não feito
 nesta rodada.
+
+**Investigação extra (07/09/2026, pedido do usuário — "ainda tem tick
+lento com 0 players, isso não faz sentido")**: o log deste teste tinha
+148 ocorrências de tick lento com `players=0` — bem mais que o `1`
+medido no teste do §120. Investigado ANTES de assumir que era
+regressão dos 5 fixes: (1) o log mostrou o servidor de pé por **4,5
+minutos sem nenhum bot conectado** antes da rampa começar (boot às
+14:05:26, 1º login às 14:09:57) — janela de ócio ~28x mais longa que
+qualquer teste anterior, então CONTAGEM bruta não é comparável; (2) o
+"culpado" no caminho crítico girou entre **18 sistemas diferentes**
+(`index_build`, `global_systems`, `aoi_collect`, `combat_spatial_hash_build`,
+`player_attacks`, `death_handling`, etc.), sem nenhum dominando, com
+intervalos irregulares entre ocorrências (8 a 749 ticks, sem
+periodicidade) — assinatura de interferência EXTERNA ao processo
+(disputa de CPU no SO), não de um sistema específico com bug real (o
+padrão do §118, quando era bug de verdade, tinha 1 causa dominante
+achável por profiling).
+
+**Teste de controle decisivo**: rodei o servidor de novo, sozinho,
+por ~5min, SEM executar nenhum outro comando em paralelo (janela
+"silenciosa", eliminando minha própria atividade de terminal como
+variável). Resultado: **8 ocorrências em 7500 ticks (0,11%)** contra
+**64 em 8400 ticks (0,76%)** da janela "barulhenta" — quase 7x menos,
+com o MESMO código rodando dos dois lados. Confirma: a maior parte do
+problema é contenção de CPU da própria máquina de desenvolvimento
+compartilhada (meus comandos de terminal rodando em paralelo com o
+servidor), não um bug introduzido pelos 5 fixes do §121. A taxa
+residual mesmo na janela silenciosa (0,11%, ~1 a cada 31s) é esperada
+num Windows real (SO, antivírus, IDE) e não é zero em NENHUM servidor
+rodando numa máquina compartilhada — não é motivo pra escalar os 3
+agentes de novo; fechado sem mudança de código.
