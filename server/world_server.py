@@ -171,6 +171,21 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
     # jogadores legítimos agindo juntos tanto quanto 1 cliente malicioso.
     MAX_SKILL_REQUESTS_PER_PLAYER_PER_TICK = 3
 
+    # Orçamento de TEMPO (não só contagem) pra `_process_skill_requests`
+    # (07/09/2026, PROBLEMAS_ARQUITETURA.md §121) — o rate-limit acima é
+    # por JOGADOR; não impede que a SOMA de todo mundo estoure o tick.
+    # Achado real: pico de 350,5ms num único tick com 240 players (perto
+    # do teto teórico de 240×3=720 pedidos), toda a simulação travando
+    # pra todo mundo por 1/3 de segundo. Mesmo princípio de
+    # `MAX_PATHFINDS_PER_FRAME`/`_apply_active_mob_budget` (nunca
+    # descarta, só adia pro próximo tick), mas com relógio real em vez de
+    # contagem — contagem sozinha não protege porque o custo por pedido
+    # não é fixo o bastante pra um teto de N pedidos garantir um teto de
+    # ms (skill diferentes, hit de projétil, etc. variam). 10ms deixa
+    # ~1/3 do budget de 33ms pra essa fila mesmo no pior caso, sobrando
+    # pros outros sistemas do tick.
+    SKILL_REQUESTS_TIME_BUDGET_MS = 10.0
+
     MAP_FILE = "maps/map_1.csv"   # mapa padrão carregado pelo servidor
 
     # DESCONTINUADO como "PvP de mundo aberto" (16/07/2026): players são

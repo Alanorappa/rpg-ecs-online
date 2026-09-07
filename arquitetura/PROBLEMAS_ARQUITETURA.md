@@ -16583,3 +16583,67 @@ residual mesmo na janela silenciosa (0,11%, ~1 a cada 31s) é esperada
 num Windows real (SO, antivírus, IDE) e não é zero em NENHUM servidor
 rodando numa máquina compartilhada — não é motivo pra escalar os 3
 agentes de novo; fechado sem mudança de código.
+
+## 122. Orçamento de TEMPO pra `skill_requests` — devolve excesso pro próximo tick em vez de travar o tick inteiro (07/09/2026)
+
+Diagnóstico geral de performance (3 agentes, pedido do usuário sem
+parâmetro de comparação — ver seção anterior desta mesma investigação)
+achou 1 evento real preocupante no meio de um quadro geral saudável:
+tick#9857 (240 players) levou **365,8ms** (11x o orçamento de 33ms),
+com `skill_requests` sozinho consumindo 350,5ms — trava a simulação
+INTEIRA pra TODOS os jogadores por 1/3 de segundo. Investigado se era
+artefato do bot de teste antes de mexer em código: cruzando timestamp
+real do tick com o log do servidor, o evento caiu bem no meio da rampa
+de conexão inicial (sessão total cruzando de ~230→242), não na rajada
+de reconexão já catalogada (§120). Matemática bate com "quase todo
+mundo bateu o teto do rate-limit ao mesmo tempo": 350,5ms ÷ custo médio
+por pedido (~0,3-0,4ms) ≈ 875-1150 pedidos processados — perto do
+teto TEÓRICO de `240 players × MAX_SKILL_REQUESTS_PER_PLAYER_PER_TICK
+(3) = 720`. Conclusão: o rate-limit por JOGADOR (§117) funciona certo
+(ninguém abusou sozinho), mas nunca protegeu contra a SOMA de muitos
+jogadores legítimos coincidindo no mesmo tick — e o bot de teste tem 2
+comportamentos que tornam essa coincidência mais provável que com
+humanos reais (`_SKILL_CHANCE_PER_TICK=0.35` por bot independente, e
+"age imediato ao spawnar" desde o §116) — mas o GAP arquitetural em si
+(nenhum teto agregado) é real e podia, em tese, ser atingido por
+jogadores reais numa coordenação forte (largada de BG, pull de raid),
+só que bem mais raro.
+
+**Correção**: mesmo princípio já usado em `MAX_PATHFINDS_PER_FRAME`/
+`EnemyAISystem._apply_active_mob_budget` (nunca descarta, só adia pro
+próximo tick) — mas com **orçamento de TEMPO, não de contagem**, porque
+o custo por pedido não é fixo o bastante (skill diferentes, projétil
+vs instantânea) pra um teto de N pedidos garantir um teto de ms.
+`_process_skill_requests` (`server/skill_processor.py`) agora checa, a
+cada 20 pedidos processados (não a cada 1 — custo do relógio some no
+ruído), se já passou de `SKILL_REQUESTS_TIME_BUDGET_MS=10.0`
+(`server/world_server.py`) desde o início da fila deste tick. Se sim,
+devolve o RESTO da fila — na MESMA ordem, FIFO — pro início de
+`_pending_skill_requests`, que vira a fila do PRÓXIMO tick. Nenhum
+pedido é descartado, só adiado; 10ms deixa ~1/3 do orçamento de 33ms
+pra essa fila mesmo no pior caso, sobrando espaço pros outros sistemas
+do tick.
+
+De quebra, corrigido um import local (`import time as _time_mod`
+dentro do loop por-request) que tinha escapado da limpeza do §121 —
+mesma classe de custo (~8,7x mais lento que referência já resolvida),
+hoisted pro topo do arquivo.
+
+**Decisão consciente, não escalada pro escopo maior**: o usuário
+perguntou sobre uma ideia mais ampla (sistemas priorizados por
+importância no tick inteiro, "crítico" roda sempre vs "adiável" só se
+sobrar tempo) — decidimos fazer SÓ este piloto concreto agora (baixo
+risco, ataca o problema medido de verdade) e deixar a reclassificação
+de TODOS os ~20 sistemas do tick pra uma conversa futura separada, já
+que isso exige julgamento sistema-por-sistema que não deve ser feito
+sozinho.
+
+**Testes**: `TestSkillRequestsTimeBudget` (3, `tests/test_server.py`)
+— estoura orçamento devolve resto na mesma ordem; abaixo do orçamento
+processa tudo normal (comportamento antigo preservado); pedidos
+adiados processam de verdade no tick seguinte. Revert-to-confirm
+(corte desabilitado na mão) confirmou 2 dos 3 testes pegando a
+regressão. Suíte completa: 1527 passed (1524 + 3 novos), 0 regressão.
+
+**Pendente**: medir com teste de carga real se o pico de 350ms some/
+diminui de verdade — não feito ainda nesta sessão.

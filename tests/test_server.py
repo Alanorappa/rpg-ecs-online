@@ -1854,6 +1854,67 @@ class TestSkillRequestRateLimitPorPlayer(unittest.TestCase):
                          "contador não pode ficar preso pra sempre")
 
 
+class TestSkillRequestsTimeBudget(unittest.TestCase):
+    """Orçamento de TEMPO pra `_process_skill_requests` (07/09/2026, ver
+    SKILL_REQUESTS_TIME_BUDGET_MS em world_server.py) — achado real: pico
+    de 350,5ms num único tick com 240 players, perto do teto teórico de
+    240×3=720 pedidos (rate-limit por JOGADOR não protege contra a SOMA
+    de todo mundo). Ao estourar o orçamento, o resto da fila (mesma
+    ordem, FIFO) devia voltar pra `_pending_skill_requests` pro próximo
+    tick processar — nunca descartar pedido nenhum."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+
+    def _fake_requests(self, n):
+        # player_eid inexistente (-999) é suficiente — cada request só
+        # precisa chegar ao ponto de checagem do orçamento; o que
+        # acontece DEPOIS (autorização/execução) não importa pra este
+        # teste, só a contagem e a ordem de quem processa vs quem adia.
+        return [{"player_eid": -999, "sid": "impacto", "tid": -1,
+                 "tx": 0.0, "ty": 0.0, "dir_x": 0, "marker": i} for i in range(n)]
+
+    def test_estoura_orcamento_devolve_resto_na_mesma_ordem(self):
+        reqs = self._fake_requests(45)
+        self.ws._pending_skill_requests = list(reqs)
+        self.ws.SKILL_REQUESTS_TIME_BUDGET_MS = -1.0  # sempre "estourado" já na 1ª checagem (i=20)
+
+        self.ws._process_skill_requests()
+
+        # Só os 20 primeiros (índice 0-19) processam antes da 1ª checagem;
+        # os outros 25 voltam pra fila, NA MESMA ORDEM, pro próximo tick.
+        restantes = self.ws._pending_skill_requests
+        self.assertEqual(len(restantes), 25)
+        self.assertEqual([r["marker"] for r in restantes], list(range(20, 45)),
+                         "pedidos adiados têm que voltar na MESMA ordem (FIFO) — "
+                         "nunca embaralhar nem descartar")
+
+    def test_abaixo_do_orcamento_processa_tudo_normalmente(self):
+        reqs = self._fake_requests(10)
+        self.ws._pending_skill_requests = list(reqs)
+        # orçamento generoso — nem chega a checar (só checa a cada 20 pedidos)
+
+        self.ws._process_skill_requests()
+
+        self.assertEqual(self.ws._pending_skill_requests, [],
+                         "com poucos pedidos (abaixo do intervalo de checagem), "
+                         "a fila inteira processa no mesmo tick, igual antes desta mudança")
+
+    def test_pedidos_adiados_processam_no_tick_seguinte(self):
+        reqs = self._fake_requests(25)
+        self.ws._pending_skill_requests = list(reqs)
+        self.ws.SKILL_REQUESTS_TIME_BUDGET_MS = -1.0
+
+        self.ws._process_skill_requests()
+        self.assertEqual(len(self.ws._pending_skill_requests), 5)
+
+        self.ws.SKILL_REQUESTS_TIME_BUDGET_MS = 10.0  # restaura orçamento normal
+        self.ws._process_skill_requests()
+        self.assertEqual(self.ws._pending_skill_requests, [],
+                         "no tick seguinte, com orçamento normal, o resto "
+                         "(poucos pedidos) processa e a fila esvazia")
+
+
 class TestSkillLevelsDirtyFlag(unittest.TestCase):
     """§121 (06/09/2026) — `_sync_player_skill_levels_dirty` trocou
     recompute-then-diff (recalculava `tuple(sorted(...))` de TODO player

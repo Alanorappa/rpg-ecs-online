@@ -4,6 +4,7 @@ Mixin para WorldServer: processamento de skill requests por tick.
 """
 from __future__ import annotations
 from server.log import log
+import time
 
 from shared.constants import TILE_SIZE, TICK_RATE, LAG_COMP_WINDOW_MS
 # Imports abaixo eram locais DENTRO do loop por-request de
@@ -42,7 +43,19 @@ class SkillProcessorMixin:
         # chegando entre 2 ticks consecutivos.
         self._skill_requests_this_tick_by_player.clear()
 
-        for req in requests:
+        # Orçamento de TEMPO pra esta fila inteira (07/09/2026, ver
+        # SKILL_REQUESTS_TIME_BUDGET_MS em world_server.py) — checa a cada
+        # 20 pedidos (não a cada 1, custo do próprio relógio some no
+        # ruído do resto do processamento). Ao estourar, devolve o RESTO
+        # pra fila do PRÓXIMO tick, na MESMA ordem (FIFO) — prepend, não
+        # append, pra não perder a vez de quem já esperou. Nunca descarta
+        # pedido nenhum, só adia.
+        _budget_t0 = time.perf_counter()
+        for _req_i, req in enumerate(requests):
+            if (_req_i and _req_i % 20 == 0
+                    and (time.perf_counter() - _budget_t0) * 1000.0 >= self.SKILL_REQUESTS_TIME_BUDGET_MS):
+                self._pending_skill_requests[0:0] = requests[_req_i:]
+                break
             player_eid = req["player_eid"]
             sid        = req["sid"]
 
@@ -125,9 +138,8 @@ class SkillProcessorMixin:
             # _sk_key/_now_srv/_sk_cd continuam calculados aqui (não só
             # dentro de _skill_ready) porque o registro de CD mais abaixo
             # (após o handler rodar com sucesso) reusa os 3.
-            import time as _time_mod
             _sk_key  = (player_eid, sid)
-            _now_srv = _time_mod.time()
+            _now_srv = time.time()
             _sk_cd   = self._skill_effective_cd.get(_sk_key,
                            getattr(skill_obj, "cooldown", 0.0))
             _ready, _cd_remaining = self._skill_ready(player_eid, skill_obj)
