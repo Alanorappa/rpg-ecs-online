@@ -15,6 +15,7 @@
 | Quero… | Arquivo | Seção |
 |--------|---------|-------|
 | Empacotar o cliente pra distribuição (alpha) | `release_tools/build_client.ps1` + `release_tools/rpg_online_client.spec` | PyInstaller onedir; assets/maps ao lado do exe; LEIA-ME gerado; config.json criado no 1º run ao lado do exe (`config.py`) |
+| Enviar código commitado (HEAD) pro servidor Hetzner de produção + reiniciar o jogo lá | `release_tools/deploy_server.ps1` | `git archive HEAD` → arquivo temp → `scp` → SSH extrai + `systemctl restart rpg-server`; nunca envia WIP não commitado (config.json/data/game.db/maps/*.csv ficam de fora de propósito); ver PROBLEMAS_ARQUITETURA.md §124 |
 | Definir/modificar tipo de mensagem | `shared/messages.py` | `MsgType` enum + docstring do payload |
 | Adicionar handler de mensagem no servidor | `server/session.py` | `_handlers` dict + `async def _handle_*` |
 | Alterar constante de rede (tick rate, AOI, etc.) | `shared/constants.py` | constante direta |

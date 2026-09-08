@@ -16782,3 +16782,119 @@ travados por este item): usuário provisiona o servidor Linux na nuvem;
 decidir se a migração de dados reais roda agora ou só na hora do
 deploy; configurar systemd + firewall + TLS/wss (item C1, ainda em
 aberto) + backup automático.
+
+## 124. Provisionamento real do servidor Hetzner + migração de dados reais + backup + deploy (08/09/2026)
+
+Continuação do §123 — a parte de infraestrutura que ficou pendente lá.
+Usuário criou conta na Hetzner Cloud e pediu ajuda passo a passo pelo
+console web (screenshots).
+
+**Dimensionamento — recalibrado após pushback direto do usuário**:
+sugeri inicialmente CPX32/CPX31 (4 vCPU/8GB, ~US$73-74/mês) baseado em
+raciocínio abstrato de sharding futuro, sem pesar o suficiente a
+restrição orçamentária ATUAL do usuário. Usuário corrigiu direto:
+"isso vai ser muito caro pra mim que estou desenvolvendo, ainda não
+tenho retorno financeiro." Recalibrei pra CPX11 (2 vCPU/2GB,
+~US$20/mês) — dimensionado pro uso ATUAL de desenvolvimento/teste, não
+pra escala hipotética futura (upgrade de plano é trivial depois, sem
+perda de dado). **Lição registrada**: não dimensionar infraestrutura
+pra escala futura hipotética quando o usuário está pré-receita — vale
+pra qualquer decisão de custo de infra futura, não só esta.
+
+**Esclarecimento importante dado ao usuário**: o processo do jogo é
+`asyncio` single-thread — usa 1 núcleo só pro tick loop, não importa
+quantos vCPUs o servidor tenha. Hoje, vCPUs extras só ajudam por dar
+ao Postgres/SO um núcleo próprio (sem disputar com o processo do jogo),
+**não** por paralelizar lógica de jogo — paralelismo de verdade entre
+núcleos exigiria a arquitetura de sharding por mapa/instância (ainda
+não construída, multi-processo).
+
+**Servidor provisionado**: Ubuntu 24.04.4 LTS, região Ashburn/VA
+(us-east — mais perto do Brasil que Helsinki/Europa, escolha aprovada
+pelo usuário), CPX11, IP `5.161.104.174`. Par de chaves SSH dedicado
+gerado localmente (`~/.ssh/rpg_hetzner`/`.pub`), nunca a chave pessoal
+do usuário — arquivo `~/.ssh/config` pré-existente do usuário (hosts
+não relacionados) foi só lido, nunca modificado.
+
+**Descoberta durante o setup — falha silenciosa de `apt-get`**: comando
+`apt-get install ... 2>&1 | tail -N && echo INSTALACAO_OK` imprimiu
+sucesso mesmo com a instalação tendo falhado de verdade (só `git`
+instalou; `postgresql` e `python3.10` não) — `&&` depois de um pipe só
+checa o exit code do ÚLTIMO comando do pipe (`tail`), nunca o do
+`apt-get`. Causa raiz real: `python3.10-venv` não existe nos repositórios
+padrão do Ubuntu 24.04 (que já vem com Python 3.12 por padrão),
+abortando a transação inteira. Só percebido por checar o estado
+instalado de forma independente depois (`which psql` vazio,
+`python3.10 --version` "command not found") em vez de confiar no
+marcador ecoado. Fix: PPA `deadsnakes` pra Python 3.10 + checagem
+explícita de exit code em todo comando remoto daí em diante
+(`; echo EXIT_CODE=$?`), nunca só um `&&` depois de pipe.
+
+**Setup final**: usuário de serviço não-root `rpgapp` (dono de
+código/venv/logs, roda o processo do jogo); `ufw` liberando só
+`22/tcp`+`8765/tcp` (Postgres só em `localhost`, nunca exposto —
+motivo de rodar a migração de dados VIA SSH no próprio servidor, não
+da máquina local pela rede); PostgreSQL local (`rpgapp`/senha aleatória
+`openssl rand -hex 24`, banco `rpg_ecs_online`); `systemd`
+(`rpg-server.service`, `Restart=always`, habilitado no boot) — essa é a
+"alta disponibilidade" que o usuário pediu (auto-restart + rede
+estável do provedor, nunca discutimos failover multi-servidor, fora de
+escopo no estágio atual).
+
+**Migração de dados reais executada**: usuário testou o servidor por 2
+dias e criou uma conta de teste (`juugo`) que colidia de username com
+uma conta JÁ existente no `data/game.db` legado. Usuário pediu
+explicitamente pra limpar as tabelas do Postgres do servidor antes de
+migrar pra evitar o conflito — `rpg-server` parado, `TRUNCATE
+characters, accounts RESTART IDENTITY CASCADE`, `data/game.db` local
+copiado pro servidor via `scp` (`legacy_game.db`), migração real rodada
+DENTRO do servidor (venv/`.env` próprios) com
+`tools/migrate_sqlite_to_postgres.py` (já validado no §123 contra
+schema isolado, agora rodado contra dado real pela 1ª vez). Resultado:
+**481 contas + 573 personagens** migrados, mesmos ~45 grupos de nome
+duplicado renomeados automaticamente (determinístico, consistente com
+o dry-run do §123). Verificado pós-migração: conta `juugo` agora reflete
+os personagens do banco legado (`jungo`/`Aldrin`/`Xadread`), não mais a
+conta de teste recém-criada. `legacy_game.db` removido do servidor
+depois (só o `data/game.db` local continua sendo a origem histórica).
+`rpg-server` reiniciado.
+
+**Backup**: `pg_dump -Fc` (formato custom, restaurável via `pg_restore`)
+via `cron` do root, diário às 4h, retenção de 14 dias
+(`/opt/rpg_ecs_online/backup_db.sh` +
+`/opt/rpg_ecs_online/backups/`). Escolhido em vez do produto de Backups
+pago da Hetzner (~20% sobre o preço do servidor) por controle de custo
+— banco pequeno hoje, sem impacto de performance medido/esperado.
+Primeira execução validada manualmente antes de agendar (169KB gerado).
+
+**Deploy — não existe automático, decisão consciente**: nenhum commit
+local chega ao servidor sozinho. `release_tools/deploy_server.ps1`
+criado como mecanismo único: empacota só a árvore COMMITADA
+(`git archive HEAD`, nunca `config.json`/`data/game.db`/
+`maps/*.csv` do usuário, que ficam de fora de propósito — mesma regra
+de nunca tocar WIP do usuário), transfere e reinicia o `systemd`.
+**Achado ao testar**: `git archive HEAD --format=tar | ssh ...` direto
+num pipeline do PowerShell corrompe o tar ("This does not look like a
+tar archive") — PowerShell trata pipeline nativo como texto, não
+binário puro, mesmo redirecionando pra um comando externo. Fix: gerar
+o tar num arquivo temporário (`git archive --output=`), enviar por
+`scp`, extrair via SSH — evita o pipe binário pelo PowerShell
+inteiramente. Script testado de ponta a ponta contra o servidor real
+(deploy do HEAD já commitado, serviço confirmado `active` depois).
+
+**TLS/wss — ainda não implementado, só esclarecido**: usuário perguntou
+se afeta desempenho ou só autenticação. Resposta dada: `wss://`
+criptografa a sessão WebSocket INTEIRA (toda mensagem de gameplay, não
+só login) — custo de CPU por mensagem real mas provavelmente modesto;
+compromisso assumido de medir via teste de carga (`tools/loadtest/`)
+depois de implementar, em vez de assumir, seguindo a regra de
+"observabilidade antes de otimização" já estabelecida no projeto.
+Implementação em si segue pendente — precisa de domínio pra certificado,
+mexe em `websockets.serve()` (`server/main.py`) e na URL de conexão do
+cliente (`client/network.py`); arquitetural o suficiente pra exigir
+aprovação explícita do usuário antes de codar (ainda não dada).
+
+**Pendente**: TLS/wss (item C1, aberto desde §123); medir impacto real
+de CPU depois de implementar; considerar automatizar o deploy manual se
+a fricção incomodar no dia a dia (hoje é 1 comando só,
+`.\release_tools\deploy_server.ps1`, considerado suficiente por ora).

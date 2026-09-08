@@ -108,6 +108,35 @@ Recarregar não persistia). Ver hooks existentes: `_on_loot_action`,
 `_send_talent_update`, `_send_hotbar_update`, `_on_recarregar_changed`
 (`client/save_sync_handlers.py`).
 
+**Infraestrutura de produção (08/09/2026):** servidor dedicado Hetzner
+Cloud, Ubuntu 24.04 LTS, plano CPX11 (2 vCPU/2GB, ~US$20/mês —
+dimensionado pro estágio atual pré-receita, upgrade de plano é trivial
+depois sem perda de dado). IP público `5.161.104.174`. Usuário de
+serviço não-root `rpgapp` roda tanto o processo do jogo quanto é dono
+do código/venv/logs. `ufw` libera só `22/tcp` (SSH) e `8765/tcp`
+(WebSocket do jogo) — Postgres roda só em `localhost`, nunca exposto
+à internet. `systemd` (`/etc/systemd/system/rpg-server.service`,
+`Restart=always`) reinicia o processo sozinho se cair e sobe no boot —
+essa é a "alta disponibilidade" pedida pelo usuário (auto-restart +
+rede estável do provedor, não failover multi-servidor, que não faz
+sentido no estágio atual).
+
+Deploy é manual, nunca automático: `release_tools/deploy_server.ps1`
+empacota `git archive HEAD` (só o que está COMMITADO, nunca
+`config.json`/`data/game.db`/`maps/*.csv` do usuário, que ficam sempre
+de fora de propósito), envia por `scp` (pipe direto por SSH corrompe o
+tar binário no PowerShell — motivo do arquivo temporário no script) e
+reinicia o `rpg-server` via SSH. Rodar sempre que um commit precisa
+valer no servidor de verdade — nenhum código novo ou mapa editado tem
+efeito na nuvem até esse script rodar (não existe hot-reload; mapas
+carregam 1x no boot do processo).
+
+Backup: `pg_dump` diário via `cron` (root, 4h da manhã,
+`/opt/rpg_ecs_online/backup_db.sh`), retenção de 14 dias, formato
+`-Fc` (custom, restaurável com `pg_restore`). Escolhido em vez do
+Backups pago da Hetzner (~20% sobre o preço do servidor) por custo —
+banco ainda pequeno, sem impacto de performance medido.
+
 ### 7. Autenticação
 - username + SHA-256(password, client) → sha256(salt+client_hash) no banco (PostgreSQL)
 - Session token UUID gerado no LOGIN_OK
