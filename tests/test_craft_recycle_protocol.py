@@ -51,7 +51,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pygame
 pygame.init()
 
-from tests.helpers import make_world_server, spawn_player
+from tests.helpers import make_world_server, spawn_player, AuthPoolCleanupMixin
 from engine.components import Inventory, Wallet, Item, LearnedRecipes
 from content.crafting_data import RARITY_FORGE_COST, RARITY_RECYCLE_COST
 
@@ -394,7 +394,7 @@ class TestShopSellRemovesFromLiveInventory(unittest.TestCase):
         self.assertEqual(self.inv.items, [])
 
 
-class TestCraftRecycleProtocolDispatch(unittest.IsolatedAsyncioTestCase):
+class TestCraftRecycleProtocolDispatch(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Fim-a-fim via protocolo real (encode/on_message)."""
 
     async def asyncSetUp(self):

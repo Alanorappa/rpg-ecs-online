@@ -2,3 +2,6 @@
 websockets>=12.0
 pygame-ce>=2.4.0
 psutil>=5.9
+# PostgreSQL (migrado de SQLite em 07/09/2026, ver PROBLEMAS_ARQUITETURA.md
+# §123) — driver assíncrono nativo, sem precisar de thread executor.
+asyncpg>=0.31.0

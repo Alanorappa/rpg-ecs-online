@@ -13,6 +13,7 @@ import unittest
 
 from shared.messages import MsgType, encode, validate_c2s
 from tests.test_session import make_session_manager, fake_login, get_msgs_of_type
+from tests.helpers import AuthPoolCleanupMixin
 
 
 class TestValidateC2S(unittest.TestCase):
@@ -53,7 +54,7 @@ class TestValidateC2S(unittest.TestCase):
                          "missing_field:talents")
 
 
-class TestEdgeRejection(unittest.IsolatedAsyncioTestCase):
+class TestEdgeRejection(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Integração: a borda (on_message) rejeita antes do handler."""
 
     async def asyncSetUp(self):

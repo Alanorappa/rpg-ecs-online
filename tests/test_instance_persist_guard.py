@@ -27,12 +27,13 @@ import unittest
 from unittest.mock import patch
 
 from tests.test_session import make_session_manager, fake_login
+from tests.helpers import AuthPoolCleanupMixin
 from server.instance_progression import (
     enter_normalized_progression, exit_normalized_progression,
 )
 
 
-class TestPersistCharacterSkipsInsideInstance(unittest.IsolatedAsyncioTestCase):
+class TestPersistCharacterSkipsInsideInstance(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.ws_server, self.mgr = make_session_manager()
@@ -114,7 +115,7 @@ class TestPersistCharacterSkipsInsideInstance(unittest.IsolatedAsyncioTestCase):
         mock_save.assert_not_called()
 
 
-class TestKillXpSaveUsesSharedChokepoint(unittest.IsolatedAsyncioTestCase):
+class TestKillXpSaveUsesSharedChokepoint(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """server/world_server.py — o save de XP/level pós-kill (02/08/2026,
     refatorado a pedido do usuário pra unificar com todo outro save do
     jogo) precisa passar por `SessionManager._persist_character` (nunca

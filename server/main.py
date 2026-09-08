@@ -85,7 +85,8 @@ async def main(host: str, port: int) -> None:
     asyncio.get_running_loop().slow_callback_duration = 0.05
 
     # Inicializa banco de dados (cria contas de teste via _seed_test_accounts)
-    init_db()
+    # -- async desde a migração pra PostgreSQL/asyncpg (07/09/2026, §123)
+    await init_db()
 
     # Inicializa o mundo e o gerenciador de sessões
     world = WorldServer(zone_id="world_main")

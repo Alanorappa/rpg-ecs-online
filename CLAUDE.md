@@ -216,7 +216,10 @@ padrão a quebrar, não só os bugs individuais.
 - TILE_SIZE = 32px, tela 1280×720, cliente renderiza a 60 FPS
 - Servidor: Python asyncio + WebSocket, **sem Pygame**, 30 ticks/s
 - Cliente: Pygame + `client/network.py`
-- Banco: SQLite (dev) → PostgreSQL (prod)
+- Banco: PostgreSQL via `asyncpg` (migrado de SQLite em 07/09/2026, ver
+  PROBLEMAS_ARQUITETURA.md §123 — dev local roda um container Docker,
+  `RPG_DATABASE_URL` aponta pro alvo). `server/auth.py` é o ponto único
+  de acesso — nunca abrir conexão em outro lugar.
 - Protocolo: JSON via WebSocket (→ MessagePack antes do lançamento)
 
 ---
@@ -687,11 +690,18 @@ padrão a quebrar, não só os bugs individuais.
 
 ## Como rodar
 
+Precisa de um PostgreSQL rodando (07/09/2026, §123 — migrado de SQLite).
+Dev local, via Docker (1x, se o container ainda não existir):
+```bash
+docker run --name rpg_postgres -e POSTGRES_PASSWORD=devpassword -e POSTGRES_DB=rpg_ecs_online -p 5432:5432 -d postgres:16
+```
+Se o container já existe mas está parado: `docker start rpg_postgres`.
+
 ```bash
 # Instalar dependências do servidor
 pip install -r requirements_server.txt
 
-# Iniciar servidor (cria banco e conta de teste automaticamente)
+# Iniciar servidor (cria schema/tabelas e conta de teste automaticamente)
 python server/main.py
 
 # Em outro terminal: iniciar cliente

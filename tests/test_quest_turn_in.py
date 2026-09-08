@@ -13,6 +13,7 @@ import os, sys, unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.test_session import make_session_manager, fake_login, get_msgs_of_type
+from tests.helpers import AuthPoolCleanupMixin
 from shared.messages import MsgType
 from content.quests_data import QUESTS, QuestDef, QuestReward, ObjectiveDef
 from engine.components import QuestLog
@@ -27,7 +28,7 @@ def _make_ready_quest(qid: str, reward: QuestReward) -> None:
     )
 
 
-class TestQuestTurnInRewardItems(unittest.IsolatedAsyncioTestCase):
+class TestQuestTurnInRewardItems(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         self._added_qids: list = []
@@ -199,7 +200,7 @@ class TestQuestTurnInRewardItems(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(equip.slots["mainhand"].item_id, "training_sword")
 
 
-class TestQuestTurnInConsumesCollectItem(unittest.IsolatedAsyncioTestCase):
+class TestQuestTurnInConsumesCollectItem(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """collect_item objective — entrega da quest remove o item da bag DO
     SERVIDOR (engine/quest_logic.py::complete_quest, já existia) E avisa
     o cliente pra tirar o mesmo item da bag LOCAL (campo "removed" de
@@ -283,7 +284,7 @@ class TestQuestTurnInConsumesCollectItem(unittest.IsolatedAsyncioTestCase):
                          [{"item_id": "presa_lobo", "stack": 1}])
 
 
-class TestQuestTurnInRewardSkill(unittest.IsolatedAsyncioTestCase):
+class TestQuestTurnInRewardSkill(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """QuestReward.skill (25/07/2026, pedido do usuário) — diferente de
     item: servidor grava em PlayerSkills.learned_skill_ids NA HORA (gate
     de autorização server-side, is_skill_authorized, precisa ser real
@@ -393,7 +394,7 @@ class TestQuestTurnInRewardSkill(unittest.IsolatedAsyncioTestCase):
             sum(1 for sk in ps.skills if sk and sk.skill_id == "golpe_poderoso"), 1)
 
 
-class TestQuestTurnInInstanceXp(unittest.IsolatedAsyncioTestCase):
+class TestQuestTurnInInstanceXp(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Gap real achado nesta sessão (02/08/2026): recompensa de XP de
     quest caía direto no `process_levelups` REAL, sem checar
     `is_in_normalized_progression` — mesmo desvio que `world_server.py::

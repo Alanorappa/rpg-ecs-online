@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pygame
 pygame.init()
 
-from tests.helpers import make_world_server, spawn_player
+from tests.helpers import make_world_server, spawn_player, AuthPoolCleanupMixin
 from engine.components import Inventory, Item
 
 
@@ -128,7 +128,7 @@ class TestAddTradeItemQuantitySlice(unittest.TestCase):
         self.assertEqual(stacks, [2, 3])
 
 
-class TestTradeOfferItemProtocol(unittest.IsolatedAsyncioTestCase):
+class TestTradeOfferItemProtocol(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Round-trip via sessão real (TRADE_OFFER_ITEM com/sem quantity)."""
 
     async def asyncSetUp(self):

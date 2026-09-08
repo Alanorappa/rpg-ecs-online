@@ -2,15 +2,17 @@
 tests/test_character_names.py — validação/unicidade/geração de nome de
 personagem (feedback do usuário, 20/07/2026: personagens de teste
 duplicados "Aventureiro"/"Juugo" porque não havia checagem nenhuma de
-formato nem unicidade no banco). Usa banco temporário isolado (mesmo
-padrão de test_auth_salt.py) — unicidade é GLOBAL (todas as contas), não
-faz sentido testar isso contra o banco dev real compartilhado.
+formato nem unicidade no banco). Usa schema Postgres isolado (mesmo
+padrão de test_auth_salt.py, 07/09/2026 §123) — unicidade é GLOBAL (todas
+as contas), não faz sentido testar isso contra o schema dev real
+compartilhado.
 """
-import os, sys, sqlite3, tempfile
+import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import unittest
 import server.auth as auth
+from tests.helpers import isolate_auth_schema, restore_auth_schema
 from shared.character_names import (
     is_valid_name, is_valid_name_char, generate_name_candidate,
     normalize_name, NAME_MIN_LEN, NAME_MAX_LEN,
@@ -104,89 +106,94 @@ class TestGenerateNameCandidate(unittest.TestCase):
         self.assertGreater(len(names), 1, "gerador sempre produz o mesmo nome")
 
 
-class TestCreateCharacterValidation(unittest.TestCase):
-    """Banco temporário isolado — unicidade é GLOBAL, testar contra o
-    banco dev real (compartilhado com test_session.py) daria falso
+class TestCreateCharacterValidation(unittest.IsolatedAsyncioTestCase):
+    """Schema Postgres isolado — unicidade é GLOBAL, testar contra o
+    schema dev real (compartilhado com test_session.py) daria falso
     positivo/negativo dependendo do que já foi criado antes."""
 
-    def setUp(self):
-        self._orig_db     = auth.DB_PATH
-        self._orig_schema = auth._schema_ensured
-        auth.DB_PATH         = os.path.join(tempfile.mkdtemp(), "test_charnames.db")
-        auth._schema_ensured = False
-        auth.init_db()
-        self.acc_a = self._make_account("conta_a")
-        self.acc_b = self._make_account("conta_b")
+    async def asyncSetUp(self):
+        self._orig_schema = await isolate_auth_schema("test_charnames_create")
+        self.acc_a = await self._make_account("conta_a")
+        self.acc_b = await self._make_account("conta_b")
 
-    def tearDown(self):
-        auth.DB_PATH         = self._orig_db
-        auth._schema_ensured = self._orig_schema
+    async def asyncTearDown(self):
+        await restore_auth_schema(self._orig_schema)
 
-    def _make_account(self, username: str) -> int:
+    async def _make_account(self, username: str) -> int:
         ch = auth._hash("senha123")
-        auth._register_account_sync(username, ch)
-        return auth._get_account_id_sync(username)
+        await auth._register_account(username, ch)
+        return await auth._get_account_id(username)
 
-    def test_criacao_com_nome_valido_funciona(self):
-        reason = auth._create_character_sync(self.acc_a, "Fulano", "guerreiro")
+    async def test_criacao_com_nome_valido_funciona(self):
+        reason = await auth._create_character(self.acc_a, "Fulano", "guerreiro")
         self.assertEqual(reason, "ok")
 
-    def test_nome_minusculo_e_salvo_com_1a_letra_maiuscula(self):
+    async def test_nome_minusculo_e_salvo_com_1a_letra_maiuscula(self):
         """Defesa em profundidade — cliente já normaliza, mas um cliente
         modificado que mande o nome cru minúsculo não deve escapar disso."""
-        reason = auth._create_character_sync(self.acc_a, "fulano", "guerreiro")
+        reason = await auth._create_character(self.acc_a, "fulano", "guerreiro")
         self.assertEqual(reason, "ok")
-        with auth._get_conn() as conn:
-            row = conn.execute(
-                "SELECT name FROM characters WHERE account_id=?", (self.acc_a,)
-            ).fetchone()
+        pool = await auth._get_pool()
+        row = await pool.fetchrow(
+            "SELECT name FROM characters WHERE account_id=$1", self.acc_a)
         self.assertEqual(row["name"], "Fulano")
 
-    def test_nome_com_espaco_rejeitado(self):
-        reason = auth._create_character_sync(self.acc_a, "Fulano Silva", "guerreiro")
+    async def test_nome_com_espaco_rejeitado(self):
+        reason = await auth._create_character(self.acc_a, "Fulano Silva", "guerreiro")
         self.assertEqual(reason, "invalid_name_format")
 
-    def test_nome_com_numero_rejeitado(self):
-        reason = auth._create_character_sync(self.acc_a, "Juugo1", "guerreiro")
+    async def test_nome_com_numero_rejeitado(self):
+        reason = await auth._create_character(self.acc_a, "Juugo1", "guerreiro")
         self.assertEqual(reason, "invalid_name_format")
 
-    def test_nome_ja_usado_na_mesma_conta_rejeitado(self):
-        auth._create_character_sync(self.acc_a, "Fulano", "guerreiro")
-        reason = auth._create_character_sync(self.acc_a, "Fulano", "mago")
+    async def test_nome_ja_usado_na_mesma_conta_rejeitado(self):
+        await auth._create_character(self.acc_a, "Fulano", "guerreiro")
+        reason = await auth._create_character(self.acc_a, "Fulano", "mago")
         self.assertEqual(reason, "name_taken")
 
-    def test_nome_ja_usado_em_OUTRA_conta_rejeitado(self):
+    async def test_nome_ja_usado_em_OUTRA_conta_rejeitado(self):
         """Unicidade é GLOBAL — nameplate/chat/trade mostram o nome pra
         todo mundo, então duas contas não podem ter o mesmo "Aventureiro"."""
-        auth._create_character_sync(self.acc_a, "Fulano", "guerreiro")
-        reason = auth._create_character_sync(self.acc_b, "Fulano", "mago")
+        await auth._create_character(self.acc_a, "Fulano", "guerreiro")
+        reason = await auth._create_character(self.acc_b, "Fulano", "mago")
         self.assertEqual(reason, "name_taken")
 
-    def test_nome_ja_usado_case_insensitive_rejeitado(self):
-        auth._create_character_sync(self.acc_a, "Fulano", "guerreiro")
-        reason = auth._create_character_sync(self.acc_b, "fulano", "mago")
+    async def test_nome_ja_usado_case_insensitive_rejeitado(self):
+        await auth._create_character(self.acc_a, "Fulano", "guerreiro")
+        reason = await auth._create_character(self.acc_b, "fulano", "mago")
         self.assertEqual(reason, "name_taken")
 
-    def test_limite_de_3_personagens_por_conta(self):
-        self.assertEqual(auth._create_character_sync(self.acc_a, "Alfa", "guerreiro"), "ok")
-        self.assertEqual(auth._create_character_sync(self.acc_a, "Beta", "guerreiro"), "ok")
-        self.assertEqual(auth._create_character_sync(self.acc_a, "Gama", "guerreiro"), "ok")
-        reason = auth._create_character_sync(self.acc_a, "Delta", "guerreiro")
+    async def test_limite_de_3_personagens_por_conta(self):
+        self.assertEqual(await auth._create_character(self.acc_a, "Alfa", "guerreiro"), "ok")
+        self.assertEqual(await auth._create_character(self.acc_a, "Beta", "guerreiro"), "ok")
+        self.assertEqual(await auth._create_character(self.acc_a, "Gama", "guerreiro"), "ok")
+        reason = await auth._create_character(self.acc_a, "Delta", "guerreiro")
         self.assertEqual(reason, "limit_reached")
+
+    async def test_nomes_iguais_concorrentes_so_1_sucede(self):
+        """07/09/2026, §123 — a corrida REAL (TOCTOU) agora é fechada pelo
+        índice único do banco (`characters_name_lower_idx`), não por um
+        lock de processo (removido na migração pra Postgres — não
+        protegeria múltiplos processos futuros de qualquer forma). 2
+        criações concorrentes do MESMO nome, mesma variação de caixa:
+        exatamente 1 sucede, a outra recebe "name_taken" — nunca as 2
+        "ok" (duplicata sobrevivendo) nem as 2 falhando."""
+        import asyncio
+        results = await asyncio.gather(
+            auth._create_character(self.acc_a, "Concorrente", "guerreiro"),
+            auth._create_character(self.acc_b, "concorrente", "mago"),
+        )
+        self.assertEqual(sorted(results), ["name_taken", "ok"],
+                         f"esperado exatamente 1 'ok' e 1 'name_taken', veio {results}")
 
 
 class TestSuggestCharacterName(unittest.IsolatedAsyncioTestCase):
 
-    def setUp(self):
-        self._orig_db     = auth.DB_PATH
-        self._orig_schema = auth._schema_ensured
-        auth.DB_PATH         = os.path.join(tempfile.mkdtemp(), "test_suggest.db")
-        auth._schema_ensured = False
-        auth.init_db()
+    async def asyncSetUp(self):
+        self._orig_schema = await isolate_auth_schema("test_charnames_suggest")
 
-    def tearDown(self):
-        auth.DB_PATH         = self._orig_db
-        auth._schema_ensured = self._orig_schema
+    async def asyncTearDown(self):
+        await restore_auth_schema(self._orig_schema)
 
     async def test_sugestao_e_valida(self):
         name = await auth.suggest_character_name()
@@ -194,11 +201,11 @@ class TestSuggestCharacterName(unittest.IsolatedAsyncioTestCase):
 
     async def test_sugestao_nao_repete_nome_ja_existente(self):
         ch = auth._hash("senha123")
-        auth._register_account_sync("conta_sugestao", ch)
-        acc_id = auth._get_account_id_sync("conta_sugestao")
+        await auth._register_account("conta_sugestao", ch)
+        acc_id = await auth._get_account_id("conta_sugestao")
 
         first = await auth.suggest_character_name()
-        auth._create_character_sync(acc_id, first, "guerreiro")
+        await auth._create_character(acc_id, first, "guerreiro")
 
         second = await auth.suggest_character_name()
         self.assertNotEqual(first, second,
@@ -206,31 +213,26 @@ class TestSuggestCharacterName(unittest.IsolatedAsyncioTestCase):
 
 
 class TestSessionCreateCharacterWiring(unittest.IsolatedAsyncioTestCase):
-    """CREATE_CHARACTER/SUGGEST_NAME fim-a-fim via SessionManager — banco
-    temporário isolado (unicidade global não pode ser testada contra o
-    banco dev real compartilhado com test_session.py)."""
+    """CREATE_CHARACTER/SUGGEST_NAME fim-a-fim via SessionManager — schema
+    Postgres isolado (unicidade global não pode ser testada contra o
+    schema dev real compartilhado com test_session.py)."""
 
-    def setUp(self):
-        self._orig_db     = auth.DB_PATH
-        self._orig_schema = auth._schema_ensured
-        auth.DB_PATH         = os.path.join(tempfile.mkdtemp(), "test_session_charnames.db")
-        auth._schema_ensured = False
-        auth.init_db()
+    async def asyncSetUp(self):
+        self._orig_schema = await isolate_auth_schema("test_session_charnames")
 
         from tests.test_session import make_session_manager, FakeWS, get_msgs_of_type
         self._FakeWS = FakeWS
         self._get_msgs = get_msgs_of_type
         self.ws, self.mgr = make_session_manager()
 
-    def tearDown(self):
-        auth.DB_PATH         = self._orig_db
-        auth._schema_ensured = self._orig_schema
+    async def asyncTearDown(self):
+        await restore_auth_schema(self._orig_schema)
 
     async def _login(self, username: str):
         from shared.messages import encode, MsgType
         from shared.constants import PROTOCOL_VERSION
         ch = auth._hash("senha123")
-        auth._register_account_sync(username, ch)
+        await auth._register_account(username, ch)
         fake_ws = self._FakeWS()
         session = await self.mgr.on_connect(fake_ws, username)
         await self.mgr.on_message(session, encode(MsgType.LOGIN, {

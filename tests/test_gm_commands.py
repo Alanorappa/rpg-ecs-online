@@ -14,20 +14,21 @@ import os, sys, unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.test_session import make_session_manager, fake_login, get_msgs_of_type
+from tests.helpers import AuthPoolCleanupMixin
 from shared.messages import MsgType
-from server.auth import _register_account_sync, _hash
+from server.auth import _register_account, _hash
 from server.grant_gm import set_gm
 from engine.components import CharacterStats, CombatStats, TalentTree, Wallet, Inventory
 
 
 async def _login(mgr, sid: str, username: str, *, gm: bool, class_id: str = "mago"):
-    _register_account_sync(username, _hash("test123"))
+    await _register_account(username, _hash("test123"))
     if gm:
-        set_gm(username, True)
+        await set_gm(username, True)
     return await fake_login(mgr, sid, username, class_id=class_id)
 
 
-class TestGmLevelup(unittest.IsolatedAsyncioTestCase):
+class TestGmLevelup(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.ws, self.mgr = make_session_manager()
@@ -61,7 +62,7 @@ class TestGmLevelup(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("level" in u for u in updates))
 
 
-class TestGmAddGold(unittest.IsolatedAsyncioTestCase):
+class TestGmAddGold(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.ws, self.mgr = make_session_manager()
@@ -92,7 +93,7 @@ class TestGmAddGold(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(u.get("gold") == wallet.gold for u in updates))
 
 
-class TestGmAddItem(unittest.IsolatedAsyncioTestCase):
+class TestGmAddItem(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
 
     ITEM_NAME = "Espada de treinamento"
 

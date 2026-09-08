@@ -55,7 +55,7 @@
 | Preferência de slot da hotbar por skill_id (dentro OU fora da BG) | `ui/skill_slot_prefs.py` | `preferred_slot_for_skill()`/`skill_slot_prefs_to_dict()` — função pura, chamada por `game.py`, `client/network_handlers.py` e `ui/trainer_system.py` (objeto sem referência de volta pro GameEngine — por isso não é método `self.`) |
 | Iniciar o servidor | `server/main.py` | `py -3.10 server/main.py` |
 | Conectar cliente ao servidor | `client/network.py` | `NetworkClient` |
-| Banco de dados / schema | `data/game.db` (SQLite) | criado por `auth.init_db()` |
+| Banco de dados / schema | PostgreSQL (`RPG_DATABASE_URL`, dev via Docker) | criado por `auth.init_db()` — migrado de SQLite em 07/09/2026, §123 |
 
 ## Onde encontrar o quê — Compartilhado (COMPARTILHADO)
 
@@ -272,7 +272,7 @@ rpg_ecs_online/
 │   ├── main.py                      ← ponto de entrada: asyncio + WebSocket
 │   ├── world_server.py              ← ECS headless: loop de ticks, sistemas, skill pipeline
 │   ├── session.py                   ← SessionManager: AOI subscription, dispatch, save
-│   ├── auth.py                      ← autenticação SQLite (salt por conta) + persistência
+│   ├── auth.py                      ← autenticação PostgreSQL/asyncpg (salt por conta) + persistência
 │   ├── log.py                       ← logger do servidor (console + logs/server.log rotativo; RPG_LOG_LEVEL)
 │   ├── trade_processor.py           ← TradeProcessorMixin/TradeSession: trade player↔player
 │   ├── duel_processor.py            ← DuelProcessorMixin: duelo (contexto PvP, golpe letal → 1 HP)
@@ -293,8 +293,10 @@ rpg_ecs_online/
 │   │   arena_handlers.py, battleground_handlers.py, bg_queue_handlers.py,
 │   │   chat_handlers.py, colors.py
 │
-├── data/                            ← criada automaticamente
-│   └── game.db                      ← banco SQLite (contas + personagens)
+├── data/                            ← `game.db` legado (SQLite, pré-07/09/2026)
+│                                        preservado só como origem pra
+│                                        `tools/migrate_sqlite_to_postgres.py`
+│                                        — servidor não lê mais daqui
 │
 ├── tests/                           ← suíte (servidor + cliente headless)
 │   ├── test_server.py               ← suite principal do servidor
@@ -324,7 +326,7 @@ rpg_ecs_online/
 |---------|------|---------------------|
 | `server/world_server.py` | ONLINE-ONLY | ECS headless, toda a lógica de servidor |
 | `server/session.py` | ONLINE-ONLY | AOI, save merge, handlers WebSocket |
-| `server/auth.py` | ONLINE-ONLY | SQLite, `asyncio.get_running_loop()` fix |
+| `server/auth.py` | ONLINE-ONLY | PostgreSQL/asyncpg (§123), pool por event loop |
 | `server/server_death_handler.py` | ONLINE-ONLY | Morte de mobs sem Pygame |
 | `shared/messages.py` | ONLINE-ONLY | Protocolo completo |
 | `shared/constants.py` | ONLINE-ONLY | `COMBAT_SYNC_STATS`, `AOI_RADIUS` |

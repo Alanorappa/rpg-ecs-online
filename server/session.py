@@ -187,19 +187,13 @@ class SessionManager:
         # padrão de registro-em-set-de-módulo já usado alhures no
         # projeto, aqui como atributo de instância por ser por-conexão.
         self._dispatch_tasks: set = set()
-        # Serialização de escrita SQLite (accounts/characters) NÃO mora mais
-        # aqui — 06/09/2026 (PROBLEMAS_ARQUITETURA.md §113/§118): convergida
-        # pra `server.auth._write_lock` (módulo que de fato abre a conexão),
-        # acionado DE DENTRO de save_character/register/create_character/
-        # delete_character. Um lock aqui em `SessionManager` só protegeria
-        # quem lembrasse de usá-lo neste arquivo — `tools/loadtest/
-        # provision.py` bate em register/create_character pelo protocolo de
-        # rede real (passa pelos MESMOS handlers, então ainda se beneficia),
-        # mas qualquer script/teste que chame os wrappers async direto (fora
-        # de uma sessão) ficaria descoberto por um lock preso à classe de
-        # sessão — por isso o ponto único de verdade vive em `auth.py`, não
-        # aqui. Ver comentário completo (racional de latência de LOGIN,
-        # WAL+lock precisarem andar juntos, etc.) no topo de `server/auth.py`.
+        # Serialização de escrita de accounts/characters NÃO mora aqui —
+        # vive em `server/auth.py` (ponto único de verdade, módulo que de
+        # fato abre a conexão). Pós-migração pra PostgreSQL/asyncpg
+        # (07/09/2026, §123), nem precisa mais de lock nenhum — Postgres
+        # aceita múltiplos escritores reais; unicidade (username, nome de
+        # personagem) é garantida por índice único no próprio banco. Ver
+        # topo de `server/auth.py` pro racional completo.
         self.world_server.register_on_tick(self._on_tick)
 
     # ── Ciclo de vida ─────────────────────────────────────────────────────────
@@ -268,8 +262,6 @@ class SessionManager:
         if patch_fn is not None:
             patch_fn(merged)
         try:
-            # Serialização de escrita SQLite mora dentro de `save_character`
-            # (server/auth.py::_write_lock) — não precisa lock aqui.
             await save_character(session.char_data["id"], merged)
             return merged
         except Exception as e:
@@ -570,9 +562,6 @@ class SessionManager:
             await session.send(MsgType.REGISTER_ERROR, {"reason": "invalid_input"})
             return
         from server.auth import register as _auth_register
-        # Serialização de escrita SQLite mora dentro de `register`
-        # (server/auth.py::_write_lock, PROBLEMAS_ARQUITETURA.md §113/§118)
-        # — não precisa lock aqui.
         ok = await _auth_register(username, password)
         if ok:
             await session.send(MsgType.REGISTER_OK, {})
@@ -1906,8 +1895,6 @@ class SessionManager:
         if char_id < 0:
             return
         from server.auth import delete_character as _del_char
-        # Serialização de escrita SQLite mora dentro de `delete_character`
-        # (server/auth.py::_write_lock) — não precisa lock aqui.
         await _del_char(session.account_id, char_id)
         await session.send(MsgType.DELETE_CHARACTER_OK, {})
 
@@ -1925,24 +1912,18 @@ class SessionManager:
         if class_id not in ("guerreiro", "mago", "arqueiro"):
             class_id = "guerreiro"
 
-        from server.auth import create_character as _create_char, _get_conn as _gc
-        # Serialização de escrita SQLite mora dentro de `create_character`
-        # (server/auth.py::_write_lock) — não precisa lock aqui.
+        from server.auth import create_character as _create_char, _get_pool as _gp
         reason = await _create_char(session.account_id, name, class_id)
         if reason != "ok":
             await session.send(MsgType.CHARACTER_ERROR, {"reason": reason})
             return
 
         # Lê o personagem recém-criado (maior id da conta)
-        def _fetch():
-            with _gc() as conn:
-                row = conn.execute(
-                    "SELECT * FROM characters WHERE account_id=? ORDER BY id DESC LIMIT 1",
-                    (session.account_id,)
-                ).fetchone()
-                return dict(row) if row else None
-
-        char_data = await asyncio.get_running_loop().run_in_executor(None, _fetch)
+        pool = await _gp()
+        row = await pool.fetchrow(
+            "SELECT * FROM characters WHERE account_id=$1 ORDER BY id DESC LIMIT 1",
+            session.account_id)
+        char_data = dict(row) if row else None
         if not char_data:
             await session.send(MsgType.CHARACTER_ERROR, {"reason": "creation_failed"})
             return

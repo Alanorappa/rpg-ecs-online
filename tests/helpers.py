@@ -16,6 +16,53 @@ def make_world_server():
     return WorldServer()
 
 
+async def isolate_auth_schema(schema: str) -> str:
+    """Troca `server.auth` pra um schema Postgres isolado (07/09/2026, §123
+    — mesmo espírito do `DB_PATH` temporário da era SQLite) e roda
+    `init_db()` nele — DROP+CREATE do zero, nunca acumula entre execuções.
+    Retorna o schema anterior, pra restaurar em `asyncTearDown`
+    (`restore_auth_schema`). Não precisa mexer em `auth._pool` na mão —
+    `_get_pool()` já recria sozinho quando `_SCHEMA` muda (mesma lógica
+    que já recria quando o event loop muda entre testes)."""
+    import server.auth as auth
+    import asyncpg
+    orig_schema = auth._SCHEMA
+    conn = await asyncpg.connect(auth.DATABASE_URL)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+    finally:
+        await conn.close()
+    auth._SCHEMA = schema
+    await auth.init_db()
+    return orig_schema
+
+
+async def restore_auth_schema(orig_schema: str) -> None:
+    """Contrapartida de `isolate_auth_schema` — chamar em `asyncTearDown`.
+    Fecha o pool ANTES de restaurar o schema (ver `auth._close_pool` pro
+    motivo: precisa acontecer enquanto o loop do teste ainda está vivo,
+    senão vaza conexão — `TooManyConnectionsError` depois de milhares de
+    testes, achado real §123)."""
+    import server.auth as auth
+    await auth._close_pool()
+    auth._SCHEMA = orig_schema
+
+
+class AuthPoolCleanupMixin:
+    """Mixin pra qualquer `unittest.IsolatedAsyncioTestCase` que toque
+    `server.auth` (via `fake_login`/`_login`/chamada direta) SEM trocar de
+    schema (schema "public", banco dev real compartilhado) — fecha o pool
+    no fim do teste, mesmo motivo de `restore_auth_schema` (07/09/2026,
+    §123: sem isso, cada teste vaza o pool do loop anterior, e a suíte
+    inteira esgota `max_connections` do Postgres bem antes do fim).
+    Classes que já definem seu PRÓPRIO `asyncTearDown` precisam chamar
+    `await super().asyncTearDown()` (herança múltipla, MRO cooperativo)."""
+
+    async def asyncTearDown(self):
+        import server.auth as auth
+        await auth._close_pool()
+
+
 def spawn_player(ws, session_id: str, tile_x: int, tile_y: int,
                  class_id: str = "guerreiro", hp: int = 200) -> int:
     char = {

@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pygame
 pygame.init()
 
-from tests.helpers import make_world_server, spawn_player
+from tests.helpers import make_world_server, spawn_player, AuthPoolCleanupMixin
 from engine.components import Inventory, Item
 
 
@@ -174,7 +174,7 @@ class TestLootItemSemEspacoFicaNoCadaver(unittest.TestCase):
         self.assertFalse(result["no_space"])
 
 
-class TestLootQuestProgressViaSessionFlow(unittest.IsolatedAsyncioTestCase):
+class TestLootQuestProgressViaSessionFlow(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Progresso de collect_item precisa disparar DIRETO no fluxo de
     saque agora — o cliente não manda mais INV_SYNC depois de lootear
     (débito A4, request_loot já é quem muta o Inventory ao vivo)."""
@@ -195,6 +195,7 @@ class TestLootQuestProgressViaSessionFlow(unittest.IsolatedAsyncioTestCase):
         )
 
     async def asyncTearDown(self):
+        await super().asyncTearDown()
         from content.quests_data import QUESTS
         QUESTS.pop(self.QID, None)
 

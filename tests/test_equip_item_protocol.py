@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pygame
 pygame.init()
 
-from tests.helpers import make_world_server, spawn_player
+from tests.helpers import make_world_server, spawn_player, AuthPoolCleanupMixin
 from engine.components import Inventory, Equipment, Item
 
 
@@ -175,7 +175,7 @@ class TestUnequipItemSlot(unittest.TestCase):
         self.assertEqual(self.inv.items, [])
 
 
-class TestEquipItemProtocolDispatch(unittest.IsolatedAsyncioTestCase):
+class TestEquipItemProtocolDispatch(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Fim-a-fim via protocolo real (encode/on_message), não chamada direta
     de método — prova que EQUIP_ITEM/UNEQUIP_ITEM estão amarrados certo no
     dispatch (server/session.py) e que EQUIP_REJECTED só sai quando deve."""

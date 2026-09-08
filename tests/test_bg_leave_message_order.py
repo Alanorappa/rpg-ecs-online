@@ -32,11 +32,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import unittest
 
 from tests.test_session import make_session_manager, fake_login, get_messages
+from tests.helpers import AuthPoolCleanupMixin
 from shared.messages import encode, MsgType
 from server import debug_battleground as bg
 
 
-class TestBattlegroundLeaveMessageOrder(unittest.IsolatedAsyncioTestCase):
+class TestBattlegroundLeaveMessageOrder(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.ws_server, self.mgr = make_session_manager()
@@ -50,6 +51,7 @@ class TestBattlegroundLeaveMessageOrder(unittest.IsolatedAsyncioTestCase):
         inv.items = [Item("Espada Real de Teste", "weapon", "mainhand")]
 
     async def asyncTearDown(self):
+        await super().asyncTearDown()
         bg._state["members"]        = set()
         bg._state["stat_snapshots"] = {}
         bg._state["last_kda_sent"]  = {}

@@ -16668,3 +16668,117 @@ com número de mapas ativos, não uma regressão nova.
 Conexão/reconexão neste teste ficou saudável (239-247/250 conectados o
 tempo todo, ~500 reconexões totais, sem rajada) — não interfere na
 comparação de `skill_requests`.
+
+## 123. Migração SQLite → PostgreSQL (asyncpg) — decisão de infraestrutura do usuário: servidor dedicado em nuvem, Linux, múltiplos núcleos (07/09/2026)
+
+Usuário decidiu ir pra servidor dedicado em nuvem (Linux, alta
+disponibilidade no sentido prático — reinício automático + rede boa,
+não failover completo — e múltiplos núcleos, pensando em sharding por
+mapa/instância no futuro). Antes de mexer em infraestrutura, priorizado
+resolver a dívida já documentada desde sempre no CLAUDE.md ("SQLite
+(dev) → PostgreSQL (prod)") — decisão do usuário de fazer AGORA, junto
+com a ida pra nuvem, não depois.
+
+**Por que trocar a biblioteca também (não só o SQL)**: toda a
+maquinaria de `_write_lock`/`_identity_lock`/`_write_executor`/
+`_identity_executor`/`_conn_cache` construída nas seções §113-122
+existia SÓ porque SQLite aceita 1 escritor real por vez. Postgres
+aceita múltiplos escritores de verdade (MVCC) — manter aquela
+serialização seria complexidade sem propósito, e um lock em memória de
+UM processo NUNCA protegeria de verdade contra múltiplos PROCESSOS
+(o próprio motivo de ir pra multi-core). Decisão consciente, aprovada
+pelo usuário antes de implementar (não decidida sozinho): trocar
+`sqlite3` síncrono por `asyncpg` (driver assíncrono nativo, pool de
+conexões pronto, sem precisar de thread executor) E remover toda a
+maquinaria de lock/executor da era SQLite.
+
+**Unicidade de nome de personagem** (TOCTOU fechado por `_identity_lock`
+no §119) agora é garantida por um **índice único no próprio banco**
+(`characters_name_lower_idx`, case-insensitive) — correto mesmo com
+múltiplos processos disputando ao mesmo tempo, o que um lock em memória
+de 1 processo nunca garantiria. Revert-to-confirm real feito (não só
+teórico): com o índice removido e um `asyncio.Event` forçando 2
+coroutines a passarem pelo SELECT de checagem ANTES de qualquer uma
+tentar o INSERT, o banco terminou com **2 linhas duplicadas** do mesmo
+nome — com o índice restaurado, o MESMO cenário forçado terminou com
+exatamente 1 linha (`UniqueViolationError` capturada e traduzida pra
+`"name_taken"` na outra).
+
+**Corrida aceita e documentada, não corrigida**: limite de 3 personagens
+por conta ainda é um SELECT COUNT seguido de INSERT, sem proteção de
+banco — 2 CREATE_CHARACTER simultâneos da MESMA conta podem, em teoria,
+resultar em 4 personagens em vez de 3. Exige duplo-clique na MESMA
+fração de segundo da MESMA conta; sem impacto de segurança/corretude de
+dado (só um soft-limit cosmético passando por 1) — não justifica a
+complexidade de uma transação SERIALIZABLE com retry. Unicidade de
+NOME (o que realmente importa pra nameplate/chat global) tem proteção
+real; contagem de personagem não.
+
+**Achado real, sério, durante o desenvolvimento**: pool `asyncpg`
+recriado a cada troca de event loop (mesmo princípio já usado pro
+`_get_write_lock` da era SQLite — `unittest.IsolatedAsyncioTestCase`
+cria um loop novo por método de teste) tem um problema que um
+`asyncio.Lock` cru NUNCA tinha: um POOL segura conexões reais no
+Postgres, e só dá pra fechar ele DIREITO enquanto o loop em que foi
+criado ainda está rodando — depois que esse loop fecha (fim do método
+de teste), não tem mais como agendar o fechamento limpo. Rodando a
+suíte inteira, isso vazou conexão a cada teste que tocasse `server.auth`
+(via `fake_login`/`_login`/chamada direta), esgotando o
+`max_connections` do Postgres por volta do teste #1500 —
+`asyncpg.exceptions.TooManyConnectionsError`, 17 testes falhando (todos
+em arquivos que nem tocam auth diretamente, só rodavam DEPOIS que o
+teto já tinha estourado). Fix: `server.auth._close_pool()` (nova
+função) chamada de dentro do próprio teste, ENQUANTO o loop dele ainda
+roda — via `restore_auth_schema()` (helper já usado pelos testes de
+schema isolado) e um novo `tests.helpers.AuthPoolCleanupMixin`
+(`asyncTearDown` que fecha o pool) aplicado a TODA classe
+`IsolatedAsyncioTestCase` que toca auth sem trocar de schema (14
+arquivos de teste — `test_session.py` sozinho tinha 20 classes).
+Produção NUNCA tem esse problema (1 processo = 1 loop a vida inteira,
+pool fechado só quando o processo morre) — é puramente um artefato de
+como `IsolatedAsyncioTestCase` cria/destrói loop por método.
+
+**Escopo tocado**: `server/auth.py` (reescrito — schema Postgres,
+`asyncpg`, sem locks), `server/main.py` (`init_db()` virou `await`),
+`server/grant_gm.py` (reescrito async), `server/session.py` (removida
+referência a `_get_conn`/`_write_lock`, comentários desatualizados
+limpos), `tools/loadtest/provision.py` (Fase B reescrita com `asyncpg`
+em vez de `sqlite3` direto), `requirements_server.txt` (+`asyncpg`).
+Testes: `tests/test_auth_write_lock.py` REMOVIDO (testava mecanismo que
+não existe mais) e substituído por `tests/test_auth_concurrency.py`
+(testa a garantia que IMPORTA agora: corretude sob concorrência real,
+não "nunca sobrepõe no tempo"); `tests/test_auth_salt.py`/
+`tests/test_character_names.py` reescritos pra schema Postgres isolado
+(`tests.helpers.isolate_auth_schema`/`restore_auth_schema`, novo,
+mesmo espírito do `DB_PATH` temporário da era SQLite); 14 arquivos de
+teste ganharam `AuthPoolCleanupMixin`.
+
+**Novo**: `tools/migrate_sqlite_to_postgres.py` — migração ÚNICA (não
+faz parte do runtime) do `data/game.db` antigo pro Postgres. Nunca
+destrutivo (só LEITURA no SQLite); preserva IDs originais; recusa rodar
+contra um banco Postgres que já tenha dado (nunca sobrescreve). Achado
+real ao testar: o banco dev real tem **~45 grupos de nomes de
+personagem duplicados** (case-insensitive) — dados de teste antigos, de
+antes da regra de unicidade existir (inclusive "Aventureiro", o
+incidente ORIGINAL que motivou a regra, §107/§108, nunca limpo do
+banco). O índice único novo rejeitaria a migração direta; o script
+detecta e renomeia automaticamente as ocorrências duplicadas (sufixo
+`__dupN`, nunca a primeira) — nada é apagado, tudo fica visível no
+relatório. **Rodar de verdade contra `data/game.db` fica pendente,
+decisão do usuário** (script testado e validado contra um schema
+Postgres isolado, não contra o banco dev real ainda).
+
+**Testes**: suíte completa — **1527 passed, 2 failed** (as 2 falhas são
+`time.sleep(0.01)` com margem de 10ms num teste de timing de
+performance, ex.: `TestTickPerfProfiler::test_perf_push_pop_grava_no_caminho`
+— flakiness de granularidade de timer do Windows, PRÉ-EXISTENTE,
+reproduzida isoladamente sem nenhuma relação com a migração; não
+corrigida por estar fora do escopo desta tarefa). Revert-to-confirm
+real no índice único (não só teste automatizado — script standalone
+provando a corrida via `asyncio.Event`, documentado acima).
+
+**Pendente** (próximos passos do roadmap de infraestrutura, não
+travados por este item): usuário provisiona o servidor Linux na nuvem;
+decidir se a migração de dados reais roda agora ou só na hora do
+deploy; configurar systemd + firewall + TLS/wss (item C1, ainda em
+aberto) + backup automático.

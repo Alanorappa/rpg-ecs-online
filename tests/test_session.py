@@ -11,7 +11,8 @@ Uso:
 import os, sys, asyncio, unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tests.helpers import make_world_server, spawn_player, run_ticks, first_mob, set_entity_tile
+from tests.helpers import (make_world_server, spawn_player, run_ticks, first_mob,
+                          set_entity_tile, AuthPoolCleanupMixin)
 from shared.messages import MsgType
 
 
@@ -80,16 +81,16 @@ async def fake_login(mgr, session_id: str, username: str,
     LOGIN → AUTH_OK{characters} → SELECT_CHARACTER → LOGIN_OK/WORLD_STATE).
     Retorna (session, fake_ws).
     """
-    from server.auth import (_register_account_sync, _get_account_id_sync,
-                             _create_character_sync, _hash)
+    from server.auth import (_register_account, _get_account_id,
+                             _create_character, _hash)
     from shared.messages import encode, MsgType
     from shared.constants import PROTOCOL_VERSION
 
     # Garante que conta + personagem existem no banco
     pw_hash = _hash("test123")
-    _register_account_sync(username, pw_hash)   # no-op se já existe
-    acc_id = _get_account_id_sync(username)
-    _create_character_sync(acc_id, _valid_char_name(username), class_id, tile_x, tile_y)
+    await _register_account(username, pw_hash)   # no-op se já existe
+    acc_id = await _get_account_id(username)
+    await _create_character(acc_id, _valid_char_name(username), class_id, tile_x, tile_y)
 
     fake_ws = FakeWS()
     session = await mgr.on_connect(fake_ws, session_id)
@@ -173,7 +174,7 @@ class TestBuildSaveMergeFog(unittest.TestCase):
         self.assertEqual(decode_fog(merged["fog"])["maps/map_1.csv"], {(9, 9)})
 
 
-class TestLogin(unittest.IsolatedAsyncioTestCase):
+class TestLogin(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.ws_server, self.mgr = make_session_manager()
@@ -211,14 +212,14 @@ class TestLogin(unittest.IsolatedAsyncioTestCase):
         derivados server-side (Equipment/TalentTree/level). O teste antigo
         assertava o comportamento inverso, que era a vulnerabilidade
         PLAYER_STAT_SYNC (removida — ver PROBLEMAS_ARQUITETURA.md)."""
-        from server.auth import (_register_account_sync, _get_account_id_sync,
-                                 _create_character_sync, _hash)
+        from server.auth import (_register_account, _get_account_id,
+                                 _create_character, _hash)
         from shared.messages import encode
         from shared.constants import PROTOCOL_VERSION
         ph = _hash("test123")
-        _register_account_sync("user_ap_test", ph)
-        acc_id = _get_account_id_sync("user_ap_test")
-        _create_character_sync(acc_id, _valid_char_name("user_ap_test"), "guerreiro", 115, 389)
+        await _register_account("user_ap_test", ph)
+        acc_id = await _get_account_id("user_ap_test")
+        await _create_character(acc_id, _valid_char_name("user_ap_test"), "guerreiro", 115, 389)
 
         fake_ws = FakeWS()
         session = await self.mgr.on_connect(fake_ws, "s_ap")
@@ -255,20 +256,20 @@ class TestLogin(unittest.IsolatedAsyncioTestCase):
         Somados nos 3 personagens de uma conta bem testada, passava do
         limite de 1 MB do frame WebSocket. Fix: authenticate() só seleciona
         as 4 colunas leves do banco."""
-        from server.auth import (_register_account_sync, _get_account_id_sync,
-                                 _create_character_sync, _hash, _get_conn)
+        from server.auth import (_register_account, _get_account_id,
+                                 _create_character, _hash, _get_pool)
         from shared.messages import encode
         from shared.constants import PROTOCOL_VERSION
         ph = _hash("test123")
-        _register_account_sync("user_fog_grande", ph)
-        acc_id = _get_account_id_sync("user_fog_grande")
-        _create_character_sync(acc_id, _valid_char_name("user_fog_grande"), "guerreiro", 115, 389)
+        await _register_account("user_fog_grande", ph)
+        acc_id = await _get_account_id("user_fog_grande")
+        await _create_character(acc_id, _valid_char_name("user_fog_grande"), "guerreiro", 115, 389)
 
         # Simula fog_json inchado (como um personagem MUITO explorado teria).
         _fog_grande = "x" * 600_000
-        with _get_conn() as conn:
-            conn.execute("UPDATE characters SET fog_json=? WHERE account_id=?",
-                        (_fog_grande, acc_id))
+        pool = await _get_pool()
+        await pool.execute("UPDATE characters SET fog_json=$1 WHERE account_id=$2",
+                           _fog_grande, acc_id)
 
         fake_ws = FakeWS()
         session = await self.mgr.on_connect(fake_ws, "s_fog")
@@ -317,7 +318,7 @@ class TestLogin(unittest.IsolatedAsyncioTestCase):
 # 2. AOI subscription — known_eids
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestAOISubscription(unittest.IsolatedAsyncioTestCase):
+class TestAOISubscription(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.ws_server, self.mgr = make_session_manager()
@@ -416,7 +417,7 @@ class TestAOISubscription(unittest.IsolatedAsyncioTestCase):
 # 3. AOI_UPDATE distribution
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestAOIUpdate(unittest.IsolatedAsyncioTestCase):
+class TestAOIUpdate(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.ws_server, self.mgr = make_session_manager()
@@ -559,7 +560,7 @@ class TestAOIUpdate(unittest.IsolatedAsyncioTestCase):
 # 4. Disconnect
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestDisconnect(unittest.IsolatedAsyncioTestCase):
+class TestDisconnect(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.ws_server, self.mgr = make_session_manager()
@@ -609,7 +610,7 @@ class TestDisconnect(unittest.IsolatedAsyncioTestCase):
 # 5. Player death
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestPlayerDeathEvent(unittest.IsolatedAsyncioTestCase):
+class TestPlayerDeathEvent(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.ws_server, self.mgr = make_session_manager()
@@ -719,7 +720,7 @@ class TestPlayerDeathEvent(unittest.IsolatedAsyncioTestCase):
 # 6. Loot em grupo — LOOT_UPDATE sincroniza quem não clicou
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestPartyLootSync(unittest.IsolatedAsyncioTestCase):
+class TestPartyLootSync(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Bug real relatado pelo usuário 17/07/2026: quando A sacava algo de
     um corpse compartilhado do grupo, B (que também tinha o corpse
     aberto, via LOOT_AVAILABLE) nunca ficava sabendo — via ouro/item
@@ -790,7 +791,7 @@ class TestPartyLootSync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(get_msgs_of_type(fw_a, MsgType.LOOT_RESULT)), 1)
 
 
-class TestHarvestableEmptyNaoDisparaDespawnGenerico(unittest.IsolatedAsyncioTestCase):
+class TestHarvestableEmptyNaoDisparaDespawnGenerico(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Bug real relatado pelo usuário 25/07/2026: esvaziar uma caixa de
     harvestable removia a entidade da tela de QUALQUER jogador no AOI
     (não só de quem saqueou). Causa: `_handle_loot_request` manda um
@@ -904,7 +905,7 @@ class TestHarvestableEmptyNaoDisparaDespawnGenerico(unittest.IsolatedAsyncioTest
 # 6b. Loot condicional de quest é resolvido POR JOGADOR (Fase L1, 25/07/2026)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestConditionalLootPerPlayer(unittest.IsolatedAsyncioTestCase):
+class TestConditionalLootPerPlayer(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Bug real confirmado (usuário perguntou, investigação achou): antes,
     o loot condicional de quest (ex.: Pelo de Urso) era decidido 1x na
     morte do mob contra a QuestLog do first-attacker e ficava FIXO no
@@ -927,6 +928,7 @@ class TestConditionalLootPerPlayer(unittest.IsolatedAsyncioTestCase):
         )
 
     async def asyncTearDown(self):
+        await super().asyncTearDown()
         from content.quests_data import QUESTS
         QUESTS.pop(self.QID, None)
 
@@ -1030,7 +1032,7 @@ class TestConditionalLootPerPlayer(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results2[0]["items"], [])
 
 
-class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
+class TestHarvestableM1(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Item de mapa saqueável (Fase M1, revisão 2, 25/07/2026) — entidade
     real (posição+aparência+loot, SEM combate/diálogo), colisão e Y-sort
     automáticos via os mesmos sistemas genéricos que já servem NPC/mob
@@ -1336,7 +1338,7 @@ class TestHarvestableM1(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fc._spawn_remote_harvestable_args, (42, payload["entities"][0]))
 
 
-class TestHarvestableRespawnM2(unittest.IsolatedAsyncioTestCase):
+class TestHarvestableRespawnM2(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Fase M2 (25/07/2026) — harvestable de posição fixa com
     respawn_s > 0 reabastece sozinho depois de esvaziar POR COMPLETO
     (itens E moedas), resetando também o loot condicional de quest
@@ -1427,7 +1429,7 @@ class TestHarvestableRespawnM2(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(matching[0]["coins"], 9)
 
 
-class TestHarvestableQuestGateM3(unittest.IsolatedAsyncioTestCase):
+class TestHarvestableQuestGateM3(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Fase M3 (25/07/2026) — harvestable com `requires_quest` fica
     TOTALMENTE invisível (nem no AOI) pra quem não tem a quest ativa,
     tanto no login (WORLD_STATE) quanto no sweep de tick — decisão
@@ -1445,6 +1447,7 @@ class TestHarvestableQuestGateM3(unittest.IsolatedAsyncioTestCase):
         )
 
     async def asyncTearDown(self):
+        await super().asyncTearDown()
         from content.quests_data import QUESTS
         QUESTS.pop(self.QID, None)
 
@@ -1592,7 +1595,7 @@ class TestHarvestableQuestGateM3(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.ws_server._harvestable_visible_to(hv_eid, 12345))
 
 
-class TestItemGrantsQuestM4(unittest.IsolatedAsyncioTestCase):
+class TestItemGrantsQuestM4(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Fase M4 (25/07/2026, REVISADA no mesmo dia — usuário pediu fluxo de
     decisão em vez de automático): item mapeado em ITEM_GRANTS_QUEST NÃO
     inicia a quest sozinho ao ser saqueado — fica só na bag. Quem inicia é
@@ -1617,6 +1620,7 @@ class TestItemGrantsQuestM4(unittest.IsolatedAsyncioTestCase):
         ITEM_GRANTS_QUEST[self.ITEM_NAME] = self.QID
 
     async def asyncTearDown(self):
+        await super().asyncTearDown()
         from content.quests_data import QUESTS, ITEM_GRANTS_QUEST
         QUESTS.pop(self.QID, None)
         ITEM_GRANTS_QUEST.pop(self.ITEM_NAME, None)
@@ -1694,7 +1698,7 @@ class TestItemGrantsQuestM4(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.QID, ql.active)
 
 
-class TestHarvestableZone(unittest.IsolatedAsyncioTestCase):
+class TestHarvestableZone(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Zona de itens (25/07/2026) — decisões confirmadas via
     AskUserQuestion: mistura de sub-tipos na MESMA zona (mesmo padrão de
     spawn_zones de mob); nó esgotado SOME de verdade (ao contrário do
@@ -1833,7 +1837,7 @@ class TestHarvestableZone(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(self.ws_server._harvestable_visible_to(eid, 99999))
 
 
-class TestArenaDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
+class TestArenaDispatchSemMovimento(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Bug real relatado pelo usuário 21/07/2026: "só chamou a arena
     quando movi o personagem" + "cliquei em aceitar e ninguém entrou".
     Causa raiz: `_on_tick`'s `has_pending` (server/session.py) decide se
@@ -1938,7 +1942,7 @@ class TestArenaDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
             "de qualquer outra atividade no tick")
 
 
-class TestPartyDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
+class TestPartyDispatchSemMovimento(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Bug real relatado pelo usuário 22/07/2026: HUD de grupo (slots no
     canto superior esquerdo) só atualizava quando algum player se movia
     depois de aceitar um convite. Mesma classe de bug já corrigida pra
@@ -1978,7 +1982,7 @@ class TestPartyDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
                 "depender de qualquer outra atividade no tick")
 
 
-class TestBattlegroundDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
+class TestBattlegroundDispatchSemMovimento(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Nexus derrubado (02/08/2026, pedido do usuário) — MESMA classe de
     bug já corrigida pra arena/party: `has_pending` (server/session.py::
     _on_tick) precisa olhar `_dbg_bg_tick._state["pending_match_result"]`
@@ -2064,7 +2068,7 @@ class TestBattlegroundDispatchSemMovimento(unittest.IsolatedAsyncioTestCase):
             bg._state["pending_forced_leave_notify"] = []
 
 
-class TestDispatchSerializacaoDeTicks(unittest.IsolatedAsyncioTestCase):
+class TestDispatchSerializacaoDeTicks(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Opção (c) do §44 (PROBLEMAS_ARQUITETURA.md) — coalescência de
     despacho por tick. Antes, `_on_tick` disparava
     `asyncio.create_task(_dispatch_tick_deltas(deltas))` sem trava nem
@@ -2244,7 +2248,7 @@ class TestDispatchSerializacaoDeTicks(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.mgr._dispatch_in_flight)
 
 
-class TestUnstuck(unittest.IsolatedAsyncioTestCase):
+class TestUnstuck(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Botão "Voltar ao Spawn" (bug real relatado pelo usuário 22/07/2026):
     só mudava tile_x/tile_y pro spawn de map_1, nunca o mapa em si — quem
     estava numa caverna ficava preso lá com a coordenada errada."""
@@ -2283,7 +2287,7 @@ class TestUnstuck(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(get_msgs_of_type(fw, MsgType.ENTITY_MOVE)), 1)
 
 
-class TestZoneChangeReq(unittest.IsolatedAsyncioTestCase):
+class TestZoneChangeReq(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """ZONE_CHANGE_REQ (C→S) — usado por transições normais de mapa (ex.:
     entrar numa caverna) E, desde 23/07/2026, pelo teleporte de mapa do
     menu de debug (F12): antes chamava `_do_transition` client-side direto
@@ -2369,7 +2373,7 @@ class TestZoneChangeReq(unittest.IsolatedAsyncioTestCase):
 # Visão compartilhada de time (30/07/2026, pedido do usuário)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestAllyVisionSharing(unittest.IsolatedAsyncioTestCase):
+class TestAllyVisionSharing(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """SÓ conteúdo instanciado (arena hoje, battlefield/dungeon no futuro)
     — gate: Faction EXPLÍCITA no player (mundo aberto normal nunca tem).
     Reaproveita Faction como já existe, zero conceito novo de time.

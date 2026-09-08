@@ -9,19 +9,19 @@ Uso:
     python -m server.grant_gm <username> --revoke  # revoga
 """
 from __future__ import annotations
+import asyncio
 import sys
 
-from server.auth import _get_conn
+from server.auth import _get_pool
 
 
-def set_gm(username: str, is_gm: bool) -> bool:
+async def set_gm(username: str, is_gm: bool) -> bool:
     """Retorna True se a conta existia e foi atualizada."""
-    with _get_conn() as conn:
-        cur = conn.execute(
-            "UPDATE accounts SET is_gm=? WHERE username=?",
-            (1 if is_gm else 0, username),
-        )
-        return cur.rowcount > 0
+    pool = await _get_pool()
+    result = await pool.execute(
+        "UPDATE accounts SET is_gm=$1 WHERE username=$2", is_gm, username)
+    # asyncpg devolve "UPDATE <n>" — n=0 quando nenhuma linha bateu.
+    return not result.endswith(" 0")
 
 
 if __name__ == "__main__":
@@ -30,7 +30,7 @@ if __name__ == "__main__":
         sys.exit(1)
     _username = sys.argv[1]
     _revoke   = "--revoke" in sys.argv[2:]
-    if set_gm(_username, not _revoke):
+    if asyncio.run(set_gm(_username, not _revoke)):
         print(f"[grant_gm] '{_username}' agora {'NÃO é' if _revoke else 'é'} GM.")
     else:
         print(f"[grant_gm] conta '{_username}' não encontrada.")

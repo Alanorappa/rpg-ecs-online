@@ -88,7 +88,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pygame
 pygame.init()
 
-from tests.helpers import make_world_server, spawn_player
+from tests.helpers import make_world_server, spawn_player, AuthPoolCleanupMixin
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -453,7 +453,7 @@ class TestInstanceSkillGrant(unittest.TestCase):
 #    não da edição recente.
 # ─────────────────────────────────────────────────────────────────────────
 
-class TestHotbarUpdateAppliesLive(unittest.IsolatedAsyncioTestCase):
+class TestHotbarUpdateAppliesLive(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         from tests.test_session import make_session_manager, fake_login
@@ -506,7 +506,7 @@ class TestHotbarUpdateAppliesLive(unittest.IsolatedAsyncioTestCase):
 #    vazar o estado temporário pro personagem persistido.
 # ─────────────────────────────────────────────────────────────────────────
 
-class TestHotbarReorderSurvivesInstanceLevelup(unittest.IsolatedAsyncioTestCase):
+class TestHotbarReorderSurvivesInstanceLevelup(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         from tests.test_session import make_session_manager, fake_login
@@ -603,7 +603,7 @@ class TestHotbarReorderSurvivesInstanceLevelup(unittest.IsolatedAsyncioTestCase)
 #    (terceiro ponto, diferente de 1 e 2 acima — ver docstring do módulo).
 # ─────────────────────────────────────────────────────────────────────────
 
-class TestHotbarPersistedFromLiveECS(unittest.IsolatedAsyncioTestCase):
+class TestHotbarPersistedFromLiveECS(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         from tests.test_session import make_session_manager, fake_login
@@ -703,7 +703,7 @@ class TestHotbarPersistedFromLiveECS(unittest.IsolatedAsyncioTestCase):
 #    (terceira ocorrência do mesmo padrão — ver docstring do módulo).
 # ─────────────────────────────────────────────────────────────────────────
 
-class TestTalentsNotLeakedFromInstanceOverlay(unittest.IsolatedAsyncioTestCase):
+class TestTalentsNotLeakedFromInstanceOverlay(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         from tests.test_session import make_session_manager, fake_login
@@ -778,7 +778,7 @@ class TestTalentsNotLeakedFromInstanceOverlay(unittest.IsolatedAsyncioTestCase):
 #    padrão — ver docstring do módulo).
 # ─────────────────────────────────────────────────────────────────────────
 
-class TestInventoryPersistedFromLiveECS(unittest.IsolatedAsyncioTestCase):
+class TestInventoryPersistedFromLiveECS(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         from tests.test_session import make_session_manager, fake_login

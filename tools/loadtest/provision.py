@@ -14,7 +14,7 @@ reimplementar hash de senha/validação de nome na mão, o servidor já faz
 isso certo; reimplementar seria duplicar lógica sensível a segurança e
 divergir se o servidor mudar.
 
-Fase B (sqlite3 direto): só a concessão de skill, que não tem mensagem
+Fase B (asyncpg direto): só a concessão de skill, que não tem mensagem
 de protocolo própria — é um atalho de ferramenta de teste, não uma
 feature de jogo (por isso não vira MsgType novo).
 """
@@ -25,9 +25,7 @@ import asyncio
 import hashlib
 import json
 import os
-import sqlite3
 import sys
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -102,58 +100,46 @@ async def _provision_one(i: int, host: str, port: int) -> "dict | None":
         await client.close()
 
 
-def _grant_starter_skills(db_path: str, provisioned: list) -> None:
-    """Fase B — escreve `characters.skills_json` direto, sem servidor
-    vivo envolvido. Idempotente (funde com o que já existir, nunca
-    duplica). 1 conexão/transação só pra minimizar a janela concorrendo
-    com o processo do servidor no mesmo arquivo."""
+async def _grant_starter_skills(provisioned: list) -> None:
+    """Fase B — escreve `characters.skills_json` direto, sem passar pelo
+    protocolo de rede (não existe mensagem pra "aprender skill em lote").
+    Idempotente (funde com o que já existir, nunca duplica). Usa o MESMO
+    pool asyncpg de `server.auth` (07/09/2026, §123 — migração de
+    SQLite) — Postgres aceita escritores concorrentes de verdade, não
+    precisa mais do retry-por-banco-travado da era SQLite."""
     if not provisioned:
         return
-    last_err = None
-    for attempt in range(5):
+    from server.auth import _get_pool
+    pool = await _get_pool()
+    granted = 0
+    for entry in provisioned:
+        char_id = entry["char_id"]
+        class_id = entry["class_id"]
+        wanted = starter_skills_for_class(class_id)
+        if not wanted:
+            continue
+        row = await pool.fetchrow("SELECT skills_json FROM characters WHERE id=$1", char_id)
+        if row is None:
+            continue
         try:
-            conn = sqlite3.connect(db_path, timeout=10.0)
-            try:
-                granted = 0
-                for entry in provisioned:
-                    char_id = entry["char_id"]
-                    class_id = entry["class_id"]
-                    wanted = starter_skills_for_class(class_id)
-                    if not wanted:
-                        continue
-                    row = conn.execute(
-                        "SELECT skills_json FROM characters WHERE id=?", (char_id,)
-                    ).fetchone()
-                    if row is None:
-                        continue
-                    try:
-                        data = json.loads(row[0]) if row[0] else {}
-                    except (TypeError, ValueError):
-                        data = {}
-                    if not isinstance(data, dict):
-                        data = {}
-                    learned = list(data.get("learned") or [])
-                    changed = False
-                    for sid in wanted:
-                        if sid not in learned:
-                            learned.append(sid)
-                            changed = True
-                    if changed:
-                        data["learned"] = learned
-                        conn.execute(
-                            "UPDATE characters SET skills_json=? WHERE id=?",
-                            (json.dumps(data), char_id),
-                        )
-                        granted += 1
-                conn.commit()
-                print(f"Fase B: skills concedidas/atualizadas em {granted} personagem(ns).")
-                return
-            finally:
-                conn.close()
-        except sqlite3.OperationalError as e:
-            last_err = e
-            time.sleep(0.5 * (attempt + 1))
-    raise RuntimeError(f"Fase B falhou após 5 tentativas (banco travado?): {last_err}")
+            data = json.loads(row["skills_json"]) if row["skills_json"] else {}
+        except (TypeError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        learned = list(data.get("learned") or [])
+        changed = False
+        for sid in wanted:
+            if sid not in learned:
+                learned.append(sid)
+                changed = True
+        if changed:
+            data["learned"] = learned
+            await pool.execute(
+                "UPDATE characters SET skills_json=$1 WHERE id=$2",
+                json.dumps(data), char_id)
+            granted += 1
+    print(f"Fase B: skills concedidas/atualizadas em {granted} personagem(ns).")
 
 
 async def _run(count: int, host: str, port: int, batch_size: int, batch_interval_s: float) -> None:
@@ -168,8 +154,7 @@ async def _run(count: int, host: str, port: int, batch_size: int, batch_interval
     provisioned = [r for r in results if r is not None]
     print(f"Fase A: {len(provisioned)}/{count} conta(s)+personagem(ns) confirmados.")
 
-    from server.auth import DB_PATH
-    _grant_starter_skills(DB_PATH, provisioned)
+    await _grant_starter_skills(provisioned)
     print("Provisionamento concluído.")
 
 
