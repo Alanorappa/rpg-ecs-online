@@ -85,6 +85,7 @@ _MOVE_STEP_INTERVAL_S = TILE_SIZE / 110.0
 # `server/bot_ai_system.py::BOT_DIVE_HP_THRESHOLD_PCT`) e alcance
 # "seguro" por classe, usados pela IA de combate por classe abaixo.
 _HP_DEFENSIVE_THRESHOLD_PCT = 0.30   # mago: Bloco de Gelo/Polimorfia; grupo: kite
+_HP_REENGAGE_THRESHOLD_PCT  = 0.50   # histerese -- só volta a aceitar alvo novo acima disto
 _HP_FINISHER_THRESHOLD_PCT  = 0.90   # guerreiro: Vitória Iminente (carga ganha ao matar,
                                      # não cura garantida — só não "guarda" a carga full HP)
 _MAGE_SAFE_RANGE_TILES    = 5   # < cast_range=6 de Bola de Fogo (margem de 1 tile)
@@ -435,24 +436,27 @@ class LoadBot:
     async def _combat_step(self, target_eid: int) -> None:
         """Aproxima, mantém ou recua em relação ao alvo — decisão de
         QUANDO recuar (`self._kiting`) é do think loop; aqui só executa
-        o passo, a cada `_MOVE_STEP_INTERVAL_S`."""
+        o passo, a cada `_MOVE_STEP_INTERVAL_S`.
+
+        Kitando SEMPRE recua, não só quando já dentro do alcance desejado
+        (bug corrigido 08/09/2026: a versão anterior só invertia a
+        direção se `dist <= desired`, então um alvo mais rápido que
+        alcançasse o bot kitando de FORA do alcance desejado fazia o bot
+        andar EM DIREÇÃO a ele — o oposto do propósito de kitar)."""
         target = self.known_entities.get(target_eid)
         if target is None:
             return
         etx, ety = target.get("tx", self.tx), target.get("ty", self.ty)
-        dist = max(abs(etx - self.tx), abs(ety - self.ty))
-        desired = self._desired_range()
 
-        if self._kiting and dist <= desired:
-            # Já perto o bastante pra atacar, mas em modo defensivo —
-            # abre espaço em vez de continuar aproximando (arqueiro/mago
-            # kitando de verdade: anda pro lado oposto do alvo enquanto
-            # ainda ataca à distância no think loop).
+        if self._kiting:
             await self._step_away(etx, ety)
-        elif dist > desired:
+            return
+
+        dist = max(abs(etx - self.tx), abs(ety - self.ty))
+        if dist > self._desired_range():
             await self._step_toward(etx, ety)
-        # else: já no alcance desejado e não kitando — mantém posição,
-        # deixa o think loop decidir ataque/skill.
+        # else: já no alcance desejado — mantém posição, deixa o think
+        # loop decidir ataque/skill.
 
     async def _step_away(self, etx: int, ety: int) -> None:
         dx = 0 if etx == self.tx else (-1 if etx > self.tx else 1)
@@ -563,15 +567,27 @@ class LoadBot:
         return 1
 
     def _update_kiting_state(self) -> None:
-        # Guerreiro não tem ferramenta de fuga (Vitória Iminente é
-        # finisher, não escape) — decisão do usuário (08/09/2026): sem
-        # alcance pra kitar, só continua lutando mesmo com HP baixo.
-        self._kiting = (self.class_id in ("mago", "arqueiro")
-                        and self._hp_ratio() <= _HP_DEFENSIVE_THRESHOLD_PCT)
+        # Histerese (08/09/2026, pedido do usuário) — liga ao cair a
+        # <=30%, só desliga de volta ao SUBIR a >=50% (nunca o mesmo
+        # threshold pros dois lados, senão o bot oscila fugir/lutar a
+        # cada think bem na borda de 30%). Entre 30-50%: mantém o estado
+        # anterior. Guerreiro AGORA TAMBÉM foge (revertido o "guerreiro
+        # nunca kita" original — corrida sem ferramenta de escape ainda
+        # é fuga válida, só não tem skill que ajude nisso).
+        ratio = self._hp_ratio()
+        if ratio <= _HP_DEFENSIVE_THRESHOLD_PCT:
+            self._kiting = True
+        elif ratio >= _HP_REENGAGE_THRESHOLD_PCT:
+            self._kiting = False
 
     async def _wander_or_engage(self) -> None:
+        self._update_kiting_state()
+
         if self.target_eid == -1 or self.target_eid not in self.known_entities:
-            self.target_eid = self._nearest_target() or -1
+            # Kitando (recuperando HP) — não aceita alvo novo até sair da
+            # histerese; senão o bot volta a brigar no meio da fuga assim
+            # que outro mob aparece por perto.
+            self.target_eid = -1 if self._kiting else (self._nearest_target() or -1)
 
         if self.target_eid != -1:
             # Alvo de combate de verdade sempre ganha de uma excursão em
@@ -579,17 +595,17 @@ class LoadBot:
             # ameaça no meio de um passeio) e evita competir com o
             # watchdog de goto.
             self._cancel_goto()
-            self._update_kiting_state()
             await self._engage(self.target_eid)
             return
 
-        self._kiting = False
         # Movimento (passo a passo, seja excursão ou wander curto) agora
         # é 100% responsabilidade do `_move_loop` (cadência própria,
         # desacoplada do think) — aqui só decide SE inicia uma excursão
         # nova; `_advance_movement` já cai pro wander sozinho quando não
-        # há excursão em andamento.
-        if self._goto_path is None:
+        # há excursão em andamento. Kitando sem alvo (fugiu, mob evadiu)
+        # nunca inicia excursão nova — só volta a procurar mob depois de
+        # sair da histerese.
+        if self._goto_path is None and not self._kiting:
             await self._maybe_start_excursion()
 
     def _priority_skill(self, ready: list, dist: int) -> "str | None":
@@ -600,6 +616,12 @@ class LoadBot:
         hp_ratio = self._hp_ratio()
 
         if self.class_id == "guerreiro":
+            if self._kiting:
+                # Fugindo (HP<=30%, sem ferramenta de escape de verdade) —
+                # nunca Interceptar (fecharia a distância que acabou de
+                # abrir) nem Vitória Iminente (exige adjacência, que a
+                # fuga está evitando de propósito).
+                return None
             # "Na distância máxima" na prática é uma FAIXA, não um valor
             # exato: o `_move_loop` (cadência própria, mais rápida que o
             # think) já está fechando a distância em paralelo, então por

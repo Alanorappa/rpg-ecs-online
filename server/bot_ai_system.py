@@ -64,6 +64,55 @@ BOT_LANE_AWARENESS_RADIUS_TILES = 8
 # mesmo padrão de bot de Dota/LoL em dificuldade mais alta: "não se
 # intimida com torre quando o alvo está baixo").
 BOT_DIVE_HP_THRESHOLD_PCT = 0.30
+# Histerese de fuga por HP baixo (08/09/2026, pedido do usuário — vale
+# pras 3 classes: guerreiro corre em direção à própria base, mago/
+# arqueiro kitam mantendo distância) — liga ao CAIR a
+# BOT_LOW_HP_RETREAT_PCT, só desliga ao SUBIR a BOT_LOW_HP_REENGAGE_PCT
+# (nunca o mesmo valor pros dois lados, senão o bot oscilaria fugir/
+# brigar a cada decisão de 0.35s bem na borda de um threshold só). Ver
+# `BotControlled.is_retreating` (engine/components.py) — estado por
+# entidade, esta função só decide.
+BOT_LOW_HP_RETREAT_PCT  = 0.30
+BOT_LOW_HP_REENGAGE_PCT = 0.50
+# Minion só vira alvo de ataque do bot quando está prestes a morrer —
+# antes disso, o bot ignora minion saudável (que a própria lane/torre já
+# está resolvendo sozinha) e só intervém pra fechar o abate (XP), nunca
+# desperdiça hit/skill nele antes da hora (08/09/2026, pedido do
+# usuário). Player inimigo sempre tem prioridade sobre qualquer minion.
+BOT_MINION_LAST_HIT_PCT = 0.20
+# Nº mínimo de inimigos (player+minion) num raio pra valer a pena gastar
+# uma skill em ÁREA (Fatiador de Corpos/Nova Congelante) em vez de uma
+# skill de alvo único — 1 alvo só não compensa o cooldown longo dessas
+# skills (08/09/2026, pedido do usuário).
+BOT_CLEAVE_MIN_TARGETS = 2
+
+# IDs de skill usados pela prioridade tática por classe abaixo — nunca
+# hardcoded solto no meio da lógica, todos num lugar só pra facilitar
+# auditoria contra o catálogo real (`content/skill_config.py`).
+_SKILL_EXECUTAR    = "executar"          # guerreiro: dano 3x se alvo HP<=30% (finisher)
+_SKILL_FATIADOR    = "fatiador_de_corpos"  # guerreiro: cleave, raio 2 tiles
+_SKILL_VITORIA     = "vitoria_iminente"    # guerreiro: carga ganha ao matar, gasta com HP<90%
+_SKILL_INTERCEPTAR = "interceptar"         # guerreiro: gap-closer, 2-6 tiles
+_SKILL_NOVA        = "nova_congelante"     # mago: dano + enraíza em área, raio 3 tiles
+_SKILL_POLIMORFIA  = "polimorfia"          # mago: CC de alvo único, alcance 7
+_SKILL_BLOCO       = "bloco_de_gelo"       # mago: imunidade + regen, self-cast
+_SKILL_BOLA        = "bola_de_fogo"        # mago: ataque padrão à distância, alcance 6
+_SKILL_PICADA      = "picada_escorpiao"    # arqueiro: slow, usado pra abrir espaço
+
+# Thresholds/raios espelhados do catálogo real (`content/skill_config.py`)
+# — mantidos aqui como constante nomeada em vez de reconsultar o dict a
+# cada decisão, mesmo valor exato:
+# executar.params.hp_threshold=0.3, fatiador_de_corpos.params.
+# radius_tiles=2, vitoria_iminente (sem threshold próprio — carga, ver
+# docstring de _try_priority_skill), nova_congelante.cast_range=3 (faz
+# duplo papel de raio de área no servidor, `_server_nova_congelante`),
+# interceptar.params: min_range=2/max_range=6 (`engine/skill_handlers.py`).
+_EXECUTAR_HP_THRESHOLD_PCT   = 0.30
+_VITORIA_HP_THRESHOLD_PCT    = 0.90
+_FATIADOR_RADIUS_TILES       = 2
+_NOVA_RADIUS_TILES           = 3
+_INTERCEPTAR_MAX_RANGE_TILES = 6
+
 # Raio (Chebyshev) em que um minion aliado perto do PRÓPRIO BOT libera o
 # dive-gate (25/08/2026 — substitui "minion dentro do alcance da MESMA
 # torre", condição frágil demais: minion morre rápido pra torre, raramente
@@ -171,7 +220,8 @@ class BotAISystem:
 
     @staticmethod
     def update(world_server, dt: float) -> None:
-        from engine.components import BotControlled, TileMovement, Faction, GhostState
+        from engine.components import (BotControlled, TileMovement, Faction,
+                                       GhostState, CombatStats)
 
         world = world_server.world
         for eid, bot in list(world.get_entities_with(BotControlled)):
@@ -190,7 +240,25 @@ class BotAISystem:
             if sid is None or tm is None or fac is None:
                 continue
 
+            # Histerese de fuga por HP baixo — ver constantes no topo do
+            # arquivo. Roda ANTES de qualquer decisão de alvo/engajamento,
+            # pra fuga sempre poder interromper um combate em andamento.
+            own_cs = world.get_component(eid, CombatStats)
+            own_ratio = ((own_cs.current_hp / own_cs.max_hp)
+                        if own_cs is not None and own_cs.max_hp > 0 else 1.0)
+            if own_ratio <= BOT_LOW_HP_RETREAT_PCT:
+                bot.is_retreating = True
+            elif own_ratio >= BOT_LOW_HP_REENGAGE_PCT:
+                bot.is_retreating = False
+
             target_eid, target_tm = BotAISystem._find_nearest_enemy(world_server, eid, fac, tm)
+
+            if bot.is_retreating:
+                class_id = BotAISystem._class_id_of(world_server, eid)
+                if target_eid is None or not BotAISystem._try_defensive_skill(
+                        world_server, sid, eid, target_eid, class_id):
+                    BotAISystem._retreat(world_server, eid, bot, tm, fac, sid)
+                continue
 
             if target_eid is not None:
                 dist = max(abs(tm.current_tile_x - target_tm.current_tile_x),
@@ -198,7 +266,8 @@ class BotAISystem:
                 engage_range = BotAISystem._effective_engage_range(world_server, eid)
                 if dist <= engage_range:
                     bot.path = None
-                    if not BotAISystem._try_cast_offensive_skill(world_server, sid, eid, target_eid):
+                    class_id = BotAISystem._class_id_of(world_server, eid)
+                    if not BotAISystem._try_priority_skill(world_server, sid, eid, target_eid, class_id):
                         BotAISystem._engage_target(world_server, sid, eid, target_eid)
                     continue
                 BotAISystem._advance_toward(
@@ -210,15 +279,23 @@ class BotAISystem:
             BotAISystem._push_lane(world_server, eid, bot, tm, fac, sid)
 
     @staticmethod
+    def _class_id_of(world_server, eid: int) -> str:
+        from engine.components import CharacterStats as _CSClass
+        char = world_server.world.get_component(eid, _CSClass)
+        return char.class_id if char is not None else ""
+
+    @staticmethod
     def _find_nearest_enemy(world_server, eid: int, fac, tm) -> "tuple[int | None, object]":
-        """Player OU minion inimigo (16/08/2026 — v1 só mirava player;
-        agora "mesmo comportamento" de brigar com quem entra no alcance,
-        pedido do usuário), o que estiver mais perto, dentro de
-        `BOT_LANE_AWARENESS_RADIUS_TILES` da posição atual do bot — sem
-        limite de raio aqui, um minion de outra lane (podem existir ~24
-        no mapa ao mesmo tempo) puxaria o bot pra longe da PRÓPRIA lane.
-        Torre continua fora de escopo (bot empurra até ela, não a
-        ataca)."""
+        """Player inimigo SEMPRE vence minion (08/09/2026, pedido do
+        usuário — antes disso era só "o mais perto entre os dois", então
+        o bot podia trocar de brigar com um player pra bater num minion
+        de passagem). Minion só vira alvo quando está prestes a morrer
+        (`BOT_MINION_LAST_HIT_PCT`) — garante o abate (XP) sem gastar
+        ataque/skill num minion saudável que a própria lane (minion
+        aliado + torre) já está resolvendo sozinha. Nearest-wins
+        continua valendo DENTRO de cada categoria, mesmo raio de sempre
+        (`BOT_LANE_AWARENESS_RADIUS_TILES`). Torre continua fora de
+        escopo (bot empurra até ela, não a ataca)."""
         from engine.components import (Faction as _FacFE, TileMovement as _TMFE,
                                        GhostState as _GSFE, Minion as _MinFE,
                                        MapLocation as _MLFE, CombatStats as _CSFE)
@@ -226,18 +303,12 @@ class BotAISystem:
         world   = world_server.world
         my_sid  = world_server._player_eid_to_sid.get(eid)
         my_map  = world_server.get_player_map(my_sid) if my_sid else None
-        best_eid, best_tm, best_dist = None, None, None
 
-        def _consider(cand_eid: int, cand_tm) -> None:
-            nonlocal best_eid, best_tm, best_dist
-            dist = max(abs(tm.current_tile_x - cand_tm.current_tile_x),
+        def _dist_to(cand_tm) -> int:
+            return max(abs(tm.current_tile_x - cand_tm.current_tile_x),
                        abs(tm.current_tile_y - cand_tm.current_tile_y))
-            if dist > BOT_LANE_AWARENESS_RADIUS_TILES:
-                return
-            if best_dist is None or dist < best_dist:
-                best_eid, best_tm, best_dist = cand_eid, cand_tm, dist
 
-        # Players (real ou bot — indistinguível de propósito).
+        best_player_eid, best_player_tm, best_player_dist = None, None, None
         for other_eid, other_fac in world.get_entities_with(_FacFE):
             if other_eid == eid or other_fac.faction_id == fac.faction_id:
                 continue
@@ -252,23 +323,83 @@ class BotAISystem:
             other_tm = world.get_component(other_eid, _TMFE)
             if other_tm is None:
                 continue
-            _consider(other_eid, other_tm)
+            dist = _dist_to(other_tm)
+            if dist > BOT_LANE_AWARENESS_RADIUS_TILES:
+                continue
+            if best_player_dist is None or dist < best_player_dist:
+                best_player_eid, best_player_tm, best_player_dist = other_eid, other_tm, dist
 
-        # Minions inimigos (16/08/2026, novo) — mesmo filtro de time que
-        # o loop de player acima já usa (mesmas 2 facções em jogo numa
-        # BG, arena_time_a/b — comparação direta de faction_id é
-        # suficiente, mesmo padrão do loop de player, sem precisar de
-        # is_hostile()/get_relationship_between aqui).
+        if best_player_eid is not None:
+            return best_player_eid, best_player_tm
+
+        best_minion_eid, best_minion_tm, best_minion_dist = None, None, None
         for m_eid, minion, m_fac, m_ml, m_tm in world.get_entities_with(
                 _MinFE, _FacFE, _MLFE, _TMFE):
             if m_fac.faction_id == fac.faction_id or m_ml.map_file != my_map:
                 continue
             m_cs = world.get_component(m_eid, _CSFE)
+            if m_cs is None or m_cs.current_hp <= 0:
+                continue
+            if m_cs.max_hp <= 0 or (m_cs.current_hp / m_cs.max_hp) > BOT_MINION_LAST_HIT_PCT:
+                continue  # ainda saudável demais -- deixa a lane resolver sozinha
+            dist = _dist_to(m_tm)
+            if dist > BOT_LANE_AWARENESS_RADIUS_TILES:
+                continue
+            if best_minion_dist is None or dist < best_minion_dist:
+                best_minion_eid, best_minion_tm, best_minion_dist = m_eid, m_tm, dist
+
+        return best_minion_eid, best_minion_tm
+
+    @staticmethod
+    def _count_nearby_enemies(world_server, eid: int, radius: int) -> int:
+        """Conta inimigos (player OU minion, vivos, mesmo mapa) num raio
+        Chebyshev da posição do bot — usado só pra decidir skill em ÁREA
+        (Fatiador de Corpos/Nova Congelante) quando vale a pena de
+        verdade (`BOT_CLEAVE_MIN_TARGETS`+), nunca pra seleção de alvo
+        (isso é `_find_nearest_enemy`)."""
+        from engine.components import (Faction as _FacCnt, TileMovement as _TMCnt,
+                                       GhostState as _GSCnt, Minion as _MinCnt,
+                                       MapLocation as _MLCnt, CombatStats as _CSCnt)
+
+        world = world_server.world
+        tm  = world.get_component(eid, _TMCnt)
+        fac = world.get_component(eid, _FacCnt)
+        if tm is None or fac is None:
+            return 0
+        my_sid = world_server._player_eid_to_sid.get(eid)
+        my_map = world_server.get_player_map(my_sid) if my_sid else None
+        count = 0
+
+        for other_eid, other_fac in world.get_entities_with(_FacCnt):
+            if other_eid == eid or other_fac.faction_id == fac.faction_id:
+                continue
+            other_sid = world_server._player_eid_to_sid.get(other_eid)
+            if other_sid is None:
+                continue
+            if world_server.get_player_map(other_sid) != my_map:
+                continue
+            gst = world.get_component(other_eid, _GSCnt)
+            if gst is not None and gst.is_dead:
+                continue
+            other_tm = world.get_component(other_eid, _TMCnt)
+            if other_tm is None:
+                continue
+            if max(abs(tm.current_tile_x - other_tm.current_tile_x),
+                  abs(tm.current_tile_y - other_tm.current_tile_y)) <= radius:
+                count += 1
+
+        for m_eid, minion, m_fac, m_ml, m_tm in world.get_entities_with(
+                _MinCnt, _FacCnt, _MLCnt, _TMCnt):
+            if m_fac.faction_id == fac.faction_id or m_ml.map_file != my_map:
+                continue
+            m_cs = world.get_component(m_eid, _CSCnt)
             if m_cs is not None and m_cs.current_hp <= 0:
                 continue
-            _consider(m_eid, m_tm)
+            if max(abs(tm.current_tile_x - m_tm.current_tile_x),
+                  abs(tm.current_tile_y - m_tm.current_tile_y)) <= radius:
+                count += 1
 
-        return best_eid, best_tm
+        return count
 
     @staticmethod
     def _effective_engage_range(world_server, eid: int) -> int:
@@ -348,6 +479,136 @@ class BotAISystem:
         return False
 
     @staticmethod
+    def _try_cast_specific(world_server, sid: str, eid: int, target_eid: int,
+                           skill_ids: list) -> bool:
+        """Mesmo gate de `_try_cast_offensive_skill` (cooldown real via
+        `_skill_ready`, carga disponível), mas escolhendo por ID em vez
+        de "a 1ª do hotbar" — usado pela prioridade tática por classe
+        (`_try_priority_skill`/`_try_defensive_skill`) pra tentar uma
+        skill ESPECÍFICA (só dispara se o bot já tiver essa skill
+        aprendida — nível insuficiente dentro da instância = ainda não
+        está em `ps.skills`, tentativa vira no-op)."""
+        from engine.components import PlayerSkills as _PSSpec
+        import time as _t_spec
+
+        ps = world_server.world.get_component(eid, _PSSpec)
+        if ps is None:
+            return False
+        for wanted_id in skill_ids:
+            for skill in ps.skills:
+                if skill is None or skill.skill_id != wanted_id:
+                    continue
+                if not world_server._skill_ready(eid, skill)[0]:
+                    continue
+                if skill.max_charges > 0 and skill.charges <= 0:
+                    continue
+                world_server.queue_skill(sid, skill.skill_id, target_eid, 0.0, 0.0,
+                                         int(_t_spec.time() * 1000))
+                return True
+        return False
+
+    @staticmethod
+    def _try_priority_skill(world_server, sid: str, eid: int, target_eid: int,
+                            class_id: str) -> bool:
+        """Discernimento tático por classe (08/09/2026, pedido do
+        usuário) — substitui "sempre a 1ª skill pronta do hotbar" por
+        uma ordem que considera a SITUAÇÃO (HP do alvo, nº de inimigos
+        ao redor, HP próprio, distância). Cada classe tenta, em ordem, a
+        skill que faz sentido; se nenhuma bater, cai pro fallback
+        genérico (`_try_cast_offensive_skill`) — cobre golpe_poderoso/
+        impacto/flecha_reiterada/tiro_multiplo/etc., que não têm regra
+        tática própria e continuam "a 1ª pronta"."""
+        from engine.components import CombatStats as _CSPri, TileMovement as _TMPri
+
+        if class_id == "guerreiro":
+            target_cs = world_server.world.get_component(target_eid, _CSPri)
+            if (target_cs is not None and target_cs.max_hp > 0
+                    and (target_cs.current_hp / target_cs.max_hp) <= _EXECUTAR_HP_THRESHOLD_PCT
+                    and BotAISystem._try_cast_specific(world_server, sid, eid, target_eid,
+                                                        [_SKILL_EXECUTAR])):
+                return True
+            if (BotAISystem._count_nearby_enemies(world_server, eid, _FATIADOR_RADIUS_TILES)
+                    >= BOT_CLEAVE_MIN_TARGETS
+                    and BotAISystem._try_cast_specific(world_server, sid, eid, target_eid,
+                                                        [_SKILL_FATIADOR])):
+                return True
+            own_cs = world_server.world.get_component(eid, _CSPri)
+            own_ratio = ((own_cs.current_hp / own_cs.max_hp)
+                        if own_cs is not None and own_cs.max_hp > 0 else 1.0)
+            if (own_ratio < _VITORIA_HP_THRESHOLD_PCT
+                    and BotAISystem._try_cast_specific(world_server, sid, eid, target_eid,
+                                                        [_SKILL_VITORIA])):
+                return True
+            tm = world_server.world.get_component(eid, _TMPri)
+            target_tm = world_server.world.get_component(target_eid, _TMPri)
+            if tm is not None and target_tm is not None:
+                dist = max(abs(tm.current_tile_x - target_tm.current_tile_x),
+                          abs(tm.current_tile_y - target_tm.current_tile_y))
+                if (1 < dist <= _INTERCEPTAR_MAX_RANGE_TILES
+                        and BotAISystem._try_cast_specific(world_server, sid, eid, target_eid,
+                                                            [_SKILL_INTERCEPTAR])):
+                    return True
+
+        elif class_id == "mago":
+            if (BotAISystem._count_nearby_enemies(world_server, eid, _NOVA_RADIUS_TILES)
+                    >= BOT_CLEAVE_MIN_TARGETS
+                    and BotAISystem._try_cast_specific(world_server, sid, eid, target_eid,
+                                                        [_SKILL_NOVA])):
+                return True
+            if BotAISystem._try_cast_specific(world_server, sid, eid, target_eid, [_SKILL_BOLA]):
+                return True
+
+        return BotAISystem._try_cast_offensive_skill(world_server, sid, eid, target_eid)
+
+    @staticmethod
+    def _try_defensive_skill(world_server, sid: str, eid: int, target_eid: int,
+                             class_id: str) -> bool:
+        """HP crítico (`BotControlled.is_retreating`) — tenta a skill de
+        escape/defensiva da classe (mesma ordem "skill > movimento" do
+        resto do arquivo: se conseguir castar, este tick não anda; a
+        fuga em si continua no próximo tick via `_retreat`). Mago:
+        Nova Congelante primeiro (dano + enraíza QUEM ESTÁ PERSEGUINDO,
+        ajuda a fugir de verdade — não só CC), senão Polimorfia, senão
+        Bloco de Gelo. Arqueiro: Picada de Escorpião (slow no
+        perseguidor). Guerreiro não tem ferramenta de escape real
+        (Interceptar aproxima, Vitória Iminente exige adjacência) —
+        sempre cai direto pra `_retreat` (correr, sem skill)."""
+        if class_id == "mago":
+            return BotAISystem._try_cast_specific(
+                world_server, sid, eid, target_eid,
+                [_SKILL_NOVA, _SKILL_POLIMORFIA, _SKILL_BLOCO])
+        if class_id == "arqueiro":
+            return BotAISystem._try_cast_specific(
+                world_server, sid, eid, target_eid, [_SKILL_PICADA])
+        return False
+
+    @staticmethod
+    def _retreat(world_server, eid: int, bot, tm, fac, sid: str) -> None:
+        """Foge em direção à PRÓPRIA base (`bot.route[0]` — a ponta da
+        rota de lane mais perto do spawn, já calculada por `_push_lane`/
+        `schedule_lane_push`) reaproveitando `_advance_toward` (mesmo
+        A*/cache/dive-gate/torres-como-obstáculo de sempre — nenhuma
+        lógica de movimento nova). Sem rota calculada ainda (raro — HP
+        caiu antes do 1º `_push_lane` rodar, ex: focado por skill logo
+        no spawn): foge 1 tile na direção oposta ao inimigo mais
+        próximo conhecido, sem exigir pathfinding pronto."""
+        if bot.route:
+            BotAISystem._advance_toward(world_server, eid, bot, tm, bot.route[0],
+                                        fac=fac, dive_target_eid=None)
+            return
+
+        target_eid, target_tm = BotAISystem._find_nearest_enemy(world_server, eid, fac, tm)
+        if target_tm is None:
+            return
+        dx = 0 if target_tm.current_tile_x == tm.current_tile_x else (
+            -1 if target_tm.current_tile_x > tm.current_tile_x else 1)
+        dy = 0 if target_tm.current_tile_y == tm.current_tile_y else (
+            -1 if target_tm.current_tile_y > tm.current_tile_y else 1)
+        if dx == 0 and dy == 0:
+            return
+        world_server.move_player(sid, tm.current_tile_x + dx, tm.current_tile_y + dy)
+
+    @staticmethod
     def _engage_target(world_server, sid: str, eid: int, target_eid: int) -> None:
         """Auto-attack — mesma sequência que `server/session.py::
         _handle_auto_attack` já faz por trás de AUTO_ATTACK (set_player_
@@ -402,7 +663,8 @@ class BotAISystem:
         cur = (tm.current_tile_x, tm.current_tile_y)
         nxt = bot.route[bot.route_idx + 1]
 
-        if not BotAISystem._dive_allowed(world_server, map_file, nxt, fac.faction_id, None, cur):
+        if not BotAISystem._dive_allowed(world_server, map_file, nxt, fac.faction_id, None, cur,
+                                         my_eid=eid):
             return  # fica parado — espera minion aliado chegar perto, ou desiste no próx tick
 
         from engine.world_systems import is_tile_walkable as _walkable_pl
@@ -425,15 +687,21 @@ class BotAISystem:
     @staticmethod
     def _dive_allowed(world_server, map_file: str, tile: tuple,
                       my_faction_id: str, target_eid: "int | None",
-                      my_tile: tuple) -> bool:
+                      my_tile: tuple, my_eid: "int | None" = None) -> bool:
         """Gate do dive (16/08/2026, pedido do usuário; condição (a)
-        reajustada 25/08/2026): entrar num tile coberto por torre
-        inimiga só é permitido se (a) existe minion ALIADO perto DO
-        PRÓPRIO BOT agora (`BOT_DIVE_ALLY_MINION_RADIUS_TILES` — andando
-        JUNTO da leva), ou (b) o alvo de combate atual do bot está
-        abaixo de `BOT_DIVE_HP_THRESHOLD_PCT` (fechar kill). Tile fora
-        de qualquer alcance de torre inimiga: sempre permitido (não
-        precisa nem varrer torre).
+        reajustada 25/08/2026; gate de HP PRÓPRIO adicionado 08/09/2026,
+        pedido do usuário): entrar num tile coberto por torre inimiga só
+        é permitido se, ANTES de mais nada, o HP do PRÓPRIO bot estiver
+        acima de `BOT_DIVE_HP_THRESHOLD_PCT` (nunca arrisca morrer pro
+        dano da torre, mesmo com minion aliado por perto ou alvo baixo —
+        as duas condições abaixo existem pra fechar KILL, não valem a
+        pena se o bot morre no caminho) — e, satisfeito isso, (a) existe
+        minion ALIADO perto DO PRÓPRIO BOT agora
+        (`BOT_DIVE_ALLY_MINION_RADIUS_TILES` — andando JUNTO da leva),
+        ou (b) o ALVO de combate atual do bot está abaixo do mesmo
+        threshold (fechar kill). Tile fora de qualquer alcance de torre
+        inimiga: sempre permitido (não precisa nem varrer torre, nem
+        checar HP de ninguém).
 
         Condição (a) antes exigia minion aliado DENTRO do alcance da
         MESMA torre — janela frágil (minion morre rápido pra torre, não
@@ -444,6 +712,12 @@ class BotAISystem:
         towers = world_server._enemy_towers_covering(map_file, tile, my_faction_id)
         if not towers:
             return True
+        if my_eid is not None:
+            from engine.components import CombatStats as _CSDiveMe
+            my_cs = world_server.world.get_component(my_eid, _CSDiveMe)
+            if (my_cs is not None and my_cs.max_hp > 0
+                    and (my_cs.current_hp / my_cs.max_hp) <= BOT_DIVE_HP_THRESHOLD_PCT):
+                return False
         if world_server._allied_minion_near_tile(
                 map_file, my_tile, my_faction_id, BOT_DIVE_ALLY_MINION_RADIUS_TILES):
             return True
@@ -506,7 +780,8 @@ class BotAISystem:
         map_file = world_server.get_player_map(sid)
         next_tile = bot.path[0]
         if fac is not None and not BotAISystem._dive_allowed(
-                world_server, map_file, next_tile, fac.faction_id, dive_target_eid, cur):
+                world_server, map_file, next_tile, fac.faction_id, dive_target_eid, cur,
+                my_eid=eid):
             return  # espera a condição do dive ficar verdadeira, sem descartar o path
         bot.path.pop(0)
         if not world_server.move_player(sid, next_tile[0], next_tile[1]):

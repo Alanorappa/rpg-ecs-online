@@ -285,19 +285,39 @@ direto.
 decide por prioridade, chamando as MESMAS funções internas que os
 handlers de rede já chamam por trás (`WorldServer.move_player`/
 `set_player_target`/`queue_skill` — zero lógica de combate duplicada):
-1. Skill ofensiva off-cooldown em alcance (1ª do hotbar,
-   `SKILL_CATALOG` — sem hardcode de skill específica).
-2. Auto-attack em alcance (`set_player_target` + `enter_combat`, mesma
-   sequência de `_handle_auto_attack`).
-3. Perseguir alvo visível fora de alcance — pathfinding reaproveitado
+
+0. **Histerese de fuga** (08/09/2026, §125) — HP próprio ≤30% liga
+   `BotControlled.is_retreating`, só desliga de volta a ≥50%. Enquanto
+   ligado: tenta 1x a skill defensiva da classe (`_try_defensive_skill`
+   — mago: Nova Congelante/Polimorfia/Bloco de Gelo; arqueiro: Picada
+   de Escorpião; guerreiro não tem ferramenta de escape, sempre cai
+   direto pra correr) e SEMPRE foge em direção à própria base
+   (`_retreat`, reaproveita `_advance_toward` mirando `bot.route[0]`).
+1. Alvo em alcance → **discernimento tático por classe**
+   (`_try_priority_skill`, §125): guerreiro tenta Executar (alvo≤30%
+   HP) → Fatiador de Corpos (2+ inimigos num raio de 2,
+   `_count_nearby_enemies`) → Vitória Iminente (HP próprio<90%) →
+   Interceptar (1<dist≤6); mago tenta Nova Congelante (2+ inimigos num
+   raio de 3 — ofensiva E defensiva, prioridade sobre Bola de Fogo) →
+   Bola de Fogo. Cada tentativa cai pro fallback antigo
+   (`_try_cast_offensive_skill`, "1ª skill ofensiva pronta do hotbar",
+   `SKILL_CATALOG` — sem hardcode) se não bater, cobrindo toda skill
+   sem regra tática própria.
+2. Sem skill disponível → auto-attack em alcance (`set_player_target`
+   + `enter_combat`, mesma sequência de `_handle_auto_attack`).
+3. Alvo visível fora de alcance → persegue, pathfinding reaproveitado
    de `WorldServer._get_pathfinding_for_map_file` (MESMO que
    `_tick_minion_waves` já usa, nenhum A* novo), 1 tile por decisão.
 4. Sem inimigo → empurra a própria lane, waypoints reaproveitados de
    `WorldServer._minion_lanes` (mesmo dado que os minions seguem).
 
-Só mira PLAYERS inimigos (v1, ignora torre/minion). Sem "recuar" —
-morre, respawna pelo mesmo timer automático de qualquer player da BG
-(`WorldServer._tick_bg_respawns`).
+Alvo: **player inimigo sempre vence minion** (`_find_nearest_enemy`,
+reescrito 08/09/2026) — minion só entra na disputa com HP≤20%
+(`BOT_MINION_LAST_HIT_PCT`, last-hit pra fechar XP, nunca gasta hit em
+minion saudável que a própria lane já está resolvendo sozinha). Dive
+gate (`_dive_allowed`) bloqueia SEMPRE que o HP do PRÓPRIO bot estiver
+≤30%, antes de checar minion aliado perto/alvo baixo (nunca arrisca
+morrer pro dano da própria torre).
 
 Cleanup centralizado em `BgQueueProcessorMixin.request_bg_leave` (não
 em cada chamador) — checa `BotControlled` no fim e despawna por

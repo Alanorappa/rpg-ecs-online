@@ -578,7 +578,11 @@ class TestBotPushLaneV2(unittest.TestCase):
 
 class TestBotAttacksMinion(unittest.TestCase):
     """Bot mira minion inimigo, não só player (16/08/2026 — v1 ignorava
-    minion por completo)."""
+    minion por completo). Atualizado 08/09/2026 (pedido do usuário):
+    minion só vira alvo quando está prestes a morrer
+    (`BOT_MINION_LAST_HIT_PCT=0.20`) — deixa de gastar hit/skill em
+    minion saudável, que a própria lane já está resolvendo sozinha, e só
+    intervém pra fechar o abate (XP)."""
 
     def setUp(self):
         self.ws = make_world_server()
@@ -591,31 +595,48 @@ class TestBotAttacksMinion(unittest.TestCase):
         from engine.utils import snap_to_tile
         snap_to_tile(self.ws.world, self.bot, 20, 20, carry_prev=False)
 
-    def test_bot_engaja_minion_inimigo_em_alcance(self):
+    def _spawn_minion(self, tx, ty, hp_pct=1.0):
+        from engine.entity_factory import create_minion
+        from engine.components import MapLocation, CombatStats
+        map_file = self.ws.get_player_map(self.ws._player_eid_to_sid[self.bot])
+        minion = create_minion(self.ws.world, tx, ty, "minion_melee",
+                               faction_id="arena_time_b", route=[(tx, ty)])
+        self.ws.world.add_component(minion, MapLocation(map_file))
+        if hp_pct < 1.0:
+            cs = self.ws.world.get_component(minion, CombatStats)
+            cs.current_hp = max(1, int(cs.max_hp * hp_pct))
+        return minion
+
+    def test_bot_ignora_minion_saudavel_em_alcance(self):
+        """Minion com HP cheio dentro do alcance — bot NÃO ataca (deixa a
+        lane resolver sozinha), nem anda até ele (sem alvo = cai pro
+        `_push_lane`, que aqui não tem rota configurada e fica parado)."""
+        minion = self._spawn_minion(21, 20, hp_pct=1.0)
+
+        BotAISystem.update(self.ws, dt=999.0)
+
+        pending = [r for r in self.ws._pending_skill_requests if r["player_eid"] == self.bot]
+        self.assertFalse(any(r["tid"] == minion for r in pending),
+                         "bot não deveria gastar skill num minion saudável")
+        cst = self.ws.world.get_component(self.bot, CombatState)
+        self.assertNotEqual(cst.target_entity_id, minion,
+                            "bot não deveria mirar auto-attack num minion saudável")
+
+    def test_bot_engaja_minion_quase_morto_em_alcance(self):
         # Mesmo padrão de test_bot_engaja_alvo_em_alcance_com_skill (bot
         # guerreiro tem "golpe_poderoso" pronta e off-cooldown — usa
         # skill, não auto-attack puro, então o sinal certo é
         # _pending_skill_requests, não CombatState.target_entity_id).
-        from engine.entity_factory import create_minion
-        from engine.components import MapLocation
-        map_file = self.ws.get_player_map(self.ws._player_eid_to_sid[self.bot])
-        minion = create_minion(self.ws.world, 21, 20, "minion_melee",
-                               faction_id="arena_time_b", route=[(21, 20)])
-        self.ws.world.add_component(minion, MapLocation(map_file))
+        minion = self._spawn_minion(21, 20, hp_pct=0.15)
 
         BotAISystem.update(self.ws, dt=999.0)
 
         pending = [r for r in self.ws._pending_skill_requests if r["player_eid"] == self.bot]
         self.assertTrue(any(r["sid"] == "golpe_poderoso" and r["tid"] == minion for r in pending),
-                        "bot deveria ter mirado a skill no minion inimigo em alcance")
+                        "bot deveria ter mirado a skill no minion quase morto (last-hit)")
 
-    def test_bot_persegue_minion_fora_de_alcance(self):
-        from engine.entity_factory import create_minion
-        from engine.components import MapLocation
-        map_file = self.ws.get_player_map(self.ws._player_eid_to_sid[self.bot])
-        minion = create_minion(self.ws.world, 26, 20, "minion_melee",
-                               faction_id="arena_time_b", route=[(26, 20)])
-        self.ws.world.add_component(minion, MapLocation(map_file))
+    def test_bot_persegue_minion_quase_morto_fora_de_alcance(self):
+        minion = self._spawn_minion(26, 20, hp_pct=0.15)
 
         tm_before = self.ws.world.get_component(self.bot, TileMovement)
         pos_before = (tm_before.current_tile_x, tm_before.current_tile_y)
@@ -623,7 +644,7 @@ class TestBotAttacksMinion(unittest.TestCase):
         tm_after = self.ws.world.get_component(self.bot, TileMovement)
         pos_after = (tm_after.current_tile_x, tm_after.current_tile_y)
         self.assertNotEqual(pos_before, pos_after,
-                            "bot deveria andar em direção ao minion fora de alcance")
+                            "bot deveria andar em direção ao minion quase morto fora de alcance")
 
 
 class TestBotDiveGate(unittest.TestCase):
@@ -699,6 +720,219 @@ class TestBotDiveGate(unittest.TestCase):
         cs.current_hp = cs.max_hp  # 100%
         self.assertFalse(BotAISystem._dive_allowed(
             self.ws, self.map_file, self.covered_tile, "arena_time_a", healthy_target, self.my_tile))
+
+    def test_dive_bloqueado_com_hp_proprio_baixo_mesmo_com_minion_aliado_perto(self):
+        """08/09/2026, pedido do usuário: bot nunca arrisca morrer pro
+        dano da própria torre — HP próprio <=30% bloqueia o dive mesmo
+        quando a condição (a) (minion aliado perto do bot) sozinha
+        liberaria."""
+        from engine.entity_factory import create_minion
+        from engine.components import MapLocation, CombatStats as _CSDGme
+        ally_minion = create_minion(self.ws.world, *self.my_tile, "minion_melee",
+                                    faction_id="arena_time_a", route=[self.my_tile])
+        self.ws.world.add_component(ally_minion, MapLocation(self.map_file))
+        bot = self.ws._spawn_bot_player(class_id="guerreiro")
+        from engine.utils import snap_to_tile
+        snap_to_tile(self.ws.world, bot, *self.my_tile, carry_prev=False)
+        cs = self.ws.world.get_component(bot, _CSDGme)
+        cs.current_hp = int(cs.max_hp * 0.20)
+        self.assertFalse(BotAISystem._dive_allowed(
+            self.ws, self.map_file, self.covered_tile, "arena_time_a", None, self.my_tile,
+            my_eid=bot))
+
+    def test_dive_bloqueado_com_hp_proprio_baixo_mesmo_com_alvo_baixo(self):
+        from tests.helpers import spawn_player as _sp_dg3
+        from engine.components import CombatStats as _CSDG3
+        low_hp_target = _sp_dg3(self.ws, "dg_target3", 25, 25)
+        cs_t = self.ws.world.get_component(low_hp_target, _CSDG3)
+        cs_t.current_hp = int(cs_t.max_hp * 0.20)
+        bot = self.ws._spawn_bot_player(class_id="guerreiro")
+        from engine.utils import snap_to_tile
+        snap_to_tile(self.ws.world, bot, *self.my_tile, carry_prev=False)
+        cs_bot = self.ws.world.get_component(bot, _CSDG3)
+        cs_bot.current_hp = int(cs_bot.max_hp * 0.20)
+        self.assertFalse(BotAISystem._dive_allowed(
+            self.ws, self.map_file, self.covered_tile, "arena_time_a", low_hp_target, self.my_tile,
+            my_eid=bot))
+
+    def test_dive_ainda_permitido_com_hp_proprio_saudavel_e_alvo_baixo(self):
+        """Regressão: o gate novo não deve bloquear o caso já coberto
+        antes (alvo baixo + bot saudável)."""
+        from tests.helpers import spawn_player as _sp_dg4
+        from engine.components import CombatStats as _CSDG4
+        low_hp_target = _sp_dg4(self.ws, "dg_target4", 25, 25)
+        cs_t = self.ws.world.get_component(low_hp_target, _CSDG4)
+        cs_t.current_hp = int(cs_t.max_hp * 0.20)
+        bot = self.ws._spawn_bot_player(class_id="guerreiro")
+        from engine.utils import snap_to_tile
+        snap_to_tile(self.ws.world, bot, *self.my_tile, carry_prev=False)
+        self.assertTrue(BotAISystem._dive_allowed(
+            self.ws, self.map_file, self.covered_tile, "arena_time_a", low_hp_target, self.my_tile,
+            my_eid=bot))
+
+
+class TestBotRetreat(unittest.TestCase):
+    """Histerese de fuga por HP baixo (08/09/2026, pedido do usuário) —
+    liga em BOT_LOW_HP_RETREAT_PCT (30%), só desliga em
+    BOT_LOW_HP_REENGAGE_PCT (50%). Vale pras 3 classes; guerreiro (sem
+    skill de escape) é o caso mais simples pra testar só o movimento."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        from tests.test_tile_los_visibility import _clear_area
+        _clear_area(self.ws, 8, 8, 60, 60)
+        self.bot = self.ws._spawn_bot_player(class_id="guerreiro")
+        from tests.helpers import clear_login_immunity
+        clear_login_immunity(self.ws, self.bot)
+        self.ws.world.add_component(self.bot, Faction(faction_id="arena_time_a"))
+        from engine.utils import snap_to_tile
+        snap_to_tile(self.ws.world, self.bot, 20, 20, carry_prev=False)
+        self.enemy = spawn_player(self.ws, "retreat_enemy", 21, 20)
+        self.ws.world.add_component(self.enemy, Faction(faction_id="arena_time_b"))
+
+    def _set_own_hp_pct(self, pct: float) -> None:
+        cs = self.ws.world.get_component(self.bot, CombatStats)
+        cs.current_hp = max(1, int(cs.max_hp * pct))
+
+    def test_hp_baixo_liga_retreating_e_bot_foge_do_atacante(self):
+        self._set_own_hp_pct(0.20)
+
+        BotAISystem.update(self.ws, dt=999.0)
+
+        bot_comp = self.ws.world.get_component(self.bot, BotControlled)
+        self.assertTrue(bot_comp.is_retreating, "HP<=30% deveria ligar is_retreating")
+        tm = self.ws.world.get_component(self.bot, TileMovement)
+        # Inimigo está em (21,20), bot em (20,20) — fugir = andar pra x menor.
+        self.assertLess(tm.current_tile_x, 20,
+                        "bot deveria se afastar do atacante (x diminuindo), não ficar parado/aproximar")
+
+    def test_hp_saudavel_nunca_liga_retreating(self):
+        self._set_own_hp_pct(0.80)
+
+        BotAISystem.update(self.ws, dt=999.0)
+
+        bot_comp = self.ws.world.get_component(self.bot, BotControlled)
+        self.assertFalse(bot_comp.is_retreating)
+
+    def test_histerese_continua_fugindo_entre_30_e_50_por_cento(self):
+        """HP caiu a 20% (liga fuga), subiu pra 40% (ainda abaixo de 50%)
+        — não deveria voltar a engajar ainda, mesmo já acima de 30%."""
+        self._set_own_hp_pct(0.20)
+        BotAISystem.update(self.ws, dt=999.0)
+        bot_comp = self.ws.world.get_component(self.bot, BotControlled)
+        self.assertTrue(bot_comp.is_retreating)
+
+        self._set_own_hp_pct(0.40)
+        BotAISystem.update(self.ws, dt=999.0)
+        self.assertTrue(bot_comp.is_retreating,
+                        "40% está ACIMA do threshold de 30% mas AINDA ABAIXO do de 50% -- "
+                        "histerese deveria manter fugindo")
+
+    def test_histerese_reengaja_ao_atingir_50_por_cento(self):
+        self._set_own_hp_pct(0.20)
+        BotAISystem.update(self.ws, dt=999.0)
+        bot_comp = self.ws.world.get_component(self.bot, BotControlled)
+        self.assertTrue(bot_comp.is_retreating)
+
+        self._set_own_hp_pct(0.55)
+        BotAISystem.update(self.ws, dt=999.0)
+        self.assertFalse(bot_comp.is_retreating,
+                         "55% está acima do threshold de reengajar (50%) -- deveria voltar a lutar")
+
+
+class TestBotPrioritySkills(unittest.TestCase):
+    """Discernimento tático por classe (08/09/2026, pedido do usuário) —
+    substitui 'sempre a 1ª skill pronta do hotbar' por prioridade que
+    considera HP do alvo, HP próprio e nº de inimigos ao redor."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        from tests.test_tile_los_visibility import _clear_area
+        _clear_area(self.ws, 8, 8, 60, 60)
+
+    def _make_bot(self, class_id: str, extra_skill_ids: list) -> int:
+        from engine.components import PlayerSkills
+        bot = self.ws._spawn_bot_player(class_id=class_id)
+        from tests.helpers import clear_login_immunity
+        clear_login_immunity(self.ws, bot)
+        self.ws.world.add_component(bot, Faction(faction_id="arena_time_a"))
+        from engine.utils import snap_to_tile
+        snap_to_tile(self.ws.world, bot, 20, 20, carry_prev=False)
+        ps = self.ws.world.get_component(bot, PlayerSkills)
+        from content.skill_config import SKILL_CATALOG
+        idx = 1
+        for sid in extra_skill_ids:
+            ps.skills[idx] = PlayerSkills._make_skill(sid, SKILL_CATALOG)
+            ps.learned_skill_ids.add(sid)
+            idx += 1
+        return bot
+
+    def test_guerreiro_usa_executar_com_alvo_abaixo_de_30_por_cento(self):
+        bot = self._make_bot("guerreiro", ["executar"])
+        enemy = spawn_player(self.ws, "prio_target1", 21, 20)
+        self.ws.world.add_component(enemy, Faction(faction_id="arena_time_b"))
+        cs = self.ws.world.get_component(enemy, CombatStats)
+        cs.current_hp = int(cs.max_hp * 0.20)
+
+        BotAISystem.update(self.ws, dt=999.0)
+
+        pending = [r for r in self.ws._pending_skill_requests if r["player_eid"] == bot]
+        self.assertTrue(any(r["sid"] == "executar" and r["tid"] == enemy for r in pending),
+                        "guerreiro deveria priorizar Executar contra alvo com HP<=30%")
+
+    def test_guerreiro_usa_fatiador_com_2_inimigos_proximos(self):
+        bot = self._make_bot("guerreiro", ["fatiador_de_corpos"])
+        e1 = spawn_player(self.ws, "prio_cleave1", 21, 20)
+        e2 = spawn_player(self.ws, "prio_cleave2", 20, 21)
+        for e in (e1, e2):
+            self.ws.world.add_component(e, Faction(faction_id="arena_time_b"))
+
+        BotAISystem.update(self.ws, dt=999.0)
+
+        pending = [r for r in self.ws._pending_skill_requests if r["player_eid"] == bot]
+        self.assertTrue(any(r["sid"] == "fatiador_de_corpos" for r in pending),
+                        "guerreiro deveria preferir Fatiador de Corpos com 2+ inimigos por perto")
+
+    def test_guerreiro_nao_usa_fatiador_com_so_1_inimigo(self):
+        bot = self._make_bot("guerreiro", ["fatiador_de_corpos"])
+        enemy = spawn_player(self.ws, "prio_single", 21, 20)
+        self.ws.world.add_component(enemy, Faction(faction_id="arena_time_b"))
+
+        BotAISystem.update(self.ws, dt=999.0)
+
+        pending = [r for r in self.ws._pending_skill_requests if r["player_eid"] == bot]
+        self.assertFalse(any(r["sid"] == "fatiador_de_corpos" for r in pending),
+                         "1 alvo só não compensa o cooldown longo do Fatiador de Corpos")
+
+    def test_mago_usa_nova_congelante_com_2_inimigos_proximos(self):
+        bot = self._make_bot("mago", ["nova_congelante"])
+        e1 = spawn_player(self.ws, "prio_nova1", 21, 20)
+        e2 = spawn_player(self.ws, "prio_nova2", 20, 21)
+        for e in (e1, e2):
+            self.ws.world.add_component(e, Faction(faction_id="arena_time_b"))
+
+        BotAISystem.update(self.ws, dt=999.0)
+
+        pending = [r for r in self.ws._pending_skill_requests if r["player_eid"] == bot]
+        self.assertTrue(any(r["sid"] == "nova_congelante" for r in pending),
+                        "mago deveria preferir Nova Congelante (dano+root em área) com 2+ inimigos por perto")
+
+    def test_mago_retreating_usa_polimorfia_pra_fugir(self):
+        """HP<=30% sem Nova Congelante/Bloco de Gelo aprendidos ainda —
+        cai pra Polimorfia (CC no perseguidor, abre tempo pra fugir)."""
+        bot = self._make_bot("mago", ["polimorfia"])
+        cs_bot = self.ws.world.get_component(bot, CombatStats)
+        cs_bot.current_hp = int(cs_bot.max_hp * 0.20)
+        enemy = spawn_player(self.ws, "prio_poli_chaser", 21, 20)
+        self.ws.world.add_component(enemy, Faction(faction_id="arena_time_b"))
+
+        BotAISystem.update(self.ws, dt=999.0)
+
+        bot_comp = self.ws.world.get_component(bot, BotControlled)
+        self.assertTrue(bot_comp.is_retreating)
+        pending = [r for r in self.ws._pending_skill_requests if r["player_eid"] == bot]
+        self.assertTrue(any(r["sid"] == "polimorfia" and r["tid"] == enemy for r in pending),
+                        "mago fugindo deveria tentar Polimorfia no perseguidor antes de só correr")
 
 
 class TestBotProjectileAutohit(unittest.TestCase):

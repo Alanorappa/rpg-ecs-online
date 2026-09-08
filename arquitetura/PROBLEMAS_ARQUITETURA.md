@@ -16898,3 +16898,198 @@ aprovação explícita do usuário antes de codar (ainda não dada).
 de CPU depois de implementar; considerar automatizar o deploy manual se
 a fricção incomodar no dia a dia (hoje é 1 comando só,
 `.\release_tools\deploy_server.ps1`, considerado suficiente por ora).
+
+## 125. IA de combate por classe — bot de teste de carga E bot de BG (08/09/2026)
+
+Motivado por dois testes de carga reais nesta sessão (§124): com 10 e
+depois 20 bots por 90s/10min, nenhum bot chegou a lutar de verdade
+(`WANDER` nunca mudava, `mobs_ativos` do servidor ficava perto de 0) —
+usuário pediu IA de combate de verdade pros bots, primeiro pro de teste
+(`tools/loadtest/bot.py`), depois pediu explicitamente pra replicar o
+mesmo tipo de inteligência pro bot real de BG (`server/bot_ai_system.py`).
+Dois sistemas TOTALMENTE separados (um é cliente de rede externo, outro
+é entidade ECS 100% servidor) — nenhum código compartilhado entre eles,
+tratados como dois trabalhos distintos nesta seção.
+
+### Causa raiz do "bot não anda direito" (loadtest) — teleporte/lentidão
+
+Investigado ANTES de desenhar a IA de combate (usuário perguntou
+separadamente "por que os bots teleportam/andam devagar"). Achado: o
+bot só mandava 1 `MOVE` (1 tile) por ciclo de "think" inteiro, e o
+think só rodava a cada `random.uniform(0.6, 1.8)` segundos — um jogador
+real manda 1 `MOVE` por tile completo, a cada ~0,29s (`TILE_SIZE/110`,
+mesma constante de fallback que `server/world_server.py::
+PLAYER_SPEED_TILES_FALLBACK` usa). Resultado: bot andava 3-9x mais
+devagar, E o hiato longo e irregular entre passos (nenhum MOVE real
+pulava mais de 1 tile — confirmado lendo `_step_toward`/`_continue_goto`)
+criava a ILUSÃO de teleporte pra quem olhava de relance (personagem
+parado, depois "pulava" 1 tile de repente). Fix: `_move_loop` novo,
+cadência própria (`_MOVE_STEP_INTERVAL_S`), separado do `_think_loop`
+de decisão (que continua lento de propósito — só "pensar" precisa ser
+raro, "andar" não).
+
+### Bot de teste de carga (`tools/loadtest/bot.py`) — desenho aprovado
+
+Levantamento prévio (Explore agent) confirmou mecânicas reais antes de
+codar: Bola de Fogo (cast_range=6, não exige adjacência), Bloco de Gelo
+(self-cast, imunidade+regen 5s), Polimorfia (cast_range=7, CD=0, só
+limitada por mana/interrupção), Interceptar (dash 2-6 tiles, min E max
+range — "muito perto" também rejeita), Vitória Iminente (CD=0 mas é uma
+CARGA ganha ao MATAR um alvo — não cura garantida ao usar, só "não
+guarda a carga com HP cheio"), arqueiro precisa de arco+aljava
+equipados de verdade (senão `server/combat_processor.py` bloqueia o
+auto-attack inteiro, "no_quiver_or_empty" — nunca deixa passar com
+munição infinita), Picada de Escorpião/Tiro Repulsivo (kite real).
+
+Implementado: `_hp_ratio()` (antes `STATS_UPDATE` era só `pass`'d — bot
+nunca sabia o próprio HP); `_priority_skill()` por classe (guerreiro:
+Interceptar ao entrar em alcance 1<dist≤6, Vitória Iminente se
+HP<90%; mago: Bola de Fogo padrão, Bloco de Gelo/Polimorfia com
+HP≤30%; arqueiro: Picada de Escorpião/Tiro Repulsivo pra abrir espaço);
+kite real (`_combat_step`/`_step_away`) com HISTERESE (`_kiting` liga a
+≤30% HP, só desliga a ≥50% — sem isso o bot oscilava fugir/lutar a cada
+think bem na borda de 30%), estendida a TODAS as 3 classes (guerreiro
+também foge agora — sem skill de escape, só corre mesmo; decisão
+revertida do desenho original desta sessão, que tinha excluído
+guerreiro por "sem ferramenta"). Bug pego e corrigido ANTES de declarar
+pronto: `_combat_step` só invertia a direção (fugir) quando `dist <=
+desired_range` — um alvo mais rápido que alcançasse o bot kitando de
+FORA do alcance desejado fazia ele andar EM DIREÇÃO ao perseguidor (o
+oposto do propósito); corrigido pra kite SEMPRE recuar, independente da
+distância atual.
+
+Busca ativa de mob: `_POI_EXCURSION_CHANCE` 0.05→0.15 (POI = zona de
+spawn real de mob, `map_data.poi_points()`, não um ponto aleatório) +
+`self.anchor` passa a "assentar" onde a excursão termina (não mais no
+spawn original do player) — sem isso, um bot cujo spawn ficava longe de
+qualquer zona de mob raramente decidia ir até uma, e o
+`_WANDER_ANCHOR_DRIFT_MAX` de 10 tiles o puxava de volta pro spawn
+inteiro toda vez que uma excursão terminava, mesmo bem-sucedida.
+Confirmado por teste real (ver seção de validação abaixo):
+`mobs_ativos` no servidor foi de ~0 (testes anteriores) pra 2-7 (pico 8)
+sustentado nos 3 minutos de teste local pós-fix.
+
+Arqueiro: `tools/loadtest/provision.py` ganhou `_grant_archer_equipment`
+(Fase B nova, mesmo padrão de `_grant_starter_skills`) — grava
+`hunter_bow`+`battleground_quiver` (999 flechas, mesma aljava vendida
+na loja de BG) direto no `equipment_json` via `item_id` (schema mínimo
+que `WorldServer._reconstruct_item` já resolve pro item real do
+catálogo — nunca confia em stat vindo de fora).
+
+### Bot de BG (`server/bot_ai_system.py`) — escopo bem maior que o esperado
+
+Usuário pediu réplica do comportamento pro bot real de BG — investigação
+prévia (Explore agent) achou a IA atual (v2, §69-75) MUITO mais simples
+do que a do loadtest: sempre "1ª skill ofensiva pronta do hotbar",
+zero lógica de HP próprio, zero recuo (docstring do módulo dizia
+literalmente "sem recuar na v1, decisão explícita do usuário" —
+perguntado, usuário esclareceu que foi ELE quem pediu isso antes, pra
+desenvolver aos poucos, não uma decisão definitiva).
+
+**Engano corrigido durante a investigação**: a 1ª pesquisa concluiu
+"XP de instância nunca é concedido em jogo real, só em teste" (grep por
+`grant_instance_xp(` não achou nada fora de `tests/`). Usuário
+discordou, afirmando que bot E player sobem de nível de verdade dentro
+da BG. Reconferido manualmente: existe sim um call site real,
+`server/world_server.py:6029-6034` — `_death_handler.consume_xp()`
+(abate de MINION) chama `grant_instance_xp` via um alias de import
+(`grant_instance_xp as _grant_ixp`) que o grep original não pegou por
+procurar o literal `grant_instance_xp(` com parêntese colado. Ou seja:
+skills 2-6 de `INSTANCE_SKILL_UNLOCK_ORDER` já ficam disponíveis de
+verdade ao longo de uma partida (bot e player), só faltava o bot saber
+usar a que fizesse sentido pra situação — nenhuma progressão nova
+precisou ser criada, ao contrário do que a 1ª pesquisa levou a crer.
+Lição: **verificar contra o código atual antes de aceitar uma conclusão
+de "não existe"/"nunca é chamado" baseada em busca textual — um alias
+de import é o tipo de coisa que grep ingênuo perde.**
+
+**Levantamento adicional** (2ª rodada de pesquisa) confirmou mecânicas
+específicas antes de codar: Nova Congelante é AOE de verdade (raio =
+`cast_range=3`, reaproveitado como raio de área em
+`_server_nova_congelante`) — dano E `root` (`blocks_move=True` mas
+SEM `blocks_act`, confirmado em `content/status_effects_data.py` — o
+alvo enraizado não pode andar mas continua podendo atacar, então o
+propósito real da skill pro mago é enraizar QUEM PERSEGUE, abrindo
+espaço de fuga de verdade); `_dive_allowed` (`bot_ai_system.py:425-455`
+antes desta sessão) só olhava o HP do ALVO, nunca do próprio bot;
+`_find_nearest_enemy` só usava distância, sem noção de "espera o minion
+ficar fraco"; `WorldServer.apply_consumable(session_id, payload)`
+existe e é reaproveitável (mesmo padrão de `queue_skill`/`move_player`)
+pra poção/comida, mas exige montar o payload a partir do catálogo (não
+existe atalho `use_item_by_id` pronto) — ficou de fora do escopo desta
+sessão por decisão do usuário (mais trabalho que o resto, confirmar
+depois).
+
+**Implementado** (`server/bot_ai_system.py`, `engine/components.py::
+BotControlled.is_retreating` novo campo):
+- **Histerese de fuga** (`BOT_LOW_HP_RETREAT_PCT=0.30`/
+  `BOT_LOW_HP_REENGAGE_PCT=0.50`), mesmo princípio do loadtest bot,
+  agora pras 3 classes de BG também — guerreiro corre em direção à
+  PRÓPRIA BASE (reaproveita `_advance_toward` mirando `bot.route[0]`,
+  a ponta da rota de lane mais perto do spawn — zero pathfinding novo,
+  só um destino diferente do de sempre; fallback simples de "1 passo
+  na direção oposta" só se `bot.route` ainda não existir, caso raro de
+  HP cair antes do 1º `_push_lane`).
+- **Discernimento tático por classe** (`_try_priority_skill`, chamado
+  só quando NÃO retreating): guerreiro — Executar (alvo≤30% HP, dano
+  3x) > Fatiador de Corpos (2+ inimigos num raio de 2, `_count_
+  nearby_enemies` novo, reusa o mesmo padrão de scan de `_find_
+  nearest_enemy`) > Vitória Iminente (HP próprio<90%) > Interceptar
+  (1<dist≤6); mago — Nova Congelante (2+ inimigos num raio de 3,
+  dano+enraíza — prioridade sobre Bola de Fogo porque é "ofensiva E
+  defensiva ao mesmo tempo", pedido explícito do usuário) > Bola de
+  Fogo padrão. Cada tentativa cai pro fallback genérico já existente
+  (`_try_cast_offensive_skill`, "1ª pronta do hotbar") se a skill
+  específica não estiver aprendida/pronta — nunca quebra o
+  comportamento de skills sem regra tática própria (golpe_poderoso,
+  flecha_reiterada, tiro_multiplo, etc.).
+- **Skill defensiva ao fugir** (`_try_defensive_skill`, tentada 1x por
+  decisão ANTES de `_retreat` — mesma ordem "skill > movimento" que o
+  resto do arquivo já usa): mago tenta Nova Congelante (enraíza quem
+  persegue) > Polimorfia > Bloco de Gelo; arqueiro tenta Picada de
+  Escorpião (slow no perseguidor); guerreiro não tem ferramenta de
+  escape real (Interceptar aproxima, Vitória Iminente exige
+  adjacência) — sempre cai direto pra correr.
+- **Minion só vira alvo perto de morrer** (`BOT_MINION_LAST_HIT_PCT
+  =0.20`, `_find_nearest_enemy` reescrito): player inimigo SEMPRE
+  vence minion agora (antes era só "o mais perto entre os dois");
+  minion só entra na consideração com HP≤20% — garante o abate (XP)
+  sem gastar hit/skill em minion saudável que a própria lane (minion
+  aliado + torre) já está resolvendo sozinha.
+- **Dive-gate com HP próprio** (`_dive_allowed` ganha `my_eid`):
+  bloqueia SEMPRE que o HP do PRÓPRIO bot estiver ≤30%, antes de
+  checar minion aliado perto ou alvo baixo — as duas condições
+  antigas existem pra fechar KILL, nunca valem a pena se o bot morre
+  pro dano da própria torre no caminho.
+
+**Decisão de design não pedida explicitamente, mas necessária**:
+alcance de engajamento (`_effective_engage_range`) MANTIDO dinâmico
+por classe/arma (melee=1, mago=6, arqueiro=7-9 pelo arco real
+equipado) em vez de fixar em 5 tiles como o usuário sugeriu como
+simplificação possível — um valor fixo faria melee tentar atacar de
+longe (nunca acerta) ou arqueiro parar antes da hora (desperdiça
+alcance real do arco). Comunicado ao usuário, sem objeção.
+
+### Testes
+
+`tests/test_bg_bot.py`: 2 testes antigos de `TestBotAttacksMinion`
+QUEBRARAM de propósito (testavam o comportamento ANTIGO — atacar
+qualquer minion em alcance) — reescritos pra refletir o novo
+last-hit (`_spawn_minion(hp_pct=...)` helper novo), mais 1 teste NOVO
+confirmando que minion saudável é ignorado. 4 testes novos em
+`TestBotDiveGate` (HP próprio baixo bloqueia mesmo com minion
+aliado/alvo baixo presentes; regressão confirmando que HP próprio
+saudável + alvo baixo continua permitido). 2 classes novas inteiras:
+`TestBotRetreat` (liga/desliga histerese, foge de verdade do
+atacante) e `TestBotPrioritySkills` (Executar/Fatiador/Nova
+Congelante disparam nas condições certas, Fatiador NÃO dispara com só
+1 alvo, mago fugindo tenta Polimorfia antes de só correr). Suíte
+completa do arquivo: 50 passed (era 38 antes desta sessão). Suíte
+COMPLETA do projeto: 1540 passed, 2 failed (mesmo timing flake
+pré-existente de granularidade de timer do Windows já documentado no
+§123, sem relação — confirmado rodando o teste isolado). Validação em
+partida de BG real ainda pendente (usuário vai testar).
+
+**Pendente**: poção/comida pro bot (decisão consciente de adiar,
+precisa de kit inicial novo + tradução catálogo→payload que hoje só o
+cliente real faz); TLS/wss (aberto desde §123).

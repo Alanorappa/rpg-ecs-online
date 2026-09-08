@@ -334,6 +334,11 @@ class BotControlled:
     push_start_at: float = 0.0        # time.time() a partir do qual o bot pode empurrar a lane
     route: list | None = None         # polyline completa da lane (mesmo formato de Minion.route)
     route_idx: int = 0                # progresso em `route`, mesmo par que Minion usa
+    # IA tática por classe (08/09/2026, pedido do usuário): liga em HP
+    # baixo (BOT_LOW_HP_RETREAT_PCT), só desliga de volta ao HP subir o
+    # bastante (BOT_LOW_HP_REENGAGE_PCT) — histerese pra nunca oscilar
+    # fugir/brigar a cada decisão bem na borda de um threshold só.
+    is_retreating: bool = False
 
 @dataclass
 class RemoteControlled:
