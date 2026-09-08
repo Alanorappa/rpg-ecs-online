@@ -57,12 +57,48 @@ _WANDER_ANCHOR_DRIFT_MAX = 10   # tiles — além disso, wander tende a voltar
 # maioria das decisões continua sendo o wander curto de sempre, senão
 # TODO bot vira uma excursão de pathfinding o tempo todo (não é
 # realista, e gera mais custo no PRÓPRIO processo do swarm do que
-# necessário pro teste).
+# necessário pro teste). POI = zona de spawn real de mob (`map_data.
+# poi_points()`) — subiu de 0.05 pra 0.15 (08/09/2026, pedido do usuário
+# pra bot procurar mob ativamente): sem isso, um bot cujo spawn de
+# player fica longe de qualquer zona de mob raramente decidia ir até
+# uma, e ficava o teste inteiro sem lutar (achado real do teste de 20
+# bots/10min — `WANDER` nunca mudava de estado).
 _NOTICE_RADIUS_TILES = 30       # "vejo um mob ali longe, vou até lá"
 _BUSH_EXCURSION_CHANCE = 0.05
-_POI_EXCURSION_CHANCE = 0.05
+_POI_EXCURSION_CHANCE = 0.15
 _GOTO_STUCK_TIMEOUT_S = 8.0     # sem avançar no caminho por tanto tempo = desiste
 _LOOT_TAKE_DELAY_S = (0.3, 0.9)  # jitter de "reação" antes de saquear (não instantâneo)
+
+# Movimento (08/09/2026) — cadência de passo DESACOPLADA da cadência de
+# decisão (`think_min_s`/`think_max_s`, até 1.8s). Antes o bot só mandava
+# 1 MOVE por think inteiro, andando 3-9x mais devagar que um jogador real
+# (que manda 1 MOVE por tile completo, a cada ~0,29s aqui) — visto pelo
+# usuário como "bot andando devagar" e, pelo hiato longo e irregular
+# entre passos, "bot teleportando" (nenhum MOVE real pula mais de 1 tile;
+# é só o efeito de ficar parado até 1,8s entre passos visíveis). Mesma
+# constante de fallback que o servidor usa pra jogador sem `TileMovement.
+# speed` setado (`server/world_server.py::PLAYER_SPEED_TILES_FALLBACK =
+# 110/TILE_SIZE`) — pacing real, não um número arbitrário.
+_MOVE_STEP_INTERVAL_S = TILE_SIZE / 110.0
+
+# HP thresholds (fração 0.0-1.0 de current/max — mesmo padrão de
+# `server/bot_ai_system.py::BOT_DIVE_HP_THRESHOLD_PCT`) e alcance
+# "seguro" por classe, usados pela IA de combate por classe abaixo.
+_HP_DEFENSIVE_THRESHOLD_PCT = 0.30   # mago: Bloco de Gelo/Polimorfia; grupo: kite
+_HP_FINISHER_THRESHOLD_PCT  = 0.90   # guerreiro: Vitória Iminente (carga ganha ao matar,
+                                     # não cura garantida — só não "guarda" a carga full HP)
+_MAGE_SAFE_RANGE_TILES    = 5   # < cast_range=6 de Bola de Fogo (margem de 1 tile)
+_ARCHER_SAFE_RANGE_TILES  = 6   # < cast_range real do arco equipado (7-9)
+_ARCHER_KITE_TRIGGER_TILES = 3  # mob a essa distância ou menos = abre espaço
+_INTERCEPTAR_MAX_RANGE_TILES = 6  # engine/skill_handlers.py::INTERCEPT_MAX_RANGE
+
+_MAGE_ATTACK_SKILL     = "bola_de_fogo"
+_MAGE_DEFENSIVE_SKILL  = "bloco_de_gelo"
+_MAGE_CC_SKILL         = "polimorfia"
+_WAR_GAPCLOSER_SKILL   = "interceptar"
+_WAR_FINISHER_SKILL    = "vitoria_iminente"
+_ARCHER_SLOW_SKILL       = "picada_escorpiao"
+_ARCHER_KNOCKBACK_SKILL  = "tiro_repulsivo"
 
 
 def _hash_password(raw: str) -> str:
@@ -99,6 +135,20 @@ class LoadBot:
         self.target_eid = -1
         self.known_entities: dict = {}          # eid -> {tx, ty, kind, faction, hp, ...}
         self.skill_ready_at: dict = {}           # sid -> monotonic time
+
+        # HP próprio (08/09/2026) — antes `STATS_UPDATE` era só `pass`'d,
+        # então nenhuma decisão baseada em HP (defensiva de mago, kite de
+        # grupo, finisher de guerreiro) tinha como funcionar. `hp_max=1`
+        # (nunca 0) evita ZeroDivisionError em `_hp_ratio()` antes do
+        # primeiro LOGIN_OK/STATS_UPDATE chegar.
+        self.hp = 1
+        self.hp_max = 1
+        # True quando a classe (mago/arqueiro — guerreiro não tem
+        # ferramenta de fuga) decide abrir distância por estar com HP
+        # baixo — lido pelo `_move_loop` (`_combat_step`) pra inverter a
+        # direção do passo, e por `_priority_skill` pra preferir a skill
+        # de controle de distância certa.
+        self._kiting = False
         self._blocked_dirs: dict = {}            # (dx,dy) -> expire monotonic time
         self._stop = asyncio.Event()
         self._reconnect_attempt = 0
@@ -133,8 +183,9 @@ class LoadBot:
                 self._reconnect_attempt = 0
                 recv_task = asyncio.create_task(self._recv_loop())
                 think_task = asyncio.create_task(self._think_loop())
+                move_task = asyncio.create_task(self._move_loop())
                 done, pending = await asyncio.wait(
-                    {recv_task, think_task}, return_when=asyncio.FIRST_COMPLETED)
+                    {recv_task, think_task, move_task}, return_when=asyncio.FIRST_COMPLETED)
                 for t in pending:
                     t.cancel()
                 for t in done:
@@ -257,6 +308,8 @@ class LoadBot:
             self.tx = int(char.get("tile_x", self.tx))
             self.ty = int(char.get("tile_y", self.ty))
             self.anchor = (self.tx, self.ty)
+            self.hp = int(payload.get("hp", self.hp))
+            self.hp_max = int(payload.get("hp_max", self.hp_max)) or 1
             self.state = "QUEUEING" if self.role != "world" else "WANDER"
 
         elif msg_type == MsgType.WORLD_STATE:
@@ -296,9 +349,16 @@ class LoadBot:
                 self.known_entities[eid].update(payload)
 
         elif msg_type == MsgType.STATS_UPDATE:
-            # Só nos interessa se o próprio bot morreu/reviveu — o resto
-            # (mana/raiva) o bot não precisa acompanhar de perto.
-            pass
+            # Privado (servidor só manda pro dono, `queue_stats_update`) —
+            # sem o `eid == self.eid` aqui não tem como confundir com o
+            # HP de outra entidade. Mana/raiva continuam ignorados, o bot
+            # não precisa acompanhar de perto (skill já falha/backoff via
+            # SKILL_RESULT se faltar recurso).
+            if payload.get("eid") == self.eid:
+                if "hp" in payload:
+                    self.hp = int(payload["hp"])
+                if "hp_max" in payload:
+                    self.hp_max = int(payload["hp_max"]) or 1
 
         elif msg_type == MsgType.LOOT_AVAILABLE:
             # Sem checagem de distância (confirmado em código,
@@ -344,6 +404,62 @@ class LoadBot:
             self.target_eid = -1
 
     # ── decisão ───────────────────────────────────────────────────────
+
+    # ── movimento (cadência própria, 08/09/2026) ────────────────────────
+
+    async def _move_loop(self) -> None:
+        """Loop de EXECUÇÃO de movimento, separado do `_think_loop` de
+        DECISÃO — antes os dois eram a mesma cadência (até 1,8s por
+        passo), 3-9x mais devagar que um jogador real (que manda 1 MOVE
+        por tile completo, a cada ~0,29s). Decisão (que alvo, qual
+        skill, quando kitar) continua lenta de propósito; só o "andar"
+        precisa ser rápido."""
+        while not self._stop.is_set():
+            await asyncio.sleep(_MOVE_STEP_INTERVAL_S)
+            try:
+                await self._advance_movement()
+            except Exception:
+                self.stats["errors"] = self.stats.get("errors", 0) + 1
+
+    async def _advance_movement(self) -> None:
+        if self.state not in ("WANDER", "IN_MATCH"):
+            return  # fila/login/reconectando/etc. — nada a andar
+        if self._goto_path is not None:
+            await self._continue_goto()
+            return
+        if self.target_eid != -1 and self.target_eid in self.known_entities:
+            await self._combat_step(self.target_eid)
+            return
+        await self._wander()
+
+    async def _combat_step(self, target_eid: int) -> None:
+        """Aproxima, mantém ou recua em relação ao alvo — decisão de
+        QUANDO recuar (`self._kiting`) é do think loop; aqui só executa
+        o passo, a cada `_MOVE_STEP_INTERVAL_S`."""
+        target = self.known_entities.get(target_eid)
+        if target is None:
+            return
+        etx, ety = target.get("tx", self.tx), target.get("ty", self.ty)
+        dist = max(abs(etx - self.tx), abs(ety - self.ty))
+        desired = self._desired_range()
+
+        if self._kiting and dist <= desired:
+            # Já perto o bastante pra atacar, mas em modo defensivo —
+            # abre espaço em vez de continuar aproximando (arqueiro/mago
+            # kitando de verdade: anda pro lado oposto do alvo enquanto
+            # ainda ataca à distância no think loop).
+            await self._step_away(etx, ety)
+        elif dist > desired:
+            await self._step_toward(etx, ety)
+        # else: já no alcance desejado e não kitando — mantém posição,
+        # deixa o think loop decidir ataque/skill.
+
+    async def _step_away(self, etx: int, ety: int) -> None:
+        dx = 0 if etx == self.tx else (-1 if etx > self.tx else 1)
+        dy = 0 if ety == self.ty else (-1 if ety > self.ty else 1)
+        if dx == 0 and dy == 0:
+            dx, dy = self.rng.choice(_ADJ)  # alvo na mesma tile (raro) — foge a esmo
+        await self._send_move(self.tx + dx, self.ty + dy)
 
     async def _think_loop(self) -> None:
         # 1ª ação já no spawn (sem esperar o intervalo aleatório) — pedido
@@ -430,6 +546,29 @@ class LoadBot:
                 best_eid, best_dist = eid, dist
         return best_eid
 
+    def _hp_ratio(self) -> float:
+        return (self.hp / self.hp_max) if self.hp_max > 0 else 1.0
+
+    def _desired_range(self) -> int:
+        """Distância que a classe tenta manter do alvo — usada tanto pra
+        decidir 'preciso me aproximar' quanto (arqueiro/mago) 'já estou
+        no alcance, não preciso chegar mais perto'. Guerreiro é melee de
+        verdade (1); mago/arqueiro ficam abaixo do alcance real da
+        skill/arco (margem de 1 tile, nunca o valor exato — evita ficar
+        exatamente na borda e um passo do alvo tirar do alcance)."""
+        if self.class_id == "mago":
+            return _MAGE_SAFE_RANGE_TILES
+        if self.class_id == "arqueiro":
+            return _ARCHER_SAFE_RANGE_TILES
+        return 1
+
+    def _update_kiting_state(self) -> None:
+        # Guerreiro não tem ferramenta de fuga (Vitória Iminente é
+        # finisher, não escape) — decisão do usuário (08/09/2026): sem
+        # alcance pra kitar, só continua lutando mesmo com HP baixo.
+        self._kiting = (self.class_id in ("mago", "arqueiro")
+                        and self._hp_ratio() <= _HP_DEFENSIVE_THRESHOLD_PCT)
+
     async def _wander_or_engage(self) -> None:
         if self.target_eid == -1 or self.target_eid not in self.known_entities:
             self.target_eid = self._nearest_target() or -1
@@ -440,15 +579,65 @@ class LoadBot:
             # ameaça no meio de um passeio) e evita competir com o
             # watchdog de goto.
             self._cancel_goto()
+            self._update_kiting_state()
             await self._engage(self.target_eid)
             return
 
-        if self._goto_path is not None:
-            await self._continue_goto()
-            return
+        self._kiting = False
+        # Movimento (passo a passo, seja excursão ou wander curto) agora
+        # é 100% responsabilidade do `_move_loop` (cadência própria,
+        # desacoplada do think) — aqui só decide SE inicia uma excursão
+        # nova; `_advance_movement` já cai pro wander sozinho quando não
+        # há excursão em andamento.
+        if self._goto_path is None:
+            await self._maybe_start_excursion()
 
-        if not await self._maybe_start_excursion():
-            await self._wander()
+    def _priority_skill(self, ready: list, dist: int) -> "str | None":
+        """Skills reativas que devem disparar de forma DETERMINÍSTICA
+        quando a condição bate (não competem com a chance aleatória
+        `_SKILL_CHANCE_PER_TICK`, que é só pra variedade/flavor) —
+        desenho aprovado pelo usuário 08/09/2026."""
+        hp_ratio = self._hp_ratio()
+
+        if self.class_id == "guerreiro":
+            # "Na distância máxima" na prática é uma FAIXA, não um valor
+            # exato: o `_move_loop` (cadência própria, mais rápida que o
+            # think) já está fechando a distância em paralelo, então por
+            # essa checagem mais lenta nunca "pegar" dist==6 no instante
+            # certo — dispara assim que o alvo ENTRA no alcance (1 <
+            # dist <= 6, nunca dist<=1 porque aí já é melee/adjacente).
+            if _WAR_GAPCLOSER_SKILL in ready and 1 < dist <= _INTERCEPTAR_MAX_RANGE_TILES:
+                return _WAR_GAPCLOSER_SKILL
+            # Vitória Iminente é uma CARGA ganha ao matar um alvo (não
+            # cura garantida ao usar) — a regra real é só "não guardar a
+            # carga com HP cheio", não "só usar perto de matar". Se não
+            # houver carga disponível, o cast simplesmente não faz nada
+            # extra (sem custo de recurso — cooldown=0 no catálogo).
+            if _WAR_FINISHER_SKILL in ready and hp_ratio < _HP_FINISHER_THRESHOLD_PCT:
+                return _WAR_FINISHER_SKILL
+            return None
+
+        if self.class_id == "mago":
+            if hp_ratio <= _HP_DEFENSIVE_THRESHOLD_PCT:
+                if _MAGE_DEFENSIVE_SKILL in ready:
+                    return _MAGE_DEFENSIVE_SKILL
+                _poli_range = SKILL_CATALOG.get(_MAGE_CC_SKILL, {}).get("cast_range") or 7
+                if _MAGE_CC_SKILL in ready and dist <= _poli_range:
+                    return _MAGE_CC_SKILL
+            _fire_range = SKILL_CATALOG.get(_MAGE_ATTACK_SKILL, {}).get("cast_range") or 6
+            if _MAGE_ATTACK_SKILL in ready and dist <= _fire_range:
+                return _MAGE_ATTACK_SKILL
+            return None
+
+        if self.class_id == "arqueiro":
+            if self._kiting and dist <= _ARCHER_KITE_TRIGGER_TILES:
+                if _ARCHER_KNOCKBACK_SKILL in ready:
+                    return _ARCHER_KNOCKBACK_SKILL
+                if _ARCHER_SLOW_SKILL in ready:
+                    return _ARCHER_SLOW_SKILL
+            return None
+
+        return None
 
     async def _engage(self, target_eid: int) -> None:
         target = self.known_entities.get(target_eid)
@@ -459,6 +648,13 @@ class LoadBot:
         dist = max(abs(etx - self.tx), abs(ety - self.ty))
         ready = [sid for sid in self.learned_skills
                 if self.skill_ready_at.get(sid, 0.0) <= time.monotonic()]
+
+        priority_sid = self._priority_skill(ready, dist)
+        if priority_sid is not None:
+            await self.client.send(MsgType.CAST_SKILL, {
+                "sid": priority_sid, "tid": target_eid, "dir_x": 0.0, "dir_y": 0.0,
+            })
+            return
 
         if dist > 1:
             # Skill com alcance real pode disparar sem precisar chegar
@@ -477,7 +673,17 @@ class LoadBot:
                     "sid": sid, "tid": target_eid, "dir_x": 0.0, "dir_y": 0.0,
                 })
                 return
-            await self._step_toward(etx, ety)
+            if dist <= self._desired_range():
+                # Já no alcance "seguro" da classe (arqueiro/mago) — auto-
+                # attack funciona a distância de verdade se a classe tiver
+                # arma real equipada (servidor valida, ver
+                # `server/combat_processor.py::_resolve_auto_attack`);
+                # melee (guerreiro, desired_range=1) nunca cai aqui com
+                # dist>1, então não manda ataque inválido.
+                await self.client.send(MsgType.AUTO_ATTACK, {"tid": target_eid})
+                return
+            # Fora do alcance seguro: aproximação é responsabilidade do
+            # `_move_loop`/`_combat_step`, não daqui.
             return
 
         # Adjacente: auto-attack de base + skill por cima, ocasionalmente.
@@ -594,6 +800,15 @@ class LoadBot:
             return
 
         if self._goto_path is None or self._goto_index >= len(self._goto_path):
+            # Excursão concluída de verdade (não abandonada) — "assenta"
+            # o anchor aqui, não no spawn original (08/09/2026, pedido do
+            # usuário pra bot procurar mob ativamente). Sem isso, o
+            # wander curto de sempre (`_WANDER_ANCHOR_DRIFT_MAX`) puxava
+            # o bot de volta pro spawn do PLAYER depois de toda excursão
+            # bem-sucedida até uma zona de mob — ele chegava, lutava um
+            # pouco, e ia embora de volta pra longe de qualquer mob de
+            # novo em vez de continuar por perto.
+            self.anchor = (self.tx, self.ty)
             self._cancel_goto()
             return
 

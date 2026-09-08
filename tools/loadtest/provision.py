@@ -37,6 +37,16 @@ from tools.loadtest.identity import (
 from tools.loadtest.protocol_client import ProtocolClient
 
 
+# Arqueiro precisa de arco (mainhand) + aljava (offhand) equipados de
+# verdade — sem isso o servidor BLOQUEIA o auto-attack inteiro (não
+# deixa passar com "munição infinita", ver
+# server/combat_processor.py::_resolve_auto_attack, "no_quiver_or_empty").
+# "Aljava de Batalha" (`battleground_quiver`) é a mesma vendida na loja
+# de instância/BG (999 flechas) — pedido do usuário 08/09/2026 pra
+# arqueiro de loadtest nunca ficar sem munição durante o teste.
+_ARCHER_EQUIPMENT = {"mainhand": "hunter_bow", "offhand": "battleground_quiver"}
+
+
 def _hash_password(raw: str) -> str:
     """Mesmo hash que o client real manda — SHA-256 do texto puro, nunca
     a senha crua na rede (regra de segurança do projeto)."""
@@ -142,6 +152,46 @@ async def _grant_starter_skills(provisioned: list) -> None:
     print(f"Fase B: skills concedidas/atualizadas em {granted} personagem(ns).")
 
 
+async def _grant_archer_equipment(provisioned: list) -> None:
+    """Fase B (equipamento) — grava `equipment_json` direto pro Arqueiro
+    já sair com arco+aljava equipados (08/09/2026, ver plano de IA de
+    combate dos bots). Mesmo padrão de `_grant_starter_skills`: só
+    escreve se algo realmente mudou (idempotente), nunca apaga outros
+    slots já equipados. `item_id` sozinho basta —
+    `WorldServer._reconstruct_item` resolve os stats reais do catálogo
+    (`content/item_table.py`) na hora do login, nunca confia em stat
+    vindo do payload."""
+    if not provisioned:
+        return
+    from server.auth import _get_pool
+    pool = await _get_pool()
+    granted = 0
+    for entry in provisioned:
+        if entry["class_id"] != "arqueiro":
+            continue
+        char_id = entry["char_id"]
+        row = await pool.fetchrow("SELECT equipment_json FROM characters WHERE id=$1", char_id)
+        if row is None:
+            continue
+        try:
+            data = json.loads(row["equipment_json"]) if row["equipment_json"] else {}
+        except (TypeError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        changed = False
+        for slot, item_id in _ARCHER_EQUIPMENT.items():
+            if (data.get(slot) or {}).get("item_id") != item_id:
+                data[slot] = {"item_id": item_id, "slot": slot}
+                changed = True
+        if changed:
+            await pool.execute(
+                "UPDATE characters SET equipment_json=$1 WHERE id=$2",
+                json.dumps(data), char_id)
+            granted += 1
+    print(f"Fase B (equipamento): arco+aljava concedidos/atualizados em {granted} arqueiro(s).")
+
+
 async def _run(count: int, host: str, port: int, batch_size: int, batch_interval_s: float) -> None:
     print(f"Provisionando {count} bot(s) contra {host}:{port} "
          f"(lotes de {batch_size}, {batch_interval_s}s entre lotes)...")
@@ -155,6 +205,7 @@ async def _run(count: int, host: str, port: int, batch_size: int, batch_interval
     print(f"Fase A: {len(provisioned)}/{count} conta(s)+personagem(ns) confirmados.")
 
     await _grant_starter_skills(provisioned)
+    await _grant_archer_equipment(provisioned)
     print("Provisionamento concluído.")
 
 
