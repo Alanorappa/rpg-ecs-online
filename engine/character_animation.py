@@ -34,7 +34,7 @@ puramente visuais).
 from __future__ import annotations
 
 CHAR_TILE_SIZE = 32
-DEFAULT_FRAME_MS = 65
+DEFAULT_FRAME_MS = 78  # 65 * 1.2 — animação 20% mais lenta (09/09/2026, pedido do usuário)
 
 # Cache de módulo, chaveado por (class_id, state, direction) — conjunto
 # BEM pequeno e fixo (3 classes × 2 estados × 4 direções = 24 no

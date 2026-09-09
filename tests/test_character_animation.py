@@ -71,10 +71,10 @@ class TestGetCharacterFrame(unittest.TestCase):
         self.assertEqual(w, 32)
 
     def test_frame_avanca_com_o_tempo(self):
-        from engine.character_animation import get_character_frame
-        f0  = get_character_frame("guerreiro", "idle", "down", 0)
-        f65 = get_character_frame("guerreiro", "idle", "down", 65)
-        self.assertIsNot(f0, f65, "frame deveria avançar após frame_ms (65 default)")
+        from engine.character_animation import get_character_frame, DEFAULT_FRAME_MS
+        f0    = get_character_frame("guerreiro", "idle", "down", 0)
+        f_adv = get_character_frame("guerreiro", "idle", "down", DEFAULT_FRAME_MS)
+        self.assertIsNot(f0, f_adv, "frame deveria avançar após frame_ms (default)")
 
     def test_combinacao_inexistente_retorna_none(self):
         """class_id fictício — não pode depender de quais sprites reais
