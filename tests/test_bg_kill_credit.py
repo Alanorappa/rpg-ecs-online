@@ -244,5 +244,68 @@ class TestPlayerKillCreditAndAssist(unittest.TestCase):
             "hit fora da janela de 10s não deveria contar como assist")
 
 
+class TestPlayerDeathNotDoubleProcessed(unittest.TestCase):
+    """§130 (09/09/2026) — kill por auto-attack PvP disparava
+    `_handle_player_death` 2x no mesmo tick: uma vez no braço de PvP
+    (`_process_pvp_attack`) e de novo no loop genérico de
+    `_process_player_attacks` ("qualquer fonte que zerou o HP neste
+    tick", pensado pra DoT/skill/mob — não sabe que o PvP já tratou a
+    MESMA morte). Não dobrava `players_killed` (o log de contribuições
+    já tinha sido consumido), mas dobrava incondicionalmente
+    `CharStatsTracker.deaths` da vítima. Usa o caminho de combate REAL
+    (`_process_player_attacks` com snapshot capturado ANTES do tick,
+    mesmo formato que `WorldServer._tick` monta) — não um atalho direto
+    em `_handle_player_death`, pra exercitar a race de verdade."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        from server.instance_progression import enter_normalized_progression
+        self.a = spawn_player(self.ws, "s_a", 10, 10, class_id="guerreiro")
+        self.v = spawn_player(self.ws, "s_v", 11, 10, class_id="guerreiro")
+        self.ws.world.add_component(self.a, Faction(faction_id=_FAC_A))
+        self.ws.world.add_component(self.v, Faction(faction_id=_FAC_B))
+        for eid in (self.a, self.v):
+            enter_normalized_progression(self.ws, eid)
+            self.ws.world.get_component(eid, CombatStats).acerto = 100.0
+
+    def test_kill_por_auto_attack_nao_dobra_deaths_da_vitima(self):
+        vic_cs = self.ws.world.get_component(self.v, CombatStats)
+        vic_cs.dodge_rating = 0.0
+        vic_cs.parry_rating = 0.0
+        vic_cs.current_hp = 1   # um golpe mata
+
+        # Snapshot capturado ANTES do dano do tick — mesmo formato que
+        # WorldServer._tick monta em player_hp_snap (hp cheio/pré-morte).
+        snapshot = {self.v: vic_cs.current_hp}
+
+        engage_target(self.ws, "s_a", self.v)
+        self.ws._attack_timers["s_a"] = 0.0
+        self.ws._process_player_attacks(0.05, snapshot)
+
+        cst_a = self.ws.world.get_component(self.a, CharStatsTracker)
+        cst_v = self.ws.world.get_component(self.v, CharStatsTracker)
+        self.assertEqual(cst_a.players_killed, 1,
+            "matador deveria ganhar exatamente 1 kill")
+        self.assertEqual(cst_v.deaths, 1,
+            "vítima deveria ganhar exatamente 1 death, não 2 (processamento duplicado no mesmo tick)")
+
+    def test_handle_player_death_chamado_2x_direto_e_no_op_na_segunda_vez(self):
+        """Regressão de baixo nível: mesmo sem passar pelo combate real,
+        chamar `_handle_player_death` de novo pro MESMO player já morto
+        (GhostState.is_dead=True) não deve fazer nada — nem re-somar
+        death, nem re-processar limpeza."""
+        self.ws._handle_player_death(self.v, killer_eid=self.a)
+        cst_a = self.ws.world.get_component(self.a, CharStatsTracker)
+        cst_v = self.ws.world.get_component(self.v, CharStatsTracker)
+        kills_after_first  = cst_a.players_killed
+        deaths_after_first = cst_v.deaths
+
+        self.ws._handle_player_death(self.v, killer_eid=self.a)
+        self.assertEqual(cst_a.players_killed, kills_after_first,
+            "2ª chamada pro mesmo player já morto não deveria dar kill de novo")
+        self.assertEqual(cst_v.deaths, deaths_after_first,
+            "2ª chamada pro mesmo player já morto não deveria somar death de novo")
+
+
 if __name__ == "__main__":
     unittest.main()

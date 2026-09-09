@@ -17376,3 +17376,70 @@ frente, não só no servidor.
 **Não validado**: reprodução manual em jogo (subir de nível na BG até
 desbloquear Vitória Iminente depois de uma skill sem preferência,
 sair, confirmar slot).
+
+---
+
+### 🟡 §130 — `_handle_player_death` chamado 2x no mesmo tick dobrava `deaths` (não `kills`) — bug relacionado, mas diferente do relatado (09/09/2026)
+
+Usuário relatou: "quando eu mato pela primeira vez um player ele conta 2
+vezes, aparece no KDA 'Kills: 2' quando era pra ser 1", na fila real de
+BG, no HUD ao vivo (não no placar final), "só de vez em quando" — sem
+certeza se o golpe final foi auto-attack ou skill.
+
+**Investigação**: checado primeiro se batia com algum item já
+catalogado (regra do CLAUDE.md) — não achou nenhum. Mapeados os 3
+únicos call sites de `_handle_player_death` (`server/respawn_system.py`
+— "ÚNICO ponto que credita kill/assist de player", ver docstring da
+função e §a unificação de 16/08/2026): (1) `_process_pvp_attack`
+(combat_processor.py, kill por auto-attack PvP), (2) o loop genérico
+dentro de `_process_player_attacks` (mesmo arquivo, "qualquer fonte que
+zerou o HP neste tick" — pensado pra DoT/skill/mob), (3)
+`ServerDeathHandler.update()` (server_death_handler.py, fallback pra
+quando nenhum dos 2 anteriores capturou a morte no mesmo tick).
+
+**Causa raiz confirmada por teste, não só leitura de código** (regra do
+CLAUDE.md — "corrigido" exige reprodução, não suposição): quando o
+golpe final é um auto-attack PvP, (1) e (2) rodam SEQUENCIALMENTE
+dentro da MESMA chamada de `_process_player_attacks` — (1) primeiro
+(mata a vítima, credita o kill certo, remove `PendingDeath`), (2) depois
+(vê a MESMA transição de HP via `player_hp_snapshot`, sem saber que (1)
+já tratou essa morte) e chama `_handle_player_death` de novo. A 2ª
+chamada NÃO dobra `players_killed` (o dict de contribuições de dano já
+foi consumido — `.pop()` — pela 1ª chamada, então o bloco de crédito de
+kill nem executa), mas dobra `CharStatsTracker.deaths` da vítima, porque
+esse incremento é incondicional (primeira linha de lógica da função,
+roda sempre, antes de qualquer checagem de quem bateu). Reproduzido
+isolado: `players_killed(matador) == 1` (certo), `deaths(vítima) == 2`
+(errado).
+
+**Isso não é o bug relatado** — usuário viu "Kills" dobrar, não
+"Deaths". Rastreando os 3 call sites e a lógica de crédito inteira, não
+foi encontrado nenhum caminho que dobre especificamente `players_killed`
+do matador. Reportado ao usuário nesses termos; decisão explícita dele:
+corrigir o bug confirmado (deaths) mesmo sem ele ser 100% o relatado, e
+avisar na próxima ocorrência do "Kills: 2" com horário + se havia mais
+de um atacante do time no mesmo alvo (dado que falta pra achar o
+mecanismo real).
+
+**Fix**: `_handle_player_death` (server/respawn_system.py) ganhou um
+guard de idempotência no topo — se `GhostState.is_dead` já é `True`
+(campo só fica `True` entre a morte e o revive, resetado por
+`_revive_player`), retorna sem fazer nada. Corrigir NA função (ponto
+único de verdade já existente) em vez de tentar impedir a 2ª CHAMADA em
+cada call site — mais simples e cobre qualquer chamador futuro
+automaticamente.
+
+**Testes**: `tests/test_bg_kill_credit.py::TestPlayerDeathNotDoubleProcessed`
+— 2 casos novos: (1) via caminho de combate real
+(`_process_player_attacks` com snapshot pré-tick, mesmo formato que
+`WorldServer._tick` monta), confirma `players_killed==1` e `deaths==1`;
+(2) chamando `_handle_player_death` 2x direto pro mesmo eid, confirma
+2ª chamada é no-op total (nem kill nem death somam de novo). Suíte
+ampla de combate/morte/BG (13 arquivos, 426+ testes) sem regressão —
+única falha é o flake de timer do Windows já catalogado (§123), sem
+relação. Suíte completa (`pytest tests/ -q`) roda em paralelo, resultado
+pendente de confirmação.
+
+**Pendente**: mecanismo real do "Kills: 2" ainda não encontrado —
+usuário avisará na próxima ocorrência com horário e contexto (sozinho ou
+mais gente do time no mesmo alvo) pra reduzir o espaço de busca.

@@ -61,8 +61,27 @@ class RespawnMixin:
         ×2, server/server_death_handler.py) chamam esta função em vez de
         creditar cada um por conta própria (16/08/2026, unificação —
         antes só 1 desses 3 lugares creditava, e nunca era alcançado de
-        verdade em partida real; ver PROBLEMAS_ARQUITETURA.md)."""
+        verdade em partida real; ver PROBLEMAS_ARQUITETURA.md).
+
+        Idempotente por design (09/09/2026, §130): dos 3 chamadores, o
+        loop genérico de `_process_player_attacks` (combat_processor.py,
+        "qualquer fonte que zerou o HP neste tick") roda DEPOIS do braço
+        de PvP (`_process_pvp_attack`, mesma função) e não sabe se aquele
+        já processou a MESMA morte no MESMO tick — ele só vê a transição
+        de HP via snapshot, sem checar se já foi tratada. Sem este guard,
+        um kill por auto-attack disparava esta função 2x no mesmo tick:
+        a 2ª chamada não dobra o kill (o log de dano/contribuições já foi
+        consumido pela 1ª), mas dobra `CharStatsTracker.deaths` da vítima
+        incondicionalmente (bug real relatado pelo usuário como "Kills: 2"
+        na BG — achado ao investigar era outro contador que dobrava, ver
+        PROBLEMAS_ARQUITETURA.md §130). `GhostState.is_dead` só é True
+        entre a morte e o revive — reaproveitar esse campo em vez de criar
+        estado novo."""
         from engine.components import CombatState, TileMovement, GhostState, CharacterStats
+
+        _gst_guard = self.world.get_component(player_eid, GhostState)
+        if _gst_guard is not None and _gst_guard.is_dead:
+            return
 
         # CharStatsTracker.deaths (02/08/2026, pedido do usuário — HUD de
         # Kills/Deaths/Farm do battleground de teste) — qualquer morte de
