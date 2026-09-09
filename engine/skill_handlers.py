@@ -1013,7 +1013,8 @@ class SkillHandlers:
             combat_state.is_casting = True
             enter_combat(combat_state)
             combat_state.is_pursuing = True
-            combat_state.chase_suppressed = False   # reengajamento reativa a perseguição
+            from engine.utils import reengage_chase
+            reengage_chase(self.world, self.player_entity_id)
 
         SOUNDS.play_spell("bola_de_fogo", "cast")
         LOG.add("Lançando Bola de Fogo...", (255, 160, 60))

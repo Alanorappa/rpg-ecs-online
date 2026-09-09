@@ -262,6 +262,38 @@ def is_target_alive(world, target_id: int) -> bool:
     return meta is not None and meta.hp > 0
 
 
+def reengage_chase(world, player_entity: int) -> None:
+    """Único ponto de verdade pra "reativar a perseguição de combate"
+    (09/09/2026) — inverso simétrico de `ui/npc_interaction.py::
+    suppress_chase` (que só liga `chase_suppressed`, nunca toca
+    `PlayerAutoMove`). Liga `chase_suppressed=False` E cancela qualquer
+    clique de chão/"Seguir" pendente (`PlayerAutoMove.ground_target`/
+    `path`/`follow_eid`) — sem isso, usar QUALQUER skill ofensiva
+    enquanto um clique de chão ainda está em andamento reativa o
+    auto-chase (`ui/systems.py::PlayerInputSystem._process_target`) sem
+    cancelar o auto-move de chão, e os dois competem pela posição do
+    player todo frame — mesma classe de bug já corrigida pra clique em
+    NPC (PROBLEMAS_ARQUITETURA.md §112), nunca fechada pro caso "usar
+    skill". Fica mais visível com Interceptar (teleporta o player,
+    tornando o zigue-zague óbvio: dash pro mob, depois puxado de volta
+    pro tile clicado, repete), mas o conflito existe em qualquer skill
+    ofensiva com auto-chase ativo. NUNCA toca `target_entity_id`/
+    `is_pursuing` — quem chama decide isso, igual `suppress_chase` nunca
+    decidia alvo. Roda em código compartilhado client/servidor (ex:
+    `engine/skill_handlers.py`) — `PlayerAutoMove` não existe no lado
+    servidor (componente client-only), por isso o guard `if auto_move`."""
+    from engine.components import CombatState, PlayerAutoMove
+    cs = world.get_component(player_entity, CombatState)
+    if cs is not None:
+        cs.chase_suppressed = False
+    auto_move = world.get_component(player_entity, PlayerAutoMove)
+    if auto_move is not None:
+        auto_move.active = False
+        auto_move.path.clear()
+        auto_move.ground_target = None
+        auto_move.follow_eid = -1
+
+
 def _cc_blocks(world, entity_id: int, attr: str) -> bool:
     """Lê `content/status_effects_data.py::EFFECT_DEFS[*].{blocks_move,
     blocks_act}` — fonte única de "este efeito tira o controle do

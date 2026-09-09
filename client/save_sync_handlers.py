@@ -558,7 +558,7 @@ class SaveSyncHandlers:
         antes de despachar ESPAÇO pra cá). Mesmo choke-point usado pelo
         gate de skills (`skill_processor.py`) e auto-attack
         (`combat_processor.py`) no servidor — ver `engine/utils.py`."""
-        from engine.components import TileMovement, CombatState, PlayerAutoMove
+        from engine.components import TileMovement, CombatState
         from engine.faction_system import can_engage as _can_engage_sp
         from engine.utils import is_target_alive as _is_target_alive_sp
         from engine.utils import is_action_locked as _is_action_locked_sp
@@ -566,7 +566,6 @@ class SaveSyncHandlers:
             return
         tm   = self.world.get_component(self.player_entity, TileMovement)
         cs_p = self.world.get_component(self.player_entity, CombatState)
-        auto = self.world.get_component(self.player_entity, PlayerAutoMove)
         if not tm or not cs_p:
             return
         pl_x, pl_y = tm.current_tile_x, tm.current_tile_y
@@ -595,10 +594,8 @@ class SaveSyncHandlers:
 
         cs_p.target_entity_id = best_local
         cs_p.is_pursuing = True
-        cs_p.chase_suppressed = False   # reengajamento reativa a perseguição
-        if auto:
-            auto.ground_target = None
-            auto.path.clear()
+        from engine.utils import reengage_chase
+        reengage_chase(self.world, self.player_entity)
 
     def _send_loot_request(self, corpse_id: int, take: str = "all",
                            item_id: str = "") -> None:

@@ -17171,3 +17171,73 @@ o estado do ambiente ANTES de rodar uma comparação, não confiar em
 
 **Não validado**: reprodução manual em jogo pelo usuário (perto de
 torre, Interceptar repetido).
+
+## 127. Interceptar: dash pra um lugar e depois "volta" pro tile clicado, num loop (09/09/2026)
+
+Usuário testou o fix do §126 e reportou o comportamento persistindo,
+com um cenário mais preciso: andando por CLIQUE DE CHÃO até um ponto,
+apertar Interceptar ANTES de chegar lá fazia o personagem dar o dash e
+depois ficar oscilando entre o tile clicado e a direção do mob — um
+loop, não só um snap único.
+
+**Causa raiz — mecanismo DIFERENTE do §126** (mesma família de
+sintoma, "personagem sendo puxado pra 2 lugares", mas outra origem):
+existe uma flag client-only, `CombatState.chase_suppressed`, que
+impede o sistema de auto-perseguição (`ui/systems.py::
+PlayerInputSystem._process_target`, `_auto_move_step`) de competir com
+"andar até onde cliquei" (`PlayerAutoMove.ground_target`). Clicar no
+chão liga essa flag corretamente (`chase_suppressed=True`). Mas usar
+QUALQUER skill ofensiva a desliga de novo (`chase_suppressed=False`,
+"reengajamento reativa a perseguição") — reativando o auto-chase — sem
+nunca cancelar o `ground_target` que ainda estava pendente. Os dois
+sistemas passam a competir pela posição do player todo frame: chase
+quer ir pro mob, o clique pendente quer ir pro tile antigo.
+
+Achado revisando o histórico: é a MESMA classe de bug já catalogada e
+corrigida em §112 (04/09/2026) — só que ali o gatilho era clicar num
+NPC amigável (Treinador/Ferreiro/etc.), corrigido com
+`ui/npc_interaction.py::suppress_chase()`/`walk_to_npc()`. O caso
+"reativar via skill" nunca foi coberto por aquele fix — a linha
+`chase_suppressed = False` estava duplicada em **6 lugares** do código
+(`engine/skill_handlers.py`, 3× em `ui/systems.py`, `ui/spell_system.py`,
+`client/save_sync_handlers.py`), 4 deles já cancelando `ground_target`
+na mão (redundante, nunca centralizado) e 2 deles NUNCA cancelando —
+exatamente os 2 caminhos de "apertar uma skill" (`ui/systems.py::
+_use_skill_visual_only`, o handler genérico de tecla de skill; e
+`engine/skill_handlers.py::_skill_bola_de_fogo`) — é isso que o
+usuário estava batendo com Interceptar (a tecla de skill passa por
+`_use_skill_visual_only` antes de qualquer coisa específica da skill).
+
+**Fix — ponto único de verdade novo**: `engine/utils.py::
+reengage_chase(world, player_entity)` — inverso simétrico de
+`suppress_chase`. Liga `chase_suppressed=False` E cancela
+`PlayerAutoMove.ground_target`/`path`/`active`/`follow_eid` (mesmo
+"reset" que WASD já fazia há tempos ao cancelar auto-move) — nunca
+toca `target_entity_id`/`is_pursuing`, mesma garantia de
+`suppress_chase`. Roda em código compartilhado client/servidor
+(`engine/skill_handlers.py` também executa no servidor via
+`HeadlessSkillHandler`) — `PlayerAutoMove` não existe do lado
+servidor, por isso o guard `if auto_move is not None`. Os 6 lugares
+passam a chamar essa função em vez de mexer na flag na mão — inclusive
+os 4 que já estavam certos, pra nunca mais divergir.
+
+**Escopo do fix, decidido com o usuário**: perguntado se o fix deveria
+valer só pro caminho do Interceptar ou pras 6 origens de reengajamento
+— usuário escolheu as 6, já que o mesmo conflito pode acontecer com
+QUALQUER skill ofensiva usada durante um clique de chão pendente (só é
+menos visível nas outras porque elas não teleportam o player).
+
+**Testes**: `tests/test_reengage_chase.py` (novo, 4 casos) — função
+isolada reativa chase e cancela clique/Seguir pendente; nunca toca
+target_entity_id/is_pursuing; não quebra sem PlayerAutoMove (caso
+servidor); cancela "Seguir" também. Bug real pego DURANTE a
+implementação: 2 dos 6 call sites usavam `self.player_entity_id`
+(atributo de instância) só que 1 deles (`ui/systems.py`, função de
+reengajar via SPACE/TAB) na verdade recebe `entity_id` como PARÂMETRO
+local da função, não tem esse atributo — `AttributeError` pego pela
+suíte de regressão antes de comitar, corrigido antes de rodar a suíte
+completa. Suíte completa: 1548 passed, 1 failed (mesmo timing flake de
+sempre, §123, sem relação).
+
+**Não validado**: reprodução manual em jogo (clique de chão longo +
+Interceptar no meio do caminho).

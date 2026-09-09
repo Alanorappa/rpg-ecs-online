@@ -543,11 +543,10 @@ class MouseTargetingSystem(System):
                     if player_cs:
                         player_cs.target_entity_id = target_id
                         player_cs.is_pursuing = True
-                        player_cs.chase_suppressed = False   # reengajamento reativa a perseguição
                         enter_combat(player_cs)
+                        from engine.utils import reengage_chase
+                        reengage_chase(self.world, self.player_entity_id)
                     if player_auto:
-                        player_auto.ground_target = None
-                        player_auto.path.clear()
                         player_auto.path_recalc_timer = 0.0
                 else:
                     # Clique direito no chão → move para aquele tile
@@ -1411,11 +1410,10 @@ class PlayerInputSystem(System):
         if combat_state:
             combat_state.target_entity_id = best_eid
             combat_state.is_pursuing = True
-            combat_state.chase_suppressed = False   # reengajamento reativa a perseguição
             enter_combat(combat_state)
+            from engine.utils import reengage_chase
+            reengage_chase(self.world, entity_id)
         if auto_move:
-            auto_move.ground_target = None
-            auto_move.path.clear()
             auto_move.path_recalc_timer = 0.0
 
         # Ataca imediatamente se já estiver no alcance
@@ -4456,7 +4454,16 @@ class SkillSystem(System, SkillHandlers):
             from engine.stat_fns import enter_combat as _ec_pre
             _ec_pre(combat_state)
             combat_state.is_pursuing = True
-            combat_state.chase_suppressed = False   # reengajamento reativa a perseguição
+            # reengage_chase cancela clique de chão/"Seguir" pendente —
+            # sem isso, usar a skill (ex: Interceptar) enquanto um clique
+            # de chão ainda está em andamento reativava o auto-chase sem
+            # cancelar o auto-move de chão, e os dois competiam pela
+            # posição do player todo frame (zigue-zague entre o tile
+            # clicado e o alvo — bug real relatado pelo usuário
+            # 09/09/2026, ver PROBLEMAS_ARQUITETURA.md §127). Mesma
+            # classe de bug já corrigida pra clique em NPC (§112).
+            from engine.utils import reengage_chase
+            reengage_chase(self.world, self.player_entity_id)
 
             # Range check — apenas para skills que exigem alvo explícito
             if _needs_target and _target_local != -1:
