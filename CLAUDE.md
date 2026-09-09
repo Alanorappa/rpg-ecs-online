@@ -452,6 +452,24 @@ padrão a quebrar, não só os bugs individuais.
   "pesquisar antes de codar" já existir, o que prova que reciclar
   pesquisa de um tópico mais amplo não substitui pesquisar a decisão
   específica em jogo).
+- **Animação BASE de personagem** (idle/andar, qualquer direção, qualquer
+  classe — não confundir com override TEMPORÁRIO de aparência acima) →
+  `engine/character_animation.py::get_character_frame(class_id, state,
+  direction, anim_time_ms)` — convenção de arquivo
+  `assets/sprites/{class_id}_{idle|run}_{down|up|left|right}.png`
+  (sheet cortado em frames de 32px de largura, `class_id` sempre em
+  português — mesmo valor de `CharacterStats.class_id`/
+  `RemoteControlled.class_id`, nunca uma tradução nova). Implementação
+  incremental por decisão do usuário (09/09/2026): arquivo ausente →
+  `None` → `RenderSystem` cai pro retângulo colorido de sempre, nunca
+  erro nem placeholder. `direction` vem de `TileMovement.facing`
+  (gravado por `TileMovementSystem` a cada passo real, via
+  `engine.utils.facing_from_delta` — NUNCA recalcular esse delta em
+  outro lugar). "left"/"right" sem arquivo próprio herdam o espelho
+  horizontal do lado oposto automaticamente — pintar só 1 dos 2 lados é
+  suficiente. `RenderSystem` só tenta isso pra entidades com `class_id`
+  resolvível (`CharacterStats` local ou `RemoteControlled` remoto) —
+  mob/NPC continuam retângulo, sem mudança.
 - **Entry point server-side novo que executa handler compartilhado em nome
   de um player** (skill/spell/projectile/channeling) →
   `WorldServer.register_map_services_for(player_eid)` ANTES do handler —

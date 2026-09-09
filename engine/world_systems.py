@@ -4336,6 +4336,16 @@ class TileMovementSystem(System):
                     _h = _rend.height if _rend else 24
                     DASH_TRAIL.emit(position.x, position.y, _w, _h)
 
+                # Direção pra animação de personagem (client-only,
+                # servidor nunca lê) — target/current ficam estáveis
+                # durante todo o passo, então recalcular todo tick é
+                # redundante mas barato; mais simples que só calcular 1x
+                # no primeiro frame do passo.
+                from engine.utils import facing_from_delta as _facing_from_delta
+                tile_movement.facing = _facing_from_delta(
+                    tile_movement.target_tile_x - tile_movement.current_tile_x,
+                    tile_movement.target_tile_y - tile_movement.current_tile_y)
+
                 tile_movement.progress += dt / tile_movement.move_duration
                 tile_movement.progress = min(tile_movement.progress, 1.0)
 

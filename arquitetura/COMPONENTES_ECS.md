@@ -23,7 +23,7 @@
 
 | Componente | Campos principais | Notas |
 |-----------|-------------------|-------|
-| `TileMovement(current_tile_x/y, target_tile_x/y, progress, speed, slow_mult, elevation, is_dash)` | estado de movimento em grid | `slow_mult` setado por StatusEffectSystem. **Online:** `_server_dir_x/_server_dir_y` injetados em runtime por `_process_skill_requests` para skills direcionais |
+| `TileMovement(current_tile_x/y, target_tile_x/y, progress, speed, slow_mult, elevation, is_dash, facing)` | estado de movimento em grid | `slow_mult` setado por StatusEffectSystem. `facing` ("down"/"up"/"left"/"right", default "down") gravado por `TileMovementSystem` a cada passo real via `engine.utils.facing_from_delta` — client-only (usado por `RenderSystem` pra escolher sprite de personagem, ver `engine/character_animation.py`); servidor nunca lê. **Online:** `_server_dir_x/_server_dir_y` injetados em runtime por `_process_skill_requests` para skills direcionais |
 | `PlayerAutoMove(active, path, ground_target, follow_eid)` | auto-move por clique + "Seguir" player | path é lista de (tx,ty); `follow_eid` = eid local do player seguido (botão Seguir do modal de interação, -1 = não seguindo) |
 | `InitialPosition(x,y)` | posição de spawn do mob | usado por DeathHandlerSystem para respawn zone |
 

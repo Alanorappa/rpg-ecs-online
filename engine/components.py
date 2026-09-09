@@ -1276,6 +1276,15 @@ class TileMovement:
     _last_valid_tile_x: int = -1
     _last_valid_tile_y: int = -1
     _last_valid_ts:     float = 0.0
+    # Direção cardinal (4 vias) pra animação de personagem — atualizada
+    # por TileMovementSystem a cada passo real (ver facing_from_delta,
+    # engine/utils.py), a partir do delta target-current. Só o CLIENTE
+    # usa pra escolher o sprite (ui/systems.py::RenderSystem via
+    # engine/character_animation.py); servidor nunca lê, mesmo padrão
+    # de outros campos client/server-específicos já neste componente
+    # (_server_dir_x/_server_dir_y são o inverso: só servidor usa).
+    # Default "down" = mesma direção do único sprite que existe hoje.
+    facing: str = "down"
 
 
 @dataclass

@@ -82,6 +82,20 @@ def chebyshev(ax: int, ay: int, bx: int, by: int) -> int:
     return max(abs(ax - bx), abs(ay - by))
 
 
+def facing_from_delta(dx: int, dy: int) -> str:
+    """Direção cardinal (4 vias) pra animação de personagem, a partir do
+    delta de tile de um passo (target - current). Empate na diagonal
+    (abs(dx)==abs(dy), ex: (1,1)) — eixo vertical ganha (critério
+    arbitrário, mas consistente); dx==dy==0 cai no default "down" (não
+    deveria ser chamado nesse caso — só faz sentido durante um passo
+    real, `TileMovement.is_moving`)."""
+    if dy == 0 and dx == 0:
+        return "down"
+    if abs(dy) >= abs(dx):
+        return "down" if dy > 0 else "up"
+    return "right" if dx > 0 else "left"
+
+
 def in_aoi(cx: int, cy: int, ex: int, ey: int, radius: int) -> bool:
     """Retorna True se (ex, ey) está dentro do AOI centrado em (cx, cy).
 

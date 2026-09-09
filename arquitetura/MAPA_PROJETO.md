@@ -222,6 +222,15 @@ rpg_ecs_online/
 │   │                                  (CombatStats.camouflage_*/StatusEffects), já sincronizado
 │   │                                  por outro caminho. Passou por 4 tentativas até acertar —
 │   │                                  ver PROBLEMAS_ARQUITETURA.md
+│   ├── character_animation.py      ← NOVO (09/09/2026): animação BASE de personagem
+│   │                                  (idle/run × 4 direções × class_id), implementação
+│   │                                  incremental — get_character_frame() retorna None se o
+│   │                                  arquivo `{class_id}_{idle|run}_{direction}.png` ainda não
+│   │                                  existir (RenderSystem cai pro retângulo do pygame).
+│   │                                  Espelha "left"/"right" quando só existe o arquivo do lado
+│   │                                  oposto. Irmão CONCEITUAL de entity_disguise.py (mesmo
+│   │                                  padrão de cache/corte de sheet), mas diferente: aparência
+│   │                                  SEMPRE presente, não override condicional
 │   └── faction_system.py           ← can_engage()/is_hostile()/get_relationship_between()
 │
 ├── ui/                              ← ONLINE-ONLY na prática: client-only mesmo

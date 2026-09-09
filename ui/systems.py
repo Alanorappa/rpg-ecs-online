@@ -1658,7 +1658,39 @@ class RenderSystem(System):
                     # outros players (ver CombatState.is_bush_hidden).
                     self.world_surf.blit(fill_surf((rect.width, rect.height), (*renderable.color[:3], 127)), rect.topleft)
                 else:
-                    pygame.draw.rect(self.world_surf, renderable.color, rect)
+                    # Animação base de personagem (09/09/2026, pedido do
+                    # usuário — implementação incremental, ver
+                    # engine/character_animation.py). Só players (local
+                    # via CharacterStats, remoto via RemoteControlled) —
+                    # mob/NPC continuam 100% retângulo, sem class_id pra
+                    # resolver sprite nenhum. Corpo/espírito/bush-hidden
+                    # (branches acima) continuam com o tratamento visual
+                    # de retângulo que já tinham — este branch só cobre o
+                    # caso "vivo, sem estado visual especial".
+                    _char_id_rnd = None
+                    if _is_local_player:
+                        _cs_rnd = self.world.get_component(entity_id, CharacterStats)
+                        _char_id_rnd = _cs_rnd.class_id if _cs_rnd else None
+                    else:
+                        _rc_rnd = self.world.get_component(entity_id, RemoteControlled)
+                        _char_id_rnd = _rc_rnd.class_id if _rc_rnd else None
+
+                    _char_frame = None
+                    if _char_id_rnd:
+                        _tm_rnd = self.world.get_component(entity_id, TileMovement)
+                        if _tm_rnd is not None:
+                            from engine.character_animation import get_character_frame as _gcf
+                            _state_rnd = "run" if _tm_rnd.is_moving else "idle"
+                            _char_frame = _gcf(_char_id_rnd, _state_rnd, _tm_rnd.facing,
+                                               pygame.time.get_ticks())
+
+                    if _char_frame is not None:
+                        _csw, _csh = _char_frame.get_size()
+                        _cblit_x = int(draw_x - _csw / 2)
+                        _cblit_y = int(draw_y + 12 - _csh)  # +12 = mesmo offset de pé já usado pra disfarce
+                        self.world_surf.blit(_char_frame, (_cblit_x, _cblit_y))
+                    else:
+                        pygame.draw.rect(self.world_surf, renderable.color, rect)
 
             # ── Efeitos de chão: desenhados NA FRENTE do retângulo da entidade ──
             # Verificação direta em StatusEffects (sem exigir CombatStats) para
