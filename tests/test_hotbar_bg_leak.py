@@ -215,6 +215,11 @@ def test_skill_slot_prefs_to_dict_faz_merge_nao_substitui(monkeypatch):
 
 
 def test_preferred_slot_ignora_slot_ja_ocupado(monkeypatch):
+    """09/09/2026 — `preferred_slot_for_skill` passou a devolver a
+    decisão FINAL de fallback (não mais só a preferência própria/None),
+    ver §129. Slot preferido ocupado por outra skill: cai pro fallback
+    (1º slot vazio), nunca None — os 3 chamadores não fazem mais o
+    próprio fallback."""
     fx, ps = _make_skill_placement_fixture()
     from content.skill_config import SKILL_CATALOG
     from engine.components import PlayerSkills as _PS
@@ -226,10 +231,45 @@ def test_preferred_slot_ignora_slot_ja_ocupado(monkeypatch):
     }}})
     monkeypatch.setattr("config.load", fake_cfg.load)
 
-    assert preferred_slot_for_skill(fx.world, fx.player_entity, ps, "golpe_poderoso") is None, \
-        "slot preferido ocupado por OUTRA skill não deveria ser sugerido"
-    assert preferred_slot_for_skill(fx.world, fx.player_entity, ps, "interceptar") is None, \
-        "sem preferência salva pra essa skill (só golpe_poderoso está no fake config)"
+    assert preferred_slot_for_skill(fx.world, fx.player_entity, ps, "golpe_poderoso") == 0, \
+        "slot preferido (4) ocupado por OUTRA skill -- cai pro 1º vazio (0), nunca None"
+    assert preferred_slot_for_skill(fx.world, fx.player_entity, ps, "interceptar") == 0, \
+        "sem preferência salva pra essa skill -- cai pro 1º vazio (0) igual"
+
+
+def test_preferred_slot_fallback_pula_reserva_de_outra_skill(monkeypatch):
+    """09/09/2026, bug real relatado pelo usuário (§129): skill SEM
+    preferência própria (ex: Golpe Debilitante, nível 3 da BG, nunca
+    aprendida de verdade fora) não deve ocupar de passagem o slot
+    reservado por OUTRA skill que ainda nem existe em `ps.skills` (ex:
+    Vitória Iminente, nível 5, preferência salva = slot 3) — sem esse
+    filtro, quando a skill de nível maior finalmente desbloqueasse, o
+    slot já estaria tomado e ela seria empurrada pra outro lugar
+    permanentemente."""
+    fx, ps = _make_skill_placement_fixture()
+    from ui.skill_slot_prefs import preferred_slot_for_skill
+
+    fake_cfg = _FakeCfgFile({"characters": {"TestChar": {
+        "skill_slot_prefs": {"vitoria_iminente": 3},
+    }}})
+    monkeypatch.setattr("config.load", fake_cfg.load)
+
+    # golpe_debilitante não tem preferência própria e todos os slots
+    # 0-3 estão vazios -- deveria pular o 3 (reserva de vitoria_iminente)
+    # e cair no 0.
+    idx = preferred_slot_for_skill(fx.world, fx.player_entity, ps, "golpe_debilitante")
+    assert idx == 0, f"deveria pular o slot 3 (reserva de outra skill), caiu em {idx}"
+
+    # Preenchendo TODOS os slots exceto o 3 (reservado): agora não tem
+    # slot "seguro" nenhum -- melhor conceder em algum lugar do que não
+    # conceder, cai pro único vazio restante mesmo sendo reserva de outra skill.
+    from content.skill_config import SKILL_CATALOG
+    from engine.components import PlayerSkills as _PS
+    for _i in range(len(ps.skills)):
+        if _i != 3:
+            ps.skills[_i] = _PS._make_skill("golpe_poderoso", SKILL_CATALOG)
+    idx2 = preferred_slot_for_skill(fx.world, fx.player_entity, ps, "golpe_debilitante")
+    assert idx2 == 3, "sem slot seguro nenhum, deveria conceder no único vazio restante"
 
 
 def test_skills_hotbar_usa_preferencia_do_jogador(monkeypatch):
@@ -247,7 +287,58 @@ def test_skills_hotbar_usa_preferencia_do_jogador(monkeypatch):
 
     assert ps.skills[6] is not None and ps.skills[6].skill_id == "interceptar", \
         "deveria ter usado a preferência (slot 6), não a posição sugerida pelo servidor (slot 3)"
-    assert ps.skills[3] is None
+    assert ps.skills[3] is None, \
+        "posição sugerida pelo servidor (slot 3) nunca deveria ter sido usada"
+
+
+def test_skill_temporaria_da_bg_nao_rouba_slot_de_skill_real_que_ainda_vai_desbloquear(monkeypatch):
+    """09/09/2026, bug real relatado pelo usuário (ver
+    PROBLEMAS_ARQUITETURA.md §129) — cenário ponta a ponta: dentro da
+    BG, Golpe Debilitante (nível 3, sem preferência própria — o
+    personagem REAL nunca a aprendeu fora) desbloqueia ANTES de Vitória
+    Iminente (nível 5, preferência real = slot 3). Sem o fix, Golpe
+    Debilitante caía no 1º vazio (slot 3, coincidência de ordem) e
+    Vitória Iminente era empurrada pra outro lugar quando finalmente
+    desbloqueava — permanentemente, mesmo depois de sair da BG e Golpe
+    Debilitante ser removida."""
+    fx, ps = _make_skill_placement_fixture()
+    fake_cfg = _FakeCfgFile({"characters": {"TestChar": {
+        "skill_slot_prefs": {
+            "golpe_poderoso": 0, "interceptar": 1,
+            "vitoria_iminente": 3, "executar": 5,
+        },
+    }}})
+    monkeypatch.setattr("config.load", fake_cfg.load)
+
+    # Nível 3 dentro da BG: golpe_poderoso(1)/interceptar(2)/golpe_debilitante(3)
+    # já desbloqueados -- golpe_debilitante sem preferência própria.
+    fx._handle_msg_stats_update({
+        "eid": fx._my_eid,
+        "skills_hotbar": ["golpe_poderoso", "interceptar", "golpe_debilitante"],
+    })
+    _slot_gd = next(i for i, s in enumerate(ps.skills) if s and s.skill_id == "golpe_debilitante")
+    assert _slot_gd != 3, \
+        "golpe_debilitante não deveria roubar o slot 3 (reserva real de vitoria_iminente)"
+
+    # Nível 5 dentro da BG: vitoria_iminente desbloqueia.
+    fx._handle_msg_stats_update({
+        "eid": fx._my_eid,
+        "skills_hotbar": ["golpe_poderoso", "interceptar", "golpe_debilitante", "vitoria_iminente"],
+    })
+    assert ps.skills[3] is not None and ps.skills[3].skill_id == "vitoria_iminente", \
+        "vitoria_iminente deveria estar no slot 3 (sua preferência real), não empurrada"
+
+    # Saindo da BG: golpe_debilitante é removida (não é skill real do
+    # personagem); vitoria_iminente continua no slot certo.
+    fx._handle_msg_stats_update({
+        "eid": fx._my_eid,
+        "skills_hotbar": ["golpe_poderoso", "interceptar", "vitoria_iminente", "executar"],
+        "in_instance": False,
+    })
+    assert ps.skills[3] is not None and ps.skills[3].skill_id == "vitoria_iminente", \
+        "vitoria_iminente deveria continuar no slot 3 depois de sair da BG"
+    assert all(s is None or s.skill_id != "golpe_debilitante" for s in ps.skills), \
+        "golpe_debilitante (não é skill real) deveria ter sido removida ao sair"
 
 
 def test_skills_hotbar_nunca_retoca_skill_ja_conhecida(monkeypatch):

@@ -384,11 +384,6 @@ class TrainerSystem(UIScaleMixin, System):
         if new_skill:
             from ui.skill_slot_prefs import preferred_slot_for_skill
             idx = preferred_slot_for_skill(self.world, self.player_entity, ps, skill_id)
-            if idx is None:
-                try:
-                    idx = ps.skills.index(None)
-                except ValueError:
-                    idx = None
             if idx is not None:
                 ps.skills[idx] = new_skill
             else:

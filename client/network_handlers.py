@@ -1926,11 +1926,6 @@ class NetworkHandlers:
                             continue
                         from ui.skill_slot_prefs import preferred_slot_for_skill as _psfs_hb
                         _idx_hb = _psfs_hb(self.world, self.player_entity, _ps_hb, sid)
-                        if _idx_hb is None:
-                            try:
-                                _idx_hb = _ps_hb.skills.index(None)
-                            except ValueError:
-                                _idx_hb = None
                         if _idx_hb is not None:
                             _ps_hb.skills[_idx_hb] = _new_sk_hb
                         _known_hb.add(sid)
@@ -2498,11 +2493,6 @@ class NetworkHandlers:
             # pro primeiro slot vazio.
             from ui.skill_slot_prefs import preferred_slot_for_skill as _psfs_sg
             idx = _psfs_sg(self.world, self.player_entity, ps, skill_id)
-            if idx is None:
-                try:
-                    idx = ps.skills.index(None)
-                except ValueError:
-                    idx = None
             if idx is not None:
                 ps.skills[idx] = new_sk
             else:

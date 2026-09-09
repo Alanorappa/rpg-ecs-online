@@ -36,22 +36,49 @@ def preferred_slot_for_skill(world, player_entity: int, ps: "PlayerSkills",
                              skill_id: str) -> "int | None":
     """Slot que o jogador já escolheu pra essa skill antes (dentro OU
     fora da BG, mesma preferência) — só retorna um slot LIVRE (nunca
-    rouba o lugar de outra skill já colocada, cai pro fallback de
-    primeiro slot vazio nesse caso, igual sempre foi). Usado pelos 3
-    pontos que colocam uma skill nova na hotbar: `ui/trainer_system.py::
-    _do_learn`, `client/network_handlers.py::_handle_msg_skill_granted`
-    e o bloco `skills_hotbar` (revelação de skill dentro da instância)."""
+    rouba o lugar de outra skill já colocada). Usado pelos 3 pontos que
+    colocam uma skill nova na hotbar: `ui/trainer_system.py::_do_learn`,
+    `client/network_handlers.py::_handle_msg_skill_granted` e o bloco
+    `skills_hotbar` (revelação de skill dentro da instância) — os 3
+    confiam no valor de retorno já ser a decisão FINAL (nunca fazem seu
+    próprio fallback de "primeiro slot vazio" mais).
+
+    Fallback (09/09/2026, bug real relatado pelo usuário, ver
+    PROBLEMAS_ARQUITETURA.md §129): "primeiro slot vazio" pula qualquer
+    slot que seja a preferência salva de OUTRA skill — mesmo uma que
+    ainda não existe/não desbloqueou. Sem isso, uma skill sem
+    preferência própria (ex: Golpe Debilitante, nível 3 da BG, sem
+    preferência salva porque o personagem real nunca a aprendeu fora)
+    podia ocupar de passagem o slot que outra skill de nível MAIOR (ex:
+    Vitória Iminente, nível 5, com preferência salva = slot 3) ia querer
+    usar — quando a de nível maior finalmente desbloqueava, o slot já
+    estava tomado, e a regra "nunca rouba slot ocupado" a jogava pra
+    outro lugar, permanentemente (skill já conhecida nunca é remexida
+    de novo, nem depois da interlopeira ser removida ao sair da BG). Se
+    TODOS os slots vazios forem reserva de outra skill (raro — melhor
+    conceder a skill em algum lugar do que não conceder), cai pro
+    primeiro vazio puro, sem esse filtro."""
     char_name = _char_name(world, player_entity)
-    if not char_name:
-        return None
-    import config as _cfg
-    prefs = (_cfg.load().get("characters", {})
-                        .get(char_name, {})
-                        .get("skill_slot_prefs", {}))
+    prefs = {}
+    if char_name:
+        import config as _cfg
+        prefs = (_cfg.load().get("characters", {})
+                            .get(char_name, {})
+                            .get("skill_slot_prefs", {}))
+
     idx = prefs.get(skill_id)
     if idx is not None and 0 <= idx < len(ps.skills) and ps.skills[idx] is None:
         return idx
-    return None
+
+    reserved_by_others = {v for k, v in prefs.items() if k != skill_id}
+    for i, slot in enumerate(ps.skills):
+        if slot is None and i not in reserved_by_others:
+            return i
+
+    try:
+        return ps.skills.index(None)
+    except ValueError:
+        return None
 
 
 def skill_slot_prefs_to_dict(ps: "PlayerSkills | None", existing: dict) -> dict:

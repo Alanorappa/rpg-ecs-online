@@ -17302,3 +17302,77 @@ nada que já funcionava. Suíte completa: 1551 passed, 2 failed (mesmos
 
 **Não validado**: reprodução manual em jogo (Interceptar atravessando
 um mob/player no meio do caminho).
+
+## 129. Skill temporária da BG rouba o slot de uma skill real que ainda vai desbloquear (09/09/2026)
+
+Usuário reportou (relato antigo, nunca fechado — o próprio §73 tinha
+essa validação marcada como "pendente, nunca confirmada em jogo")
+depois de sair de uma BG: atalhos que eram 1,2,3,R virarem 1,2,4,R —
+Vitória Iminente saiu do slot 3 pro 4.
+
+**Causa raiz — interação entre 2 regras corretas isoladamente (§73)**:
+1. Skills reais (aprendidas fora da BG) têm slot preferido salvo em
+   `config.json::skill_slot_prefs`.
+2. Dentro da BG, skills são liberadas em ordem fixa por nível
+   (`INSTANCE_SKILL_UNLOCK_ORDER`). Skill que o personagem REAL nunca
+   aprendeu fora (ex: Golpe Debilitante, nível 3) não tem preferência
+   salva — cai no "1º slot vazio" no momento em que aparece.
+3. Se essa skill "temporária" aparecer ANTES (nível 3) de uma skill
+   REAL com preferência salva pra aquele mesmo slot (ex: Vitória
+   Iminente, nível 5, preferência = slot 3) e o 1º vazio nesse momento
+   coincidir, ela ocupa o lugar da skill real ANTES dela nem existir.
+4. Quando a skill real finalmente desbloqueia (nível 5), o slot já
+   está ocupado — a regra "nunca rouba slot ocupado" (deliberada, §73)
+   manda ela pro próximo vazio (slot 4).
+5. Ao sair da BG, a skill temporária é removida (não é real) — o slot
+   3 fica livre de novo — mas a regra "skill já conhecida nunca é
+   remexida" (também deliberada, §73) deixa a skill real presa no
+   fallback pra sempre, mesmo com o lugar certo livre.
+
+**Fix — decisão do usuário, entre 2 opções apresentadas**: impedir o
+roubo na ORIGEM em vez de corrigir só na saída da BG (mais abrangente
+— protege dentro E fora da BG, qualquer ordem de desbloqueio).
+`ui/skill_slot_prefs.py::preferred_slot_for_skill` passa a fazer a
+decisão de fallback COMPLETA internamente (antes só devolvia a
+preferência própria ou `None`, e os 3 chamadores faziam seu próprio
+"1º slot vazio" — 3 cópias da mesma lógica): agora, sem preferência
+própria disponível, escaneia por um slot vazio que NÃO seja a
+preferência salva de NENHUMA outra skill (mesmo uma que ainda não
+existe em `ps.skills`) — só cai no 1º vazio puro (ignorando reservas)
+se todos os vazios estiverem reservados por outra coisa (melhor
+conceder em algum lugar do que não conceder). Os 3 chamadores
+(`ui/trainer_system.py::_do_learn`, `client/network_handlers.py::
+_handle_msg_skill_granted`, bloco `skills_hotbar`) simplificados —
+confiam 100% no retorno da função agora, removido o `ps.skills.
+index(None)` duplicado de cada um.
+
+**Testes**: `tests/test_hotbar_bg_leak.py` — 2 casos novos
+(`test_preferred_slot_fallback_pula_reserva_de_outra_skill`: unidade,
+confirma que pula reserva de outra skill e só usa como último recurso
+quando não há slot seguro nenhum; `test_skill_temporaria_da_bg_nao_
+rouba_slot_de_skill_real_que_ainda_vai_desbloquear`: ponta a ponta,
+reproduz a sequência exata level 3→5→saída da BG) + 1 teste antigo
+(`test_preferred_slot_ignora_slot_ja_ocupado`) atualizado pro novo
+contrato da função (antes retornava `None` quando a preferência própria
+estava ocupada; agora retorna a decisão final de fallback). Bug de
+edição pego durante a escrita do teste (não do código de produção):
+uma asserção legítima do teste ORIGINAL (`assert ps.skills[3] is None`,
+de `test_skills_hotbar_usa_preferencia_do_jogador`) foi arrastada por
+engano pra dentro do MEU teste novo ao inserir conteúdo no meio do
+arquivo — `git diff` confirmou a origem antes de corrigir, devolvida
+pro lugar certo. Suíte completa: 1553 passed, 2 failed (mesmos 2 timing
+flakes de sempre, §123, sem relação).
+
+**Achado importante sobre distribuição**: este fix (e os §126/§127/§128
+anteriores) tocam código do CLIENTE (`ui/`, `client/`) — usuário
+confirmou que testa via pacote buildado (`dist/RPG_Online`), não
+`python main.py` direto do repo. `deploy_server.ps1` só atualiza o
+SERVIDOR — o pacote do cliente precisa ser RECONSTRUÍDO
+(`release_tools/build_client.ps1`) e o usuário precisa trocar pelo
+novo a cada fix client-side, ou vai continuar testando código antigo
+sem perceber. Vale reforçar isso a cada fix client-side daqui pra
+frente, não só no servidor.
+
+**Não validado**: reprodução manual em jogo (subir de nível na BG até
+desbloquear Vitória Iminente depois de uma skill sem preferência,
+sair, confirmar slot).
