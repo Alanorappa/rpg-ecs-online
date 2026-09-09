@@ -416,7 +416,7 @@ def test_try_open_corpse_de_longe_pula_adjacente_mais_proximo_se_ele_for_solido(
 
     class _FakeTileValidationBlockNearest:
         def is_tile_walkable(self, entity_id, tx, ty, from_tx=None,
-                             from_ty=None, ignore_eid=-1):
+                             from_ty=None, ignore_eid=-1, ignore_entities=False):
             return (tx, ty) != (2, 3)   # só (2,3) é sólido
 
     ws_mod._svc_resolver = None
@@ -1726,7 +1726,7 @@ def _make_wasd_pursuit_fixture():
 
     class _FakeTileValidation:
         def is_tile_walkable(self, entity_id, tx, ty, from_tx=None,
-                             from_ty=None, ignore_eid=-1):
+                             from_ty=None, ignore_eid=-1, ignore_entities=False):
             return True
 
     class _FakePathfinding:
@@ -1980,7 +1980,7 @@ def _make_cc_move_fixture():
 
     class _FakeTileValidation:
         def is_tile_walkable(self, entity_id, tx, ty, from_tx=None,
-                             from_ty=None, ignore_eid=-1):
+                             from_ty=None, ignore_eid=-1, ignore_entities=False):
             return True
 
     # _svc_resolver é global de módulo — se um teste de servidor (WorldServer)

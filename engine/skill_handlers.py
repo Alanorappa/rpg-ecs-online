@@ -624,7 +624,12 @@ class SkillHandlers:
 
         Diferente de _has_los (só checa is_solid), também bloqueia cortes diagonais
         entre dois tiles sólidos — replicando exatamente a validação de move_player
-        do servidor.
+        do servidor. `ignore_entities=True` (09/09/2026, pedido do usuário):
+        player/mob/minion/NPC no caminho do dash nunca bloqueiam — só
+        obstáculo sólido de verdade (árvore/pedra/parede/piso). Único
+        chamador hoje é Interceptar; se outra skill de dash reusar esta
+        função no futuro e precisar do comportamento antigo (bloquear em
+        entidade), vira parâmetro — não hardcoded aqui de propósito.
         """
         dx = abs(x1 - x0)
         dy = abs(y1 - y0)
@@ -644,7 +649,8 @@ class SkillHandlers:
             if e2 < dx:
                 err += dx
                 cy  += sy
-            if not is_tile_walkable(self.player_entity_id, cx, cy, prev_x, prev_y):
+            if not is_tile_walkable(self.player_entity_id, cx, cy, prev_x, prev_y,
+                                    ignore_entities=True):
                 return False
 
     # ------------------------------------------------------------------
@@ -688,7 +694,8 @@ class SkillHandlers:
 
         adj = [(tx + dx, ty + dy) for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1))]
         walkable = [t for t in adj
-                    if is_tile_walkable(self.player_entity_id, t[0], t[1])]
+                    if is_tile_walkable(self.player_entity_id, t[0], t[1],
+                                       ignore_entities=True)]
         if not walkable:
             self._warn("Sem espaço ao redor do alvo")
             return

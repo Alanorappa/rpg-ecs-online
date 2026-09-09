@@ -111,16 +111,18 @@ def get_tilemap():
 
 def is_tile_walkable(entity_id: int, tx: int, ty: int,
                      from_tx=None, from_ty=None,
-                     ignore_eid: int = -1) -> bool:
+                     ignore_eid: int = -1, ignore_entities: bool = False) -> bool:
     # Servidor multi-mapa: resolve o tile_validation do bundle do MAPA da
     # PRÓPRIA entidade (guarda automática — ver _svc_resolver acima).
     if _svc_resolver is not None:
         _bundle = _svc_resolver(entity_id)
         if _bundle is not None and getattr(_bundle, 'tile_validation', None) is not None:
             return _bundle.tile_validation.is_tile_walkable(
-                entity_id, tx, ty, from_tx, from_ty, ignore_eid=ignore_eid)
+                entity_id, tx, ty, from_tx, from_ty, ignore_eid=ignore_eid,
+                ignore_entities=ignore_entities)
     return _svc['tile_validation'].is_tile_walkable(entity_id, tx, ty, from_tx, from_ty,
-                                                    ignore_eid=ignore_eid)
+                                                    ignore_eid=ignore_eid,
+                                                    ignore_entities=ignore_entities)
 
 
 def get_mainhand_weapon(world, entity_id: int):
@@ -385,12 +387,23 @@ class TileValidationSystem(System):
                          target_tile_x: int, target_tile_y: int,
                          from_tile_x: int | None = None,
                          from_tile_y: int | None = None,
-                         ignore_eid: int = -1) -> bool:
+                         ignore_eid: int = -1, ignore_entities: bool = False) -> bool:
         """Verifica se o tile destino é acessível para a entidade.
 
         from_tile_x/from_tile_y (opcional): tile de origem para checar colisão
         direcional e regras de elevação. Sem eles, só a colisão base é checada.
         ignore_eid (opcional): ignora ocupação desse entity_id (ex: mob-alvo do chase).
+        ignore_entities (opcional, 09/09/2026): pula TODA a checagem de
+        ocupação por entidade (linha abaixo) — só terreno/objeto sólido
+        (`tile_type.is_solid`) e as regras de piso/elevação continuam
+        bloqueando. Pedido do usuário: Interceptar (e qualquer skill que
+        precise do mesmo comportamento) não deve ser bloqueado por
+        player/mob/minion/NPC no caminho, só por obstáculo sólido de
+        verdade (árvore/pedra/parede) — mesmo espírito que o knockback do
+        Tiro Repulsivo já tinha, só que resolvido lá com um `_is_solid`
+        local próprio (`server/spell_completion_processor.py`) em vez
+        de reusar esta função compartilhada. Ver
+        PROBLEMAS_ARQUITETURA.md §128.
         """
         tilemap_comp = self._get_tilemap_component()
         if not tilemap_comp:
@@ -520,6 +533,9 @@ class TileValidationSystem(System):
                 pass  # permite (elevation não é alterada ao chegar)
             else:
                 return False  # piso diferente, sem passagem
+
+        if ignore_entities:
+            return True
 
         occupant_id = self._occupied.get((target_tile_x, target_tile_y))
         if occupant_id is None or occupant_id == moving_entity_id:

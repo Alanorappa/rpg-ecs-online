@@ -17241,3 +17241,64 @@ sempre, §123, sem relação).
 
 **Não validado**: reprodução manual em jogo (clique de chão longo +
 Interceptar no meio do caminho).
+
+## 128. Interceptar não deve ser bloqueado por entidade (player/mob/minion/NPC), só por obstáculo sólido de verdade (09/09/2026)
+
+Pedido do usuário: Interceptar (e qualquer skill que precise do mesmo
+comportamento) nunca deveria ser bloqueado por outra entidade no
+caminho — só árvore/pedra/parede/etc. Usuário citou "assim como outras
+skills também não bloqueiam" como referência.
+
+**Investigação confirmou a referência do usuário, mas por um mecanismo
+diferente do que ele imaginava**: nenhuma OUTRA skill chama a função
+compartilhada `is_tile_walkable` — o Tiro Repulsivo (knockback do
+arqueiro) já ignora entidade no caminho, só que com uma checagem LOCAL
+própria (`server/spell_completion_processor.py::_is_solid`, só olha
+`tile_matrix[...].is_solid`) em vez de reusar a função compartilhada.
+Interceptar é o único caso que usa `is_tile_walkable` — a mesma função
+que `move_player` usa pra MOVE normal — e essa função checa DUAS coisas
+juntas: solidez de terreno (`tile_type.is_solid`) E ocupação por
+entidade (`TileValidationSystem._occupied`, um cache reconstruído por
+frame com a posição de TODO mundo com `TileMovement`). É a checagem de
+ocupação que bloqueava Interceptar contra mob/player/minion no caminho
+— nunca deveria, já que dash não é passo normal de WASD.
+
+**Fix**: `is_tile_walkable` (módulo `engine/world_systems.py`, função
+E `TileValidationSystem.is_tile_walkable`) ganha `ignore_entities:
+bool = False` — quando `True`, pula SÓ o bloco de ocupação por
+entidade (linhas do `_occupied`), nunca a checagem de solidez real nem
+as regras de piso/elevação. Usado nos 2 pontos do Interceptar
+(`engine/skill_handlers.py::_dash_path_clear`, o Bresenham do caminho
+do dash, e a seleção do tile de destino adjacente ao alvo) — MOVE
+normal (`move_player`) continua chamando sem o parâmetro, comportamento
+intocado. Parâmetro nomeado (não um novo caminho de código) pra
+qualquer skill futura de dash/movimento reusar sem reinventar um
+`_is_solid` local como o Tiro Repulsivo teve que fazer.
+
+**Regressão pega pela suíte antes de comitar**: `tests/test_client_ui.py`
+tinha 3 classes fake (`_FakeTileValidationBlockNearest`/
+`_FakeTileValidation` ×2) simulando `TileValidationSystem` pra testes
+que não precisam do mapa real — nenhuma aceitava o kwarg novo
+(`TypeError: unexpected keyword argument 'ignore_entities'`), porque o
+wrapper de módulo agora SEMPRE repassa esse parâmetro pra qualquer
+`tile_validation` registrado, real ou fake. Corrigido adicionando o
+parâmetro (default `False`, nunca usado pela lógica do fake) nas 3
+assinaturas — lição: um novo parâmetro numa função de serviço
+registrável (`register_services`) precisa ser adicionado em TODO fake
+que a substitui em teste, não só na implementação real.
+
+**Testes**: `tests/test_interceptar_ignores_entities.py` (novo, 4
+casos) — unidade (`ignore_entities` libera tile ocupado por entidade,
+nunca libera tile sólido de verdade) + integração (dash real ignora
+entidade no tile de destino E no meio do caminho do Bresenham). Bug de
+setup pego durante a escrita do teste (não do código de produção):
+mover o mob de teste pra uma tile mais distante (125,374) quebrava o
+cast por um motivo não investigado a fundo (sem warning nenhum
+registrado) — descartado em favor de reusar a configuração já
+validada (mob em 127,374, destino real 128,374) só adicionando o
+bloqueador exatamente no meio do caminho (129,374), sem reposicionar
+nada que já funcionava. Suíte completa: 1551 passed, 2 failed (mesmos
+2 timing flakes de sempre, §123, sem relação).
+
+**Não validado**: reprodução manual em jogo (Interceptar atravessando
+um mob/player no meio do caminho).
