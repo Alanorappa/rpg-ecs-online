@@ -2,11 +2,14 @@
 tests/test_character_animation.py — animação base de personagem
 (09/09/2026, pedido do usuário, implementação incremental).
 
-Cobre 3 peças: `engine.utils.facing_from_delta` (direção pura),
+Cobre 4 peças: `engine.utils.facing_from_delta` (direção pura),
 `engine.character_animation.get_character_frame` (carrega/corta/
-espelha sprite, com fallback None quando o arquivo não existe), e
+espelha sprite, com fallback None quando o arquivo não existe),
 `TileMovementSystem` gravando `TileMovement.facing` durante um passo
-real (integração, não atalho).
+real (integração, não atalho), e o topo do nameplate/HUD em
+`RenderSystem` acompanhando a altura REAL do sprite (não o
+`renderable.height` antigo de 24px — bug real relatado pelo usuário:
+nameplate cobria a metade de cima do sprite de 48px de altura).
 """
 import os, sys
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -74,16 +77,21 @@ class TestGetCharacterFrame(unittest.TestCase):
         self.assertIsNot(f0, f65, "frame deveria avançar após frame_ms (65 default)")
 
     def test_combinacao_inexistente_retorna_none(self):
+        """class_id fictício — não pode depender de quais sprites reais
+        já existem em assets/sprites/ neste momento (o usuário vai
+        adicionando aos poucos)."""
         from engine.character_animation import get_character_frame
-        self.assertIsNone(get_character_frame("guerreiro", "run", "down", 0))
-        self.assertIsNone(get_character_frame("mago", "idle", "down", 0))
+        self.assertIsNone(get_character_frame("classe_inexistente_xyz", "run", "down", 0))
+        self.assertIsNone(get_character_frame("classe_inexistente_xyz", "idle", "down", 0))
 
     def test_left_e_right_sem_arquivo_nenhum_retorna_none_sem_recursao_infinita(self):
         """Regressão: bug real pego testando — sem o guard, left tentava
-        espelhar right, que tentava espelhar left de volta, infinitamente."""
+        espelhar right, que tentava espelhar left de volta, infinitamente.
+        Usa class_id fictício (nunca "guerreiro") — não pode depender de
+        quais sprites reais já existem em assets/sprites/ neste momento."""
         from engine.character_animation import get_character_frame
-        self.assertIsNone(get_character_frame("guerreiro", "idle", "left", 0))
-        self.assertIsNone(get_character_frame("guerreiro", "idle", "right", 0))
+        self.assertIsNone(get_character_frame("classe_inexistente_xyz", "idle", "left", 0))
+        self.assertIsNone(get_character_frame("classe_inexistente_xyz", "idle", "right", 0))
 
     def test_espelha_lado_que_falta_a_partir_do_lado_que_existe(self):
         from engine.character_animation import get_character_frame
@@ -145,6 +153,58 @@ class TestTileMovementSystemSetsFacing(unittest.TestCase):
         self.assertFalse(self.tm.is_moving)
         self.assertEqual(self.tm.facing, "left",
             "facing do último passo real deve continuar valendo enquanto parado")
+
+
+class TestRenderSystemNameplateTopFollowsSpriteHeight(unittest.TestCase):
+    """`guerreiro_idle_down.png` (32x48, real) é quase o dobro da altura
+    do retângulo antigo (24px) — o topo do nameplate precisa subir pra
+    acompanhar, não ficar fixo em `renderable.height/2`."""
+
+    def _make_player(self, world):
+        from engine.components import (Position, Renderable, PlayerControlled,
+                                       CharacterStats, CombatStats, TileMovement)
+        eid = world.create_entity()
+        world.add_component(eid, Position(x=100, y=100, prev_x=100, prev_y=100))
+        world.add_component(eid, Renderable(color=(40, 50, 60), width=24, height=24))
+        world.add_component(eid, PlayerControlled())
+        world.add_component(eid, CharacterStats(name="Herói", class_id="guerreiro"))
+        cs = CombatStats()
+        cs.max_hp = 100
+        cs.current_hp = 100
+        world.add_component(eid, cs)
+        tm = TileMovement()
+        tm.is_moving = False
+        tm.facing = "down"
+        world.add_component(eid, tm)
+        return eid
+
+    def test_topo_do_hud_usa_altura_do_sprite_nao_do_retangulo_antigo(self):
+        from engine.world import World
+        from ui.systems import RenderSystem
+        from ui.world_labels import WORLD_LABELS
+
+        world = World()
+        eid = self._make_player(world)
+        screen = pygame.display.get_surface()
+        rs = RenderSystem(world, screen)
+
+        WORLD_LABELS._pending.clear()
+        WORLD_LABELS._stack_offset.clear()
+        rs.render(0, 0, nameplate_mode=0)
+
+        # Todo elemento empilhado pra este entity_id usa o MESMO
+        # world_y de topo (stack_key=eid) — a barra de HP é o 1º.
+        entries = [e for e in WORLD_LABELS._pending]
+        self.assertTrue(entries, "deveria ter enfileirado pelo menos a barra de HP")
+        hud_top_world_y = entries[0][1]
+
+        # Sprite real é 32x48; âncora de pé é position.y+12 (mesmo
+        # offset usado pro blit) — topo esperado = position.y+12-48.
+        self.assertAlmostEqual(hud_top_world_y, 100 + 12 - 48)
+        # Regressão: NÃO pode ser o cálculo antigo (baseado em
+        # renderable.height=24), que ficaria bem mais baixo — dentro do
+        # próprio sprite.
+        self.assertNotAlmostEqual(hud_top_world_y, 100 - 24 / 2)
 
 
 if __name__ == "__main__":

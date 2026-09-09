@@ -1577,6 +1577,15 @@ class RenderSystem(System):
             # de fato o jogador local — barato (1 entidade por cliente).
             _is_local_player = self.world.get_component(entity_id, PlayerControlled) is not None
             _combat_state_draw = self.world.get_component(entity_id, CombatState) if _is_local_player else None
+            # Altura real do sprite de personagem desenhado (None = nenhum,
+            # caiu no retângulo) — setado no branch de desenho abaixo,
+            # consumido pelo cálculo de topo do HUD (nameplate/HP) mais
+            # adiante NA MESMA iteração. Precisa ser resetado aqui (não só
+            # no branch que a seta) — senão uma entidade que cai no
+            # retângulo herdaria por acidente a altura do sprite da
+            # entidade anterior no loop (bug real pego revisando antes de
+            # existir em produção).
+            _char_sprite_h_for_hud = None
 
             draw_x = position.x - camera_offset_x
             draw_y = position.y - camera_offset_y
@@ -1689,6 +1698,7 @@ class RenderSystem(System):
                         _cblit_x = int(draw_x - _csw / 2)
                         _cblit_y = int(draw_y + 12 - _csh)  # +12 = mesmo offset de pé já usado pra disfarce
                         self.world_surf.blit(_char_frame, (_cblit_x, _cblit_y))
+                        _char_sprite_h_for_hud = _csh
                     else:
                         pygame.draw.rect(self.world_surf, renderable.color, rect)
 
@@ -1741,6 +1751,19 @@ class RenderSystem(System):
                     _spr_hud = TILE_SPRITES.get_raw_sprite(renderable.sprite_id)
                     _spr_h_hud = _spr_hud.get_height() if _spr_hud else renderable.height
                     _hud_top_world_y = position.y + TILE_SIZE / 2 - _spr_h_hud
+                elif _char_sprite_h_for_hud is not None:
+                    # Animação de personagem (09/09/2026) — mesma ideia do
+                    # branch de sprite_id acima (sobe o topo do HUD pra
+                    # acompanhar a altura REAL do sprite, não o
+                    # renderable.height antigo de 24px), só que com o
+                    # offset de pé "+12" já usado pro próprio sprite (ver
+                    # branch de desenho acima), não "+TILE_SIZE/2" — são
+                    # convenções de âncora diferentes (objeto de mapa vs.
+                    # personagem). Sem isso, o nameplate cobria a metade de
+                    # cima do sprite (guerreiro_idle_down.png é 48px de
+                    # altura, quase o DOBRO do retângulo de 24px que
+                    # existia antes — bug real relatado pelo usuário).
+                    _hud_top_world_y = position.y + 12 - _char_sprite_h_for_hud
                 else:
                     _hud_top_world_y = position.y - renderable.height / 2
                 _hud_surf = None
