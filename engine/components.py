@@ -1285,6 +1285,21 @@ class TileMovement:
     # (_server_dir_x/_server_dir_y são o inverso: só servidor usa).
     # Default "down" = mesma direção do único sprite que existe hoje.
     facing: str = "down"
+    # Grace cosmético (client-only) pra animação de personagem NÃO
+    # piscar pro estado "idle" no frame exato em que um passo termina
+    # (`is_moving` vira False) — `PlayerInputSystem` (ordem 5, ver
+    # game.py) roda ANTES de `TileMovementSystem` (ordem 23) todo
+    # frame; no frame em que o passo termina, o passo SEGUINTE só é
+    # iniciado no PRÓXIMO frame, deixando exatamente 1 frame com
+    # `is_moving=False` no meio de uma caminhada contínua — bug real
+    # relatado pelo usuário: piscava a animação "idle" (ou o retângulo
+    # de fallback trocava pra idle) andando em qualquer direção.
+    # `TileMovementSystem` seta pra `ANIM_WALK_GRACE_S` quando o passo
+    # termina e decrementa todo tick; `RenderSystem` trata
+    # `is_moving or anim_walk_grace_s > 0` como "ainda andando" pra
+    # escolher a animação. Puramente cosmético — NUNCA usado por
+    # gameplay/combate (que continuam lendo só `is_moving` puro).
+    anim_walk_grace_s: float = 0.0
 
 
 @dataclass

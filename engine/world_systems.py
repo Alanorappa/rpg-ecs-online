@@ -4301,7 +4301,8 @@ class TauntSystem(System):
 
 
 class TileMovementSystem(System):
-    FOOTSTEP_INTERVAL = 0.20  # segundos mínimos entre passos
+    FOOTSTEP_INTERVAL   = 0.20  # segundos mínimos entre passos
+    ANIM_WALK_GRACE_S    = 0.1  # ver TileMovement.anim_walk_grace_s
 
     def __init__(self, world: World):
         self.world = world
@@ -4310,6 +4311,8 @@ class TileMovementSystem(System):
     def update(self, events: list = None, dt: float = 0) -> None:
         self._footstep_timer = max(0.0, self._footstep_timer - dt)
         for entity_id, position, tile_movement in self.world.get_entities_with(Position, TileMovement):
+            if tile_movement.anim_walk_grace_s > 0:
+                tile_movement.anim_walk_grace_s = max(0.0, tile_movement.anim_walk_grace_s - dt)
             if tile_movement.is_moving:
                 # Stun/sleep interrompe um passo normal já em andamento — sem isso,
                 # um mob que estava no meio de um chase-step (iniciado por
@@ -4358,6 +4361,7 @@ class TileMovementSystem(System):
                     tile_movement.current_tile_x = tile_movement.target_tile_x
                     tile_movement.current_tile_y = tile_movement.target_tile_y
                     tile_movement.is_moving = False
+                    tile_movement.anim_walk_grace_s = self.ANIM_WALK_GRACE_S
                     # Baseline anti-cheat (WorldServer.move_player()): dash do
                     # Interceptar termina AQUI (é o mesmo tween de qualquer
                     # movimento, só com move_duration curto) — sem isto, o

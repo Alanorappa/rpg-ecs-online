@@ -107,3 +107,18 @@ def get_character_frame(class_id: str, state: str, direction: str,
         return None
     idx = (anim_time_ms // frame_ms) % len(frames)
     return frames[idx]
+
+
+def resolve_anim_state(tile_movement) -> str:
+    """"idle" ou "run" pra animação — ponto único de verdade pra "o que
+    conta como andando" (09/09/2026). NÃO é só `tile_movement.is_moving`
+    puro: `anim_walk_grace_s` (setado por `TileMovementSystem` no
+    instante em que um passo termina) cobre o frame único em que
+    `is_moving` pisca False no MEIO de uma caminhada contínua —
+    `PlayerInputSystem` (ordem 5) só inicia o passo seguinte no PRÓXIMO
+    frame, depois de `TileMovementSystem` (ordem 23) já ter terminado o
+    atual no frame corrente. Sem esse grace, a animação flicava pro
+    estado "idle" àquele frame, pra qualquer direção (bug real relatado
+    pelo usuário). Puramente cosmético — combate/gameplay continuam
+    lendo `is_moving` puro, nunca isto."""
+    return "run" if (tile_movement.is_moving or tile_movement.anim_walk_grace_s > 0) else "idle"

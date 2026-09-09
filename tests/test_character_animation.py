@@ -154,6 +154,89 @@ class TestTileMovementSystemSetsFacing(unittest.TestCase):
         self.assertEqual(self.tm.facing, "left",
             "facing do último passo real deve continuar valendo enquanto parado")
 
+    def test_passo_completar_liga_grace_de_animacao(self):
+        self._start_step(dx=1, dy=0)
+        self.sys.update(dt=1.0)   # completa o passo
+        self.assertFalse(self.tm.is_moving)
+        self.assertGreater(self.tm.anim_walk_grace_s, 0.0)
+
+    def test_grace_decai_com_o_tempo_ate_zerar(self):
+        self._start_step(dx=1, dy=0)
+        self.sys.update(dt=1.0)   # completa o passo, liga o grace
+        grace_inicial = self.tm.anim_walk_grace_s
+        self.sys.update(dt=grace_inicial + 1.0)   # dt grande o bastante pra zerar
+        self.assertEqual(self.tm.anim_walk_grace_s, 0.0)
+
+
+class TestResolveAnimState(unittest.TestCase):
+    """Ponto único de verdade pra "o que conta como andando" na
+    animação — não é só `is_moving` puro (ver docstring da função)."""
+
+    def _fake_tm(self, is_moving: bool, grace: float):
+        from engine.components import TileMovement
+        tm = TileMovement()
+        tm.is_moving = is_moving
+        tm.anim_walk_grace_s = grace
+        return tm
+
+    def test_andando_e_run(self):
+        from engine.character_animation import resolve_anim_state
+        self.assertEqual(resolve_anim_state(self._fake_tm(True, 0.0)), "run")
+
+    def test_parado_sem_grace_e_idle(self):
+        from engine.character_animation import resolve_anim_state
+        self.assertEqual(resolve_anim_state(self._fake_tm(False, 0.0)), "idle")
+
+    def test_parado_com_grace_ainda_ativo_e_run(self):
+        from engine.character_animation import resolve_anim_state
+        self.assertEqual(resolve_anim_state(self._fake_tm(False, 0.05)), "run")
+
+    def test_caminhada_continua_2_passos_nunca_pisca_idle_no_meio(self):
+        """Reproduz o bug real relatado: 2 passos consecutivos (como
+        segurar WASD) não devem passar por um frame "idle" no meio,
+        mesmo com `is_moving` piscando False entre um passo e outro."""
+        from engine.world import World
+        from engine.components import Position, TileMovement
+        from engine.world_systems import TileMovementSystem
+        from engine.character_animation import resolve_anim_state
+        from shared.constants import TILE_SIZE
+
+        world = World()
+        eid = world.create_entity()
+        world.add_component(eid, Position(x=0, y=0))
+        tm = TileMovement()
+        world.add_component(eid, tm)
+        sys = TileMovementSystem(world)
+
+        def start_step(dx, dy):
+            tm.current_tile_x = 5
+            tm.current_tile_y = 5
+            tm.target_tile_x  = 5 + dx
+            tm.target_tile_y  = 5 + dy
+            tm.start_pixel_x  = 5 * TILE_SIZE
+            tm.start_pixel_y  = 5 * TILE_SIZE
+            tm.target_pixel_x = (5 + dx) * TILE_SIZE
+            tm.target_pixel_y = (5 + dy) * TILE_SIZE
+            tm.progress    = 0.0
+            tm.is_moving   = True
+            tm.move_duration = 0.2
+
+        start_step(1, 0)
+        # PlayerInputSystem já rodou (iniciou o passo, is_moving=True) —
+        # simula TileMovementSystem completando o passo NO MESMO frame.
+        sys.update(dt=1.0)
+        self.assertFalse(tm.is_moving)
+        # Frame do "gap": PlayerInputSystem ainda não rodou de novo
+        # neste teste (roda só no próximo frame, ordem real do jogo) —
+        # é EXATAMENTE o frame que piscava "idle" antes do fix.
+        self.assertEqual(resolve_anim_state(tm), "run",
+            "grace deveria cobrir o frame entre 2 passos de uma caminhada contínua")
+
+        # Próximo frame: PlayerInputSystem inicia o 2º passo (segurando a tecla).
+        start_step(1, 0)
+        sys.update(dt=0.05)   # meio do 2º passo
+        self.assertEqual(resolve_anim_state(tm), "run")
+
 
 class TestRenderSystemNameplateTopFollowsSpriteHeight(unittest.TestCase):
     """`guerreiro_idle_down.png` (32x48, real) é quase o dobro da altura

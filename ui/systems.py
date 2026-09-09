@@ -1688,8 +1688,9 @@ class RenderSystem(System):
                     if _char_id_rnd:
                         _tm_rnd = self.world.get_component(entity_id, TileMovement)
                         if _tm_rnd is not None:
-                            from engine.character_animation import get_character_frame as _gcf
-                            _state_rnd = "run" if _tm_rnd.is_moving else "idle"
+                            from engine.character_animation import (
+                                get_character_frame as _gcf, resolve_anim_state as _ras)
+                            _state_rnd = _ras(_tm_rnd)
                             _char_frame = _gcf(_char_id_rnd, _state_rnd, _tm_rnd.facing,
                                                pygame.time.get_ticks())
 
