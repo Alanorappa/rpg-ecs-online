@@ -632,6 +632,27 @@ class SessionManager:
                 "from_ty": payload.get("from_ty", ty),
             })
         else:
+            # Rejeição especificamente por dash (Interceptar) em andamento
+            # (mesmo guard de `WorldServer.move_player`, `tm.is_dash and
+            # tm.is_moving`) NUNCA manda correção — `get_tile_pos()` lê
+            # `TileMovement.current_tile_x/y`, que só atualiza quando o
+            # tween do dash COMPLETA (`TileMovementSystem`), então durante
+            # o dash ela sempre aponta pra tile de ANTES dele. Um MOVE
+            # residual de WASD (comum perto de parede/torre — mais MOVE
+            # tentado/rejeitado bem na hora do cast) chegando nesse guard
+            # mandaria essa posição stale de volta; se essa correção
+            # chegar ao cliente DEPOIS da animação do dash já ter
+            # terminado localmente, o cliente aplica (sem saber que é
+            # velha) e "desfaz" um dash que era legítimo — bug real
+            # relatado pelo usuário (08/09/2026, ver
+            # PROBLEMAS_ARQUITETURA.md §126). O dash já tem confirmação
+            # própria (via `consume_skill_position_corrections`,
+            # despachada em `_dispatch_tick_deltas`) — não precisa (e não
+            # deve) de correção nenhuma vinda daqui.
+            from engine.components import TileMovement as _TMMoveRej
+            tm_rej = self.world_server.world.get_component(session.entity_id, _TMMoveRej)
+            if tm_rej is not None and tm_rej.is_dash and tm_rej.is_moving:
+                return
             real_tx, real_ty = self.world_server.get_tile_pos(session.session_id)
             await session.send(MsgType.ENTITY_MOVE, {
                 "eid":     session.entity_id,

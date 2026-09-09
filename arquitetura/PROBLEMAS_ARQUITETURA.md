@@ -17093,3 +17093,81 @@ partida de BG real ainda pendente (usuário vai testar).
 **Pendente**: poção/comida pro bot (decisão consciente de adiar,
 precisa de kit inicial novo + tradução catálogo→payload que hoje só o
 cliente real faz); TLS/wss (aberto desde §123).
+
+## 126. Interceptar: dash completa e DEPOIS é desfeito, mais comum perto de parede/torre (09/09/2026)
+
+Usuário relatou: usando Interceptar, o personagem às vezes faz o dash
+inteiro e depois "volta", como se o servidor tivesse corrigido. Mais
+comum perto de parede/torre; acontece tanto em mundo aberto (vs mob)
+quanto em BG (vs bot/jogador). Investigado com 3 agentes em paralelo
+(cliente, servidor, histórico §84/§87) antes de codar — nenhum decidido
+sozinho, design revisado com o usuário antes do fix.
+
+**1ª hipótese, DESCARTADA após verificação mais funda**: pensei que
+fosse pacote fora de ordem (comparar `seq` da correção contra o `seq`
+da última confirmação de dash, ignorar se mais antigo) — errado.
+WebSocket roda sobre TCP, que garante ordem de entrega; o pacote
+problemático não está fora de ordem, ele chega na hora certa E na
+ordem certa, só que carrega DADO ERRADO. **Lição**: antes de propor um
+fix pra "corrida de rede", confirmar a garantia de ordenação da camada
+de transporte real — "chegou depois" não implica "foi enviado depois"
+só quando a camada NÃO garante ordem; aqui garante, então a explicação
+tinha que estar em outro lugar.
+
+**Causa raiz real**: `server/session.py::_handle_move` manda uma
+correção de posição pro PRÓPRIO cliente **sempre** que
+`WorldServer.move_player()` rejeita um `MOVE`, usando
+`get_tile_pos()` → `TileMovement.current_tile_x/y`. Esse campo só é
+atualizado quando o TWEEN do dash **completa**
+(`TileMovementSystem`, `progress>=1.0`) — durante o dash inteiro ele
+aponta pra tile de ANTES dele (design original do campo, intocado
+desde §87). O guard que já existe em `move_player`
+(`if tm.is_dash and tm.is_moving: return False`, §87) protege
+corretamente o dash de ser SOBRESCRITO por um MOVE comum — mas
+`_handle_move` não sabia dessa distinção: mandava a mesma correção
+genérica pra QUALQUER motivo de rejeição, inclusive esse. Um MOVE
+residual de WASD (mais comum perto de parede/torre — o jogador tende a
+ter tentado se posicionar/contornar o obstáculo bem na hora que aperta
+Interceptar) rejeitado especificamente por "dash em andamento" gera
+essa correção com a tile PRÉ-dash; se ela chegar ao cliente **depois**
+que a animação do dash já tiver terminado localmente (é rápida, 0.18s),
+o cliente aplica sem saber que é velha — código genérico de correção,
+`client/network_handlers.py::_handle_msg_entity_move`, ramo
+"DESYNC_CORR" — e desfaz um dash 100% legítimo. É um snap instantâneo
+(`Position.x/y` sobrescrito direto), não uma 2ª animação — por isso
+parece "volta" e não "anda de volta".
+
+Investigação achada como "prima" de um bug quase idêntico já resolvido
+em 22/07/2026 (`ui/systems.py:4691-4702`): removemos TODA predição
+local do cast do Interceptar por causa de um "loop de dash e volta"
+parecido — mas aquela causa era antecipação client-side antes da
+confirmação; esta é uma fonte DIFERENTE (servidor mandando dado
+stale), nunca coberta pelos fixes anteriores. §84/§87 (30-31/08/2026)
+resolveram 2 causas de dessincronia de Interceptar bem específicas
+(relógio de grace duplicado; MOVE sobrescrevendo campos do dash EM
+ANDAMENTO) — confirmados intactos hoje, nenhum dos dois cobria "MOVE
+rejeitado gerando correção com dado stale APÓS o dash já ter
+completado". Não é regressão de nada — é um gap genuinamente não
+coberto antes.
+
+**Fix**: `_handle_move` passa a checar, quando `move_player` rejeita,
+se `tm.is_dash and tm.is_moving` — se sim, não manda correção NENHUMA
+(o dash já tem confirmação própria, via
+`consume_skill_position_corrections`/`_dispatch_tick_deltas`; essa
+posição seria sempre errada nesse caso específico). Qualquer OUTRO
+motivo de rejeição (parede, orçamento de velocidade) continua mandando
+a correção de sempre, comportamento intocado.
+
+**Testes**: `tests/test_interceptar_move_correction_race.py` (novo, 3
+casos) — rejeição por dash em andamento não manda correção; rejeição
+por outro motivo continua mandando; MOVE aceito não é afetado. Suíte
+completa: 1544 passed, 1 failed (mesmo timing flake de sempre, §123).
+Achado colateral durante a verificação: uma comparação via `git stash`
+pra confirmar que uma falha pontual de outro teste (fora do escopo
+deste fix) não era regressão ficou contaminada porque o Docker/Postgres
+local subiu NO MEIO da execução da suíte — lição registrada: confirmar
+o estado do ambiente ANTES de rodar uma comparação, não confiar em
+"estava rodando há pouco".
+
+**Não validado**: reprodução manual em jogo pelo usuário (perto de
+torre, Interceptar repetido).
