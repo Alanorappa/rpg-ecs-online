@@ -471,7 +471,14 @@ padrão a quebrar, não só os bugs individuais.
   tick pra acompanhar um alvo que se move — 09/09/2026, bug real
   relatado pelo usuário: atacava um mob atrás dele "olhando" pra outro
   lado. Os dois casos via `engine.utils.facing_from_delta` — NUNCA
-  recalcular esse delta em outro lugar). "left"/"right" sem arquivo próprio herdam o espelho
+  recalcular esse delta em outro lugar). `facing_from_delta` corta por
+  ÂNGULO a partir do eixo vertical (0°=reto pra baixo/cima), não por
+  magnitude relativa — down/up só dentro de
+  `_VERTICAL_FACING_HALF_ANGLE_DEG` (20°) de cada lado do vertical;
+  fora desse cone estreito (os 70° restantes de cada quadrante,
+  inclusive a diagonal exata de 45°), left/right (10/09/2026, decisão
+  do usuário — antes era um corte simétrico 45/45 via
+  `abs(dy)>=abs(dx)`). "left"/"right" sem arquivo próprio herdam o espelho
   horizontal do lado oposto automaticamente — pintar só 1 dos 2 lados é
   suficiente. `RenderSystem` só tenta isso pra entidades com `class_id`
   resolvível (`CharacterStats` local ou `RemoteControlled` remoto) —

@@ -43,6 +43,11 @@ class _BlitSpySurface(pygame.Surface):
 
 
 class TestFacingFromDelta(unittest.TestCase):
+    """10/09/2026, pedido do usuário: corte por ÂNGULO a partir do eixo
+    vertical (0°=reto pra baixo/cima), não mais um corte simétrico
+    45/45 — down/up só dentro de um cone estreito de
+    `_VERTICAL_FACING_HALF_ANGLE_DEG` (20°) de cada lado do vertical;
+    fora disso (os 70° restantes de cada quadrante), left/right."""
 
     def test_direcoes_cardinais(self):
         self.assertEqual(facing_from_delta(0, 1), "down")
@@ -50,18 +55,38 @@ class TestFacingFromDelta(unittest.TestCase):
         self.assertEqual(facing_from_delta(1, 0), "right")
         self.assertEqual(facing_from_delta(-1, 0), "left")
 
-    def test_empate_na_diagonal_eixo_vertical_ganha(self):
-        self.assertEqual(facing_from_delta(1, 1), "down")
-        self.assertEqual(facing_from_delta(-1, 1), "down")
-        self.assertEqual(facing_from_delta(1, -1), "up")
-        self.assertEqual(facing_from_delta(-1, -1), "up")
-
     def test_delta_zero_usa_default_down(self):
         self.assertEqual(facing_from_delta(0, 0), "down")
 
-    def test_vertical_domina_quando_maior_que_horizontal(self):
-        self.assertEqual(facing_from_delta(1, 2), "down")
-        self.assertEqual(facing_from_delta(2, 1), "right")
+    def test_diagonal_exata_45_graus_e_left_right_nao_down_up(self):
+        """Mudança de comportamento de propósito: 45° está bem fora do
+        cone de 20°, então vira left/right — antes (corte 45/45) caía
+        em down/up."""
+        self.assertEqual(facing_from_delta(1, 1), "right")
+        self.assertEqual(facing_from_delta(-1, 1), "left")
+        self.assertEqual(facing_from_delta(1, -1), "right")
+        self.assertEqual(facing_from_delta(-1, -1), "left")
+
+    def _delta_no_angulo(self, angle_deg: float, dy_sign: int = 1):
+        """(dx, dy) cujo ângulo a partir do vertical é exatamente `angle_deg`."""
+        import math
+        dy = dy_sign
+        dx = math.tan(math.radians(angle_deg)) * abs(dy)
+        return dx, dy
+
+    def test_dentro_do_cone_de_20_graus_continua_down_up(self):
+        for angle in (0.0, 10.0, 19.9):
+            dx, dy = self._delta_no_angulo(angle, dy_sign=1)
+            self.assertEqual(facing_from_delta(dx, dy), "down", f"ângulo {angle}° deveria ser down")
+            dx, dy = self._delta_no_angulo(angle, dy_sign=-1)
+            self.assertEqual(facing_from_delta(dx, dy), "up", f"ângulo {angle}° deveria ser up")
+
+    def test_passando_de_20_graus_vira_left_right(self):
+        for angle in (20.1, 30.0, 63.4, 89.0):
+            dx, dy = self._delta_no_angulo(angle, dy_sign=1)
+            self.assertEqual(facing_from_delta(dx, dy), "right", f"ângulo {angle}° deveria ser right")
+            dx, dy = self._delta_no_angulo(-angle, dy_sign=1)
+            self.assertEqual(facing_from_delta(dx, dy), "left", f"ângulo {-angle}° deveria ser left")
 
 
 class TestGetCharacterFrame(unittest.TestCase):
@@ -939,14 +964,15 @@ class TestApplyCombatResultTriggersAttackAnim(unittest.TestCase):
         self.assertEqual(tm.anim_attack_frame_ms, DEFAULT_FRAME_MS)
 
     def test_skill_sem_sprite_propria_usa_fallback_via_apply_combat_result(self):
-        """sid fictício sem sprite própria nem "skill" genérico (nenhum
-        dos dois existe pra "guerreiro" hoje) -> cai no "attack", 3º e
-        último nível da cascata. class_id="guerreiro" é real de
-        propósito (resolve o TileMovement/CharacterStats do stub), só o
-        `sid` é fictício — não pode depender de qual skill específica
-        tem ou não sprite própria no disco neste momento."""
+        """class_id E sid fictícios — nem sid específico nem "skill"
+        genérico existem pra essa classe, então cai no "attack", 3º e
+        último nível da cascata. Não pode usar "guerreiro" real aqui:
+        `guerreiro_skill_*.png` existe de verdade (fallback genérico de
+        skill), então qualquer sid desconhecido pra essa classe cairia
+        no nível 2, não no 3 — não pode depender de qual sprite existe
+        no disco neste momento."""
         from client.remote_entity_handlers import RemoteEntityHandlers
-        eng, world = self._make_engine_stub(attacker_eid=42, attacker_class_id="guerreiro",
+        eng, world = self._make_engine_stub(attacker_eid=42, attacker_class_id="classe_inexistente_xyz",
                                             is_remote=False)
         from engine.components import TileMovement
         RemoteEntityHandlers._apply_combat_result(eng, {

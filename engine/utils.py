@@ -82,16 +82,31 @@ def chebyshev(ax: int, ay: int, bx: int, by: int) -> int:
     return max(abs(ax - bx), abs(ay - by))
 
 
+_VERTICAL_FACING_HALF_ANGLE_DEG = 20.0
+# Ângulo (em cada lado do eixo vertical) dentro do qual a direção ainda
+# conta como "down"/"up" — pedido do usuário (10/09/2026): reto pra
+# baixo/cima é 0°; até 20° pra qualquer lado disso continua down/up;
+# passando de 20° (os 70° restantes de cada quadrante), vira left/right.
+# NÃO é mais um corte 45/45 simétrico — a faixa de down/up é bem mais
+# estreita que a de left/right, de propósito.
+
+
 def facing_from_delta(dx: int, dy: int) -> str:
-    """Direção cardinal (4 vias) pra animação de personagem, a partir do
-    delta de tile de um passo (target - current). Empate na diagonal
-    (abs(dx)==abs(dy), ex: (1,1)) — eixo vertical ganha (critério
-    arbitrário, mas consistente); dx==dy==0 cai no default "down" (não
+    """Direção cardinal (4 vias) pra animação de personagem, a partir de
+    um delta (de tile de um passo — target-current — ou de pixel, pra
+    "olhar pro alvo" parado). Ângulo medido a partir do eixo VERTICAL
+    (`math.degrees(math.atan2(abs(dx), abs(dy)))`, 0°=reto pra
+    baixo/cima, 90°=reto pro lado) contra
+    `_VERTICAL_FACING_HALF_ANGLE_DEG` — dentro do cone estreito ao redor
+    do vertical, vence down/up; fora dele, left/right (10/09/2026,
+    pedido do usuário — antes era um corte simétrico 45/45 via
+    `abs(dy)>=abs(dx)`). dx==dy==0 cai no default "down" (não
     deveria ser chamado nesse caso — só faz sentido durante um passo
     real, `TileMovement.is_moving`)."""
     if dy == 0 and dx == 0:
         return "down"
-    if abs(dy) >= abs(dx):
+    angle_from_vertical = math.degrees(math.atan2(abs(dx), abs(dy)))
+    if angle_from_vertical <= _VERTICAL_FACING_HALF_ANGLE_DEG:
         return "down" if dy > 0 else "up"
     return "right" if dx > 0 else "left"
 
