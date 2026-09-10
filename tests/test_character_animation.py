@@ -939,20 +939,22 @@ class TestApplyCombatResultTriggersAttackAnim(unittest.TestCase):
         self.assertEqual(tm.anim_attack_frame_ms, DEFAULT_FRAME_MS)
 
     def test_skill_sem_sprite_propria_usa_fallback_via_apply_combat_result(self):
-        """golpe_poderoso não tem sprite própria hoje (removida pelo
-        usuário) -> cai no "skill" genérico, que hoje EXISTE de verdade
-        (guerreiro_skill_*.png) — 3º nível ("attack" puro) só entraria
-        se nem esse genérico existisse."""
+        """sid fictício sem sprite própria nem "skill" genérico (nenhum
+        dos dois existe pra "guerreiro" hoje) -> cai no "attack", 3º e
+        último nível da cascata. class_id="guerreiro" é real de
+        propósito (resolve o TileMovement/CharacterStats do stub), só o
+        `sid` é fictício — não pode depender de qual skill específica
+        tem ou não sprite própria no disco neste momento."""
         from client.remote_entity_handlers import RemoteEntityHandlers
         eng, world = self._make_engine_stub(attacker_eid=42, attacker_class_id="guerreiro",
                                             is_remote=False)
         from engine.components import TileMovement
         RemoteEntityHandlers._apply_combat_result(eng, {
             "attacker": 42, "target": 555, "damage": 30, "outcome": "hit",
-            "hp_after": 20, "source": "skill", "sid": "golpe_poderoso",
+            "hp_after": 20, "source": "skill", "sid": "skill_inexistente_xyz",
         })
         tm = world.get_component(eng._atk_local_eid, TileMovement)
-        self.assertEqual(tm.anim_attack_state, "skill")
+        self.assertEqual(tm.anim_attack_state, "attack")
 
     def test_fatiador_de_corpos_liga_loop_pela_duracao_real_da_skill(self):
         """10/09/2026, pedido do usuário: Fatiador de Corpos dura 5s
