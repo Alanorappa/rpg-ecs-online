@@ -28,6 +28,20 @@ from engine.world_systems import TileMovementSystem
 from shared.constants import TILE_SIZE
 
 
+class _BlitSpySurface(pygame.Surface):
+    """`pygame.Surface.blit` é read-only na classe/instância (tipo C
+    imutável) — não dá pra monkeypatchar direto. Subclasse Python pura
+    (permitido, `pygame.draw.rect` funciona igual numa subclasse) só
+    pra registrar cada chamada de `blit()` antes de delegar pro real."""
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.blit_calls = []
+
+    def blit(self, source, dest, *a, **k):
+        self.blit_calls.append((source, dest))
+        return super().blit(source, dest, *a, **k)
+
+
 class TestFacingFromDelta(unittest.TestCase):
 
     def test_direcoes_cardinais(self):
@@ -385,11 +399,11 @@ class TestRenderSystemNameplateTopFollowsSpriteHeight(unittest.TestCase):
         world.add_component(eid, tm)
         return eid
 
-    def test_topo_do_hud_usa_altura_do_sprite_nao_do_retangulo_antigo(self):
+    def test_topo_do_hud_usa_ancora_do_tile_de_colisao_nao_o_retangulo_antigo(self):
         from engine.world import World
         from ui.systems import RenderSystem
         from ui.world_labels import WORLD_LABELS
-        from engine.character_animation import get_character_frame
+        from engine.character_animation import character_anchor_offset
 
         world = World()
         eid = self._make_player(world)
@@ -406,16 +420,167 @@ class TestRenderSystemNameplateTopFollowsSpriteHeight(unittest.TestCase):
         self.assertTrue(entries, "deveria ter enfileirado pelo menos a barra de HP")
         hud_top_world_y = entries[0][1]
 
-        # Lê a altura REAL do sprite carregado (não hardcoded — o
-        # tamanho do arquivo já mudou 1x nesta sessão, 32x48 -> 96x80,
-        # e pode mudar de novo). Âncora de pé é position.y+12 (mesmo
-        # offset usado pro blit).
-        real_h = get_character_frame("guerreiro", "idle", "down", 0).get_height()
-        self.assertAlmostEqual(hud_top_world_y, 100 + 12 - real_h)
+        # Âncora não depende mais da altura do sprite (10/09/2026) — é
+        # sempre `position.y - anchor_dy` (tile de colisão de 32×32
+        # dentro do frame, ver `character_anchor_offset`).
+        _, anchor_dy = character_anchor_offset()
+        self.assertAlmostEqual(hud_top_world_y, 100 - anchor_dy)
         # Regressão: NÃO pode ser o cálculo antigo (baseado em
         # renderable.height=24), que ficaria bem mais baixo — dentro do
         # próprio sprite.
         self.assertNotAlmostEqual(hud_top_world_y, 100 - 24 / 2)
+
+
+class TestCharacterAnchorOffset(unittest.TestCase):
+    """10/09/2026, pedido do usuário: cada frame é 96×80, mas o tile de
+    colisão "real" (32×32, == TILE_SIZE) fica no canto (32,32) do frame
+    — não o frame inteiro. Âncora de desenho e Y-sort têm que usar ESSE
+    tile, nunca a largura/altura crua do frame."""
+
+    def test_offset_e_metade_do_tile_mais_o_offset_do_canto(self):
+        from engine.character_animation import (character_anchor_offset,
+                                                  CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y,
+                                                  CHAR_COLLISION_SIZE)
+        dx, dy = character_anchor_offset()
+        self.assertEqual(dx, CHAR_COLLISION_OFFSET_X + CHAR_COLLISION_SIZE / 2)
+        self.assertEqual(dy, CHAR_COLLISION_OFFSET_Y + CHAR_COLLISION_SIZE / 2)
+
+    def test_valores_atuais_sao_48_48(self):
+        """Com offset (32,32) e tile 32×32, o centro do tile de colisão
+        cai em (48,48) dentro do frame — valor concreto conferido com o
+        usuário, guarda de regressão se as constantes mudarem sem querer."""
+        from engine.character_animation import character_anchor_offset
+        self.assertEqual(character_anchor_offset(), (48, 48))
+
+
+class TestCharacterSpriteBlitAnchor(unittest.TestCase):
+    """Integração real: `RenderSystem.render()` deve blitar o sprite de
+    personagem alinhando o CENTRO do tile de colisão (32×32) com
+    `position` — não o centro/base do frame inteiro (96×80)."""
+
+    def _make_player(self, world, x=100, y=100):
+        from engine.components import (Position, Renderable, PlayerControlled,
+                                       CharacterStats, CombatStats, TileMovement)
+        eid = world.create_entity()
+        world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
+        world.add_component(eid, Renderable(color=(40, 50, 60), width=24, height=24))
+        world.add_component(eid, PlayerControlled())
+        world.add_component(eid, CharacterStats(name="Herói", class_id="guerreiro"))
+        cs = CombatStats()
+        cs.max_hp = 100
+        cs.current_hp = 100
+        world.add_component(eid, cs)
+        tm = TileMovement()
+        tm.is_moving = False
+        tm.facing = "down"
+        world.add_component(eid, tm)
+        return eid
+
+    def test_blit_alinha_centro_do_tile_de_colisao_com_position(self):
+        from engine.world import World
+        from ui.systems import RenderSystem
+        from engine.character_animation import character_anchor_offset
+
+        world = World()
+        self._make_player(world, x=200, y=150)
+        screen = _BlitSpySurface((300, 300))
+        rs = RenderSystem(world, screen)
+        rs.render(0, 0)
+
+        # Acha o blit do sprite do personagem (96 de largura) entre
+        # todos os blits que aconteceram no frame.
+        char_blits = [(src, dest) for src, dest in screen.blit_calls
+                      if getattr(src, "get_width", lambda: None)() == 96]
+        self.assertTrue(char_blits, "sprite do guerreiro (96 de largura) deveria ter sido blitado")
+        _, (bx, by) = char_blits[0]
+        anchor_dx, anchor_dy = character_anchor_offset()
+        self.assertEqual(bx, int(200 - anchor_dx))
+        self.assertEqual(by, int(150 - anchor_dy))
+
+
+class TestCharacterYSortUsesCollisionTile(unittest.TestCase):
+    """Y-sort de personagem com animação usa o tile de colisão de 32×32
+    (`position.y + CHAR_COLLISION_SIZE/2`), não `renderable.height`
+    antigo (24) nem a altura crua do frame (80) — vale mesmo se ainda
+    cair no retângulo de fallback (direção/classe sem arte)."""
+
+    def _make_char(self, world, x, y, class_id="guerreiro", local=True):
+        from engine.components import (Position, Renderable, PlayerControlled,
+                                       CharacterStats, RemoteControlled, TileMovement)
+        eid = world.create_entity()
+        world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
+        world.add_component(eid, Renderable(color=(1, 2, 3), width=24, height=24))
+        if local:
+            world.add_component(eid, PlayerControlled())
+            world.add_component(eid, CharacterStats(class_id=class_id))
+        else:
+            world.add_component(eid, RemoteControlled(class_id=class_id))
+        tm = TileMovement()
+        tm.is_moving = False
+        tm.facing = "down"
+        world.add_component(eid, tm)
+        return eid
+
+    def test_ysort_de_personagem_desenha_na_frente_de_mob_que_ficaria_atras_com_formula_antiga(self):
+        """Cenário desenhado pra diferenciar a fórmula ANTIGA
+        (`position.y + renderable.height/2` == +12) da NOVA
+        (`position.y + CHAR_COLLISION_SIZE/2` == +16): personagem em
+        y=100 (foot_y antigo=112, novo=116) e um mob-retângulo em y=103
+        (foot_y=103+12=115, fica ENTRE os dois valores). Com a fórmula
+        antiga o personagem desenharia ATRÁS do mob (112<115); com a
+        nova, NA FRENTE (116>115) — é a ordem que tem que sair daqui."""
+        from engine.world import World
+        from engine.components import Position, Renderable
+        from ui.systems import RenderSystem
+
+        world = World()
+        char_eid = self._make_char(world, 100, 100)
+        mob_eid = world.create_entity()
+        world.add_component(mob_eid, Position(x=200, y=103, prev_x=200, prev_y=103))
+        world.add_component(mob_eid, Renderable(color=(9, 9, 9), width=24, height=24))
+
+        screen = _BlitSpySurface((300, 300))
+        rs = RenderSystem(world, screen)
+
+        # `screen.blit_calls` (via _BlitSpySurface) é o log em ORDEM REAL
+        # de execução — o spy de draw.rect grava um marcador NELE MESMO
+        # (não numa lista separada), pra os dois eventos (rect do mob,
+        # blit do personagem) caírem na MESMA sequência cronológica.
+        orig_rect = pygame.draw.rect
+        def _spy_rect(surface, color, rect, *a, **k):
+            if tuple(color[:3]) == (9, 9, 9):
+                screen.blit_calls.append(("mob_rect_marker", None))
+            return orig_rect(surface, color, rect, *a, **k)
+        pygame.draw.rect = _spy_rect
+        try:
+            rs.render(0, 0)
+        finally:
+            pygame.draw.rect = orig_rect
+
+        draw_order = []
+        for src, _dest in screen.blit_calls:
+            if src == "mob_rect_marker":
+                draw_order.append("mob")
+            elif getattr(src, "get_width", lambda: None)() == 96:
+                draw_order.append("char")
+
+        # Painter's algorithm: `drawables` ordena ASCENDENTE por foot_y e
+        # desenha nessa ordem — quem desenha DEPOIS fica NA FRENTE
+        # (pintado por cima). mob(115) < char(116) com a fórmula nova,
+        # então mob desenha primeiro (atrás), personagem por último
+        # (na frente) — é essa ordem de execução que sai daqui.
+        self.assertEqual(draw_order, ["mob", "char"],
+            "personagem (Y-sort novo, +16, > mob=115) tem que desenhar DEPOIS do mob (fica na frente)")
+
+    def test_ysort_diferente_do_retangulo_antigo_e_da_altura_do_frame(self):
+        from engine.character_animation import CHAR_COLLISION_SIZE
+        # Documenta os 2 valores que NÃO podem ser usados por engano.
+        old_rect_based = 100 + 24 / 2      # renderable.height antigo
+        frame_height_based = 100 + 80 / 2  # altura crua do frame (80)
+        correct = 100 + CHAR_COLLISION_SIZE / 2
+        self.assertNotEqual(correct, old_rect_based)
+        self.assertNotEqual(correct, frame_height_based)
+        self.assertEqual(correct, 116)
 
 
 class TestResolveAttackStateName(unittest.TestCase):

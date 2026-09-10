@@ -490,6 +490,19 @@ padrão a quebrar, não só os bugs individuais.
   ponto do código (ex: no clique de ataque, ou no envio do
   AUTO_ATTACK/CAST_SKILL) — o servidor é quem confirma que o golpe
   aconteceu de verdade, o cliente só reage a essa confirmação.
+  **Âncora de desenho e Y-sort** (10/09/2026, decisão do usuário): cada
+  frame tem um tile de colisão/pé REAL de 32×32 (`CHAR_COLLISION_SIZE`
+  == TILE_SIZE) no canto `(CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y)`
+  do frame — NÃO o frame inteiro (96×H). `character_anchor_offset()`
+  (centro desse tile dentro do frame) é o ÚNICO ponto que sabe converter
+  isso pra pixels de blit; `RenderSystem` alinha esse centro com
+  `position` (a posição lógica ECS da entidade) tanto pro blit quanto
+  pro Y-sort (`position.y + CHAR_COLLISION_SIZE/2`) — NUNCA usar a
+  largura/altura crua do frame nem `renderable.height` (convenção
+  antiga do retângulo, 24px) pra nenhum dos dois. Vale mesmo quando a
+  direção específica ainda cai no retângulo de fallback (arte não
+  existe pra aquele estado/direção ainda) — Y-sort não pode pular
+  dependendo de qual arte já foi desenhada.
 - **Entry point server-side novo que executa handler compartilhado em nome
   de um player** (skill/spell/projectile/channeling) →
   `WorldServer.register_map_services_for(player_eid)` ANTES do handler —

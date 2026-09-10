@@ -1466,6 +1466,20 @@ class RenderSystem(System):
         Ver comentário em __init__."""
         self._name_font = font
 
+    def _resolve_character_class_id(self, entity_id: int) -> "str | None":
+        """class_id resolvível pra animação de personagem (guerreiro/
+        mago/arqueiro) — local via `CharacterStats`, remoto via
+        `RemoteControlled`. None = mob/NPC/harvestable, sem sprite de
+        personagem nenhum. Ponto único de verdade — usado tanto pro
+        Y-sort (10/09/2026, precisa saber ANTES de desenhar se esta
+        entidade usa o tile de colisão de 32×32 do sprite, não o
+        `renderable.height` antigo) quanto pro desenho de fato."""
+        if self.world.get_component(entity_id, PlayerControlled) is not None:
+            cs = self.world.get_component(entity_id, CharacterStats)
+            return cs.class_id if cs else None
+        rc = self.world.get_component(entity_id, RemoteControlled)
+        return rc.class_id if rc else None
+
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0,
                world_objects: list = None, nameplate_mode: int = 0) -> None:
         """
@@ -1538,7 +1552,22 @@ class RenderSystem(System):
             # (position.y puro, já é isso por construção), igual objeto
             # estático — só o visual (branch de sprite_id logo abaixo, já
             # ancorado na base do tile) continua ocupando o tile inteiro.
-            foot_y = position.y if renderable.sprite_id else position.y + renderable.height / 2
+            # Personagem com animação (guerreiro/mago/arqueiro, local ou
+            # remoto — 10/09/2026): Y-sort usa o tile de colisão REAL de
+            # 32×32 dentro do sprite (`CHAR_COLLISION_SIZE`, ver
+            # engine/character_animation.py), nunca `renderable.height`
+            # (24, convenção antiga do retângulo) — vale mesmo quando o
+            # frame específico ainda cai no retângulo de fallback (ex:
+            # direção sem arte ainda), pra o Y-sort não pular dependendo
+            # de qual arte já existe.
+            _char_class_id_sort = self._resolve_character_class_id(entity_id)
+            if _char_class_id_sort:
+                from engine.character_animation import CHAR_COLLISION_SIZE as _CCS_sort
+                foot_y = position.y + _CCS_sort / 2
+            elif renderable.sprite_id:
+                foot_y = position.y
+            else:
+                foot_y = position.y + renderable.height / 2
             drawables.append((foot_y, "entity", entity_id, position, renderable, combat_stats, _gst_rnd))
 
         # Tile-objetos (árvores, arbustos, pedras — objetos estáticos do mapa)
@@ -1584,8 +1613,12 @@ class RenderSystem(System):
             # no branch que a seta) — senão uma entidade que cai no
             # retângulo herdaria por acidente a altura do sprite da
             # entidade anterior no loop (bug real pego revisando antes de
-            # existir em produção).
-            _char_sprite_h_for_hud = None
+            # existir em produção). Guarda o `anchor_dy` (distância do
+            # topo do FRAME até o centro do tile de colisão, ver
+            # `character_anchor_offset`), não mais a altura crua do
+            # sprite (10/09/2026 — a âncora não é mais "base do sprite",
+            # é o tile de colisão de 32×32 dentro dele).
+            _char_anchor_dy_for_hud = None
 
             draw_x = position.x - camera_offset_x
             draw_y = position.y - camera_offset_y
@@ -1676,13 +1709,7 @@ class RenderSystem(System):
                     # (branches acima) continuam com o tratamento visual
                     # de retângulo que já tinham — este branch só cobre o
                     # caso "vivo, sem estado visual especial".
-                    _char_id_rnd = None
-                    if _is_local_player:
-                        _cs_rnd = self.world.get_component(entity_id, CharacterStats)
-                        _char_id_rnd = _cs_rnd.class_id if _cs_rnd else None
-                    else:
-                        _rc_rnd = self.world.get_component(entity_id, RemoteControlled)
-                        _char_id_rnd = _rc_rnd.class_id if _rc_rnd else None
+                    _char_id_rnd = self._resolve_character_class_id(entity_id)
 
                     _char_frame = None
                     if _char_id_rnd:
@@ -1694,11 +1721,19 @@ class RenderSystem(System):
                             _char_frame = _gcf(_char_id_rnd, _state_rnd, _tm_rnd.facing, _anim_t_rnd)
 
                     if _char_frame is not None:
-                        _csw, _csh = _char_frame.get_size()
-                        _cblit_x = int(draw_x - _csw / 2)
-                        _cblit_y = int(draw_y + 12 - _csh)  # +12 = mesmo offset de pé já usado pra disfarce
+                        # Âncora pelo tile de colisão REAL (32×32) dentro
+                        # do frame, não pelo centro/base do frame inteiro
+                        # (10/09/2026, decisão do usuário — ver
+                        # engine/character_animation.py::
+                        # character_anchor_offset). Alinha o CENTRO desse
+                        # tile com (draw_x, draw_y) — mesmo ponto que o
+                        # ECS já usa como posição lógica da entidade.
+                        from engine.character_animation import character_anchor_offset as _cao
+                        _anchor_dx, _anchor_dy = _cao()
+                        _cblit_x = int(draw_x - _anchor_dx)
+                        _cblit_y = int(draw_y - _anchor_dy)
                         self.world_surf.blit(_char_frame, (_cblit_x, _cblit_y))
-                        _char_sprite_h_for_hud = _csh
+                        _char_anchor_dy_for_hud = _anchor_dy
                     else:
                         pygame.draw.rect(self.world_surf, renderable.color, rect)
 
@@ -1751,19 +1786,17 @@ class RenderSystem(System):
                     _spr_hud = TILE_SPRITES.get_raw_sprite(renderable.sprite_id)
                     _spr_h_hud = _spr_hud.get_height() if _spr_hud else renderable.height
                     _hud_top_world_y = position.y + TILE_SIZE / 2 - _spr_h_hud
-                elif _char_sprite_h_for_hud is not None:
-                    # Animação de personagem (09/09/2026) — mesma ideia do
-                    # branch de sprite_id acima (sobe o topo do HUD pra
-                    # acompanhar a altura REAL do sprite, não o
-                    # renderable.height antigo de 24px), só que com o
-                    # offset de pé "+12" já usado pro próprio sprite (ver
-                    # branch de desenho acima), não "+TILE_SIZE/2" — são
-                    # convenções de âncora diferentes (objeto de mapa vs.
-                    # personagem). Sem isso, o nameplate cobria a metade de
-                    # cima do sprite (guerreiro_idle_down.png é 48px de
-                    # altura, quase o DOBRO do retângulo de 24px que
-                    # existia antes — bug real relatado pelo usuário).
-                    _hud_top_world_y = position.y + 12 - _char_sprite_h_for_hud
+                elif _char_anchor_dy_for_hud is not None:
+                    # Animação de personagem (09-10/09/2026) — topo do
+                    # sprite em coordenadas de MUNDO é `position.y -
+                    # anchor_dy` (mesma âncora usada pra desenhar o
+                    # sprite, ver `character_anchor_offset` — centro do
+                    # tile de colisão de 32×32 alinhado com `position.y`,
+                    # não a base/centro do frame inteiro de 96×H). Sem
+                    # isso, o nameplate cobria parte do sprite (achado
+                    # real: primeiro com a altura crua do frame, depois
+                    # de novo quando a âncora do tile de colisão mudou).
+                    _hud_top_world_y = position.y - _char_anchor_dy_for_hud
                 else:
                     _hud_top_world_y = position.y - renderable.height / 2
                 _hud_surf = None

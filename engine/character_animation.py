@@ -45,6 +45,31 @@ from __future__ import annotations
 CHAR_TILE_SIZE = 96
 DEFAULT_FRAME_MS = 78  # 65 * 1.2 — animação 20% mais lenta (09/09/2026, pedido do usuário)
 
+# Tile de colisão/pé real (32×32, == TILE_SIZE) dentro do frame de
+# 96×H (10/09/2026, decisão do usuário — convenção fixa de arte,
+# mesma pra idle/run/attack/qualquer skill futura). Offset é a posição
+# do CANTO SUPERIOR ESQUERDO desse tile dentro do frame — horizontal
+# cai centrado por construção (32 + 32/2 == CHAR_TILE_SIZE/2 == 48),
+# vertical NÃO (mais espaço acima do tile — corpo/cabeça — que abaixo).
+# Usado tanto pra ancorar o blit (`character_anchor_offset`) quanto
+# pro Y-sort (`ui/systems.py::RenderSystem`) — NUNCA usar
+# CHAR_TILE_SIZE (largura do FRAME) nem a altura do sheet pra nenhum
+# dos dois, é sempre este tile de 32×32 que importa.
+CHAR_COLLISION_OFFSET_X = 32
+CHAR_COLLISION_OFFSET_Y = 32
+CHAR_COLLISION_SIZE     = 32
+
+
+def character_anchor_offset() -> "tuple[float, float]":
+    """(dx, dy) a subtrair de (draw_x, draw_y) — ponto de referência do
+    ECS (centro do tile lógico da entidade, em espaço de tela) — pra
+    achar o canto superior esquerdo de onde blitar o frame do
+    personagem. Alinha o CENTRO do tile de colisão (32×32, ver
+    `CHAR_COLLISION_OFFSET_X/Y`) com (draw_x, draw_y), não o centro/
+    canto do frame inteiro (96×H)."""
+    return (CHAR_COLLISION_OFFSET_X + CHAR_COLLISION_SIZE / 2,
+            CHAR_COLLISION_OFFSET_Y + CHAR_COLLISION_SIZE / 2)
+
 # Cache de módulo, chaveado por (class_id, state, direction) — conjunto
 # BEM pequeno e fixo (3 classes × 2 estados × 4 direções = 24 no
 # máximo), nunca por-entidade — sem risco de crescer sem teto (ver
