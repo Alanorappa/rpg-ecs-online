@@ -518,10 +518,12 @@ padrão a quebrar, não só os bugs individuais.
   `_combat_this_tick`/COMBAT_RESULT pra o cliente saber qual skill é
   (bug real achado implementando — o tick do Fatiador nunca mandava
   `sid`, então o loop nunca ligava).
-  **Âncora de desenho e Y-sort** (10/09/2026, decisão do usuário): cada
-  frame tem um tile de colisão/pé REAL de 32×32 (`CHAR_COLLISION_SIZE`
-  == TILE_SIZE) no canto `(CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y)`
-  do frame — NÃO o frame inteiro (96×H). `character_anchor_offset()`
+  **Âncora de desenho e Y-sort** (09-10/09/2026, decisão do usuário):
+  cada frame tem um tile de colisão/pé REAL de 32×32
+  (`CHAR_COLLISION_SIZE` == TILE_SIZE, NUNCA escala com o tamanho do
+  frame — é sempre 1 tile de jogo de verdade) no canto
+  `(CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y)` do frame — NÃO o
+  frame inteiro (`CHAR_TILE_SIZE`×H). `character_anchor_offset()`
   (centro desse tile dentro do frame) é o ÚNICO ponto que sabe converter
   isso pra pixels de blit; `RenderSystem` alinha esse centro com
   `position` (a posição lógica ECS da entidade) tanto pro blit quanto
@@ -530,7 +532,17 @@ padrão a quebrar, não só os bugs individuais.
   antiga do retângulo, 24px) pra nenhum dos dois. Vale mesmo quando a
   direção específica ainda cai no retângulo de fallback (arte não
   existe pra aquele estado/direção ainda) — Y-sort não pode pular
-  dependendo de qual arte já foi desenhada.
+  dependendo de qual arte já foi desenhada. `CHAR_TILE_SIZE`/offset NÃO
+  escalam linearmente entre si (usuário já mudou 2x nesta sessão: 32→96
+  com offset (32,32); 96→192 com offset indo pra (80,96), não (64,64)
+  — a composição da arte mudou, não foi só um resize uniforme) —
+  **NUNCA aplicar a mudança de constante enquanto sobrar QUALQUER
+  arquivo real ainda no tamanho anterior**: um sheet cortado com a
+  largura ERRADA não dá erro nem cai no fallback — corta em pedaços
+  visualmente quebrados (bug real relatado pelo usuário: "sprites
+  cortadas ao meio", causa raiz era exatamente isso). Sempre MEDIR os
+  arquivos reais em disco antes de trocar a constante, nunca assumir
+  que "o usuário disse que terminou" = está terminado — confirmar.
 - **Entry point server-side novo que executa handler compartilhado em nome
   de um player** (skill/spell/projectile/channeling) →
   `WorldServer.register_map_services_for(player_eid)` ANTES do handler —

@@ -432,9 +432,11 @@ class TestRenderSystemNameplateTopFollowsSpriteHeight(unittest.TestCase):
 
 
 class TestCharacterAnchorOffset(unittest.TestCase):
-    """10/09/2026, pedido do usuário: cada frame é 96×80, mas o tile de
-    colisão "real" (32×32, == TILE_SIZE) fica no canto (32,32) do frame
-    — não o frame inteiro. Âncora de desenho e Y-sort têm que usar ESSE
+    """09-10/09/2026, pedido do usuário: cada frame é maior que 1 tile,
+    mas o tile de colisão "real" (32×32, == TILE_SIZE) fica num canto
+    específico do frame (offset mudou de (32,32)/frame 96×80 pra
+    (80,96)/frame 192×160 quando o usuário dobrou a arte, mesmo dia) —
+    não o frame inteiro. Âncora de desenho e Y-sort têm que usar ESSE
     tile, nunca a largura/altura crua do frame."""
 
     def test_offset_e_metade_do_tile_mais_o_offset_do_canto(self):
@@ -445,12 +447,14 @@ class TestCharacterAnchorOffset(unittest.TestCase):
         self.assertEqual(dx, CHAR_COLLISION_OFFSET_X + CHAR_COLLISION_SIZE / 2)
         self.assertEqual(dy, CHAR_COLLISION_OFFSET_Y + CHAR_COLLISION_SIZE / 2)
 
-    def test_valores_atuais_sao_48_48(self):
-        """Com offset (32,32) e tile 32×32, o centro do tile de colisão
-        cai em (48,48) dentro do frame — valor concreto conferido com o
-        usuário, guarda de regressão se as constantes mudarem sem querer."""
-        from engine.character_animation import character_anchor_offset
-        self.assertEqual(character_anchor_offset(), (48, 48))
+    def test_offset_horizontal_fica_centrado_no_frame(self):
+        """Confirmado com o usuário pras 2 resoluções já usadas nesta
+        sessão (96 e 192 de largura de frame) — o offset horizontal do
+        tile de colisão sempre cai centrado no frame inteiro, mesmo
+        quando o offset vertical não é simétrico."""
+        from engine.character_animation import character_anchor_offset, CHAR_TILE_SIZE
+        dx, _ = character_anchor_offset()
+        self.assertEqual(dx, CHAR_TILE_SIZE / 2)
 
 
 class TestCharacterSpriteBlitAnchor(unittest.TestCase):
@@ -479,7 +483,7 @@ class TestCharacterSpriteBlitAnchor(unittest.TestCase):
     def test_blit_alinha_centro_do_tile_de_colisao_com_position(self):
         from engine.world import World
         from ui.systems import RenderSystem
-        from engine.character_animation import character_anchor_offset
+        from engine.character_animation import character_anchor_offset, CHAR_TILE_SIZE
 
         world = World()
         self._make_player(world, x=200, y=150)
@@ -487,11 +491,11 @@ class TestCharacterSpriteBlitAnchor(unittest.TestCase):
         rs = RenderSystem(world, screen)
         rs.render(0, 0)
 
-        # Acha o blit do sprite do personagem (96 de largura) entre
-        # todos os blits que aconteceram no frame.
+        # Acha o blit do sprite do personagem (largura de CHAR_TILE_SIZE)
+        # entre todos os blits que aconteceram no frame.
         char_blits = [(src, dest) for src, dest in screen.blit_calls
-                      if getattr(src, "get_width", lambda: None)() == 96]
-        self.assertTrue(char_blits, "sprite do guerreiro (96 de largura) deveria ter sido blitado")
+                      if getattr(src, "get_width", lambda: None)() == CHAR_TILE_SIZE]
+        self.assertTrue(char_blits, "sprite do guerreiro deveria ter sido blitado")
         _, (bx, by) = char_blits[0]
         anchor_dx, anchor_dy = character_anchor_offset()
         self.assertEqual(bx, int(200 - anchor_dx))
@@ -557,11 +561,12 @@ class TestCharacterYSortUsesCollisionTile(unittest.TestCase):
         finally:
             pygame.draw.rect = orig_rect
 
+        from engine.character_animation import CHAR_TILE_SIZE
         draw_order = []
         for src, _dest in screen.blit_calls:
             if src == "mob_rect_marker":
                 draw_order.append("mob")
-            elif getattr(src, "get_width", lambda: None)() == 96:
+            elif getattr(src, "get_width", lambda: None)() == CHAR_TILE_SIZE:
                 draw_order.append("char")
 
         # Painter's algorithm: `drawables` ordena ASCENDENTE por foot_y e
@@ -599,8 +604,9 @@ class TestResolveAttackStateName(unittest.TestCase):
         _ca._frame_cache.clear()
 
     def _make_sprite(self, class_id: str, state: str, direction: str) -> str:
+        from engine.character_animation import CHAR_TILE_SIZE
         path = os.path.join("assets", "sprites", f"{class_id}_{state}_{direction}.png")
-        surf = pygame.Surface((96, 80), pygame.SRCALPHA)
+        surf = pygame.Surface((CHAR_TILE_SIZE, CHAR_TILE_SIZE), pygame.SRCALPHA)
         pygame.image.save(surf, path)
         return path
 
