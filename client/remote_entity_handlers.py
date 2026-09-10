@@ -252,6 +252,30 @@ class RemoteEntityHandlers:
         # DoT/HoT ticks: source != "auto"/"skill" — sem som (bleed, poison, burn, regen…)
         _is_dot_hot     = source not in ("auto", "skill")
 
+        # Animação de golpe do ATACANTE (09/09/2026, pedido do usuário) —
+        # independente de quem/o que foi o ALVO (mob ou player): liga
+        # sempre que um player de verdade (local ou remoto) causa dano de
+        # verdade via auto-attack ou skill, nunca em DoT/HoT. Skill sem
+        # sprite própria cai no genérico "attack" (ver
+        # resolve_attack_state_name). Puramente cosmético — nunca decide
+        # gameplay, só o que a tela mostra.
+        if not _is_dot_hot and damage > 0:
+            _atk_eid_anim = (self.player_entity if server_attacker == self._my_eid
+                             else self._remote_players.get(server_attacker))
+            if _atk_eid_anim is not None:
+                from engine.components import CharacterStats as _CSAnimAtk, TileMovement as _TMAnimAtk
+                _atk_class_id = None
+                if _atk_eid_anim == self.player_entity:
+                    _cs_anim_atk = self.world.get_component(_atk_eid_anim, _CSAnimAtk)
+                    _atk_class_id = _cs_anim_atk.class_id if _cs_anim_atk else None
+                else:
+                    _rc_anim_atk = self.world.get_component(_atk_eid_anim, RemoteControlled)
+                    _atk_class_id = _rc_anim_atk.class_id if _rc_anim_atk else None
+                _tm_anim_atk = self.world.get_component(_atk_eid_anim, _TMAnimAtk)
+                if _atk_class_id and _tm_anim_atk is not None:
+                    from engine.character_animation import trigger_attack_anim as _taa
+                    _taa(_tm_anim_atk, _atk_class_id, cr.get("sid", ""), pygame.time.get_ticks())
+
         col_regen = (100, 220, 100)
 
         _lx, _ly = self._player_world_pos()

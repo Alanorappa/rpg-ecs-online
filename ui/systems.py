@@ -1689,10 +1689,9 @@ class RenderSystem(System):
                         _tm_rnd = self.world.get_component(entity_id, TileMovement)
                         if _tm_rnd is not None:
                             from engine.character_animation import (
-                                get_character_frame as _gcf, resolve_anim_state as _ras)
-                            _state_rnd = _ras(_tm_rnd)
-                            _char_frame = _gcf(_char_id_rnd, _state_rnd, _tm_rnd.facing,
-                                               pygame.time.get_ticks())
+                                get_character_frame as _gcf, resolve_display_state as _rds)
+                            _state_rnd, _anim_t_rnd = _rds(_tm_rnd, _char_id_rnd, pygame.time.get_ticks())
+                            _char_frame = _gcf(_char_id_rnd, _state_rnd, _tm_rnd.facing, _anim_t_rnd)
 
                     if _char_frame is not None:
                         _csw, _csh = _char_frame.get_size()

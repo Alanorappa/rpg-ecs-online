@@ -10,8 +10,15 @@ aparência ativo (Camuflagem/Polimorfia, ver `engine/entity_disguise.py`
 TEMPORÁRIO condicional, este é a aparência BASE, sempre presente).
 
 Convenção de arquivo em assets/sprites/, por `class_id`:
-  {class_id}_idle_{direction}.png  — sheet horizontal, personagem parado
-  {class_id}_run_{direction}.png   — sheet horizontal, personagem andando
+  {class_id}_idle_{direction}.png    — sheet horizontal, personagem parado
+  {class_id}_run_{direction}.png     — sheet horizontal, personagem andando
+  {class_id}_attack_{direction}.png  — golpe genérico (auto-attack, ou
+                                        skill SEM sprite própria)
+  {class_id}_{skill_id}_{direction}.png — golpe ESPECÍFICO de uma skill
+                                        (ex: "guerreiro_golpe_poderoso_
+                                        down.png") — opcional; sem ela,
+                                        cai no "attack" genérico acima
+                                        (ver `resolve_attack_state_name`)
   direction ∈ "down"/"up"/"left"/"right"
   Cada sheet é cortado em frames de CHAR_TILE_SIZE (96px, 09/09/2026 —
   frames NÃO são quadrados, 96 largura × altura variável conforme o
@@ -124,3 +131,48 @@ def resolve_anim_state(tile_movement) -> str:
     pelo usuário). Puramente cosmético — combate/gameplay continuam
     lendo `is_moving` puro, nunca isto."""
     return "run" if (tile_movement.is_moving or tile_movement.anim_walk_grace_s > 0) else "idle"
+
+
+def resolve_attack_state_name(class_id: str, sid: str, direction: str) -> str:
+    """"attack" (genérico) ou o próprio `sid` da skill, se ela tiver
+    sprite dedicado nessa direção (direto ou espelhado). Ponto único de
+    verdade pra "essa skill tem animação própria?" — auto-attack
+    (`sid=""`) cai direto no genérico, sem branch especial (arquivo
+    "{class_id}__{direction}.png" nunca existe, então `_frames_for`
+    já retorna vazio naturalmente)."""
+    if sid and _frames_for(class_id, sid, direction):
+        return sid
+    return "attack"
+
+
+def trigger_attack_anim(tile_movement, class_id: str, sid: str, now_ms: int) -> None:
+    """Liga a animação de golpe (09/09/2026, pedido do usuário) — chamada
+    no momento em que o dano é confirmado (COMBAT_RESULT, auto-attack OU
+    skill), nunca em resposta a DoT/HoT. `resolve_display_state()` decide
+    quando ela termina (1 ciclo completo do sheet resolvido aqui) e volta
+    pra idle/run — puramente cosmético, nunca lido por gameplay/combate."""
+    tile_movement.anim_attack_state      = resolve_attack_state_name(class_id, sid, tile_movement.facing)
+    tile_movement.anim_attack_started_ms = now_ms
+
+
+def resolve_display_state(tile_movement, class_id: str, now_ms: int,
+                          frame_ms: int = DEFAULT_FRAME_MS) -> "tuple[str, int]":
+    """(state_name, anim_time_ms) prontos pra passar direto a
+    `get_character_frame` — ponto único de verdade pra "qual animação
+    mostrar agora" (golpe tem prioridade sobre andando/parado, enquanto
+    durar 1 ciclo do sheet) e "que tempo usar pra escolher o frame"
+    (desde o INÍCIO do golpe — sempre comEça do frame 0 — vs. tempo
+    absoluto pra idle/run, que só precisam ciclar pra sempre).
+
+    Golpe expira sozinho (limpa `anim_attack_state`, sem componente/
+    sistema novo pra isso) quando o tempo desde o trigger passa de
+    `len(frames) * frame_ms`, OU na hora se o sprite resolvido não
+    existir pra essa direção — nesses casos cai pro idle/run do MESMO
+    frame, sem 1 frame de retângulo/estado errado no meio."""
+    if tile_movement.anim_attack_state:
+        frames  = _frames_for(class_id, tile_movement.anim_attack_state, tile_movement.facing)
+        elapsed = now_ms - tile_movement.anim_attack_started_ms
+        if frames and elapsed < len(frames) * frame_ms:
+            return tile_movement.anim_attack_state, elapsed
+        tile_movement.anim_attack_state = ""
+    return resolve_anim_state(tile_movement), now_ms

@@ -456,8 +456,10 @@ padrão a quebrar, não só os bugs individuais.
   classe — não confundir com override TEMPORÁRIO de aparência acima) →
   `engine/character_animation.py::get_character_frame(class_id, state,
   direction, anim_time_ms)` — convenção de arquivo
-  `assets/sprites/{class_id}_{idle|run}_{down|up|left|right}.png`
-  (sheet cortado em frames de 32px de largura, `class_id` sempre em
+  `assets/sprites/{class_id}_{idle|run|attack|<skill_id>}_{down|up|left|right}.png`
+  (sheet cortado em frames de `CHAR_TILE_SIZE` px de largura — 96,
+  09/09/2026, frame NÃO é quadrado, largura fixa por decisão do
+  usuário, nunca derivada da altura do sheet; `class_id` sempre em
   português — mesmo valor de `CharacterStats.class_id`/
   `RemoteControlled.class_id`, nunca uma tradução nova). Implementação
   incremental por decisão do usuário (09/09/2026): arquivo ausente →
@@ -469,7 +471,21 @@ padrão a quebrar, não só os bugs individuais.
   horizontal do lado oposto automaticamente — pintar só 1 dos 2 lados é
   suficiente. `RenderSystem` só tenta isso pra entidades com `class_id`
   resolvível (`CharacterStats` local ou `RemoteControlled` remoto) —
-  mob/NPC continuam retângulo, sem mudança.
+  mob/NPC continuam retângulo, sem mudança. **Estado exibido** (qual
+  animação mostrar AGORA) nunca é decidido no `RenderSystem` direto —
+  `engine/character_animation.py::resolve_display_state(tile_movement,
+  class_id, now_ms)` é o ponto único (golpe > andando/parado; golpe
+  expira sozinho após 1 ciclo do sheet, sem componente/sistema
+  dedicado a "desligar"). **Animação de golpe** (auto-attack, ou skill
+  sem sprite própria cai no genérico `attack` — ver
+  `resolve_attack_state_name`) é ligada por
+  `trigger_attack_anim(tile_movement, class_id, sid, now_ms)`, chamado
+  de UM lugar só: `client/remote_entity_handlers.py::
+  _apply_combat_result`, no momento em que o dano é confirmado
+  (`damage>0`, nunca DoT/HoT) — NUNCA replicar esse gatilho em outro
+  ponto do código (ex: no clique de ataque, ou no envio do
+  AUTO_ATTACK/CAST_SKILL) — o servidor é quem confirma que o golpe
+  aconteceu de verdade, o cliente só reage a essa confirmação.
 - **Entry point server-side novo que executa handler compartilhado em nome
   de um player** (skill/spell/projectile/channeling) →
   `WorldServer.register_map_services_for(player_eid)` ANTES do handler —

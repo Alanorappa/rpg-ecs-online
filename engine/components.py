@@ -1300,6 +1300,18 @@ class TileMovement:
     # escolher a animação. Puramente cosmético — NUNCA usado por
     # gameplay/combate (que continuam lendo só `is_moving` puro).
     anim_walk_grace_s: float = 0.0
+    # Animação de golpe (09/09/2026, pedido do usuário) — client-only,
+    # puramente cosmético. `anim_attack_state`: "" = nenhum golpe ativo;
+    # senão, "attack" (genérico) ou o `skill_id` de uma skill com sprite
+    # própria (ver `engine.character_animation.trigger_attack_anim`/
+    # `resolve_attack_state_name`, chamado por
+    # `client/remote_entity_handlers.py::_apply_combat_result` no
+    # momento em que o dano é confirmado). `anim_attack_started_ms`:
+    # `pygame.time.get_ticks()` no instante do trigger — usado por
+    # `resolve_display_state()` pra saber quando o golpe (1 ciclo do
+    # sheet) terminou e voltar sozinho pro idle/run.
+    anim_attack_state:      str = ""
+    anim_attack_started_ms: int = 0
 
 
 @dataclass

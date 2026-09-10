@@ -295,5 +295,217 @@ class TestRenderSystemNameplateTopFollowsSpriteHeight(unittest.TestCase):
         self.assertNotAlmostEqual(hud_top_world_y, 100 - 24 / 2)
 
 
+class TestResolveAttackStateName(unittest.TestCase):
+    """"attack" (genérico) por padrão, ou o skill_id se ele tiver sprite
+    própria — auto-attack (sid="") nunca tenta procurar arquivo nenhum."""
+
+    def test_sem_sid_e_attack_generico(self):
+        from engine.character_animation import resolve_attack_state_name
+        self.assertEqual(resolve_attack_state_name("guerreiro", "", "down"), "attack")
+
+    def test_skill_sem_sprite_propria_cai_no_generico(self):
+        from engine.character_animation import resolve_attack_state_name
+        self.assertEqual(
+            resolve_attack_state_name("guerreiro", "golpe_poderoso", "down"), "attack")
+
+    def test_skill_com_sprite_propria_usa_o_sid(self):
+        from engine.character_animation import resolve_attack_state_name
+        path = os.path.join("assets", "sprites", "guerreiro_golpe_poderoso_down.png")
+        surf = pygame.Surface((96, 80), pygame.SRCALPHA)
+        pygame.image.save(surf, path)
+        try:
+            from engine import character_animation as _ca
+            _ca._frame_cache.clear()
+            self.assertEqual(
+                resolve_attack_state_name("guerreiro", "golpe_poderoso", "down"),
+                "golpe_poderoso")
+        finally:
+            os.remove(path)
+            from engine import character_animation as _ca2
+            _ca2._frame_cache.clear()
+
+
+class TestAttackAnimTriggerAndExpiry(unittest.TestCase):
+    """Golpe (09/09/2026, pedido do usuário): liga no momento do dano,
+    toca 1 ciclo do sheet, volta sozinho pro idle/run — sem precisar de
+    componente/sistema novo pra "desligar", só tempo decorrido."""
+
+    def setUp(self):
+        from engine.components import TileMovement
+        self.tm = TileMovement()
+        self.tm.facing = "down"
+        self.tm.is_moving = False
+
+    def test_trigger_liga_attack_generico_pro_auto_attack(self):
+        from engine.character_animation import trigger_attack_anim
+        trigger_attack_anim(self.tm, "guerreiro", "", 1000)
+        self.assertEqual(self.tm.anim_attack_state, "attack")
+        self.assertEqual(self.tm.anim_attack_started_ms, 1000)
+
+    def test_resolve_display_state_logo_apos_trigger_comeca_do_frame_0(self):
+        from engine.character_animation import trigger_attack_anim, resolve_display_state
+        trigger_attack_anim(self.tm, "guerreiro", "", 5000)
+        state, anim_t = resolve_display_state(self.tm, "guerreiro", 5000)
+        self.assertEqual(state, "attack")
+        self.assertEqual(anim_t, 0, "deve sempre começar do frame 0, não do tempo absoluto")
+
+    def test_resolve_display_state_expira_apos_1_ciclo_e_volta_pro_idle(self):
+        from engine.character_animation import (
+            trigger_attack_anim, resolve_display_state, DEFAULT_FRAME_MS, _frames_for)
+        trigger_attack_anim(self.tm, "guerreiro", "", 1000)
+        # Conta frames de verdade via o cache interno (mesmo jeito que
+        # resolve_display_state usa) — evita hardcodar "8 frames".
+        n_frames = len(_frames_for("guerreiro", "attack", "down"))
+        self.assertGreater(n_frames, 0, "guerreiro_attack_down.png precisa existir pra este teste")
+        duration_ms = n_frames * DEFAULT_FRAME_MS
+
+        state, _ = resolve_display_state(self.tm, "guerreiro", 1000 + duration_ms - 1)
+        self.assertEqual(state, "attack", "ainda dentro do ciclo")
+
+        state, _ = resolve_display_state(self.tm, "guerreiro", 1000 + duration_ms + 1)
+        self.assertEqual(state, "idle", "ciclo terminou, parado -> idle")
+        self.assertEqual(self.tm.anim_attack_state, "",
+            "expirar deve limpar o estado, não só deixar de retorná-lo")
+
+    def test_resolve_display_state_sem_sprite_nenhum_cai_direto_pro_idle_run(self):
+        from engine.character_animation import trigger_attack_anim, resolve_display_state
+        trigger_attack_anim(self.tm, "classe_inexistente_xyz", "", 1000)
+        state, anim_t = resolve_display_state(self.tm, "classe_inexistente_xyz", 1000)
+        self.assertEqual(state, "idle")
+        self.assertEqual(anim_t, 1000, "sem golpe ativo, usa tempo absoluto (idle/run normal)")
+
+    def test_golpe_tem_prioridade_sobre_run_enquanto_ativo(self):
+        from engine.character_animation import trigger_attack_anim, resolve_display_state
+        self.tm.is_moving = True   # andando ao mesmo tempo que ataca
+        trigger_attack_anim(self.tm, "guerreiro", "", 1000)
+        state, _ = resolve_display_state(self.tm, "guerreiro", 1000)
+        self.assertEqual(state, "attack", "golpe deve aparecer mesmo andando")
+
+
+class TestApplyCombatResultTriggersAttackAnim(unittest.TestCase):
+    """Integração real: `_apply_combat_result` (client/
+    remote_entity_handlers.py) deve disparar a animação de golpe do
+    ATACANTE — local ou remoto, contra mob OU player, nunca em DoT/HoT
+    nem quando não causa dano de verdade."""
+
+    def _make_engine_stub(self, attacker_eid, attacker_class_id, is_remote):
+        """Stub com `MagicMock` pro resto do GameEngine (função de
+        produção real, ~430 linhas, mexe em combat log/som/FLT/PNQ/
+        arqueiro — muitos atributos que não importam pra ESTE teste,
+        cujo objetivo é só confirmar que o trigger de animação, perto do
+        TOPO da função, é alcançado e escreve no componente certo).
+        `world`/entidades continuam 100% reais — é a função de PRODUÇÃO
+        rodando de verdade, não uma cópia da lógica de trigger (mesma
+        régua do CLAUDE.md: "testar objeto real, não só fixture
+        monkeypatchada"); só o resto do GameEngine (irrelevante aqui) é
+        mockado, pra não precisar adivinhar cada atributo 1 por 1."""
+        from unittest.mock import MagicMock
+        from engine.world import World
+        from engine.components import (Position, TileMovement, CharacterStats,
+                                       RemoteControlled, CombatStats)
+
+        world = World()
+        eng = MagicMock()
+        eng.world = world
+        eng._remote_players = {}
+        eng._remote_mobs = {}
+        eng._my_eid = 999  # server eid do player local (arbitrário)
+        eng._bg_silence_nonplayer_combat_fx.return_value = False
+        eng._resolve_archer_attack.return_value = (False, None, False)
+        eng._player_world_pos.return_value = (0.0, 0.0)
+
+        if is_remote:
+            eng.player_entity = world.create_entity()
+            world.add_component(eng.player_entity, Position(x=0, y=0))
+            world.add_component(eng.player_entity, TileMovement())
+            world.add_component(eng.player_entity, CharacterStats(class_id="guerreiro"))
+
+            atk_local = world.create_entity()
+            world.add_component(atk_local, Position(x=0, y=0))
+            world.add_component(atk_local, TileMovement())
+            world.add_component(atk_local, RemoteControlled(class_id=attacker_class_id))
+            eng._remote_players[attacker_eid] = atk_local
+            eng._atk_local_eid = atk_local
+        else:
+            eng.player_entity = world.create_entity()
+            world.add_component(eng.player_entity, Position(x=0, y=0))
+            world.add_component(eng.player_entity, TileMovement())
+            world.add_component(eng.player_entity, CharacterStats(class_id=attacker_class_id))
+            eng._atk_local_eid = eng.player_entity
+            eng._my_eid = attacker_eid  # o ATACANTE é o player local
+
+        # Alvo: um mob remoto genérico, sem CombatStats (não precisa pra
+        # este teste — só o efeito no ATACANTE importa aqui).
+        target_local = world.create_entity()
+        world.add_component(target_local, Position(x=32, y=0))
+        eng._remote_mobs[555] = target_local
+
+        return eng, world
+
+    def test_auto_attack_local_causando_dano_liga_animacao_attack(self):
+        from client.remote_entity_handlers import RemoteEntityHandlers
+        eng, world = self._make_engine_stub(attacker_eid=42, attacker_class_id="guerreiro",
+                                            is_remote=False)
+        from engine.components import TileMovement
+        RemoteEntityHandlers._apply_combat_result(eng, {
+            "attacker": 42, "target": 555, "damage": 10, "outcome": "hit",
+            "hp_after": 40, "source": "auto",
+        })
+        tm = world.get_component(eng._atk_local_eid, TileMovement)
+        self.assertEqual(tm.anim_attack_state, "attack")
+
+    def test_ataque_remoto_causando_dano_liga_animacao_no_player_remoto_certo(self):
+        from client.remote_entity_handlers import RemoteEntityHandlers
+        eng, world = self._make_engine_stub(attacker_eid=77, attacker_class_id="guerreiro",
+                                            is_remote=True)
+        from engine.components import TileMovement
+        RemoteEntityHandlers._apply_combat_result(eng, {
+            "attacker": 77, "target": 555, "damage": 10, "outcome": "hit",
+            "hp_after": 40, "source": "auto",
+        })
+        tm_remote = world.get_component(eng._atk_local_eid, TileMovement)
+        self.assertEqual(tm_remote.anim_attack_state, "attack")
+        tm_local = world.get_component(eng.player_entity, TileMovement)
+        self.assertEqual(tm_local.anim_attack_state, "",
+            "só o ATACANTE deveria animar, não o player local (que aqui é a vítima)")
+
+    def test_dot_nao_liga_animacao_de_golpe(self):
+        from client.remote_entity_handlers import RemoteEntityHandlers
+        eng, world = self._make_engine_stub(attacker_eid=42, attacker_class_id="guerreiro",
+                                            is_remote=False)
+        from engine.components import TileMovement
+        RemoteEntityHandlers._apply_combat_result(eng, {
+            "attacker": 42, "target": 555, "damage": 10, "outcome": "hit",
+            "hp_after": 40, "source": "bleed",
+        })
+        tm = world.get_component(eng._atk_local_eid, TileMovement)
+        self.assertEqual(tm.anim_attack_state, "", "DoT/HoT nunca liga a animação de golpe")
+
+    def test_dano_zero_nao_liga_animacao_de_golpe(self):
+        from client.remote_entity_handlers import RemoteEntityHandlers
+        eng, world = self._make_engine_stub(attacker_eid=42, attacker_class_id="guerreiro",
+                                            is_remote=False)
+        from engine.components import TileMovement
+        RemoteEntityHandlers._apply_combat_result(eng, {
+            "attacker": 42, "target": 555, "damage": 0, "outcome": "miss",
+            "hp_after": 50, "source": "auto",
+        })
+        tm = world.get_component(eng._atk_local_eid, TileMovement)
+        self.assertEqual(tm.anim_attack_state, "", "miss/sem dano não deveria ligar a animação")
+
+    def test_skill_sem_sprite_propria_usa_generico_via_apply_combat_result(self):
+        from client.remote_entity_handlers import RemoteEntityHandlers
+        eng, world = self._make_engine_stub(attacker_eid=42, attacker_class_id="guerreiro",
+                                            is_remote=False)
+        from engine.components import TileMovement
+        RemoteEntityHandlers._apply_combat_result(eng, {
+            "attacker": 42, "target": 555, "damage": 30, "outcome": "hit",
+            "hp_after": 20, "source": "skill", "sid": "golpe_poderoso",
+        })
+        tm = world.get_component(eng._atk_local_eid, TileMovement)
+        self.assertEqual(tm.anim_attack_state, "attack",
+            "golpe_poderoso não tem sprite própria hoje -> fallback genérico")
+
+
 if __name__ == "__main__":
     unittest.main()
