@@ -170,7 +170,7 @@ def resolve_attack_state_name(class_id: str, sid: str, direction: str) -> str:
     return "attack"
 
 
-MISS_ATTACK_SLOWDOWN = 1.25  # 25% mais lento — golpe que erra (miss/dodge/parry), pedido do usuário 10/09/2026
+MISS_ATTACK_SLOWDOWN = 1.5  # 50% mais lento — golpe que erra (miss/dodge/parry); 25% não deu diferença perceptível, usuário pediu +25pp (10/09/2026)
 
 
 def trigger_attack_anim(tile_movement, class_id: str, sid: str, now_ms: int,
