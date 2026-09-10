@@ -257,6 +257,40 @@ class TestFacingTracksCombatTargetWhileStationary(unittest.TestCase):
         self.sys.update(dt=0.05)   # não deveria lançar exceção
         self.assertEqual(self.tm.facing, "up", "sem Position do alvo, mantém a direção anterior")
 
+    def test_caminhada_continua_contra_alvo_em_direcao_oposta_nao_pisca(self):
+        """Bug real relatado pelo usuário (09/09/2026, follow-up): andando
+        pra baixo com um alvo selecionado ao NORTE (direção oposta),
+        o frame único de `is_moving=False` entre 2 passos (mesma causa
+        raiz do flicker idle/run, ver `anim_walk_grace_s`) fazia o
+        personagem "piscar" de frente pro alvo no meio da caminhada.
+        `anim_walk_grace_s` (ligado no instante em que o passo termina)
+        precisa suprimir o facing-pro-alvo nesse frame também."""
+        target = self._put_target_at(0, -3)   # bem ao norte
+        self.cs.target_entity_id = target
+
+        def start_step_down():
+            cur_x, cur_y = self.tm.current_tile_x, self.tm.current_tile_y
+            self.tm.target_tile_x  = cur_x
+            self.tm.target_tile_y  = cur_y + 1
+            self.tm.start_pixel_x  = cur_x * TILE_SIZE
+            self.tm.start_pixel_y  = cur_y * TILE_SIZE
+            self.tm.target_pixel_x = cur_x * TILE_SIZE
+            self.tm.target_pixel_y = (cur_y + 1) * TILE_SIZE
+            self.tm.progress    = 0.0
+            self.tm.is_moving   = True
+            self.tm.move_duration = 0.2
+
+        start_step_down()
+        self.sys.update(dt=1.0)   # completa o 1º passo NO MESMO frame em que começou
+        self.assertEqual(self.tm.facing, "down",
+            "frame de transição entre passos não pode piscar pro alvo (norte)")
+        self.assertFalse(self.tm.is_moving)
+
+        # Próximo frame: PlayerInputSystem (segurando a tecla) inicia o 2º passo.
+        start_step_down()
+        self.sys.update(dt=0.05)
+        self.assertEqual(self.tm.facing, "down")
+
 
 class TestResolveAnimState(unittest.TestCase):
     """Ponto único de verdade pra "o que conta como andando" na

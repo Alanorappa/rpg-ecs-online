@@ -4468,7 +4468,7 @@ class TileMovementSystem(System):
                             and self.world.get_component(entity_id, PlayerControlled) is not None):
                         SOUNDS.play_footstep()
                         self._footstep_timer = self.FOOTSTEP_INTERVAL
-            if not tile_movement.is_moving:
+            if not tile_movement.is_moving and tile_movement.anim_walk_grace_s <= 0:
                 # Personagem parado mas com alvo de combate selecionado
                 # deve ficar de frente pro alvo, não travado na última
                 # direção que andou (bug real relatado pelo usuário,
@@ -4480,6 +4480,15 @@ class TileMovementSystem(System):
                 # enquanto. Recalcula todo tick (barato: 1 lookup + 2
                 # subtrações) pra acompanhar um alvo que se move ao
                 # redor de quem está parado.
+                #
+                # `anim_walk_grace_s > 0` (ver ANIM_WALK_GRACE_S acima)
+                # exclui o frame único em que `is_moving` pisca False no
+                # MEIO de uma caminhada contínua — sem esse guard, andar
+                # em direção CONTRÁRIA a um alvo selecionado fazia o
+                # personagem "piscar" de frente pro alvo por 1 frame no
+                # meio da animação de andar (bug real relatado pelo
+                # usuário, mesma causa raiz do flicker idle/run já
+                # corrigido — este guard é o equivalente pra `facing`).
                 _cs_facing = self.world.get_component(entity_id, CombatState)
                 if _cs_facing is not None and _cs_facing.target_entity_id != -1:
                     _tgt_pos_facing = self.world.get_component(_cs_facing.target_entity_id, Position)
