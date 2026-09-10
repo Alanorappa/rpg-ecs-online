@@ -64,11 +64,11 @@ class TestGetCharacterFrame(unittest.TestCase):
         _ca._frame_cache.clear()
 
     def test_combinacao_existente_retorna_frame(self):
-        from engine.character_animation import get_character_frame
+        from engine.character_animation import get_character_frame, CHAR_TILE_SIZE
         frame = get_character_frame("guerreiro", "idle", "down", 0)
         self.assertIsNotNone(frame)
         w, h = frame.get_size()
-        self.assertEqual(w, 32)
+        self.assertEqual(w, CHAR_TILE_SIZE)
 
     def test_frame_avanca_com_o_tempo(self):
         from engine.character_animation import get_character_frame, DEFAULT_FRAME_MS
@@ -94,18 +94,19 @@ class TestGetCharacterFrame(unittest.TestCase):
         self.assertIsNone(get_character_frame("classe_inexistente_xyz", "idle", "right", 0))
 
     def test_espelha_lado_que_falta_a_partir_do_lado_que_existe(self):
-        from engine.character_animation import get_character_frame
+        from engine.character_animation import get_character_frame, CHAR_TILE_SIZE
         path = os.path.join("assets", "sprites", "testclasse_idle_right.png")
-        surf = pygame.Surface((64, 32), pygame.SRCALPHA)
-        pygame.draw.rect(surf, (255, 0, 0, 255), (0, 0, 16, 32))
-        pygame.draw.rect(surf, (0, 0, 255, 255), (16, 0, 16, 32))
+        w, h = CHAR_TILE_SIZE * 2, CHAR_TILE_SIZE
+        surf = pygame.Surface((w, h), pygame.SRCALPHA)
+        pygame.draw.rect(surf, (255, 0, 0, 255), (0, 0, CHAR_TILE_SIZE // 2, h))
+        pygame.draw.rect(surf, (0, 0, 255, 255), (CHAR_TILE_SIZE // 2, 0, CHAR_TILE_SIZE // 2, h))
         pygame.image.save(surf, path)
         try:
             left_frame = get_character_frame("testclasse", "idle", "left", 0)
             self.assertIsNotNone(left_frame)
             # Espelhado: o que era vermelho na borda esquerda de "right"
             # vira a borda DIREITA de "left".
-            self.assertEqual(left_frame.get_at((31, 0))[:3], (255, 0, 0))
+            self.assertEqual(left_frame.get_at((CHAR_TILE_SIZE - 1, 0))[:3], (255, 0, 0))
             self.assertEqual(left_frame.get_at((0, 0))[:3], (0, 0, 255))
         finally:
             os.remove(path)
@@ -265,6 +266,7 @@ class TestRenderSystemNameplateTopFollowsSpriteHeight(unittest.TestCase):
         from engine.world import World
         from ui.systems import RenderSystem
         from ui.world_labels import WORLD_LABELS
+        from engine.character_animation import get_character_frame
 
         world = World()
         eid = self._make_player(world)
@@ -281,9 +283,12 @@ class TestRenderSystemNameplateTopFollowsSpriteHeight(unittest.TestCase):
         self.assertTrue(entries, "deveria ter enfileirado pelo menos a barra de HP")
         hud_top_world_y = entries[0][1]
 
-        # Sprite real é 32x48; âncora de pé é position.y+12 (mesmo
-        # offset usado pro blit) — topo esperado = position.y+12-48.
-        self.assertAlmostEqual(hud_top_world_y, 100 + 12 - 48)
+        # Lê a altura REAL do sprite carregado (não hardcoded — o
+        # tamanho do arquivo já mudou 1x nesta sessão, 32x48 -> 96x80,
+        # e pode mudar de novo). Âncora de pé é position.y+12 (mesmo
+        # offset usado pro blit).
+        real_h = get_character_frame("guerreiro", "idle", "down", 0).get_height()
+        self.assertAlmostEqual(hud_top_world_y, 100 + 12 - real_h)
         # Regressão: NÃO pode ser o cálculo antigo (baseado em
         # renderable.height=24), que ficaria bem mais baixo — dentro do
         # próprio sprite.

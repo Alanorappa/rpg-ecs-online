@@ -13,12 +13,14 @@ Convenção de arquivo em assets/sprites/, por `class_id`:
   {class_id}_idle_{direction}.png  — sheet horizontal, personagem parado
   {class_id}_run_{direction}.png   — sheet horizontal, personagem andando
   direction ∈ "down"/"up"/"left"/"right"
-  Cada sheet é cortado em frames de CHAR_TILE_SIZE (32px) de largura,
-  altura = altura do sheet (pode ser maior que 1 tile — personagem
-  ancorado no PÉ, mesma convenção de `entity_disguise.py`). Diferente de
-  `entity_disguise.py`: aqui IDLE também é uma sheet animada (várias
-  frames), nunca um frame único parado — personagem "respira" mesmo
-  quieto.
+  Cada sheet é cortado em frames de CHAR_TILE_SIZE (96px, 09/09/2026 —
+  frames NÃO são quadrados, 96 largura × altura variável conforme o
+  arquivo; largura fixa por decisão do usuário, não derivável da altura
+  do sheet) de largura, altura = altura do sheet (pode ser maior que 1
+  tile — personagem ancorado no PÉ, mesma convenção de
+  `entity_disguise.py`). Diferente de `entity_disguise.py`: aqui IDLE
+  também é uma sheet animada (várias frames), nunca um frame único
+  parado — personagem "respira" mesmo quieto.
 
   Espelhamento (decisão do usuário, 09/09/2026): se faltar o arquivo de
   "left" mas existir o de "right" (ou vice-versa), usa o que existir e
@@ -33,7 +35,7 @@ puramente visuais).
 """
 from __future__ import annotations
 
-CHAR_TILE_SIZE = 32
+CHAR_TILE_SIZE = 96
 DEFAULT_FRAME_MS = 78  # 65 * 1.2 — animação 20% mais lenta (09/09/2026, pedido do usuário)
 
 # Cache de módulo, chaveado por (class_id, state, direction) — conjunto
