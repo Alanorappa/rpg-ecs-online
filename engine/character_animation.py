@@ -139,7 +139,7 @@ def get_character_frame(class_id: str, state: str, direction: str,
     frames = _frames_for(class_id, state, direction)
     if not frames:
         return None
-    idx = (anim_time_ms // frame_ms) % len(frames)
+    idx = int(anim_time_ms // frame_ms) % len(frames)
     return frames[idx]
 
 
@@ -170,34 +170,52 @@ def resolve_attack_state_name(class_id: str, sid: str, direction: str) -> str:
     return "attack"
 
 
-def trigger_attack_anim(tile_movement, class_id: str, sid: str, now_ms: int) -> None:
-    """Liga a animação de golpe (09/09/2026, pedido do usuário) — chamada
-    no momento em que o dano é confirmado (COMBAT_RESULT, auto-attack OU
-    skill), nunca em resposta a DoT/HoT. `resolve_display_state()` decide
-    quando ela termina (1 ciclo completo do sheet resolvido aqui) e volta
-    pra idle/run — puramente cosmético, nunca lido por gameplay/combate."""
+MISS_ATTACK_SLOWDOWN = 1.25  # 25% mais lento — golpe que erra (miss/dodge/parry), pedido do usuário 10/09/2026
+
+
+def trigger_attack_anim(tile_movement, class_id: str, sid: str, now_ms: int,
+                        missed: bool = False) -> None:
+    """Liga a animação de golpe — chamada no momento em que o servidor
+    confirma o resultado do golpe (COMBAT_RESULT, auto-attack OU skill),
+    nunca em resposta a DoT/HoT (09/09/2026, pedido do usuário).
+    `missed=True` (miss/dodge/parry — golpe que não causa dano, 10/09/2026,
+    pedido do usuário: "sem isso o personagem fica congelado quando erra")
+    reusa a MESMA animação, só `MISS_ATTACK_SLOWDOWN` mais lenta — nenhuma
+    arte nova precisa existir; se um dia quiser uma animação DEDICADA de
+    erro, é só criar `{class_id}_miss_{direction}.png` e resolver aqui
+    (hoje sempre cai no "attack"/sid normal, só o ritmo muda).
+    `resolve_display_state()` decide quando ela termina (1 ciclo completo
+    do sheet resolvido aqui) e volta pra idle/run — puramente cosmético,
+    nunca lido por gameplay/combate."""
     tile_movement.anim_attack_state      = resolve_attack_state_name(class_id, sid, tile_movement.facing)
     tile_movement.anim_attack_started_ms = now_ms
+    # int() — frame_ms indexa frames[] via // e %; float quebraria o
+    # indexing (bug real pego testando: 78*1.25=97.5, frames[2.0] explode).
+    tile_movement.anim_attack_frame_ms   = int(DEFAULT_FRAME_MS * (MISS_ATTACK_SLOWDOWN if missed else 1.0))
 
 
 def resolve_display_state(tile_movement, class_id: str, now_ms: int,
-                          frame_ms: int = DEFAULT_FRAME_MS) -> "tuple[str, int]":
-    """(state_name, anim_time_ms) prontos pra passar direto a
+                          frame_ms: int = DEFAULT_FRAME_MS) -> "tuple[str, int, float]":
+    """(state_name, anim_time_ms, frame_ms) prontos pra passar direto a
     `get_character_frame` — ponto único de verdade pra "qual animação
     mostrar agora" (golpe tem prioridade sobre andando/parado, enquanto
-    durar 1 ciclo do sheet) e "que tempo usar pra escolher o frame"
-    (desde o INÍCIO do golpe — sempre comEça do frame 0 — vs. tempo
-    absoluto pra idle/run, que só precisam ciclar pra sempre).
+    durar 1 ciclo do sheet), "que tempo usar pra escolher o frame" (desde
+    o INÍCIO do golpe — sempre começa do frame 0 — vs. tempo absoluto
+    pra idle/run, que só precisam ciclar pra sempre), e "com que duração
+    de frame" (`tile_movement.anim_attack_frame_ms` — golpe que errou é
+    mais lento, setado por `trigger_attack_anim`, nunca o `DEFAULT_FRAME_MS`
+    fixo pra golpe).
 
     Golpe expira sozinho (limpa `anim_attack_state`, sem componente/
     sistema novo pra isso) quando o tempo desde o trigger passa de
-    `len(frames) * frame_ms`, OU na hora se o sprite resolvido não
-    existir pra essa direção — nesses casos cai pro idle/run do MESMO
+    `len(frames) * anim_attack_frame_ms`, OU na hora se o sprite resolvido
+    não existir pra essa direção — nesses casos cai pro idle/run do MESMO
     frame, sem 1 frame de retângulo/estado errado no meio."""
     if tile_movement.anim_attack_state:
+        _attack_frame_ms = tile_movement.anim_attack_frame_ms or frame_ms
         frames  = _frames_for(class_id, tile_movement.anim_attack_state, tile_movement.facing)
         elapsed = now_ms - tile_movement.anim_attack_started_ms
-        if frames and elapsed < len(frames) * frame_ms:
-            return tile_movement.anim_attack_state, elapsed
+        if frames and elapsed < len(frames) * _attack_frame_ms:
+            return tile_movement.anim_attack_state, elapsed, _attack_frame_ms
         tile_movement.anim_attack_state = ""
-    return resolve_anim_state(tile_movement), now_ms
+    return resolve_anim_state(tile_movement), now_ms, frame_ms

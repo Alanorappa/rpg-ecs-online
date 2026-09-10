@@ -631,11 +631,13 @@ class TestAttackAnimTriggerAndExpiry(unittest.TestCase):
         self.assertEqual(self.tm.anim_attack_started_ms, 1000)
 
     def test_resolve_display_state_logo_apos_trigger_comeca_do_frame_0(self):
-        from engine.character_animation import trigger_attack_anim, resolve_display_state
+        from engine.character_animation import (
+            trigger_attack_anim, resolve_display_state, DEFAULT_FRAME_MS)
         trigger_attack_anim(self.tm, "guerreiro", "", 5000)
-        state, anim_t = resolve_display_state(self.tm, "guerreiro", 5000)
+        state, anim_t, frame_ms = resolve_display_state(self.tm, "guerreiro", 5000)
         self.assertEqual(state, "attack")
         self.assertEqual(anim_t, 0, "deve sempre começar do frame 0, não do tempo absoluto")
+        self.assertEqual(frame_ms, DEFAULT_FRAME_MS, "golpe normal usa a duração padrão")
 
     def test_resolve_display_state_expira_apos_1_ciclo_e_volta_pro_idle(self):
         from engine.character_animation import (
@@ -647,10 +649,10 @@ class TestAttackAnimTriggerAndExpiry(unittest.TestCase):
         self.assertGreater(n_frames, 0, "guerreiro_attack_down.png precisa existir pra este teste")
         duration_ms = n_frames * DEFAULT_FRAME_MS
 
-        state, _ = resolve_display_state(self.tm, "guerreiro", 1000 + duration_ms - 1)
+        state, _, _ = resolve_display_state(self.tm, "guerreiro", 1000 + duration_ms - 1)
         self.assertEqual(state, "attack", "ainda dentro do ciclo")
 
-        state, _ = resolve_display_state(self.tm, "guerreiro", 1000 + duration_ms + 1)
+        state, _, _ = resolve_display_state(self.tm, "guerreiro", 1000 + duration_ms + 1)
         self.assertEqual(state, "idle", "ciclo terminou, parado -> idle")
         self.assertEqual(self.tm.anim_attack_state, "",
             "expirar deve limpar o estado, não só deixar de retorná-lo")
@@ -658,7 +660,7 @@ class TestAttackAnimTriggerAndExpiry(unittest.TestCase):
     def test_resolve_display_state_sem_sprite_nenhum_cai_direto_pro_idle_run(self):
         from engine.character_animation import trigger_attack_anim, resolve_display_state
         trigger_attack_anim(self.tm, "classe_inexistente_xyz", "", 1000)
-        state, anim_t = resolve_display_state(self.tm, "classe_inexistente_xyz", 1000)
+        state, anim_t, _ = resolve_display_state(self.tm, "classe_inexistente_xyz", 1000)
         self.assertEqual(state, "idle")
         self.assertEqual(anim_t, 1000, "sem golpe ativo, usa tempo absoluto (idle/run normal)")
 
@@ -666,8 +668,22 @@ class TestAttackAnimTriggerAndExpiry(unittest.TestCase):
         from engine.character_animation import trigger_attack_anim, resolve_display_state
         self.tm.is_moving = True   # andando ao mesmo tempo que ataca
         trigger_attack_anim(self.tm, "guerreiro", "", 1000)
-        state, _ = resolve_display_state(self.tm, "guerreiro", 1000)
+        state, _, _ = resolve_display_state(self.tm, "guerreiro", 1000)
         self.assertEqual(state, "attack", "golpe deve aparecer mesmo andando")
+
+    def test_golpe_que_errou_e_25_por_cento_mais_lento(self):
+        from engine.character_animation import (
+            trigger_attack_anim, resolve_display_state, DEFAULT_FRAME_MS, MISS_ATTACK_SLOWDOWN)
+        trigger_attack_anim(self.tm, "guerreiro", "", 1000, missed=True)
+        _, _, frame_ms = resolve_display_state(self.tm, "guerreiro", 1000)
+        self.assertEqual(frame_ms, int(DEFAULT_FRAME_MS * MISS_ATTACK_SLOWDOWN))
+        self.assertGreater(frame_ms, DEFAULT_FRAME_MS)
+
+    def test_golpe_normal_usa_duracao_padrao_nao_a_de_erro(self):
+        from engine.character_animation import trigger_attack_anim, resolve_display_state, DEFAULT_FRAME_MS
+        trigger_attack_anim(self.tm, "guerreiro", "", 1000, missed=False)
+        _, _, frame_ms = resolve_display_state(self.tm, "guerreiro", 1000)
+        self.assertEqual(frame_ms, DEFAULT_FRAME_MS)
 
 
 class TestApplyCombatResultTriggersAttackAnim(unittest.TestCase):
@@ -769,17 +785,40 @@ class TestApplyCombatResultTriggersAttackAnim(unittest.TestCase):
         tm = world.get_component(eng._atk_local_eid, TileMovement)
         self.assertEqual(tm.anim_attack_state, "", "DoT/HoT nunca liga a animação de golpe")
 
-    def test_dano_zero_nao_liga_animacao_de_golpe(self):
+    def test_miss_liga_animacao_generica_mais_lenta(self):
+        """10/09/2026, pedido do usuário: golpe que erra (miss/dodge/
+        parry) não deve deixar o personagem "congelado" — reusa a
+        MESMA animação de golpe, só mais lenta (MISS_ATTACK_SLOWDOWN),
+        nenhuma arte nova."""
         from client.remote_entity_handlers import RemoteEntityHandlers
+        from engine.character_animation import DEFAULT_FRAME_MS, MISS_ATTACK_SLOWDOWN
+        eng, world = self._make_engine_stub(attacker_eid=42, attacker_class_id="guerreiro",
+                                            is_remote=False)
+        from engine.components import TileMovement
+        for _outcome in ("miss", "dodge", "parry"):
+            RemoteEntityHandlers._apply_combat_result(eng, {
+                "attacker": 42, "target": 555, "damage": 0, "outcome": _outcome,
+                "hp_after": 50, "source": "auto",
+            })
+            tm = world.get_component(eng._atk_local_eid, TileMovement)
+            self.assertEqual(tm.anim_attack_state, "attack",
+                f"outcome={_outcome} deveria ligar a animação genérica de golpe")
+            self.assertEqual(tm.anim_attack_frame_ms, int(DEFAULT_FRAME_MS * MISS_ATTACK_SLOWDOWN),
+                f"outcome={_outcome} deveria ser mais lento que o golpe normal")
+
+    def test_hit_de_verdade_usa_duracao_normal_nao_a_de_erro(self):
+        from client.remote_entity_handlers import RemoteEntityHandlers
+        from engine.character_animation import DEFAULT_FRAME_MS
         eng, world = self._make_engine_stub(attacker_eid=42, attacker_class_id="guerreiro",
                                             is_remote=False)
         from engine.components import TileMovement
         RemoteEntityHandlers._apply_combat_result(eng, {
-            "attacker": 42, "target": 555, "damage": 0, "outcome": "miss",
+            "attacker": 42, "target": 555, "damage": 10, "outcome": "hit",
             "hp_after": 50, "source": "auto",
         })
         tm = world.get_component(eng._atk_local_eid, TileMovement)
-        self.assertEqual(tm.anim_attack_state, "", "miss/sem dano não deveria ligar a animação")
+        self.assertEqual(tm.anim_attack_state, "attack")
+        self.assertEqual(tm.anim_attack_frame_ms, DEFAULT_FRAME_MS)
 
     def test_skill_sem_sprite_propria_usa_generico_via_apply_combat_result(self):
         from client.remote_entity_handlers import RemoteEntityHandlers

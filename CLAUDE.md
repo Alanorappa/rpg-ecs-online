@@ -483,13 +483,22 @@ padrão a quebrar, não só os bugs individuais.
   dedicado a "desligar"). **Animação de golpe** (auto-attack, ou skill
   sem sprite própria cai no genérico `attack` — ver
   `resolve_attack_state_name`) é ligada por
-  `trigger_attack_anim(tile_movement, class_id, sid, now_ms)`, chamado
-  de UM lugar só: `client/remote_entity_handlers.py::
-  _apply_combat_result`, no momento em que o dano é confirmado
-  (`damage>0`, nunca DoT/HoT) — NUNCA replicar esse gatilho em outro
-  ponto do código (ex: no clique de ataque, ou no envio do
-  AUTO_ATTACK/CAST_SKILL) — o servidor é quem confirma que o golpe
-  aconteceu de verdade, o cliente só reage a essa confirmação.
+  `trigger_attack_anim(tile_movement, class_id, sid, now_ms, missed=
+  bool)`, chamado de UM lugar só: `client/remote_entity_handlers.py::
+  _apply_combat_result`, no momento em que o servidor confirma o
+  RESULTADO do golpe (`source in ("auto","skill")`, nunca DoT/HoT —
+  NÃO exige `damage>0`: miss/dodge/parry também animam, 10/09/2026,
+  decisão do usuário) — NUNCA replicar esse gatilho em outro ponto do
+  código (ex: no clique de ataque, ou no envio do AUTO_ATTACK/
+  CAST_SKILL) — o servidor é quem confirma que o golpe aconteceu de
+  verdade, o cliente só reage a essa confirmação. `missed=True` (outcome
+  miss/dodge/parry) reusa a MESMA animação, só `MISS_ATTACK_SLOWDOWN`
+  (25%) mais lenta via `TileMovement.anim_attack_frame_ms` (novo campo,
+  por-golpe — NUNCA o `DEFAULT_FRAME_MS` global pra golpe, que pode
+  variar por trigger) — decisão explícita do usuário de NÃO criar uma
+  animação dedicada de erro por enquanto; se um dia criar, o lugar certo
+  é dentro de `resolve_attack_state_name`/`trigger_attack_anim`, nunca
+  um branch novo espalhado.
   **Âncora de desenho e Y-sort** (10/09/2026, decisão do usuário): cada
   frame tem um tile de colisão/pé REAL de 32×32 (`CHAR_COLLISION_SIZE`
   == TILE_SIZE) no canto `(CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y)`

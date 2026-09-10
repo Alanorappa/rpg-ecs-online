@@ -254,12 +254,15 @@ class RemoteEntityHandlers:
 
         # Animação de golpe do ATACANTE (09/09/2026, pedido do usuário) —
         # independente de quem/o que foi o ALVO (mob ou player): liga
-        # sempre que um player de verdade (local ou remoto) causa dano de
-        # verdade via auto-attack ou skill, nunca em DoT/HoT. Skill sem
-        # sprite própria cai no genérico "attack" (ver
+        # sempre que um player de verdade (local ou remoto) resolve um
+        # auto-attack ou skill de verdade, nunca em DoT/HoT — inclusive
+        # miss/dodge/parry (10/09/2026: golpe que erra também anima, só
+        # `MISS_ATTACK_SLOWDOWN` mais lento, mesma arte — "personagem
+        # congelado" quando errava era o sintoma relatado pelo usuário).
+        # Skill sem sprite própria cai no genérico "attack" (ver
         # resolve_attack_state_name). Puramente cosmético — nunca decide
         # gameplay, só o que a tela mostra.
-        if not _is_dot_hot and damage > 0:
+        if not _is_dot_hot:
             _atk_eid_anim = (self.player_entity if server_attacker == self._my_eid
                              else self._remote_players.get(server_attacker))
             if _atk_eid_anim is not None:
@@ -274,7 +277,9 @@ class RemoteEntityHandlers:
                 _tm_anim_atk = self.world.get_component(_atk_eid_anim, _TMAnimAtk)
                 if _atk_class_id and _tm_anim_atk is not None:
                     from engine.character_animation import trigger_attack_anim as _taa
-                    _taa(_tm_anim_atk, _atk_class_id, cr.get("sid", ""), pygame.time.get_ticks())
+                    _missed_anim = outcome in ("miss", "dodge", "parry")
+                    _taa(_tm_anim_atk, _atk_class_id, cr.get("sid", ""), pygame.time.get_ticks(),
+                         missed=_missed_anim)
 
         col_regen = (100, 220, 100)
 

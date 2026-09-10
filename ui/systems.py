@@ -1717,8 +1717,10 @@ class RenderSystem(System):
                         if _tm_rnd is not None:
                             from engine.character_animation import (
                                 get_character_frame as _gcf, resolve_display_state as _rds)
-                            _state_rnd, _anim_t_rnd = _rds(_tm_rnd, _char_id_rnd, pygame.time.get_ticks())
-                            _char_frame = _gcf(_char_id_rnd, _state_rnd, _tm_rnd.facing, _anim_t_rnd)
+                            _state_rnd, _anim_t_rnd, _frame_ms_rnd = _rds(
+                                _tm_rnd, _char_id_rnd, pygame.time.get_ticks())
+                            _char_frame = _gcf(_char_id_rnd, _state_rnd, _tm_rnd.facing,
+                                               _anim_t_rnd, _frame_ms_rnd)
 
                     if _char_frame is not None:
                         # Âncora pelo tile de colisão REAL (32×32) dentro
