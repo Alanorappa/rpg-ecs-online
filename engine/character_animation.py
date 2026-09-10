@@ -32,17 +32,14 @@ Convenção de arquivo em assets/sprites/, por `class_id`:
   Auto-attack (sid vazio) vai direto pro nível 3 — nunca passa pelo
   genérico de skill, que não faz sentido pra ele.
   direction ∈ "down"/"up"/"left"/"right"
-  Cada sheet é cortado em frames de CHAR_TILE_SIZE (192px, 10/09/2026 —
-  usuário dobrou o tamanho de toda a arte, 09/09 era 96; frames NÃO são
-  quadrados, largura × altura variável conforme o arquivo; largura fixa
-  por decisão do usuário, não derivável da altura do sheet, nem do
-  número de frames — arquivos diferentes têm contagens diferentes, ex:
-  8 pra maioria, 5 pro Fatiador de Corpos) de largura, altura = altura
-  do sheet (pode ser maior que 1 tile — personagem ancorado no PÉ,
-  mesma convenção de `entity_disguise.py`). Diferente de
-  `entity_disguise.py`: aqui IDLE também é uma sheet animada (várias
-  frames), nunca um frame único parado — personagem "respira" mesmo
-  quieto.
+  Cada sheet é cortado em frames de CHAR_TILE_SIZE (96px, 09/09/2026 —
+  frames NÃO são quadrados, 96 largura × altura variável conforme o
+  arquivo; largura fixa por decisão do usuário, não derivável da altura
+  do sheet) de largura, altura = altura do sheet (pode ser maior que 1
+  tile — personagem ancorado no PÉ, mesma convenção de
+  `entity_disguise.py`). Diferente de `entity_disguise.py`: aqui IDLE
+  também é uma sheet animada (várias frames), nunca um frame único
+  parado — personagem "respira" mesmo quieto.
 
   Espelhamento (decisão do usuário, 09/09/2026): se faltar o arquivo de
   "left" mas existir o de "right" (ou vice-versa), usa o que existir e
@@ -57,25 +54,21 @@ puramente visuais).
 """
 from __future__ import annotations
 
-CHAR_TILE_SIZE = 192
+CHAR_TILE_SIZE = 96
 DEFAULT_FRAME_MS = 78  # 65 * 1.2 — animação 20% mais lenta (09/09/2026, pedido do usuário)
 
-# Tile de colisão/pé real (32×32, == TILE_SIZE) dentro do frame
-# (10/09/2026, decisão do usuário — convenção fixa de arte, mesma pra
-# idle/run/attack/qualquer skill futura; usuário dobrou o tamanho de
-# toda a arte no mesmo dia — 96→192 de largura de frame — e o offset
-# mudou de (32,32) pra (80,96), não escala linearmente com o frame
-# porque a composição da arte em si mudou, não é só um resize
-# uniforme). Offset é a posição do CANTO SUPERIOR ESQUERDO desse tile
-# dentro do frame — horizontal cai centrado por construção (80 + 32/2
-# == CHAR_TILE_SIZE/2 == 96), vertical NÃO (mais espaço acima do tile
-# — corpo/cabeça — que abaixo). Usado tanto pra ancorar o blit
-# (`character_anchor_offset`) quanto pro Y-sort
-# (`ui/systems.py::RenderSystem`) — NUNCA usar CHAR_TILE_SIZE (largura
-# do FRAME) nem a altura do sheet pra nenhum dos dois, é sempre este
-# tile de 32×32 que importa.
-CHAR_COLLISION_OFFSET_X = 80
-CHAR_COLLISION_OFFSET_Y = 96
+# Tile de colisão/pé real (32×32, == TILE_SIZE) dentro do frame de
+# 96×H (10/09/2026, decisão do usuário — convenção fixa de arte,
+# mesma pra idle/run/attack/qualquer skill futura). Offset é a posição
+# do CANTO SUPERIOR ESQUERDO desse tile dentro do frame — horizontal
+# cai centrado por construção (32 + 32/2 == CHAR_TILE_SIZE/2 == 48),
+# vertical NÃO (mais espaço acima do tile — corpo/cabeça — que abaixo).
+# Usado tanto pra ancorar o blit (`character_anchor_offset`) quanto
+# pro Y-sort (`ui/systems.py::RenderSystem`) — NUNCA usar
+# CHAR_TILE_SIZE (largura do FRAME) nem a altura do sheet pra nenhum
+# dos dois, é sempre este tile de 32×32 que importa.
+CHAR_COLLISION_OFFSET_X = 32
+CHAR_COLLISION_OFFSET_Y = 32
 CHAR_COLLISION_SIZE     = 32
 
 
@@ -85,7 +78,7 @@ def character_anchor_offset() -> "tuple[float, float]":
     achar o canto superior esquerdo de onde blitar o frame do
     personagem. Alinha o CENTRO do tile de colisão (32×32, ver
     `CHAR_COLLISION_OFFSET_X/Y`) com (draw_x, draw_y), não o centro/
-    canto do frame inteiro (CHAR_TILE_SIZE×H)."""
+    canto do frame inteiro (96×H)."""
     return (CHAR_COLLISION_OFFSET_X + CHAR_COLLISION_SIZE / 2,
             CHAR_COLLISION_OFFSET_Y + CHAR_COLLISION_SIZE / 2)
 

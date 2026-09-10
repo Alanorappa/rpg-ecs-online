@@ -1794,7 +1794,7 @@ class RenderSystem(System):
                     # anchor_dy` (mesma âncora usada pra desenhar o
                     # sprite, ver `character_anchor_offset` — centro do
                     # tile de colisão de 32×32 alinhado com `position.y`,
-                    # não a base/centro do frame inteiro). Sem
+                    # não a base/centro do frame inteiro de 96×H). Sem
                     # isso, o nameplate cobria parte do sprite (achado
                     # real: primeiro com a altura crua do frame, depois
                     # de novo quando a âncora do tile de colisão mudou).
