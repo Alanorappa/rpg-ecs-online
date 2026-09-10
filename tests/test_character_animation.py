@@ -169,6 +169,95 @@ class TestTileMovementSystemSetsFacing(unittest.TestCase):
         self.assertEqual(self.tm.anim_walk_grace_s, 0.0)
 
 
+class TestFacingTracksCombatTargetWhileStationary(unittest.TestCase):
+    """09/09/2026, pedido do usuário: personagem parado atacando um alvo
+    (ex: mob atrás dele) ficava "olhando" pra última direção que andou,
+    em vez de virar pro alvo — `facing` só era gravado durante um passo
+    de movimento. Integração real: `TileMovementSystem.update()`."""
+
+    def setUp(self):
+        from engine.components import CombatState
+        self.world = World()
+        self.player = self.world.create_entity()
+        self.world.add_component(self.player, Position(x=5 * TILE_SIZE + 16, y=5 * TILE_SIZE + 16))
+        self.tm = TileMovement(current_tile_x=5, current_tile_y=5,
+                               target_tile_x=5, target_tile_y=5)
+        self.tm.is_moving = False
+        self.tm.facing = "up"
+        self.world.add_component(self.player, self.tm)
+        self.cs = CombatState()
+        self.world.add_component(self.player, self.cs)
+        self.sys = TileMovementSystem(self.world)
+
+    def _put_target_at(self, dx_tiles: int, dy_tiles: int) -> int:
+        mob = self.world.create_entity()
+        self.world.add_component(mob, Position(
+            x=(5 + dx_tiles) * TILE_SIZE + 16, y=(5 + dy_tiles) * TILE_SIZE + 16))
+        return mob
+
+    def test_sem_alvo_mantem_ultima_direcao_de_movimento(self):
+        self.sys.update(dt=0.05)
+        self.assertEqual(self.tm.facing, "up")
+
+    def test_alvo_ao_sul_vira_pra_baixo(self):
+        self.cs.target_entity_id = self._put_target_at(0, 1)
+        self.sys.update(dt=0.05)
+        self.assertEqual(self.tm.facing, "down")
+
+    def test_alvo_a_leste_vira_pra_direita(self):
+        self.cs.target_entity_id = self._put_target_at(1, 0)
+        self.sys.update(dt=0.05)
+        self.assertEqual(self.tm.facing, "right")
+
+    def test_alvo_a_oeste_vira_pra_esquerda(self):
+        self.cs.target_entity_id = self._put_target_at(-1, 0)
+        self.sys.update(dt=0.05)
+        self.assertEqual(self.tm.facing, "left")
+
+    def test_acompanha_alvo_que_se_move_ao_redor(self):
+        target = self._put_target_at(0, 1)   # ao sul
+        self.cs.target_entity_id = target
+        self.sys.update(dt=0.05)
+        self.assertEqual(self.tm.facing, "down")
+
+        target_pos = self.world.get_component(target, Position)
+        target_pos.x = (5 - 1) * TILE_SIZE + 16   # move pro oeste
+        target_pos.y = 5 * TILE_SIZE + 16
+        self.sys.update(dt=0.05)
+        self.assertEqual(self.tm.facing, "left")
+
+    def test_andando_ignora_alvo_e_usa_direcao_do_movimento(self):
+        """Prioridade: movimento real sempre vence — só olha pro alvo
+        quando está PARADO (regressão de `TestTileMovementSystemSetsFacing`)."""
+        self.cs.target_entity_id = self._put_target_at(0, 1)  # alvo ao sul
+        self.tm.is_moving       = True
+        self.tm.target_tile_x   = 6   # andando pra LESTE
+        self.tm.target_tile_y   = 5
+        self.tm.start_pixel_x   = 5 * TILE_SIZE
+        self.tm.start_pixel_y   = 5 * TILE_SIZE
+        self.tm.target_pixel_x  = 6 * TILE_SIZE
+        self.tm.target_pixel_y  = 5 * TILE_SIZE
+        self.tm.move_duration   = 0.2
+        self.sys.update(dt=0.05)
+        self.assertEqual(self.tm.facing, "right",
+            "andando deve continuar decidindo facing pela direção do passo, não pelo alvo")
+
+    def test_sem_combat_state_nao_quebra(self):
+        world = World()
+        eid = world.create_entity()
+        world.add_component(eid, Position(x=0, y=0))
+        tm = TileMovement()
+        tm.is_moving = False
+        world.add_component(eid, tm)
+        TileMovementSystem(world).update(dt=0.05)   # não deveria lançar exceção
+
+    def test_alvo_sem_position_nao_quebra(self):
+        alvo_sem_posicao = self.world.create_entity()   # sem Position
+        self.cs.target_entity_id = alvo_sem_posicao
+        self.sys.update(dt=0.05)   # não deveria lançar exceção
+        self.assertEqual(self.tm.facing, "up", "sem Position do alvo, mantém a direção anterior")
+
+
 class TestResolveAnimState(unittest.TestCase):
     """Ponto único de verdade pra "o que conta como andando" na
     animação — não é só `is_moving` puro (ver docstring da função)."""

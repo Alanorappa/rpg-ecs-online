@@ -4468,6 +4468,26 @@ class TileMovementSystem(System):
                             and self.world.get_component(entity_id, PlayerControlled) is not None):
                         SOUNDS.play_footstep()
                         self._footstep_timer = self.FOOTSTEP_INTERVAL
+            if not tile_movement.is_moving:
+                # Personagem parado mas com alvo de combate selecionado
+                # deve ficar de frente pro alvo, não travado na última
+                # direção que andou (bug real relatado pelo usuário,
+                # 09/09/2026: atacava um mob atrás dele ainda "olhando"
+                # pra cima, porque `facing` só era gravado durante um
+                # passo de movimento). Roda em QUALQUER entidade com
+                # CombatState (não só player) — mob/NPC ainda não têm
+                # sprite direcional, então fica inofensivo neles por
+                # enquanto. Recalcula todo tick (barato: 1 lookup + 2
+                # subtrações) pra acompanhar um alvo que se move ao
+                # redor de quem está parado.
+                _cs_facing = self.world.get_component(entity_id, CombatState)
+                if _cs_facing is not None and _cs_facing.target_entity_id != -1:
+                    _tgt_pos_facing = self.world.get_component(_cs_facing.target_entity_id, Position)
+                    if _tgt_pos_facing is not None:
+                        from engine.utils import facing_from_delta as _facing_from_delta_tgt
+                        tile_movement.facing = _facing_from_delta_tgt(
+                            _tgt_pos_facing.x - position.x,
+                            _tgt_pos_facing.y - position.y)
             # debilitate_elapsed: acumula tempo enquanto sob slow (Foco Mortal)
             _sfx_tm = self.world.get_component(entity_id, StatusEffects)
             if _sfx_tm and _sfx_tm.has("slow"):

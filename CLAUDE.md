@@ -465,9 +465,13 @@ padrão a quebrar, não só os bugs individuais.
   incremental por decisão do usuário (09/09/2026): arquivo ausente →
   `None` → `RenderSystem` cai pro retângulo colorido de sempre, nunca
   erro nem placeholder. `direction` vem de `TileMovement.facing`
-  (gravado por `TileMovementSystem` a cada passo real, via
-  `engine.utils.facing_from_delta` — NUNCA recalcular esse delta em
-  outro lugar). "left"/"right" sem arquivo próprio herdam o espelho
+  (gravado por `TileMovementSystem` — movimento real tem prioridade
+  sempre; PARADO com `CombatState.target_entity_id` setado, vira pro
+  alvo em vez de travar na última direção que andou, recalculado todo
+  tick pra acompanhar um alvo que se move — 09/09/2026, bug real
+  relatado pelo usuário: atacava um mob atrás dele "olhando" pra outro
+  lado. Os dois casos via `engine.utils.facing_from_delta` — NUNCA
+  recalcular esse delta em outro lugar). "left"/"right" sem arquivo próprio herdam o espelho
   horizontal do lado oposto automaticamente — pintar só 1 dos 2 lados é
   suficiente. `RenderSystem` só tenta isso pra entidades com `class_id`
   resolvível (`CharacterStats` local ou `RemoteControlled` remoto) —
