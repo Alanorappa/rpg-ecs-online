@@ -12,13 +12,25 @@ TEMPORÁRIO condicional, este é a aparência BASE, sempre presente).
 Convenção de arquivo em assets/sprites/, por `class_id`:
   {class_id}_idle_{direction}.png    — sheet horizontal, personagem parado
   {class_id}_run_{direction}.png     — sheet horizontal, personagem andando
-  {class_id}_attack_{direction}.png  — golpe genérico (auto-attack, ou
-                                        skill SEM sprite própria)
+  {class_id}_attack_{direction}.png  — golpe genérico de AUTO-ATTACK
+                                        (fallback ÚLTIMO de qualquer golpe,
+                                        skill incluída)
+  {class_id}_skill_{direction}.png   — golpe genérico de SKILL sem
+                                        sprite própria (10/09/2026,
+                                        pedido do usuário — fica ENTRE o
+                                        sid específico e o "attack" puro
+                                        na cascata, só pra skills, nunca
+                                        pra auto-attack)
   {class_id}_{skill_id}_{direction}.png — golpe ESPECÍFICO de uma skill
                                         (ex: "guerreiro_golpe_poderoso_
-                                        down.png") — opcional; sem ela,
-                                        cai no "attack" genérico acima
-                                        (ver `resolve_attack_state_name`)
+                                        down.png") — opcional, o mais
+                                        específico da cascata
+  Cascata pra golpe de SKILL (`resolve_attack_state_name`, sid não-vazio):
+  1. `{class_id}_{skill_id}_{direction}.png` (própria da skill)
+  2. `{class_id}_skill_{direction}.png` (genérica de skill)
+  3. `{class_id}_attack_{direction}.png` (genérica de auto-attack)
+  Auto-attack (sid vazio) vai direto pro nível 3 — nunca passa pelo
+  genérico de skill, que não faz sentido pra ele.
   direction ∈ "down"/"up"/"left"/"right"
   Cada sheet é cortado em frames de CHAR_TILE_SIZE (96px, 09/09/2026 —
   frames NÃO são quadrados, 96 largura × altura variável conforme o
@@ -159,18 +171,42 @@ def resolve_anim_state(tile_movement) -> str:
 
 
 def resolve_attack_state_name(class_id: str, sid: str, direction: str) -> str:
-    """"attack" (genérico) ou o próprio `sid` da skill, se ela tiver
-    sprite dedicado nessa direção (direto ou espelhado). Ponto único de
-    verdade pra "essa skill tem animação própria?" — auto-attack
-    (`sid=""`) cai direto no genérico, sem branch especial (arquivo
-    "{class_id}__{direction}.png" nunca existe, então `_frames_for`
-    já retorna vazio naturalmente)."""
+    """Cascata de 3 níveis pra golpe de SKILL (10/09/2026, pedido do
+    usuário): sid específico → "skill" genérico → "attack" genérico.
+    Ponto único de verdade pra "que sprite essa skill usa?" — auto-attack
+    (`sid=""`) pula direto pro nível 3, nunca passa pelo "skill" genérico
+    (arquivo "{class_id}__{direction}.png" nunca existe, então
+    `_frames_for` já retorna vazio naturalmente pro nível 1 quando
+    `sid=""`, e o `if sid` abaixo já pula o nível 2 de propósito)."""
     if sid and _frames_for(class_id, sid, direction):
         return sid
+    if sid and _frames_for(class_id, "skill", direction):
+        return "skill"
     return "attack"
 
 
 MISS_ATTACK_SLOWDOWN = 1.5  # 50% mais lento — golpe que erra (miss/dodge/parry); 25% não deu diferença perceptível, usuário pediu +25pp (10/09/2026)
+
+# Skills cujo golpe deve ficar em LOOP durante toda a duração REAL da
+# skill (efeito contínuo — giro, canalização —, não um golpe único),
+# em vez do padrão "1 ciclo do sheet só" (10/09/2026, pedido do
+# usuário: "fatiador de corpos dura 5s, a animação deve ficar em loop
+# durante esse tempo"). Duração lida de SKILL_CATALOG (ponto único de
+# verdade, nunca duplicada aqui) — se um dia o design mudar a duração
+# da skill, a animação acompanha sozinha.
+_LOOPING_ATTACK_SKILLS = {"fatiador_de_corpos"}
+
+
+def _looping_attack_duration_ms(sid: str) -> "int | None":
+    """Duração (ms) pra tocar o golpe de `sid` em LOOP, se ele estiver
+    em `_LOOPING_ATTACK_SKILLS` — lida de
+    `SKILL_CATALOG[sid]["params"]["duration"]`. None = golpe normal (1
+    ciclo do sheet só), a esmagadora maioria das skills."""
+    if sid not in _LOOPING_ATTACK_SKILLS:
+        return None
+    from content.skill_config import SKILL_CATALOG
+    duration_s = SKILL_CATALOG.get(sid, {}).get("params", {}).get("duration")
+    return int(duration_s * 1000) if duration_s else None
 
 
 def trigger_attack_anim(tile_movement, class_id: str, sid: str, now_ms: int,
@@ -183,15 +219,17 @@ def trigger_attack_anim(tile_movement, class_id: str, sid: str, now_ms: int,
     reusa a MESMA animação, só `MISS_ATTACK_SLOWDOWN` mais lenta — nenhuma
     arte nova precisa existir; se um dia quiser uma animação DEDICADA de
     erro, é só criar `{class_id}_miss_{direction}.png` e resolver aqui
-    (hoje sempre cai no "attack"/sid normal, só o ritmo muda).
-    `resolve_display_state()` decide quando ela termina (1 ciclo completo
-    do sheet resolvido aqui) e volta pra idle/run — puramente cosmético,
-    nunca lido por gameplay/combate."""
+    (hoje sempre cai no "attack"/sid normal, só o ritmo muda). Skills em
+    `_LOOPING_ATTACK_SKILLS` (10/09/2026) ficam em loop pela duração REAL
+    da skill em vez de 1 ciclo só — ver `_looping_attack_duration_ms`.
+    `resolve_display_state()` decide quando ela termina e volta pra
+    idle/run — puramente cosmético, nunca lido por gameplay/combate."""
     tile_movement.anim_attack_state      = resolve_attack_state_name(class_id, sid, tile_movement.facing)
     tile_movement.anim_attack_started_ms = now_ms
     # int() — frame_ms indexa frames[] via // e %; float quebraria o
     # indexing (bug real pego testando: 78*1.25=97.5, frames[2.0] explode).
     tile_movement.anim_attack_frame_ms   = int(DEFAULT_FRAME_MS * (MISS_ATTACK_SLOWDOWN if missed else 1.0))
+    tile_movement.anim_attack_loop_duration_ms = _looping_attack_duration_ms(sid) or 0
 
 
 def resolve_display_state(tile_movement, class_id: str, now_ms: int,
@@ -207,15 +245,21 @@ def resolve_display_state(tile_movement, class_id: str, now_ms: int,
     fixo pra golpe).
 
     Golpe expira sozinho (limpa `anim_attack_state`, sem componente/
-    sistema novo pra isso) quando o tempo desde o trigger passa de
-    `len(frames) * anim_attack_frame_ms`, OU na hora se o sprite resolvido
-    não existir pra essa direção — nesses casos cai pro idle/run do MESMO
-    frame, sem 1 frame de retângulo/estado errado no meio."""
+    sistema novo pra isso) quando o tempo desde o trigger passa da
+    duração — `anim_attack_loop_duration_ms` pras skills em
+    `_LOOPING_ATTACK_SKILLS` (10/09/2026, fica em LOOP por esse tempo
+    todo, o `get_character_frame` já cicla os frames via módulo sozinho,
+    nenhuma lógica extra aqui pra isso), ou `len(frames) *
+    anim_attack_frame_ms` (1 ciclo só) pra qualquer outro golpe — OU na
+    hora se o sprite resolvido não existir pra essa direção — nesses
+    casos cai pro idle/run do MESMO frame, sem 1 frame de retângulo/
+    estado errado no meio."""
     if tile_movement.anim_attack_state:
         _attack_frame_ms = tile_movement.anim_attack_frame_ms or frame_ms
         frames  = _frames_for(class_id, tile_movement.anim_attack_state, tile_movement.facing)
         elapsed = now_ms - tile_movement.anim_attack_started_ms
-        if frames and elapsed < len(frames) * _attack_frame_ms:
+        _duration = tile_movement.anim_attack_loop_duration_ms or (len(frames) * _attack_frame_ms if frames else 0)
+        if frames and elapsed < _duration:
             return tile_movement.anim_attack_state, elapsed, _attack_frame_ms
         tile_movement.anim_attack_state = ""
     return resolve_anim_state(tile_movement), now_ms, frame_ms

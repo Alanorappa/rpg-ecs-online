@@ -25,9 +25,10 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 import pygame
 pygame.init()
 
-from tests.helpers import make_world_server, spawn_player, authorize_skill, run_ticks
+from tests.helpers import make_world_server, spawn_player, authorize_skill, run_ticks, set_entity_tile
 from content.skill_config import SKILL_CATALOG
-from engine.components import CharacterStats, CombatStats, PlayerSkills
+from engine.components import CharacterStats, CombatStats, PlayerSkills, CombatState, Visible, MapLocation
+from engine.entity_factory import create_enemy
 
 
 class TestFatiadorTickIntervalDoCatalogo(unittest.TestCase):
@@ -103,6 +104,59 @@ class TestFatiadorClienteNaoAplicaDanoLocal(unittest.TestCase):
                          "SkillSystem.update() aplicou dano local do Fatiador — código morto voltou")
         # Timer continua decrementando de verdade (necessário pra barra da hotbar)
         self.assertLess(char.fatiador_timer, 5.0)
+
+
+class TestFatiadorTickIncluiSidParaAnimacaoDeGolpe(unittest.TestCase):
+    """10/09/2026, pedido do usuário — animação de golpe em loop durante
+    a duração real da skill (client-side, engine/character_animation.py
+    ::_LOOPING_ATTACK_SKILLS) depende do cliente saber que cada tick é
+    do Fatiador de Corpos especificamente. Sem `sid` no payload de
+    `_combat_this_tick`, o cliente nunca identificaria a skill (bug real
+    pego implementando — o campo simplesmente não existia nesse ponto)."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.warrior = spawn_player(self.ws, "fat_sid_srv", 130, 374, class_id="guerreiro")
+        authorize_skill(self.ws, self.warrior, "fatiador_de_corpos")
+        self.mob = create_enemy(self.ws.world, 131, 374, faction="monstros_hostis")
+        self.ws._mob_eids.add(self.mob)
+        self.ws.world.add_component(self.mob, CombatState())
+        self.ws.world.add_component(self.mob, Visible())
+        self.ws.world.add_component(self.mob, MapLocation(self.ws._map_file))
+        set_entity_tile(self.ws, self.mob, 131, 374)
+
+    def test_tick_do_fatiador_manda_sid_no_combat_this_tick(self):
+        """`_combat_this_tick` é limpo (`.clear()`) dentro do MESMO tick
+        que o popula (WorldServer já monta e despacha o snapshot pros
+        clientes antes do fim do tick) — por isso a lista real de
+        produção é substituída por uma subclasse que guarda uma cópia
+        justo antes de esvaziar, só pra este teste conseguir inspecionar
+        o que teria sido mandado pro cliente."""
+        captured = []
+
+        class _SnapshotList(list):
+            def clear(self):
+                captured.append(list(self))
+                super().clear()
+
+        self.ws._combat_this_tick = _SnapshotList(self.ws._combat_this_tick)
+
+        sid_session = self.ws._player_eid_to_sid[self.warrior]
+        self.ws.queue_skill(sid_session, "fatiador_de_corpos", -1, 0.0, 0.0, 0)
+        run_ticks(self.ws, 1)   # ativa a skill
+
+        char = self.ws.world.get_component(self.warrior, CharacterStats)
+        # Força o próximo tick de dano a acontecer agora.
+        char.fatiador_tick = 0.0
+
+        run_ticks(self.ws, 1)
+
+        all_entries = [e for snapshot in captured for e in snapshot]
+        fatiador_entries = [e for e in all_entries
+                           if e.get("attacker") == self.warrior and e.get("target") == self.mob]
+        self.assertTrue(fatiador_entries, "esperava pelo menos 1 entrada de dano do Fatiador neste tick")
+        for entry in fatiador_entries:
+            self.assertEqual(entry.get("sid"), "fatiador_de_corpos")
 
 
 if __name__ == "__main__":

@@ -5985,6 +5985,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                                 "outcome":  "hit",
                                 "hp_after": max(0, _fat_mcs2.current_hp),
                                 "source":   "skill",
+                                # sid (10/09/2026) — sem isto, o cliente
+                                # nunca sabe que este tick é do Fatiador
+                                # de Corpos especificamente (cai sempre
+                                # no golpe genérico e o loop de 5s da
+                                # animação, ver engine/character_animation.py
+                                # ::_LOOPING_ATTACK_SKILLS, nunca liga).
+                                "sid":      "fatiador_de_corpos",
                             })
         self._perf_pop()
 

@@ -584,33 +584,78 @@ class TestCharacterYSortUsesCollisionTile(unittest.TestCase):
 
 
 class TestResolveAttackStateName(unittest.TestCase):
-    """"attack" (genérico) por padrão, ou o skill_id se ele tiver sprite
-    própria — auto-attack (sid="") nunca tenta procurar arquivo nenhum."""
+    """Cascata de 3 níveis (10/09/2026): sid específico → "skill"
+    genérico → "attack" genérico. Auto-attack (sid="") pula direto pro
+    nível 3. Usa `class_id` fictício em todos os testes — não pode
+    depender de quais sprites reais já existem em assets/sprites/ neste
+    momento (guerreiro_skill_*.png já existe de verdade, por exemplo)."""
+
+    def setUp(self):
+        from engine import character_animation as _ca
+        _ca._frame_cache.clear()
+
+    def tearDown(self):
+        from engine import character_animation as _ca
+        _ca._frame_cache.clear()
+
+    def _make_sprite(self, class_id: str, state: str, direction: str) -> str:
+        path = os.path.join("assets", "sprites", f"{class_id}_{state}_{direction}.png")
+        surf = pygame.Surface((96, 80), pygame.SRCALPHA)
+        pygame.image.save(surf, path)
+        return path
 
     def test_sem_sid_e_attack_generico(self):
         from engine.character_animation import resolve_attack_state_name
-        self.assertEqual(resolve_attack_state_name("guerreiro", "", "down"), "attack")
+        self.assertEqual(resolve_attack_state_name("classe_inexistente_xyz", "", "down"), "attack")
 
-    def test_skill_sem_sprite_propria_cai_no_generico(self):
+    def test_skill_sem_sprite_nenhuma_cai_no_attack_generico(self):
         from engine.character_animation import resolve_attack_state_name
         self.assertEqual(
-            resolve_attack_state_name("guerreiro", "golpe_poderoso", "down"), "attack")
+            resolve_attack_state_name("classe_inexistente_xyz", "skill_inexistente_xyz", "down"),
+            "attack")
 
     def test_skill_com_sprite_propria_usa_o_sid(self):
         from engine.character_animation import resolve_attack_state_name
-        path = os.path.join("assets", "sprites", "guerreiro_golpe_poderoso_down.png")
-        surf = pygame.Surface((96, 80), pygame.SRCALPHA)
-        pygame.image.save(surf, path)
+        path = self._make_sprite("classe_teste_1", "skill_teste_1", "down")
         try:
-            from engine import character_animation as _ca
-            _ca._frame_cache.clear()
             self.assertEqual(
-                resolve_attack_state_name("guerreiro", "golpe_poderoso", "down"),
-                "golpe_poderoso")
+                resolve_attack_state_name("classe_teste_1", "skill_teste_1", "down"),
+                "skill_teste_1")
         finally:
             os.remove(path)
-            from engine import character_animation as _ca2
-            _ca2._frame_cache.clear()
+
+    def test_skill_sem_sprite_propria_mas_com_skill_generico_usa_skill_generico(self):
+        from engine.character_animation import resolve_attack_state_name
+        path = self._make_sprite("classe_teste_2", "skill", "down")
+        try:
+            self.assertEqual(
+                resolve_attack_state_name("classe_teste_2", "skill_sem_sprite_propria", "down"),
+                "skill")
+        finally:
+            os.remove(path)
+
+    def test_sid_especifico_tem_prioridade_sobre_skill_generico(self):
+        from engine.character_animation import resolve_attack_state_name
+        path_generic = self._make_sprite("classe_teste_3", "skill", "down")
+        path_specific = self._make_sprite("classe_teste_3", "skill_teste_3", "down")
+        try:
+            self.assertEqual(
+                resolve_attack_state_name("classe_teste_3", "skill_teste_3", "down"),
+                "skill_teste_3", "sid específico deveria ganhar do genérico de skill")
+        finally:
+            os.remove(path_generic)
+            os.remove(path_specific)
+
+    def test_auto_attack_nunca_usa_skill_generico_mesmo_se_existir(self):
+        """sid="" (auto-attack) pula direto pro nível 3 — nunca deveria
+        tentar o "skill" genérico, que é conceito exclusivo de skill."""
+        from engine.character_animation import resolve_attack_state_name
+        path = self._make_sprite("classe_teste_4", "skill", "down")
+        try:
+            self.assertEqual(
+                resolve_attack_state_name("classe_teste_4", "", "down"), "attack")
+        finally:
+            os.remove(path)
 
 
 class TestAttackAnimTriggerAndExpiry(unittest.TestCase):
@@ -684,6 +729,79 @@ class TestAttackAnimTriggerAndExpiry(unittest.TestCase):
         trigger_attack_anim(self.tm, "guerreiro", "", 1000, missed=False)
         _, _, frame_ms = resolve_display_state(self.tm, "guerreiro", 1000)
         self.assertEqual(frame_ms, DEFAULT_FRAME_MS)
+
+
+class TestLoopingAttackDuration(unittest.TestCase):
+    """10/09/2026, pedido do usuário: Fatiador de Corpos (dura 5s no
+    SKILL_CATALOG, fonte única) fica em LOOP durante toda essa duração,
+    não expira após 1 ciclo do sheet como o resto das skills."""
+
+    def test_fatiador_de_corpos_retorna_duracao_real_do_catalogo(self):
+        from engine.character_animation import _looping_attack_duration_ms
+        from content.skill_config import SKILL_CATALOG
+        duration_s = SKILL_CATALOG["fatiador_de_corpos"]["params"]["duration"]
+        self.assertEqual(_looping_attack_duration_ms("fatiador_de_corpos"), int(duration_s * 1000))
+
+    def test_skill_normal_nao_esta_na_lista_de_loop(self):
+        from engine.character_animation import _looping_attack_duration_ms
+        self.assertIsNone(_looping_attack_duration_ms("golpe_poderoso"))
+        self.assertIsNone(_looping_attack_duration_ms(""))
+
+    def test_trigger_grava_duracao_de_loop_pro_fatiador(self):
+        from engine.components import TileMovement
+        from engine.character_animation import trigger_attack_anim
+        from content.skill_config import SKILL_CATALOG
+        tm = TileMovement()
+        tm.facing = "down"
+        trigger_attack_anim(tm, "guerreiro", "fatiador_de_corpos", 1000)
+        duration_s = SKILL_CATALOG["fatiador_de_corpos"]["params"]["duration"]
+        self.assertEqual(tm.anim_attack_loop_duration_ms, int(duration_s * 1000))
+
+    def test_trigger_golpe_normal_nao_grava_duracao_de_loop(self):
+        from engine.components import TileMovement
+        from engine.character_animation import trigger_attack_anim
+        tm = TileMovement()
+        tm.facing = "down"
+        trigger_attack_anim(tm, "guerreiro", "golpe_poderoso", 1000)
+        self.assertEqual(tm.anim_attack_loop_duration_ms, 0)
+
+    def test_resolve_display_state_fatiador_continua_ativo_apos_1_ciclo_normal(self):
+        """Um golpe normal já teria expirado depois de 1 ciclo do sheet
+        — o Fatiador tem que continuar mostrando "fatiador_de_corpos"
+        bem depois disso, até completar os 5s reais."""
+        from engine.components import TileMovement
+        from engine.character_animation import (
+            trigger_attack_anim, resolve_display_state, DEFAULT_FRAME_MS, _frames_for)
+        tm = TileMovement()
+        tm.facing = "down"
+        tm.is_moving = False
+        trigger_attack_anim(tm, "guerreiro", "fatiador_de_corpos", 1000)
+
+        n_frames = len(_frames_for("guerreiro", "fatiador_de_corpos", "down"))
+        self.assertGreater(n_frames, 0, "guerreiro_fatiador_de_corpos_down.png precisa existir")
+        one_cycle_ms = n_frames * DEFAULT_FRAME_MS
+        self.assertLess(one_cycle_ms, 5000, "1 ciclo do sheet precisa ser bem menor que 5s pro teste fazer sentido")
+
+        state, _, _ = resolve_display_state(tm, "guerreiro", 1000 + one_cycle_ms + 1)
+        self.assertEqual(state, "fatiador_de_corpos",
+            "depois de 1 ciclo normal, um golpe comum já teria expirado — o Fatiador não")
+
+    def test_resolve_display_state_fatiador_expira_apos_5s_reais(self):
+        from engine.components import TileMovement
+        from engine.character_animation import trigger_attack_anim, resolve_display_state
+        from content.skill_config import SKILL_CATALOG
+        tm = TileMovement()
+        tm.facing = "down"
+        tm.is_moving = False
+        trigger_attack_anim(tm, "guerreiro", "fatiador_de_corpos", 1000)
+        duration_ms = int(SKILL_CATALOG["fatiador_de_corpos"]["params"]["duration"] * 1000)
+
+        state, _, _ = resolve_display_state(tm, "guerreiro", 1000 + duration_ms - 1)
+        self.assertEqual(state, "fatiador_de_corpos", "ainda dentro dos 5s reais")
+
+        state, _, _ = resolve_display_state(tm, "guerreiro", 1000 + duration_ms + 1)
+        self.assertEqual(state, "idle", "passou dos 5s reais -> volta pro idle/run")
+        self.assertEqual(tm.anim_attack_state, "")
 
 
 class TestApplyCombatResultTriggersAttackAnim(unittest.TestCase):
@@ -820,7 +938,11 @@ class TestApplyCombatResultTriggersAttackAnim(unittest.TestCase):
         self.assertEqual(tm.anim_attack_state, "attack")
         self.assertEqual(tm.anim_attack_frame_ms, DEFAULT_FRAME_MS)
 
-    def test_skill_sem_sprite_propria_usa_generico_via_apply_combat_result(self):
+    def test_skill_sem_sprite_propria_usa_fallback_via_apply_combat_result(self):
+        """golpe_poderoso não tem sprite própria hoje (removida pelo
+        usuário) -> cai no "skill" genérico, que hoje EXISTE de verdade
+        (guerreiro_skill_*.png) — 3º nível ("attack" puro) só entraria
+        se nem esse genérico existisse."""
         from client.remote_entity_handlers import RemoteEntityHandlers
         eng, world = self._make_engine_stub(attacker_eid=42, attacker_class_id="guerreiro",
                                             is_remote=False)
@@ -830,8 +952,36 @@ class TestApplyCombatResultTriggersAttackAnim(unittest.TestCase):
             "hp_after": 20, "source": "skill", "sid": "golpe_poderoso",
         })
         tm = world.get_component(eng._atk_local_eid, TileMovement)
-        self.assertEqual(tm.anim_attack_state, "attack",
-            "golpe_poderoso não tem sprite própria hoje -> fallback genérico")
+        self.assertEqual(tm.anim_attack_state, "skill")
+
+    def test_fatiador_de_corpos_liga_loop_pela_duracao_real_da_skill(self):
+        """10/09/2026, pedido do usuário: Fatiador de Corpos dura 5s
+        (SKILL_CATALOG, fonte única) — a animação deve ficar em loop
+        por esse tempo todo, não expirar após 1 ciclo do sheet."""
+        from client.remote_entity_handlers import RemoteEntityHandlers
+        from content.skill_config import SKILL_CATALOG
+        eng, world = self._make_engine_stub(attacker_eid=42, attacker_class_id="guerreiro",
+                                            is_remote=False)
+        from engine.components import TileMovement
+        RemoteEntityHandlers._apply_combat_result(eng, {
+            "attacker": 42, "target": 555, "damage": 15, "outcome": "hit",
+            "hp_after": 20, "source": "skill", "sid": "fatiador_de_corpos",
+        })
+        tm = world.get_component(eng._atk_local_eid, TileMovement)
+        duration_s = SKILL_CATALOG["fatiador_de_corpos"]["params"]["duration"]
+        self.assertEqual(tm.anim_attack_loop_duration_ms, int(duration_s * 1000))
+
+    def test_golpe_normal_nao_tem_duracao_de_loop(self):
+        from client.remote_entity_handlers import RemoteEntityHandlers
+        eng, world = self._make_engine_stub(attacker_eid=42, attacker_class_id="guerreiro",
+                                            is_remote=False)
+        from engine.components import TileMovement
+        RemoteEntityHandlers._apply_combat_result(eng, {
+            "attacker": 42, "target": 555, "damage": 10, "outcome": "hit",
+            "hp_after": 40, "source": "auto",
+        })
+        tm = world.get_component(eng._atk_local_eid, TileMovement)
+        self.assertEqual(tm.anim_attack_loop_duration_ms, 0)
 
 
 if __name__ == "__main__":

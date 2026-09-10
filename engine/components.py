@@ -1318,6 +1318,14 @@ class TileMovement:
     anim_attack_state:      str = ""
     anim_attack_started_ms: int = 0
     anim_attack_frame_ms:   float = 0.0
+    # Duração de LOOP (ms) pra skills com efeito contínuo (ex: Fatiador
+    # de Corpos, gira por 5s — SKILL_CATALOG["fatiador_de_corpos"]
+    # ["params"]["duration"], fonte única, nunca duplicada aqui) — 0 =
+    # comportamento padrão (1 ciclo do sheet só, a maioria das skills).
+    # Setado por `trigger_attack_anim`, ver
+    # `engine.character_animation._looping_attack_duration_ms`
+    # (10/09/2026, pedido do usuário).
+    anim_attack_loop_duration_ms: int = 0
 
 
 @dataclass

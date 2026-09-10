@@ -480,9 +480,15 @@ padrão a quebrar, não só os bugs individuais.
   `engine/character_animation.py::resolve_display_state(tile_movement,
   class_id, now_ms)` é o ponto único (golpe > andando/parado; golpe
   expira sozinho após 1 ciclo do sheet, sem componente/sistema
-  dedicado a "desligar"). **Animação de golpe** (auto-attack, ou skill
-  sem sprite própria cai no genérico `attack` — ver
-  `resolve_attack_state_name`) é ligada por
+  dedicado a "desligar"). **Animação de golpe** —
+  `resolve_attack_state_name(class_id, sid, direction)` é a cascata de
+  até 3 níveis pra golpe de SKILL (10/09/2026): sid específico
+  (`{class_id}_{sid}_{direction}.png`) → "skill" genérico
+  (`{class_id}_skill_{direction}.png`, pra qualquer skill SEM sprite
+  própria — a maioria) → "attack" genérico
+  (`{class_id}_attack_{direction}.png`, fallback ÚLTIMO). Auto-attack
+  (`sid=""`) pula direto pro nível 3 — NUNCA passa pelo "skill"
+  genérico, que é conceito exclusivo de skill. É ligada por
   `trigger_attack_anim(tile_movement, class_id, sid, now_ms, missed=
   bool)`, chamado de UM lugar só: `client/remote_entity_handlers.py::
   _apply_combat_result`, no momento em que o servidor confirma o
@@ -493,12 +499,25 @@ padrão a quebrar, não só os bugs individuais.
   CAST_SKILL) — o servidor é quem confirma que o golpe aconteceu de
   verdade, o cliente só reage a essa confirmação. `missed=True` (outcome
   miss/dodge/parry) reusa a MESMA animação, só `MISS_ATTACK_SLOWDOWN`
-  (25%) mais lenta via `TileMovement.anim_attack_frame_ms` (novo campo,
-  por-golpe — NUNCA o `DEFAULT_FRAME_MS` global pra golpe, que pode
-  variar por trigger) — decisão explícita do usuário de NÃO criar uma
-  animação dedicada de erro por enquanto; se um dia criar, o lugar certo
-  é dentro de `resolve_attack_state_name`/`trigger_attack_anim`, nunca
-  um branch novo espalhado.
+  mais lenta (valor atual 50% — usuário testou 25% antes e achou pouca
+  diferença perceptível) via `TileMovement.anim_attack_frame_ms` (novo
+  campo, por-golpe — NUNCA o `DEFAULT_FRAME_MS` global pra golpe, que
+  pode variar por trigger) — decisão explícita do usuário de NÃO criar
+  uma animação dedicada de erro por enquanto; se um dia criar, o lugar
+  certo é dentro de `resolve_attack_state_name`/`trigger_attack_anim`,
+  nunca um branch novo espalhado. **Golpe em LOOP** (10/09/2026, pedido
+  do usuário — Fatiador de Corpos dura 5s, gira o tempo todo): skills em
+  `_LOOPING_ATTACK_SKILLS` (dict pequeno, nunca checar `sid ==
+  "fatiador_de_corpos"` direto num call site novo) tocam o sheet em
+  loop pela duração REAL da skill (lida de
+  `SKILL_CATALOG[sid]["params"]["duration"]` — fonte única, NUNCA
+  duplicar esse número aqui) via `TileMovement.
+  anim_attack_loop_duration_ms`, em vez do padrão "1 ciclo só" — o
+  gatilho de cada tick da skill (server-side, ex: `WorldServer`'s bloco
+  de `fatiador_timer`) precisa incluir `sid` no payload de
+  `_combat_this_tick`/COMBAT_RESULT pra o cliente saber qual skill é
+  (bug real achado implementando — o tick do Fatiador nunca mandava
+  `sid`, então o loop nunca ligava).
   **Âncora de desenho e Y-sort** (10/09/2026, decisão do usuário): cada
   frame tem um tile de colisão/pé REAL de 32×32 (`CHAR_COLLISION_SIZE`
   == TILE_SIZE) no canto `(CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y)`
