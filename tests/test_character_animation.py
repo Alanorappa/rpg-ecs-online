@@ -829,6 +829,55 @@ class TestLoopingAttackDuration(unittest.TestCase):
         self.assertEqual(tm.anim_attack_state, "")
 
 
+class TestLoopingAttackHasPriorityOverConcurrentTrigger(unittest.TestCase):
+    """10/09/2026, pedido do usuário — bug real relatado: "a animação do
+    tornado é cancelada quando o personagem se move". Causa raiz de
+    verdade: `trigger_attack_anim` sobrescrevia o estado sem checar nada,
+    então um auto-attack concorrente (que o movimento provoca ao entrar
+    em alcance de um mob) cancelava o loop bem antes dos 5s reais. Golpe
+    em LOOP ativo agora tem prioridade sobre qualquer golpe concorrente
+    de menor prioridade até a própria duração expirar."""
+
+    def setUp(self):
+        from engine.components import TileMovement
+        self.tm = TileMovement()
+        self.tm.facing = "down"
+
+    def test_auto_attack_concorrente_nao_cancela_o_loop_ativo(self):
+        from engine.character_animation import trigger_attack_anim, resolve_display_state
+        trigger_attack_anim(self.tm, "guerreiro", "fatiador_de_corpos", 1000)
+        trigger_attack_anim(self.tm, "guerreiro", "", 1800)  # auto-attack concorrente
+        state, anim_t, _ = resolve_display_state(self.tm, "guerreiro", 1800)
+        self.assertEqual(state, "fatiador_de_corpos",
+            "auto-attack concorrente não deveria cancelar o loop ainda ativo")
+        self.assertEqual(anim_t, 800, "elapsed deveria continuar contando do início do loop, não reiniciar")
+
+    def test_outra_skill_sem_loop_tambem_nao_cancela(self):
+        from engine.character_animation import trigger_attack_anim, resolve_display_state
+        trigger_attack_anim(self.tm, "guerreiro", "fatiador_de_corpos", 1000)
+        trigger_attack_anim(self.tm, "guerreiro", "golpe_poderoso", 1800)
+        state, _, _ = resolve_display_state(self.tm, "guerreiro", 1800)
+        self.assertEqual(state, "fatiador_de_corpos")
+        self.assertEqual(self.tm.anim_attack_loop_duration_ms, 5000,
+            "duração do loop não deveria ter sido resetada pelo trigger concorrente")
+
+    def test_golpe_comum_funciona_normalmente_apos_o_loop_expirar(self):
+        from engine.character_animation import trigger_attack_anim, resolve_display_state
+        trigger_attack_anim(self.tm, "guerreiro", "fatiador_de_corpos", 1000)
+        trigger_attack_anim(self.tm, "guerreiro", "", 6001)  # depois dos 5s reais
+        state, anim_t, _ = resolve_display_state(self.tm, "guerreiro", 6001)
+        self.assertEqual(state, "attack", "após o loop expirar, um golpe comum deve tocar normalmente")
+        self.assertEqual(anim_t, 0)
+
+    def test_recast_do_mesmo_loop_substitui_normalmente(self):
+        from engine.character_animation import trigger_attack_anim, resolve_display_state
+        trigger_attack_anim(self.tm, "guerreiro", "fatiador_de_corpos", 1000)
+        trigger_attack_anim(self.tm, "guerreiro", "fatiador_de_corpos", 1800)  # novo tick do mesmo loop
+        state, anim_t, _ = resolve_display_state(self.tm, "guerreiro", 1800)
+        self.assertEqual(state, "fatiador_de_corpos")
+        self.assertEqual(anim_t, 0, "retrigger do mesmo loop reinicia o contador (novo tick de dano)")
+
+
 class TestApplyCombatResultTriggersAttackAnim(unittest.TestCase):
     """Integração real: `_apply_combat_result` (client/
     remote_entity_handlers.py) deve disparar a animação de golpe do

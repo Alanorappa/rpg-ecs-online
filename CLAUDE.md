@@ -524,7 +524,20 @@ padrão a quebrar, não só os bugs individuais.
   de `fatiador_timer`) precisa incluir `sid` no payload de
   `_combat_this_tick`/COMBAT_RESULT pra o cliente saber qual skill é
   (bug real achado implementando — o tick do Fatiador nunca mandava
-  `sid`, então o loop nunca ligava).
+  `sid`, então o loop nunca ligava). **Golpe em LOOP tem prioridade
+  sobre golpe concorrente de menor prioridade** (10/09/2026, bug real
+  relatado: "a animação do tornado é cancelada quando o personagem se
+  move") — `trigger_attack_anim` sobrescrevia `anim_attack_state`/
+  `anim_attack_loop_duration_ms` sem checar NADA; um auto-attack normal
+  (que o movimento provoca ao entrar em alcance de um mob — não é o
+  movimento em si) chegando via `_apply_combat_result` DURANTE os 5s do
+  Fatiador cancelava o loop na hora, bem antes do fim real. Fix: se já
+  existe um loop ativo e ainda não expirado (`_attack_loop_still_active`),
+  um trigger novo SEM duração de loop própria (`_looping_attack_duration_ms
+  (sid) or 0 == 0`) é ignorado — só um loop NOVO (o mesmo sid de novo, ou
+  uma skill de loop diferente) substitui um loop ainda ativo. NUNCA
+  reverter pra "sempre sobrescreve" achando que simplifica — é exatamente
+  essa simplicidade que causava o bug.
   **Âncora de desenho e Y-sort** (10/09/2026, decisão do usuário): cada
   frame tem um tile de colisão/pé REAL de 32×32 (`CHAR_COLLISION_SIZE`
   == TILE_SIZE) no canto `(CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y)`

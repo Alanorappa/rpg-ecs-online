@@ -14,7 +14,8 @@ from shared.constants import TILE_SIZE, TICK_RATE, LAG_COMP_WINDOW_MS
 # referência já resolvida no topo (medido). Mecânico, mesmo objeto — só
 # resolvido 1x no load do módulo em vez de 1x por request.
 from engine.components import (CombatState, CombatStats, TileMovement, GhostState,
-                                PlayerSkills as _PS, StatusEffects as _SfxSkp)
+                                PlayerSkills as _PS, StatusEffects as _SfxSkp,
+                                CharacterStats as _CStatsSkp)
 from content.skill_config import SKILL_CATALOG
 from engine.utils import is_action_locked as _is_action_locked_skp
 from engine.world_systems import is_skill_authorized as _is_auth
@@ -90,6 +91,19 @@ class SkillProcessorMixin:
             # sequer tentar mandar CAST_SKILL nesse estado.
             _sfx_skp = self.world.get_component(player_eid, _SfxSkp)
             if _sfx_skp is not None and _sfx_skp.has("taunted"):
+                continue
+
+            # Fatiador de Corpos (canalização, 10/09/2026): nenhuma outra
+            # skill enquanto o spin estiver ativo. `_use_skill_visual_only`
+            # (ui/systems.py) já mostra overlay de cooldown em toda a hotbar
+            # durante o canal, mas isso é só feedback visual — nada travava
+            # de verdade o CAST_SKILL chegando aqui, então um cliente
+            # modificado (ou uma corrida entre input local e overlay ainda
+            # não desenhado) conseguia executar qualquer skill no meio do
+            # spin. Servidor é quem decide de verdade; bloqueio aqui cobre
+            # os dois lados. Mesmo padrão silent-continue das travas acima.
+            _char_fat_skp = self.world.get_component(player_eid, _CStatsSkp)
+            if _char_fat_skp is not None and _char_fat_skp.fatiador_timer > 0:
                 continue
 
             # Constrói objeto Skill a partir do SKILL_CATALOG (servidor não tem PlayerSkills)

@@ -155,6 +155,16 @@ def get_character_frame(class_id: str, state: str, direction: str,
     return frames[idx]
 
 
+def _attack_loop_still_active(tile_movement, now_ms: int) -> bool:
+    """True se um golpe em LOOP (`_LOOPING_ATTACK_SKILLS`) já ligado em
+    `tile_movement` ainda está dentro da própria duração — usado por
+    `trigger_attack_anim` pra decidir se um golpe NOVO concorrente pode
+    sobrescrever ou não."""
+    if tile_movement.anim_attack_loop_duration_ms <= 0:
+        return False
+    return (now_ms - tile_movement.anim_attack_started_ms) < tile_movement.anim_attack_loop_duration_ms
+
+
 def resolve_anim_state(tile_movement) -> str:
     """"idle" ou "run" pra animação — ponto único de verdade pra "o que
     conta como andando" (09/09/2026). NÃO é só `tile_movement.is_moving`
@@ -223,13 +233,27 @@ def trigger_attack_anim(tile_movement, class_id: str, sid: str, now_ms: int,
     `_LOOPING_ATTACK_SKILLS` (10/09/2026) ficam em loop pela duração REAL
     da skill em vez de 1 ciclo só — ver `_looping_attack_duration_ms`.
     `resolve_display_state()` decide quando ela termina e volta pra
-    idle/run — puramente cosmético, nunca lido por gameplay/combate."""
+    idle/run — puramente cosmético, nunca lido por gameplay/combate.
+
+    Golpe em LOOP ativo tem prioridade sobre qualquer golpe concorrente
+    (auto-attack, ou skill sem loop) enquanto durar — sem essa guarda, um
+    auto-attack que acerta um mob DURANTE a Fatiador de Corpos sobrescrevia
+    o estado sem checar nada, cancelando a animação bem antes do fim real
+    da skill (bug real relatado 10/09/2026: "a animação do tornado é
+    cancelada quando o personagem se move" — causa raiz de verdade era o
+    auto-attack concorrente que o movimento provoca ao entrar em alcance
+    de um mob, não o movimento em si). Só um golpe em loop NOVO (a mesma
+    skill de novo, ou uma skill de loop futura diferente) substitui um
+    loop ainda ativo."""
+    _new_loop_ms = _looping_attack_duration_ms(sid) or 0
+    if _new_loop_ms == 0 and _attack_loop_still_active(tile_movement, now_ms):
+        return
     tile_movement.anim_attack_state      = resolve_attack_state_name(class_id, sid, tile_movement.facing)
     tile_movement.anim_attack_started_ms = now_ms
     # int() — frame_ms indexa frames[] via // e %; float quebraria o
     # indexing (bug real pego testando: 78*1.25=97.5, frames[2.0] explode).
     tile_movement.anim_attack_frame_ms   = int(DEFAULT_FRAME_MS * (MISS_ATTACK_SLOWDOWN if missed else 1.0))
-    tile_movement.anim_attack_loop_duration_ms = _looping_attack_duration_ms(sid) or 0
+    tile_movement.anim_attack_loop_duration_ms = _new_loop_ms
 
 
 def resolve_display_state(tile_movement, class_id: str, now_ms: int,

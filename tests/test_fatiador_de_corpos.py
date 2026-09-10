@@ -159,5 +159,72 @@ class TestFatiadorTickIncluiSidParaAnimacaoDeGolpe(unittest.TestCase):
             self.assertEqual(entry.get("sid"), "fatiador_de_corpos")
 
 
+class TestFatiadorBloqueiaOutrasSkills(unittest.TestCase):
+    """10/09/2026, pedido do usuário — durante a canalização (5s), o
+    servidor deve recusar QUALQUER outra skill, não só mostrar overlay
+    visual na hotbar. Bug real: nada em `_process_skill_requests`
+    checava `fatiador_timer`, então um CAST_SKILL concorrente executava
+    normalmente (golpe_poderoso aplicava dano/custava raiva mesmo com o
+    spin ativo)."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.warrior = spawn_player(self.ws, "fat_block_srv", 130, 374, class_id="guerreiro")
+        authorize_skill(self.ws, self.warrior, "fatiador_de_corpos")
+        authorize_skill(self.ws, self.warrior, "golpe_poderoso")
+        self.mob = create_enemy(self.ws.world, 131, 374, faction="monstros_hostis")
+        self.ws._mob_eids.add(self.mob)
+        self.ws.world.add_component(self.mob, CombatState())
+        self.ws.world.add_component(self.mob, Visible())
+        self.ws.world.add_component(self.mob, MapLocation(self.ws._map_file))
+        set_entity_tile(self.ws, self.mob, 131, 374)
+
+        self.char = self.ws.world.get_component(self.warrior, CharacterStats)
+        self.char.rage = 100
+        self.mob_cs = self.ws.world.get_component(self.mob, CombatStats)
+
+    def test_golpe_poderoso_e_recusado_durante_o_canal(self):
+        self.char.fatiador_timer = 3.0  # simula canal em andamento
+        _hp_before   = self.mob_cs.current_hp
+        _rage_before = self.char.rage
+
+        self.ws._pending_skill_requests.append({
+            "player_eid": self.warrior, "sid": "golpe_poderoso", "tid": self.mob,
+        })
+        self.ws._process_skill_requests()
+
+        self.assertEqual(self.mob_cs.current_hp, _hp_before,
+            "golpe_poderoso não deveria acertar o alvo durante o canal do Fatiador")
+        self.assertEqual(self.char.rage, _rage_before,
+            "golpe_poderoso não deveria custar raiva se foi recusado")
+        self.assertFalse(self.ws._skill_results_this_tick,
+            "requisição recusada por canal deveria ser silenciosa, igual taunted/stun")
+
+    def test_golpe_poderoso_funciona_normalmente_sem_canal_ativo(self):
+        self.char.fatiador_timer = 0.0  # sem canal — sanity check do teste acima
+        _hp_before = self.mob_cs.current_hp
+
+        self.ws._pending_skill_requests.append({
+            "player_eid": self.warrior, "sid": "golpe_poderoso", "tid": self.mob,
+        })
+        self.ws._process_skill_requests()
+
+        self.assertLess(self.mob_cs.current_hp, _hp_before,
+            "golpe_poderoso deveria acertar normalmente fora do canal")
+
+    def test_recast_do_proprio_fatiador_tambem_e_recusado_durante_o_canal(self):
+        self.char.fatiador_timer = 3.0
+        _timer_before = self.char.fatiador_timer
+
+        sid_session = self.ws._player_eid_to_sid[self.warrior]
+        self.ws.queue_skill(sid_session, "fatiador_de_corpos", -1, 0.0, 0.0, 0)
+        run_ticks(self.ws, 1)
+
+        # Se o recast tivesse passado, fatiador_timer teria voltado pro
+        # valor cheio do catálogo (5.0) em vez de continuar decaindo do
+        # valor simulado.
+        self.assertLess(self.char.fatiador_timer, _timer_before + 0.06)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

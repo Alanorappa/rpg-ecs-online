@@ -4456,6 +4456,15 @@ class SkillSystem(System, SkillHandlers):
         # 2. GCD (igual offline)
         if player_skills and player_skills.gcd_timer > 0:
             return False
+        # 2b. Fatiador de Corpos (canalização, 10/09/2026): nenhuma outra
+        # skill enquanto o spin estiver ativo — servidor já rejeita de
+        # verdade (skill_processor.py), isto é só o mesmo bloqueio
+        # replicado aqui pra feedback local imediato (igual overlay de
+        # cooldown na hotbar, que já existia mas não impedia o clique).
+        _char_fat_ui = self.world.get_component(self.player_entity_id, CharacterStats)
+        if _char_fat_ui is not None and _char_fat_ui.fatiador_timer > 0:
+            WARN.add("Canalizando Fatiador de Corpos")
+            return False
         # 3. Cooldown/cargas + pending server (igual offline + online)
         if getattr(skill, "_server_pending", False):
             return False  # aguardando confirmação do servidor
