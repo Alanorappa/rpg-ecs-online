@@ -17443,3 +17443,98 @@ pendente de confirmação.
 **Pendente**: mecanismo real do "Kills: 2" ainda não encontrado —
 usuário avisará na próxima ocorrência com horário e contexto (sozinho ou
 mais gente do time no mesmo alvo) pra reduzir o espaço de busca.
+## 130. Mobs aleatórios paravam de perseguir/voltar pro spawn — `is_blocked` nunca resetado em RETURNING (10/09/2026)
+
+Usuário relatou, jogando no servidor Hetzner de produção: "alguns mobs
+não estão se movendo". Investigação inicial (pergunta direta ao
+usuário, regra "confirmar cenário antes de investigação profunda")
+isolou o padrão: mobs afetados atacavam normalmente quando o player
+chegava perto (combate funcionando), mas nunca perseguiam o player se
+afastando nem voltavam pro próprio spawn — e era aleatório, qualquer
+mob do mapa podia travar, não um específico. Reiniciar o servidor
+"curava" todos os mobs travados até então, o que apontou desde o
+início pra um estado em memória que nunca se autocorrige, em vez de
+terreno/spawn específico.
+
+**Acesso ao servidor real**: esta foi a primeira vez nesta sessão que
+o servidor de produção (Hetzner, `5.161.104.174`, usuário descobriu
+que já existia acesso SSH configurado — chave em
+`~/.ssh/rpg_hetzner`, usada por `release_tools/deploy_server.ps1`)
+precisou ser investigado ao vivo. `logs/server.log` (INFO) não tem
+granularidade de decisão de IA — existe um logger dedicado,
+`debug/mob_combat_debug.py` (`MCL`, grava em `logs/mob_combat.log`,
+eventos AGGRO/CHASE/IN_RANGE/ATK_FIRE/ATK_BLOCK/KITING/LEASH/
+LOST_TGT/SLEEP/INVISIBLE), mas vem DESLIGADO por padrão
+(`RPG_DEBUG_MOB_COMBAT` via `.env`, exige restart do serviço
+systemd `rpg-server` pra aplicar — autorizado explicitamente pelo
+usuário, mesmo desconectando quem estivesse online). Antes desse log
+real voltar a capturar um caso novo, a causa raiz foi achada e
+confirmada por leitura do código + reprodução sintética local — ver
+abaixo.
+
+**Causa raiz**: `AIControlled.is_blocked` é gravado como efeito
+colateral de `TileValidationSystem.is_tile_walkable()`
+(`engine/world_systems.py`, ~linha 547-552) sempre que um mob
+(`Enemy`) tenta andar pro tile EXATO que um player ocupa — sinal
+correto, usado pra decidir `CHASING → BLOCKED_BY_PLAYER`. O problema é
+que essa flag só é resetada (`is_blocked = False`) no branch de
+PERSEGUIÇÃO ativa: uma vez incondicionalmente por tick pra qualquer
+mob com alvo válido ("limpa flags de bloqueio independente de estar
+se movendo", ~linha 3522), e de novo dentro do recálculo de path de
+CHASING (~linha 3877). **O branch de RETURNING nunca resetava essa
+flag em lugar nenhum** — existem 2 pontos de entrada em RETURNING no
+código (mob que perde o alvo dentro do próprio loop, e o `else` do
+"comportamento de retorno" quando o estado já não é CHASING/etc.), e
+nenhum dos 2 tocava `is_blocked`.
+
+Sequência exata do bug: mob em CHASING tenta um passo cujo próximo
+tile do path coincide com o tile atual do player (comum — perseguição
+legítima leva o mob pra perto/sobre a posição dele) →
+`is_tile_walkable` marca `is_blocked=True` como efeito colateral. Se,
+no MESMO tick ou pouco depois, o mob perde o alvo (player sai de
+range, morre, fica invisível, etc.) e transiciona pra RETURNING — a
+partir daí, `if ai_control.path and not ai_control.is_blocked` nunca
+mais é `True`: o mob recalcula um path de volta pro spawn
+perfeitamente válido a cada ciclo (`path_recalc_interval`), mas a
+chamada de `start_tile_movement` nunca é alcançada. Preso pra sempre,
+mesmo sem absolutamente nenhum player por perto bloqueando nada —
+única saída era o componente `AIControlled` ser recriado do zero (mob
+morre e respawna, ou o servidor reinicia).
+
+**Reprodução sintética (confirmada ANTES de qualquer acesso a dado
+real do servidor)**: script isolado — spawna mob real via
+`tests.helpers.first_mob`, força manualmente
+`mob_ai.is_blocked=True; mob_ai.state="CHASING"; mob_ai.target_eid=-1`
+(simulando exatamente a sequência acima) com o mob distante do próprio
+spawn, roda 90 ticks (4.5s) via `run_ticks`. Antes do fix: mob
+transicionava pra RETURNING, `path` populado corretamente a cada
+ciclo, posição NUNCA mudava — `is_blocked` permanecia `True` pra
+sempre. Depois do fix: mob andava de volta normalmente, `is_blocked`
+voltava a `False`. Por regra do projeto ("corrigido" exige
+reproduzir o sintoma relatado, não só um cenário sintético plausível)
+— este caso fica como CONFIRMADO POR MECANISMO, não por replay do
+servidor real: o usuário não trouxe ainda um log do `mob_combat.log`
+capturando o caso ao vivo (debug ficou ligado pra a próxima
+ocorrência), então a reprodução sintética é a evidência disponível
+até lá, não uma prova definitiva de que não existe uma 2ª causa
+contribuindo pro mesmo sintoma.
+
+**Fix**: `ai_control.is_blocked = False` adicionado nos 2 pontos de
+entrada/continuação de RETURNING (`engine/world_systems.py`,
+`EnemyAISystem.update()`), logo após `ai_control.state = "RETURNING"`
+em cada um — mesma semântica já usada no branch de perseguição ("cada
+tick reavalia do zero se o próximo passo está bloqueado, nunca carrega
+um valor de um tick/estado anterior"). Teste de regressão novo:
+`tests/test_server.py::TestRegressionBugs::
+test_mob_is_blocked_nao_fica_preso_em_returning_para_sempre` — mesmo
+cenário do script de reprodução, usando um mob real spawnado pelo
+`WorldServer` (nunca um mock).
+
+**Lição pra não repetir**: qualquer flag booleana gravada como efeito
+colateral de uma função de BAIXO nível (`is_tile_walkable` não sabe
+nem deveria saber sobre estados de IA) e consumida por uma máquina de
+estados de ALTO nível precisa de uma política de reset clara pra
+TODOS os estados que a consultam, não só o estado "óbvio" onde ela
+nasceu. Nenhum teste existente cobria RETURNING seguido de bloqueio —
+os testes de `is_blocked`/`BLOCKED_BY_PLAYER` anteriores (ver
+`tests/test_server.py`, linha ~670) todos fixavam o mob em CHASING.

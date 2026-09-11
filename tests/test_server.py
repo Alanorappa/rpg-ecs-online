@@ -684,6 +684,64 @@ class TestRegressionBugs(unittest.TestCase):
             "HP não deveria curar instantaneamente ao entrar em IDLE — "
             "regen gradual (1%/3s) cuida disso com sync correto pro cliente")
 
+    def test_mob_is_blocked_nao_fica_preso_em_returning_para_sempre(self):
+        """Bug real relatado pelo usuário (10/09/2026): "alguns mobs não
+        estão se movendo" — mobs aleatórios atacavam normalmente quando o
+        player chegava perto, mas nunca perseguiam nem voltavam pro spawn.
+        Um restart do servidor "curava" os mobs já travados (reseta todo
+        AIControlled do zero), o que apontou pra estado em memória que
+        nunca se autocorrige.
+
+        Causa raiz: `ai_control.is_blocked` é gravado como efeito colateral
+        de `is_tile_walkable()` sempre que um mob tenta andar pro tile
+        exato que o player ocupa — sinal correto, mas só é resetado no
+        branch de PERSEGUIÇÃO (CHASING/ATTACKING/etc, "limpa flags de
+        bloqueio independente de estar se movendo"). O branch de RETURNING
+        nunca resetava essa flag — um mob que ficasse `is_blocked=True`
+        no exato tick em que perdeu o alvo (e por isso caiu em RETURNING)
+        ficava com `if ai_control.path and not ai_control.is_blocked`
+        permanentemente False: recalculava um path de volta pro spawn
+        válido a cada ciclo, mas NUNCA chamava `start_tile_movement` — "
+        preso" pra sempre, mesmo sem nenhum player por perto bloqueando."""
+        eid = spawn_player(self.ws, "s1", 130, 374)
+        run_ticks(self.ws, 5)
+        mob = first_mob(self.ws)
+        if not mob:
+            self.skipTest("Sem mobs")
+
+        from engine.components import AIControlled, TileMovement, Position
+        from engine.tileset import TILE_SIZE
+        mob_ai  = self.ws.world.get_component(mob, AIControlled)
+        mob_tm  = self.ws.world.get_component(mob, TileMovement)
+        mob_pos = self.ws.world.get_component(mob, Position)
+
+        # Simula o cenário exato: mob estava CHASING e ficou is_blocked=True
+        # (player no tile de destino do path), e no mesmo/próximo tick
+        # perde o alvo — precisa estar longe do próprio spawn pra garantir
+        # que RETURNING dispare (senão iria direto pra IDLE).
+        mob_ai.target_eid = -1
+        mob_ai.is_blocked  = True
+        mob_ai.state       = "CHASING"
+        mob_pos.x += TILE_SIZE * 8
+        mob_pos.y += TILE_SIZE * 8
+        mob_tm.current_tile_x += 8
+        mob_tm.current_tile_y += 8
+        mob_tm.target_tile_x = mob_tm.current_tile_x
+        mob_tm.target_tile_y = mob_tm.current_tile_y
+
+        pos_before = (mob_pos.x, mob_pos.y)
+
+        run_ticks(self.ws, 90)  # 4.5s reais — bastante pra um RETURNING normal andar vários tiles
+
+        mob_ai_after  = self.ws.world.get_component(mob, AIControlled)
+        mob_pos_after = self.ws.world.get_component(mob, Position)
+
+        self.assertEqual(mob_ai_after.state, "RETURNING")
+        self.assertFalse(mob_ai_after.is_blocked,
+            "is_blocked deveria ter sido resetado ao entrar/continuar em RETURNING")
+        self.assertNotEqual((mob_pos_after.x, mob_pos_after.y), pos_before,
+            "mob ficou preso — nunca andou de volta pro spawn apesar de ter path válido")
+
     def test_level_up_inclui_level_no_broadcast_de_hp_para_observadores(self):
         """Bug real relatado pelo usuário 17/07/2026: nameplate de player
         remoto travava no level de LOGIN pra sempre, nunca refletia

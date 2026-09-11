@@ -3327,6 +3327,17 @@ class EnemyAISystem(System):
                         # Primeira vez entrando em RETURNING: força recálculo imediato
                         ai_control.path_recalc_timer = 0.0
                     ai_control.state = "RETURNING"
+                    # Limpa flag de bloqueio herdada de um tick anterior (CHASING) —
+                    # sem isso, um mob que ficou `is_blocked=True` bem no tick em que
+                    # perdeu o alvo ficava PRESO em RETURNING pra sempre: nada neste
+                    # branch resetava a flag, então `if ai_control.path and not
+                    # ai_control.is_blocked` nunca mais era True, mesmo com um path
+                    # válido recalculado a cada ciclo (bug real relatado pelo
+                    # usuário 10/09/2026: "alguns mobs não estão se movendo" —
+                    # atacavam quando o player chegava perto, mas nunca perseguiam
+                    # nem voltavam pro spawn; só um restart do servidor, que recria
+                    # AIControlled do zero, "curava" os mobs já travados).
+                    ai_control.is_blocked = False
                     # Recalcula só quando o timer expira — se a busca falhar (path
                     # vazio), o timer já foi renovado e evita recálculo a cada tick
                     # (com muitos mobs retornando ao mesmo tempo, isso saturava o
@@ -4028,6 +4039,13 @@ class EnemyAISystem(System):
 
                 if dist_to_initial_tiles > self._settle_threshold_tiles(enemy_id):
                     ai_control.state = "RETURNING"
+                    # Mesmo reset de flag de bloqueio do outro ponto de entrada em
+                    # RETURNING (ver comentário irmão acima) — este branch é
+                    # alcançado quando o mob JÁ estava CHASING/ATTACKING/etc. e a
+                    # leitura de estado cai aqui por já ser "not in (IDLE,
+                    # RETURNING)" ter virado False; sem o reset, a mesma classe de
+                    # bug (mob travado pra sempre) também acontecia por este lado.
+                    ai_control.is_blocked = False
                     if should_recalculate_path:
                         # Reaproveita `all_occupied_tiles` — ver `_tile_of` (05/08/2026).
                         dynamic_obstacles_for_return = all_occupied_tiles - {self._tile_of(tile_movement)}

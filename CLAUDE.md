@@ -657,6 +657,19 @@ padrão a quebrar, não só os bugs individuais.
   (em vez de ler de `OBJECT_MAPPING`/`OBJECT_SHEET_TILE_MAP` já
   registrado) tem que consultar essa mesma flag também. Ver
   PROBLEMAS_ARQUITETURA.md §103.
+- **`AIControlled.is_blocked` (mob tentando andar pro tile exato do
+  player) é resetado a CADA tick por TODO estado de mob que o consulta
+  — nunca só pelo estado onde a flag nasce.** `engine/world_systems.py::
+  EnemyAISystem` grava essa flag dentro de `is_tile_walkable()` (efeito
+  colateral de baixo nível); CHASING/ATTACKING/etc. já resetam ela tanto
+  no topo do loop quanto no recálculo de path, mas RETURNING não
+  resetava em NENHUM dos seus 2 pontos de entrada — um mob que virasse
+  `is_blocked=True` bem no tick em que perdeu o alvo ficava preso em
+  RETURNING pra sempre (path válido recalculado sem nunca mover).
+  Qualquer flag nova desse tipo (efeito colateral de função de baixo
+  nível, consumida por vários estados de uma máquina de estados) precisa
+  da mesma auditoria: listar TODOS os estados que a leem, não só o
+  "óbvio". Ver PROBLEMAS_ARQUITETURA.md §130.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem
