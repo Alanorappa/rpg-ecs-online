@@ -670,6 +670,18 @@ padrão a quebrar, não só os bugs individuais.
   nível, consumida por vários estados de uma máquina de estados) precisa
   da mesma auditoria: listar TODOS os estados que a leem, não só o
   "óbvio". Ver PROBLEMAS_ARQUITETURA.md §130.
+- **Parser de célula de mapa (`engine/map_loader.py::_parse_terrain_cell`)
+  nunca devolve um token desconhecido de vários caracteres como
+  `terrain_char`.** `terrain_matrix` é sempre 1 char por tile
+  (`"".join(terrain_row)`) — um token de sheet não cadastrado em
+  `SHEET_TILE_MAP` (família removida do catálogo, nunca cadastrada, erro
+  de digitação no editor) cai pra `"G"`, nunca pro valor bruto — senão
+  infla a linha inteira e desalinha todo tile seguinte (colisão E
+  `map_width_tiles`, usado por minimapa/câmera/limites). Qualquer parser
+  novo de formato com invariante de tamanho fixo precisa da mesma
+  disciplina: fallback seguro pro "não reconheço", nunca repassar o dado
+  bruto assumindo que ele cabe no formato esperado. Ver
+  PROBLEMAS_ARQUITETURA.md §131.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

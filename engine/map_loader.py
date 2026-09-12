@@ -71,6 +71,19 @@ def _parse_terrain_cell(cell: str) -> tuple[str, str]:
             if cell.startswith(prefix + "_"):
                 return under, cell
         return "G", cell   # fallback
+    if len(cell) > 1:
+        # Token desconhecido (sheet removida do catálogo, nunca
+        # cadastrada, erro de digitação no editor, etc.) — NUNCA devolver
+        # como terrain_char: `terrain_matrix` é sempre 1 char por tile
+        # ("".join(terrain_row) em `_load_two_layer`/`_load_single_layer`)
+        # — um token de N caracteres aqui infla a linha inteira em N-1
+        # posições, desalinhando todo tile seguinte na mesma linha (tanto
+        # colisão/andabilidade quanto o que o minimapa desenha). Bug real
+        # (10/09/2026): battleground tinha 258 células "txg_*" — sheet
+        # nunca registrada em SHEET_TILE_MAP — inflando
+        # `map_width_tiles` de 100 pra até 208 e corrompendo a leitura de
+        # toda coluna depois de cada ocorrência naquela linha.
+        return "G", ""
     return cell, ""
 
 

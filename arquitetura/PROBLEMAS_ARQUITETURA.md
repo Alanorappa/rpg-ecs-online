@@ -17538,3 +17538,96 @@ TODOS os estados que a consultam, não só o estado "óbvio" onde ela
 nasceu. Nenhum teste existente cobria RETURNING seguido de bloqueio —
 os testes de `is_blocked`/`BLOCKED_BY_PLAYER` anteriores (ver
 `tests/test_server.py`, linha ~670) todos fixavam o mob em CHASING.
+## 131. Mapa da Battleground "esticou" — token de sheet desconhecido inflava a largura do mapa, sem quebrar a área jogável (10/09/2026)
+
+Usuário relatou: "vi um bug no mapa da BG, era para ser um mapa
+quadrado mas está um mapa retangular". Investigação direta (regra
+"confirmar cenário antes de investigação profunda") isolou onde
+aparecia: minimapa (tecla M, modo tela-cheia da BG) mais largo que
+alto. Perguntado se o mesmo acontecia "no mundo" (fora da BG), usuário
+confirmou que sim, mas esclareceu depois que era **dentro da própria
+BG** — "parece que o mapa duplicou a largura, porém o que aumentou não
+foi a parte explorável" — ou seja: a ÁREA JOGÁVEL continuava normal,
+só a largura DECLARADA do mapa (usada por minimapa/câmera/limites)
+tinha inflado.
+
+**Verificação prévia importante**: `maps/map_1.csv` (mundo aberto) foi
+checado e descartado como parte do mesmo bug — a variação de largura
+por linha que ele tem (300 a 1944 colunas reais, perfil suave e
+simétrico por altura) é a forma ORGÂNICA intencional do continente,
+já documentada e já tratada corretamente (ver regra "Largura de mapa
+é a MAIOR linha do terrain_matrix" no `CLAUDE.md`) — confirmado
+inspecionando o conteúdo real das linhas mais largas (tokens válidos
+de `ter_X_Y`, nenhum token desconhecido). `map_cave_east` tem variação
+pequena pelo mesmo motivo legítimo. O minimapa do mundo aberto também
+usa um modo geometricamente diferente do da BG
+(`ui/minimap.py::render` — janela quadrada FIXA ao redor do player,
+nunca pode "esticar" por causa do formato do mapa; só
+`render_fullmap`, usado "pra dentro de instância estilo MOBA", projeta
+o mapa INTEIRO proporcionalmente, e é o único dos dois vulnerável a
+este bug).
+
+**Causa raiz**: `maps/moba_battleground_terrain.csv` tinha 298 células
+com o valor `"txg_0_0"`/`"txg_0_4"`/etc. — uma família de sheet de
+terreno que **nunca foi cadastrada** em `SHEET_TILE_MAP`
+(`engine/tileset.py`; "txg" só existe como PREFIXO DE EXEMPLO num
+comentário de docstring, nenhum arquivo `assets/tiles/` corresponde a
+ele — provavelmente sobra de uma textura de teste nunca finalizada).
+`engine/map_loader.py::_parse_terrain_cell(cell)` tinha um fallback
+inseguro pra esse caso: `if cell in SHEET_TILE_MAP: ... ; return cell,
+""` — quando o token NÃO está no catálogo, a função devolvia o
+PRÓPRIO token (string de vários caracteres, ex: 8 chars) como se fosse
+o `terrain_char` de 1 tile só. `_load_two_layer`/`_load_single_layer`
+montam cada linha via `"".join(terrain_row)` — assumindo SEMPRE 1
+caractere por tile — então cada ocorrência de um token de N
+caracteres empurrava o resto da linha N-1 posições pra frente,
+desalinhando a leitura de QUALQUER tile depois dele na mesma linha
+(inclusive colisão/andabilidade real, não só o desenho). Resultado
+medido: a linha terminava com até 208 "caracteres" em vez de 100
+colunas reais — `map_width_tiles` (lido como a MAIOR linha,
+`engine/entity_factory.py::create_tilemap`, regra já documentada pro
+caso LEGÍTIMO de map_1) herdava esse valor inflado, e
+`render_fullmap()` (`ui/minimap.py`) usa exatamente
+`cols`/`rows` pra decidir a proporção do mapa desenhado — resultando
+no "mapa esticado" relatado.
+
+Por que a área jogável não mudava: a maioria das colunas REAIS
+continuava no lugar certo antes da 1ª ocorrência de `txg_*` em cada
+linha (e logo depois de cada ocorrência, se repetida); o efeito visual
+predominante era a PROPORÇÃO do mapa no minimapa ficar errada, não o
+terreno virar intransponível — mas colunas específicas depois de cada
+token inflado na MESMA linha liam o terrain_char de uma posição real
+DIFERENTE da pretendida (bug real de colisão, mesmo sem o usuário ter
+localizado um caso concreto ainda).
+
+**Fix**:
+1. `maps/moba_battleground_terrain.csv` — as 298 células `txg_*`
+   trocadas por `"G"` (grama comum, mesmo valor de reserva já usado
+   pelo resto do sistema pra terreno sem dado específico). Mapa volta
+   a carregar 100×100 uniforme.
+2. `engine/map_loader.py::_parse_terrain_cell` — fallback endurecido:
+   token desconhecido com `len(cell) > 1` cai pra `("G", "")` em vez de
+   devolver o token cru. Protege QUALQUER mapa futuro (não só a BG)
+   contra a MESMA classe de corrupção silenciosa — uma sheet removida
+   do catálogo, nunca cadastrada, ou um erro de digitação no editor
+   nunca mais consegue inflar uma linha inteira sem nenhum aviso.
+
+**Testes novos**: `tests/test_map_loader_terrain_parsing.py` —
+unitários pra `_parse_terrain_cell` (token desconhecido de N chars →
+G; char simples desconhecido continua passando direto; token
+REGISTRADO continua funcionando normal) + 1 teste de integração
+carregando o mapa REAL da battleground e exigindo que toda linha do
+`terrain_matrix` tenha exatamente 100 colunas (prova de regressão
+contra o bug relatado, não um cenário sintético à parte).
+
+**Lição pra não repetir**: qualquer função que PARSEIA um token
+externo (arquivo de mapa, config, etc.) pra um formato com invariante
+de tamanho fixo (aqui: 1 char por tile) precisa ter um fallback SEGURO
+pro caso "não reconheço este valor" — nunca devolver o valor bruto
+assumindo que ele "deve" caber no formato esperado. A mesma classe de
+bug já apareceu antes em `_register_catalog_tiles`/`group_tile_ids()`
+(§103/§104, flag de separador de prefixo) e em `create_tilemap`
+(§97, largura de mapa) — três bugs diferentes, mesma lição:
+"dado inesperado vindo de um catálogo/mapa real" precisa de um teste
+de integração carregando o MAPA REAL, não só fixtures sintéticas, ou o
+problema só aparece quando o usuário joga de verdade.
