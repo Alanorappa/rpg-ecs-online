@@ -615,6 +615,24 @@ SHEET_FAMILIES: list[dict] = [
         "underlying_terrain":  "G",
     },
         {
+        # Cadastro inicial (13/09/2026, pedido do usuário) — mesmo padrão
+        # mínimo de "TX Tileset Woodfloor"/"TX Tileset Cave" (sem "zones":
+        # a categorização fina por pixel real, como a de "TX Tileset
+        # Terrain", só faz sentido pro pincel inteligente de terreno, que
+        # está PAUSADO por decisão do usuário — ver
+        # `project_terrain_brush_paused` na memória; não reabrir sem
+        # pedido). Cor de fallback amostrada por script direto do PNG
+        # (média de pixels não-transparentes), não chutada à mão.
+        "file":                "TX Tileset Terrain Beach",
+        "prefix":              "bch",
+        "tile_w":              32,
+        "tile_h":              32,
+        "is_solid":            False,
+        "label":               "Praia",
+        "color":               (134, 144, 106),
+        "underlying_terrain":  "G",
+    },
+        {
         "file":                "TX Tileset Woodfloor",
         "prefix":              "twf",
         "tile_w":              32,
