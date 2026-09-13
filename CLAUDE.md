@@ -682,6 +682,21 @@ padrão a quebrar, não só os bugs individuais.
   disciplina: fallback seguro pro "não reconheço", nunca repassar o dado
   bruto assumindo que ele cabe no formato esperado. Ver
   PROBLEMAS_ARQUITETURA.md §131.
+- **Mecânica nova "no ponto de morte" (skill com `on_kill`, XP, gold,
+  qualquer coisa que reage a algo morrendo) precisa ser aplicada nos 2
+  caminhos de morte que o projeto tem, DESDE SEMPRE, por design —
+  mob/minion/torre (`ServerDeathHandler.update()`, `server/
+  server_death_handler.py`) e jogador/PvP (`RespawnMixin.
+  _handle_player_death`, `server/respawn_system.py`, único lugar que
+  credita kill/assist de player).** São sistemas SEPARADOS que nunca
+  foram unificados — implementar só num deles e assumir que "morte é
+  morte" é a causa raiz já catalogada duas vezes (§130 conceitualmente,
+  §132 de fato). Skills com `on_kill=="charge"` (Vitória Iminente) →
+  `grant_on_kill_charge_skills(world, world_server, killer_eid,
+  mob_eid)` (`server/server_death_handler.py`, função de MÓDULO, não
+  método de mixin — chamável dos dois pontos sem depender de herança) —
+  NUNCA reimplementar a concessão de carga num 3º lugar. Ver
+  PROBLEMAS_ARQUITETURA.md §132.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

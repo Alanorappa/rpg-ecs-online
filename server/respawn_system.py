@@ -123,6 +123,17 @@ class RespawnMixin:
             _pk_killer = max(_recent, key=_recent.get)   # (timestamp, seq) mais recente = último a bater
             _incr_deaths(self.world, _pk_killer, "players_killed")
             _grant_kill_gold(self, _pk_killer, _PKG)
+            # Skills com on_kill=="charge" (Vitória Iminente) — mesma
+            # concessão que já existia pra kill de mob/minion/torre
+            # (ServerDeathHandler), extraída pra função compartilhada
+            # porque este é um caminho de código TOTALMENTE separado
+            # (bug real relatado pelo usuário, 13/09/2026: matar jogador
+            # na Battleground nunca concedia carga, só matar mob).
+            try:
+                from server.server_death_handler import grant_on_kill_charge_skills as _grant_okc
+                _grant_okc(self.world, self, _pk_killer, mob_eid=player_eid)
+            except Exception:
+                pass
             for _assister in _recent:
                 if _assister == _pk_killer:
                     continue

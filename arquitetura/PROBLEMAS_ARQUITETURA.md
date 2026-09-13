@@ -17631,3 +17631,67 @@ bug já apareceu antes em `_register_catalog_tiles`/`group_tile_ids()`
 "dado inesperado vindo de um catálogo/mapa real" precisa de um teste
 de integração carregando o MAPA REAL, não só fixtures sintéticas, ou o
 problema só aparece quando o usuário joga de verdade.
+## 132. Vitória Iminente nunca ganhava carga matando JOGADOR — só matando mob (13/09/2026)
+
+Usuário pediu pra investigar: "Vitória Iminente não está ganhando carga
+quando o guerreiro mata um alvo". Primeira reprodução headless (mob
+morto via `apply_damage_core` + `killer_eid`, skill só aprendida, não
+na hotbar) funcionou perfeitamente — a mesma cadeia validada no fix
+original de 03/07/2026 (ver seção "RESOLVIDO" mais acima) continuava
+intacta. Perguntado ao usuário se a skill estava de fato na hotbar
+(sim) e onde exatamente o bug aparecia — resposta: "só na BG que não
+funciona".
+
+**Causa raiz**: a concessão de carga (`on_kill=="charge"`, iterando
+`SKILL_CATALOG` com lazy-create) vivia SÓ dentro do loop de morte de
+mob/minion/torre (`ServerDeathHandler.update()`,
+`server/server_death_handler.py`). Morte de JOGADOR (crédito de kill
+estilo LoL — último a bater dentro da janela de assist) passa por
+`RespawnMixin._handle_player_death` (`server/respawn_system.py`), um
+caminho de código TOTALMENTE separado (unificado em 16/08/2026 só pra
+crédito de kill/assist/gold, nunca ganhou a lógica de carga). Grep
+case-insensitive por "on_kill"/"charge"/"vitoria" no arquivo inteiro
+(512 linhas) não achou nenhuma ocorrência — confirmação direta, não
+suposição.
+
+Como a Battleground é o modo cuja atividade principal é matar
+JOGADORES (não mobs), a carga nunca acendia lá — mesmo matando
+mob/minion/torre DENTRO da própria BG funcionando normalmente (mesmo
+código de sempre), e mesmo fora da BG contra mob (também mesmo código).
+O usuário só reparou porque em PvE geralmente mata mob, e na BG mata
+principalmente gente.
+
+**Fix**: lógica extraída de dentro do loop de `ServerDeathHandler` pra
+`grant_on_kill_charge_skills(world, world_server, killer_eid, mob_eid)`
+(módulo `server/server_death_handler.py`, função de módulo — nunca
+método de mixin, pra ser chamável dos dois pontos de morte sem
+depender de qual mixin herda o quê). Notifica o cliente via
+`WorldServer.queue_stats_update()` diretamente (ponto único do canal
+privado) em vez do "bag" `pending_xp` que só `ServerDeathHandler` tinha
+— unifica os dois call sites no mesmo mecanismo de notificação, não só
+na mesma lógica de concessão. Chamada nova em
+`RespawnMixin._handle_player_death`, logo após `_pk_killer` ser
+decidido (mesmo jogador que já ganha o ouro/kill credit — nunca um
+assistente).
+
+**Testes novos**: `tests/test_on_kill_charge_skills.py` —
+`TestOnKillChargeMobPath` (regressão do caminho original após a
+extração, skill só aprendida → lazy-create funciona igual);
+`TestOnKillChargePlayerPath` (o bug relatado: matar jogador concede a
+mesma carga; um 3º player que só assistiu, sem ser o killer creditado,
+NÃO ganha carga — usa o caminho de combate REAL,
+`_process_player_attacks`, não um atalho direto em
+`_handle_player_death`, mesma disciplina de `test_bg_kill_credit.py`).
+
+**Lição pra não repetir**: quando uma mecânica nova é implementada
+"no ponto de morte", checar quantos CAMINHOS DE CÓDIGO diferentes
+processam morte de verdade no projeto (aqui: mob/minion/torre vs.
+jogador PvP são 2 sistemas distintos desde sempre, por design — nunca
+foram unificados) — implementar só num deles e assumir que "morte é
+morte" é exatamente a classe de bug capturada aqui. `PROBLEMAS_
+ARQUITETURA.md` §130 (mesma sessão anterior) já tinha o comentário
+"ÚNICO ponto que credita kill/assist de player" documentando que
+existem 2 famílias de morte separadas — a lição já estava escrita,
+só não foi cruzada de volta quando Vitória Iminente foi implementada
+(03/07/2026, antes até da unificação de kill credit de 16/08/2026
+existir).

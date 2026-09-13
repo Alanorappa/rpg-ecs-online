@@ -29,6 +29,69 @@ _XP_BY_TIER: dict[str, int] = {
 }
 
 
+def grant_on_kill_charge_skills(world, world_server, killer_eid: int,
+                                mob_eid: int = -1) -> None:
+    """Concede carga de skills com `on_kill=="charge"` (ex: Vitória
+    Iminente) pra `killer_eid`, e notifica o cliente via
+    `queue_stats_update` (ponto único de verdade do canal privado —
+    `on_kill_skill` é reencaminhado ao cliente sem espelho manual, ver
+    docstring de `WorldServer.queue_stats_update`). Itera o CATÁLOGO
+    (não `ps.skills`) com lazy-create: skill comprada no treinador
+    DURANTE a sessão só atualiza `learned_skill_ids` — o objeto `Skill`
+    nunca entra em `ps.skills` até o relog, então sem o lazy-create a
+    carga nunca seria concedida (bug real, 03/07/2026).
+
+    Extraído de dentro do loop de morte de mob/minion/torre
+    (`ServerDeathHandler.update()`) pra também ser chamado do fluxo de
+    morte de JOGADOR (`RespawnMixin._handle_player_death`,
+    `server/respawn_system.py`) — os dois eram caminhos de código
+    totalmente separados, e só o de mob tinha essa lógica. Resultado:
+    matar um jogador (a atividade principal da Battleground) NUNCA
+    concedia carga de Vitória Iminente, mesmo funcionando normalmente
+    contra mob/minion/torre (bug real relatado pelo usuário, 13/09/2026
+    — "só na BG que não funciona", confirmado sendo especificamente
+    kill de player, não kill de mob dentro da BG). `killer_eid` no caso
+    de PvP é quem o crédito de kill estilo LoL já escolheu (`_pk_killer`
+    em `_handle_player_death`), não necessariamente o golpe literal
+    final."""
+    if killer_eid == -1:
+        return
+    from engine.components import PlayerSkills
+    from content.skill_config import SKILL_CATALOG
+    ks = world.get_component(killer_eid, PlayerSkills)
+    if not ks:
+        return
+    for sid, defn in SKILL_CATALOG.items():
+        if defn.get("on_kill") != "charge":
+            continue
+        sk = ks.skill_by_id(sid)
+        if sk is None:
+            from engine.world_systems import is_skill_authorized
+            if not is_skill_authorized(world, killer_eid, sid)[0]:
+                continue
+            sk = PlayerSkills._make_skill(sid, SKILL_CATALOG)
+            if sk is None:
+                continue
+            try:
+                idx = ks.skills.index(None)
+                ks.skills[idx] = sk
+            except ValueError:
+                ks.skills.append(sk)
+        if sk.max_charges <= 0:
+            continue
+        if sk.charges < sk.max_charges:
+            sk.charges      = sk.max_charges
+            sk.charge_timer = sk.charge_timeout
+        if world_server is not None:
+            world_server.queue_stats_update({
+                "player_eid":    killer_eid,
+                "xp":            0,
+                "mob_eid":       mob_eid,
+                "on_kill_skill": sk.skill_id,
+            })
+        break
+
+
 def _serialize_item(item) -> dict:
     """Extrai apenas campos serializáveis de um Item ECS (sem objetos Pygame)."""
     return {
@@ -471,46 +534,13 @@ class ServerDeathHandler:
                     self.pending_xp[_xp_entries_start:] = _new_entries
 
             # 2b. Skills com on_kill=="charge" (Vitória Iminente): killer ganha
-            # carga ao matar mob. Itera o CATÁLOGO (não ps.skills) com
-            # lazy-create: skill comprada no treinador DURANTE a sessão só
-            # atualiza learned_skill_ids no servidor (sync_player_skills) — o
-            # objeto Skill nunca entrava em ps.skills até o relog e a carga
-            # nunca era concedida (bug real; mesmo padrão do PnQ em
-            # combat_processor).
+            # carga ao matar mob. Ver docstring de grant_on_kill_charge_skills
+            # (também chamada de RespawnMixin._handle_player_death, kill de
+            # jogador — os 2 pontos de morte compartilham a MESMA função,
+            # nunca reimplementar aqui).
             try:
-                if killer_eid != -1:
-                    from engine.components import PlayerSkills as _PSdh
-                    from content.skill_config import SKILL_CATALOG as _SC
-                    _ks = self.world.get_component(killer_eid, _PSdh)
-                    if _ks:
-                        for _sid_ok, _defn in _SC.items():
-                            if _defn.get("on_kill") != "charge":
-                                continue
-                            _sk = _ks.skill_by_id(_sid_ok)
-                            if _sk is None:
-                                from engine.world_systems import is_skill_authorized as _auth_dh
-                                if not _auth_dh(self.world, killer_eid, _sid_ok)[0]:
-                                    continue
-                                _sk = _PSdh._make_skill(_sid_ok, _SC)
-                                if _sk is None:
-                                    continue
-                                try:
-                                    _idx_ok = _ks.skills.index(None)
-                                    _ks.skills[_idx_ok] = _sk
-                                except ValueError:
-                                    _ks.skills.append(_sk)
-                            if _sk.max_charges <= 0:
-                                continue
-                            if _sk.charges < _sk.max_charges:
-                                _sk.charges      = _sk.max_charges
-                                _sk.charge_timer = _sk.charge_timeout
-                            self.pending_xp.append({
-                                "player_eid":   killer_eid,
-                                "xp":           0,
-                                "mob_eid":      eid,
-                                "on_kill_skill": _sk.skill_id,
-                            })
-                            break
+                grant_on_kill_charge_skills(self.world, self.world_server,
+                                            killer_eid, mob_eid=eid)
             except Exception:
                 pass
 
