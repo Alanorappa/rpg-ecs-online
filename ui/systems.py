@@ -921,7 +921,16 @@ class PlayerInputSystem(System):
                 auto_move, can_act, can_move, target_id, tgt_tile_x, tgt_tile_y, dt,
                 _px_chase, _melee_chase_px, dist_attack=dist_attack)
         elif is_mage:
-            pursuit_range = self._mage_attack_range(entity_id)
+            # Skill específica apertada (CombatState.pursuit_skill_range,
+            # ver docstring lá) tem prioridade sobre o mínimo genérico —
+            # senão uma skill de mira curta na hotbar (ex: Calamidade
+            # Flamejante) fazia a perseguição parar cedo demais pra
+            # QUALQUER outra skill de alcance maior (bug real relatado
+            # pelo usuário, 14/09/2026). Mínimo genérico só entra quando
+            # o jogador ainda não apertou nenhuma skill (engajou só por
+            # clique direito/Espaço) — garante que pelo menos alguma
+            # ofensiva já esteja em alcance nesse caso.
+            pursuit_range = combat_state.pursuit_skill_range or self._mage_attack_range(entity_id)
             if dist_attack <= self.PLAYER_ATTACK_RANGE:
                 # Adjacente: melee idêntico ao guerreiro (sem geração de Raiva)
                 if auto_move:
@@ -935,6 +944,7 @@ class PlayerInputSystem(System):
                     if dead:
                         combat_state.target_entity_id = -1
                         combat_state.is_pursuing = False
+                        combat_state.pursuit_skill_range = 0
                         if auto_move:
                             auto_move.active = False
             elif dist <= pursuit_range:
@@ -4522,6 +4532,7 @@ class SkillSystem(System, SkillHandlers):
                     if _stale_pos is None or _stale_vis is None or _is_dead_target:
                         _target_local = -1
                         combat_state.target_entity_id = -1
+                        combat_state.pursuit_skill_range = 0
                 if _target_local == -1:
                     # Auto-select: mesmo comportamento de _resolve_target — B6
                     _params_pre = getattr(skill, "params", {}) or {}
@@ -4573,6 +4584,13 @@ class SkillSystem(System, SkillHandlers):
                 # usa 1 tile para o check — equivale a MELEE_RANGE_PX (1t + tolerance)
                 if _max_range_tiles == 0:
                     _max_range_tiles = 1
+                # Alimenta CombatState.pursuit_skill_range (ver docstring lá) —
+                # a perseguição genérica por-tick passa a mirar o alcance
+                # DESTA skill específica, não mais o mínimo entre todas as
+                # skills da hotbar. Grava mesmo se o check de distância
+                # abaixo falhar agora ("Fora de alcance") — é exatamente
+                # esse caso que precisa fazer o personagem ANDAR até aqui.
+                combat_state.pursuit_skill_range = _max_range_tiles
                 _min_range_tiles = _params.get("min_range", 0)
                 _tol = SkillHandlers.RANGE_TOLERANCE_PX
                 _max_px = _max_range_tiles * TILE_SIZE + _tol

@@ -697,6 +697,17 @@ padrão a quebrar, não só os bugs individuais.
   método de mixin — chamável dos dois pontos sem depender de herança) —
   NUNCA reimplementar a concessão de carga num 3º lugar. Ver
   PROBLEMAS_ARQUITETURA.md §132.
+- **Perseguição genérica do mago pra usar uma skill (`ui/systems.py`)
+  para na distância da skill ESPECÍFICA que o jogador apertou
+  (`CombatState.pursuit_skill_range`, client-only), nunca no mínimo
+  genérico entre todas as skills da hotbar** (`_mage_attack_range()`) —
+  esse mínimo só é fallback pra quando nenhuma skill foi apertada ainda
+  (engajou só por clique direito/Espaço). Mudar o `cast_range` de UMA
+  skill (ex: Calamidade Flamejante) nunca deve travar a distância de
+  perseguição de QUALQUER outra skill da mesma classe — bug real: uma
+  skill de mira curta na hotbar fazia o personagem parar de andar cedo
+  demais mesmo tentando usar uma skill de alcance maior. Ver
+  PROBLEMAS_ARQUITETURA.md §133.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

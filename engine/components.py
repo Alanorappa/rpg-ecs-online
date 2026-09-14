@@ -539,6 +539,22 @@ class CombatState:
         # continua sendo a ÚNICA fonte pro servidor/rede (nunca mexer nele
         # por movimento, ver ARQUITETURA_ONLINE.md §34.62).
         self.chase_suppressed: bool = False
+        # Alcance (tiles) da ÚLTIMA skill ofensiva com alvo que o jogador
+        # tentou usar — 0 = nenhuma ainda (perseguição genérica cai pro
+        # mínimo entre TODAS as skills da hotbar, `_mage_attack_range`,
+        # ui/systems.py). Setado em `_use_skill_visual_only` no mesmo
+        # ponto em que o range check roda (mesmo valor, `_max_range_tiles`)
+        # — mago que aperta Bola de Fogo (cast_range 7) passa a perseguir
+        # até 7, mesmo com Calamidade Flamejante (cast_range 3, mira mais
+        # curta) na hotbar; antes o mínimo global fazia QUALQUER skill
+        # parar de perseguir na distância da skill de menor alcance
+        # equipada (bug real relatado pelo usuário, 14/09/2026 — "a bola
+        # de fogo ainda está com alcance curto" era o personagem parando
+        # de andar cedo demais, não a skill em si). Reseta pra 0 junto com
+        # target_entity_id/is_pursuing (troca de alvo, fim de combate) —
+        # PURAMENTE client-side (nunca lido no servidor), mesmo espírito
+        # de `chase_suppressed` acima.
+        self.pursuit_skill_range: int = 0
         self._just_entered_combat: bool = False  # sinaliza transição para CombatStateSystem disparar procs
         self.combat_timer: float = 0.0  # Conta regressiva para sair do combate
         self.stun_timer:   float = 0.0  # Contador de atordoamento (zerado em CombatStateSystem)

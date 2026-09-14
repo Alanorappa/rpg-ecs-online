@@ -985,7 +985,15 @@ class SkillHandlers:
         if not self._check_mana(char_stats, effective_cost):
             return False
 
-        target_id = self._resolve_target(combat_state, tile_move, 30)
+        # 30 fixo substituído por skill.cast_range (14/09/2026, achado
+        # investigando "Bola de Fogo ainda com alcance curto") — mesmo
+        # padrão já usado por calcinar/polimorfia/tiro_repulsivo/picada_
+        # escorpiao/flecha_reiterada; Bola de Fogo era a única exceção
+        # hardcoded, ignorando qualquer ajuste de balanceamento no
+        # catálogo. Não era a causa raiz do bug relatado (a perseguição
+        # genérica parava bem antes de chegar aqui, ver CombatState.
+        # pursuit_skill_range), mas continuava errado por si só.
+        target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
         if target_id == -1:
             self._warn("Nenhum alvo")
             return False

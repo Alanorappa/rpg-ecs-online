@@ -17695,3 +17695,65 @@ existem 2 famílias de morte separadas — a lição já estava escrita,
 só não foi cruzada de volta quando Vitória Iminente foi implementada
 (03/07/2026, antes até da unificação de kill credit de 16/08/2026
 existir).
+## 133. Bola de Fogo "com alcance curto" — não era a skill, era a perseguição parando cedo demais (14/09/2026)
+
+Continuação do nivelamento de alcance de ranged (§ commits d5791df/
+e9382d2/4dbeec7, mesma sessão). Usuário relatou, após deploy: "a bola
+de fogo do mago ainda está com alcance 5" (mesmo já tendo sido
+ajustada pra 7). Investigação em 2 etapas erradas antes de achar a
+causa real:
+
+**1ª hipótese (parcialmente certa, mas não era a causa do sintoma
+relatado)**: `_skill_bola_de_fogo` (`engine/skill_handlers.py`) chamava
+`self._resolve_target(combat_state, tile_move, 30)` — **30 fixo, nunca
+`skill.cast_range`** — diferente das outras 5 skills do mesmo
+nivelamento (Calcinar, Tiro Repulsivo, Picada de Escorpião, Flecha
+Reiterada, Polimorfia), que já liam `skill.cast_range` corretamente.
+Real, mas 30 > 7 (mais permissivo, não mais restritivo) — não explica
+"alcance curto". Corrigido mesmo assim (consistência com as outras 5),
+mas não era a causa raiz do sintoma.
+
+**Causa raiz real**: `ui/systems.py::_mage_attack_range()` — usada pela
+perseguição genérica por-tick do mago pra decidir "até onde andar antes
+de parar e aguardar cast manual" — retorna o **MENOR `cast_range` entre
+TODAS as skills ofensivas com alvo da hotbar** (decisão de design já
+documentada, 26/08/2026: "garante que, quando a perseguição parar,
+TODAS as skills já estão em alcance"). Como a Calamidade Flamejante
+(cast_range = distância da mira) tinha acabado de cair pra 3 nesta
+MESMA sessão, o mago passou a parar de perseguir a 3 tiles pra
+QUALQUER skill — inclusive ao apertar Bola de Fogo (cast_range 7) —
+porque o personagem nunca chegava mais perto de 3, satisfeito com o
+mínimo global. Confirmado com o usuário: ele contou a distância com
+precisão (grade/tiles) e o personagem literalmente parava de ANDAR
+naquele ponto ao apertar a skill — não era uma rejeição "Fora de
+alcance", era a aproximação parando cedo.
+
+**Fix**: `CombatState.pursuit_skill_range` (novo campo, client-only) —
+gravado em `_use_skill_visual_only` (`ui/systems.py`) com o
+`_max_range_tiles` já calculado ali pro range-check normal, no
+MOMENTO em que o jogador aperta uma skill ofensiva com alvo (mesmo se
+o check falhar "Fora de alcance" — é EXATAMENTE esse caso que precisa
+andar até lá). A perseguição por-tick do mago passa a preferir esse
+valor (`combat_state.pursuit_skill_range or self._mage_attack_range(...)`)
+— só cai pro mínimo genérico quando nenhuma skill específica foi
+apertada ainda (engajou só por clique direito/Espaço). Reseta junto
+com `target_entity_id`/`is_pursuing` (alvo morre/fica inválido).
+
+**Sem teste automatizado dedicado**: a lógica vive dentro de
+`PlayerInputSystem._process_target` (`ui/systems.py`), método grande e
+fortemente acoplado (GameEngine/auto_move/combat_stats como
+parâmetros) — puramente cosmético (nunca afeta autoridade de
+gameplay/servidor), decisão explícita de não construir um harness de
+teste isolado só pra isso (custo desproporcional ao risco). Suíte
+completa confirma ausência de regressão (1634 passed, 1 failed
+pré-existente/timing flake); validação manual em jogo pendente —
+usuário avisa se o comportamento não bater.
+
+**Lição pra não repetir**: um mecanismo de "usa o mínimo entre N
+coisas pra garantir margem de segurança" (aqui: perseguição genérica)
+é sensível a QUALQUER uma dessas N coisas mudar de valor — reduzir
+drasticamente só UM item (Calamidade Flamejante) teve efeito colateral
+sobre TODOS os outros (qualquer skill do mago), sem nenhuma mudança de
+código relacionada a eles. Balanceamento de conteúdo que alimenta um
+"mínimo/máximo compartilhado" precisa considerar esse acoplamento
+antes de declarar "só mudei o número de uma skill".
