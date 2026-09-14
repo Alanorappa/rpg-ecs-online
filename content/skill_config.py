@@ -204,7 +204,11 @@ SKILL_CATALOG: dict[str, dict] = {
         "cooldown":         0.0,
         "mana_cost":        10,
         "cast_time":        0.0,
-        "cast_range":       8,
+        # cast_range (distância da MIRA, não da explosão) reduzido de 8 pra
+        # 3 (14/09/2026, decisão do usuário) — alcance efetivo total era
+        # cast_range + radius_tiles (8+3=11, longe demais pra um mago); agora
+        # 3+3=6. radius_tiles (raio da explosão em si) INTOCADO de propósito.
+        "cast_range":       3,
         "is_channeled":     True,
         "channel_duration": 5.0,
         "needs_aoe_target": True,
@@ -308,6 +312,12 @@ SKILL_CATALOG: dict[str, dict] = {
     },
 
     # ── Arqueiro ─────────────────────────────────────────────────────────────
+    # cast_range das skills de alvo único nivelado em 5 (14/09/2026, decisão
+    # do usuário — era 8 pra tiro_repulsivo/picada_escorpiao/flecha_reiterada,
+    # mesmo alcance dos arcos, ver content/item_table.py). Tiro Múltiplo
+    # (cone, range_tiles=12) e Canção de Ninar (raio 5 EM VOLTA do próprio
+    # arqueiro, não alcance até um alvo) ficaram de fora de propósito —
+    # decisão explícita do usuário de não tocar nesses dois por enquanto.
     "tiro_multiplo": {
         "name":      "Tiro Múltiplo",
         "desc":      "Dispara flechas em cone de 90° na direção do mouse. 1pt=2 alvos, 2pt=3 alvos, 3pt=ilimitado.",
@@ -346,7 +356,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "desc":      "Repele o alvo 5 tiles na direção oposta. Colisão com parede = stun 3s. 100% arma + 150% AP. 100 Concentração.",
         "cooldown":  45.0,
         "cast_time": 2.5,
-        "cast_range": 8,
+        "cast_range": 5,
         "class_id":  "arqueiro",
         "offensive": True,
         "effects":   {
@@ -409,7 +419,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "desc":      "Flecha precisa: dano da arma + 50% AP. Aplica slow 30% por 3s. 20 Concentração.",
         "cooldown":  5.0,
         "cast_time": 0.8,
-        "cast_range": 8,
+        "cast_range": 5,
         "class_id":  "arqueiro",
         "offensive": True,
         "effects":   {
@@ -431,7 +441,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "desc":      "Dispara 2 flechas em sequência. Requer arco + aljava. 80 Concentração.",
         "cooldown":  12.0,
         "cast_time": 2.0,
-        "cast_range": 8,
+        "cast_range": 5,
         "class_id":  "arqueiro",
         "offensive": True,
         "effects":   {
