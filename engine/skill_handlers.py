@@ -33,7 +33,7 @@ from engine.components import (
     SpellCast, AoeTargeting, IceBlockEffect,
 )
 from engine.tileset import TILE_SIZE
-from engine.utils import chebyshev
+from engine.utils import chebyshev, in_range
 from ui.combat_log import LOG
 # fx: façade headless — no-op no servidor, gerenciadores reais no cliente
 # (fx.bind_client_fx no GameEngine). skill_handlers roda nos dois lados.
@@ -154,6 +154,23 @@ class SkillHandlers:
         """
         if combat_state is None or tile_move is None:
             return -1
+
+        # Alcance de ATAQUE usa in_range() — Euclidiana em tile, círculo de
+        # verdade — NUNCA chebyshev() (14/09/2026, ver
+        # PROBLEMAS_ARQUITETURA.md §135). EXCEÇÃO: _max_range<=1 é
+        # adjacência corpo-a-corpo (melee), não alcance ranged de verdade —
+        # aí continua chebyshev(), porque adjacência DEVE aceitar as 8
+        # direções igualmente (diagonal tem distância real ~1.41, ficaria
+        # fora de um in_range(max_range=1) e quebraria golpe corpo-a-corpo
+        # em 4 das 8 direções). Esta função é só o filtro GROSSEIRO de
+        # seleção de alvo pra skill melee — o gate FINO e preciso de
+        # verdade continua em `_melee_ok`/`_range_ok` (Euclidiana em pixel
+        # contínuo, já cobre diagonal de propósito), intocado.
+        def _atk_in_range(ax: int, ay: int, bx: int, by: int) -> bool:
+            if _max_range <= 1:
+                return chebyshev(ax, ay, bx, by) <= _max_range
+            return in_range(ax, ay, bx, by, _max_range)
+
         current = combat_state.target_entity_id
         if current != -1:
             # Alvo já selecionado também precisa estar dentro de _max_range —
@@ -165,10 +182,10 @@ class SkillHandlers:
             # vulnerabilidade de range/LOS de skill). Fora de range cai pro
             # mesmo fallback de auto-seleção usado quando o alvo está morto.
             _cur_tm = self.world.get_component(current, TileMovement)
-            _in_range = (_max_range <= 0 or (_cur_tm is not None and chebyshev(
+            _tgt_in_range = (_max_range <= 0 or (_cur_tm is not None and _atk_in_range(
                 tile_move.current_tile_x, tile_move.current_tile_y,
-                _cur_tm.current_tile_x,   _cur_tm.current_tile_y) <= _max_range))
-            if _in_range:
+                _cur_tm.current_tile_x,   _cur_tm.current_tile_y)))
+            if _tgt_in_range:
                 cs = self.world.get_component(current, CombatStats)
                 if cs and cs.current_hp > 0:
                     return current
@@ -208,7 +225,7 @@ class SkillHandlers:
             if not _is_hostile_resolve(self.world, self.player_entity_id, eid):
                 continue
             d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
-            if _max_range > 0 and d > _max_range:
+            if _max_range > 0 and not _atk_in_range(px, py, etm.current_tile_x, etm.current_tile_y):
                 continue
             if ecs.current_hp < best_hp or (ecs.current_hp == best_hp and d < best_dist):
                 best_dist = d
@@ -234,7 +251,7 @@ class SkillHandlers:
             if not _is_hostile_resolve(self.world, self.player_entity_id, eid):
                 continue
             d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
-            if _max_range > 0 and d > _max_range:
+            if _max_range > 0 and not _atk_in_range(px, py, etm.current_tile_x, etm.current_tile_y):
                 continue
             if ecs.current_hp < best_hp or (ecs.current_hp == best_hp and d < best_dist):
                 best_dist = d
@@ -252,7 +269,7 @@ class SkillHandlers:
                 if not _is_hostile_resolve(self.world, self.player_entity_id, eid):
                     continue
                 d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
-                if _max_range > 0 and d > _max_range:
+                if _max_range > 0 and not _atk_in_range(px, py, etm.current_tile_x, etm.current_tile_y):
                     continue
                 if d < best_dist:
                     best_dist = d
@@ -282,7 +299,7 @@ class SkillHandlers:
                 if not _can_engage_resolve(self.world, self.player_entity_id, eid):
                     continue
                 d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
-                if _max_range > 0 and d > _max_range:
+                if _max_range > 0 and not _atk_in_range(px, py, etm.current_tile_x, etm.current_tile_y):
                     continue
                 if d < best_dist:
                     best_dist = d
@@ -320,7 +337,7 @@ class SkillHandlers:
                 if not _can_engage_resolve2(self.world, self.player_entity_id, eid):
                     continue
                 d = chebyshev(px, py, etm.current_tile_x, etm.current_tile_y)
-                if _max_range > 0 and d > _max_range:
+                if _max_range > 0 and not _atk_in_range(px, py, etm.current_tile_x, etm.current_tile_y):
                     continue
                 if d < best_dist:
                     best_dist = d

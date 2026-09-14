@@ -17817,3 +17817,99 @@ usar a MESMA métrica/função — nunca reimplementar com uma métrica
 no mesmo. A malha de tolerância (`RANGE_TOLERANCE_PX`) cobria só lag de
 rede/animação — nunca foi desenhada pra cobrir uma DIFERENÇA
 estrutural de métrica entre as duas pontas.
+
+## 135. Alcance de ATAQUE virou distância real (Euclidiana) em vez de Chebyshev — diagonal não "estica" mais (14/09/2026)
+
+Continuação direta do §134, mesmo dia. Depois do fix de §134 (cliente
+passou a usar Chebyshev, igual ao servidor), o usuário voltou com uma
+pergunta melhor: "medir a distância de ataques em tiles é ruim pq não é
+a mesma distância em todas as direções, na diagonal a distância é muito
+maior". Confirmado em jogo: a 5 tiles Chebyshev na diagonal (dist REAL
+~7.07 tiles) ainda conseguia lançar Bola de Fogo com cast_range=6 — o
+quadrado Chebyshev sempre foi "maior" que o círculo que o jogador
+enxerga na tela.
+
+**Decisão**: trocar a métrica AUTORITATIVA de alcance de ATAQUE de alvo
+único (skill/auto-attack/torre/minion/mob) de Chebyshev pra Euclidiana
+real em tile — círculo de verdade, sem "esticar" na diagonal. Escopo
+fechado com o usuário via pergunta explícita: SÓ alcance de alvo único,
+NUNCA raio de área (AoE) — Calamidade Flamejante, Canção de Ninar,
+Impacto, Fatiador de Corpos, Brado Provocativo continuam Chebyshev
+(quadrado), decisão consciente de não mexer nisso agora (encolheria a
+área de efeito nas quinas, uma decisão de balanceamento separada).
+
+**Novo ponto único de verdade**: `engine/utils.py::in_range(ax, ay, bx,
+by, max_range) -> bool` — `dx²+dy² <= max_range²` (Euclidiana, sem
+sqrt). `chebyshev()` continua existindo, intocado, pra tudo que é
+movimento/pathing/leash/adjacência/aggro-detecção (fora de escopo).
+
+**EXCEÇÃO deliberada, achada DEPOIS de quebrar testes na 1ª tentativa**:
+alcance melee (`attack_range<=1` — adjacência de 8 direções) continua
+Chebyshev, NUNCA `in_range()`. Motivo: adjacência diagonal tem
+distância REAL ~1.41, que ficaria fora de um `in_range(max_range=1)` —
+trocar cegamente quebraria golpe corpo-a-corpo em 4 das 8 direções
+(regressão real, pega ANTES de commitar, pela suíte + por análise
+manual do próprio código antes de rodar). Todo ponto que decide alcance
+de ataque branch por `is_ranged`/`attack_range<=1`: usa `chebyshev()`
+pra melee, `in_range()` pra ranged de verdade.
+
+**Achado 2, também pego pela suíte antes de commitar**: `MinionSystem.
+_in_range_los` (`engine/world_systems.py`) é uma função COMPARTILHADA
+cujos dois chamadores reais passam `aggro_range_tiles` (raio de
+PERCEPÇÃO/detecção — "vejo esse alvo, vale a pena perseguir?" — não
+"alcance de ataque"), nunca `attack_range_tiles` diretamente. Trocar
+essa função pra Euclidiana quebrou 2 testes de throttle de recálculo de
+rota de minion (`tests/test_minions.py`, geometria do teste desenhada
+em Chebyshev de propósito). Revertido pra Chebyshev — aggro/detecção
+fica FORA do escopo combinado com o usuário (só "alcance de ATAQUE"), o
+gate real de ataque do minion é um código separado (`_minion_atk_ok`,
+mesmo arquivo), esse sim trocado pra Euclidiana com a exceção de melee
+acima.
+
+**Pontos trocados pra `in_range()`** (todos com a exceção de melee onde
+aplicável — ver cada arquivo pro detalhe):
+- `engine/skill_handlers.py::_resolve_target` — gate de alcance de
+  skill, compartilhado cliente+servidor (6 call sites internos).
+- `server/combat_processor.py::_resolve_auto_attack` — auto-attack
+  melee/ranged (branch por `_is_ranged`).
+- `engine/world_systems.py::TowerSystem._in_range_los` — torre sempre
+  ranged, sem exceção de melee.
+- `engine/world_systems.py::MinionSystem` — só o gate REAL de ataque
+  (`_minion_atk_ok`, branch por `is_ranged`); `_in_range_los`
+  (aggro/detecção) ficou de fora, ver achado 2 acima.
+- `engine/world_systems.py::EnemyAISystem` — `in_attack_range` (branch
+  por `ai_control.is_ranged`) e o gerador de tiles candidatos de
+  ataque/kiting (`potential_attack_tiles`, `_do_kiting`) — **precisavam
+  mudar junto com a autoridade**, senão o mob anda até um tile que ERA
+  suficiente pelo Chebyshev mas não é mais pelo círculo real, ficando
+  preso tentando se aproximar pra sempre (mesma classe de bug do §133,
+  causada pela troca de métrica em vez do mínimo de hotbar).
+- `server/world_server.py::_enemy_towers_covering` — réplica da métrica
+  de torre pro dive-gate do bot de BG.
+- `ui/systems.py` — gate de alcance de skill do cliente
+  (`_use_skill_visual_only`, mesma exceção de melee), parada de
+  perseguição do mago (`_mage_skill_in_range`), gate de disparo do
+  arqueiro (`bow_range`), e `_ranged_stop_tile` (destino de onde parar
+  de andar pra usar skill/atirar — reescrito pra escalar pela distância
+  REAL em vez de Chebyshev, mesmo motivo do item EnemyAISystem acima).
+
+**Teste automatizado**: `tests/test_in_range_euclidean_attack.py`
+(novo) — unitários de `in_range()` (reto na borda, diagonal "esticando"
+sob Chebyshev mas fora do círculo real, diagonal dentro do círculo) +
+integração via `HeadlessSkillHandler._resolve_target` reproduzindo o
+cenário exato relatado (Bola de Fogo, cast_range=6, alvo a 5 tiles
+diagonal rejeitado; a 6 tiles reto aceito) + regressão da exceção de
+melee (adjacência diagonal/ortogonal continuam válidas). Suíte completa
+sem regressão (1633 passed, 2 failed pré-existentes/timing flake sem
+relação, mesma família de sempre).
+
+**Lição pra não repetir**: uma métrica de distância nova nunca é "trocar
+uma função por outra" — precisa (1) mapear TODOS os call sites antes de
+tocar em qualquer um (15 arquivos usavam `chebyshev()`, a maioria fora
+de escopo), (2) checar se algum desses call sites tem um caso-limite
+onde a métrica antiga era ESSENCIAL, não incidental (melee/adjacência
+de 8 direções), e (3) atualizar TODO ponto que decide "até onde
+andar/reposicionar" pra ficar consistente com a nova autoridade — uma
+troca de métrica só na decisão final, sem tocar no que decide a
+aproximação, reproduz a mesma classe de bug de "personagem para de
+andar achando que já chegou" só que por um motivo novo.

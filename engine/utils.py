@@ -76,10 +76,34 @@ def bresenham_line_tiles(x0: int, y0: int, x1: int, y1: int) -> list[tuple[int, 
 def chebyshev(ax: int, ay: int, bx: int, by: int) -> int:
     """Distância de Chebyshev (máximo entre delta-x e delta-y).
 
-    Usada para distâncias em grade de 8 direções (tiles).
+    Usada para distâncias em grade de 8 direções (tiles) — MOVIMENTO/
+    pathing/leash/adjacência/spawn (diagonal custa o mesmo passo que
+    reto, sem penalidade de √2). NUNCA usar pra decidir alcance de
+    ATAQUE (skill/auto-attack/torre/minion/mob) — ver `in_range()`
+    abaixo, ponto único pra isso (14/09/2026, ver
+    PROBLEMAS_ARQUITETURA.md §135).
     chebyshev(1,1, 3,2) == 2  (diagonal conta como 1)
     """
     return max(abs(ax - bx), abs(ay - by))
+
+
+def in_range(ax: int, ay: int, bx: int, by: int, max_range: float) -> bool:
+    """Alcance de ATAQUE de alvo único (skill/auto-attack/torre/minion/
+    mob) — distância REAL (Euclidiana) em tile, círculo de verdade, NUNCA
+    Chebyshev (que conta diagonal igual a reto e faz o alcance "esticar"
+    ~41% na diagonal pro mesmo número de tiles — bug real relatado pelo
+    usuário, 14/09/2026, ver PROBLEMAS_ARQUITETURA.md §135). Ponto único
+    de verdade pra esse tipo de decisão — qualquer checagem nova de
+    "alvo X está a alcance de ataque Y" usa isto, nunca `chebyshev()`
+    nem uma comparação de distância ao quadrado feita na mão.
+
+    Compara distância AO QUADRADO (sem sqrt) — mesma decisão, mais
+    barato. `max_range` em tiles (pode ser float, ex: alcance derivado
+    de item/talento).
+    """
+    dx = ax - bx
+    dy = ay - by
+    return dx * dx + dy * dy <= max_range * max_range
 
 
 _VERTICAL_FACING_HALF_ANGLE_DEG = 20.0

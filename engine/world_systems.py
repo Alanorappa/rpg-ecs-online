@@ -41,7 +41,7 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        AoeTargeting, RemoteControlled, GhostState, MapLocation, Combatant, Tower, Minion
 from engine.world import World
 from engine.tileset import TILE_SIZE, OBJECT_MAPPING, get_collision_offsets
-from engine.utils import chebyshev, start_tile_movement, is_action_locked, is_movement_locked, SpatialHash
+from engine.utils import chebyshev, in_range, start_tile_movement, is_action_locked, is_movement_locked, SpatialHash
 from content.tower_definitions import TOWER_TABLE
 from engine.damage_calculator import resolve_attack_outcome, calculate_base_damage, mob_dot_tick_damage
 from ui.combat_log import LOG
@@ -1713,7 +1713,9 @@ class TowerSystem:
                       cand_pos: Position, tilemap_comp) -> bool:
         tx0, ty0 = int(tower_pos.x // TILE_SIZE), int(tower_pos.y // TILE_SIZE)
         tx1, ty1 = int(cand_pos.x // TILE_SIZE), int(cand_pos.y // TILE_SIZE)
-        if chebyshev(tx0, ty0, tx1, ty1) > tower.attack_range_tiles:
+        # Alcance de ataque usa in_range() (Euclidiana, círculo de verdade),
+        # não chebyshev() — 14/09/2026, ver PROBLEMAS_ARQUITETURA.md §135.
+        if not in_range(tx0, ty0, tx1, ty1, tower.attack_range_tiles):
             return False
         if tilemap_comp is not None and not EnemyAISystem._has_line_of_sight(
                 tilemap_comp, tx0, ty0, tx1, ty1):
@@ -2092,6 +2094,14 @@ class MinionSystem:
 
     def _in_range_los(self, minion_pos: Position, cand_pos: Position,
                       range_tiles: int, tilemap_comp) -> bool:
+        """NUNCA usa in_range()/Euclidiana aqui — os dois chamadores passam
+        `aggro_range_tiles` (raio de PERCEPÇÃO/detecção, não de ataque; ver
+        `content/minion_definitions.py`), fora do escopo da troca pra
+        distância real (14/09/2026, ver PROBLEMAS_ARQUITETURA.md §135 — só
+        alcance de ATAQUE virou círculo, aggro/detecção continua quadrado
+        Chebyshev, decisão explícita do usuário). O gate real de ATAQUE do
+        minion é outro código, mais abaixo neste arquivo (`_minion_atk_ok`),
+        já corrigido separadamente."""
         tx0, ty0 = int(minion_pos.x // TILE_SIZE), int(minion_pos.y // TILE_SIZE)
         tx1, ty1 = int(cand_pos.x // TILE_SIZE), int(cand_pos.y // TILE_SIZE)
         if chebyshev(tx0, ty0, tx1, ty1) > range_tiles:
@@ -2431,7 +2441,13 @@ class MinionSystem:
                     ty0 = int(minion_pos.y // TILE_SIZE)
                     tx1 = int(tgt_pos.x // TILE_SIZE)
                     ty1 = int(tgt_pos.y // TILE_SIZE)
-                    if chebyshev(tx0, ty0, tx1, ty1) <= minion.attack_range_tiles:
+                    # in_range() (Euclidiana) pra ranged, chebyshev() (8
+                    # direções) pra melee — mesma exceção de adjacência de
+                    # `_atk_in_range`/`_in_range_los` acima, ver §135.
+                    _minion_atk_ok = (in_range(tx0, ty0, tx1, ty1, minion.attack_range_tiles)
+                                      if is_ranged else
+                                      chebyshev(tx0, ty0, tx1, ty1) <= minion.attack_range_tiles)
+                    if _minion_atk_ok:
                         if minion.attack_cd <= 0:
                             self._attack(minion_eid, minion, cs, is_ranged)
                     elif not _minion_rooted:
@@ -3565,10 +3581,20 @@ class EnemyAISystem(System):
             # adjacente (comportamento pré-existente, ver comentário acima
             # sobre a regressão de test_server.py — não mexer nisso pra
             # facção hostil).
+            # Alcance de ataque usa in_range() (Euclidiana) pra mob ranged,
+            # chebyshev() (8 direções) pra melee — mesma exceção de
+            # adjacência já aplicada em Tower/Minion/skill, ver §135.
+            _mob_atk_in_range = (
+                in_range(enemy_current_tile_x, enemy_current_tile_y,
+                         player_current_tile_x, player_current_tile_y,
+                         ai_control.attack_range_tiles)
+                if ai_control.is_ranged else
+                1 <= chebyshev_dist_to_player <= ai_control.attack_range_tiles
+            )
             in_attack_range = (
                 not_same_tile and
                 ai_control.state != "RETURNING" and
-                1 <= chebyshev_dist_to_player <= ai_control.attack_range_tiles and
+                _mob_atk_in_range and
                 (ai_control.state != "IDLE"
                  or is_hostile(self.world, enemy_id, ai_control.target_eid))
             )
@@ -3909,11 +3935,18 @@ class EnemyAISystem(System):
                             
                             chebyshev_dist_from_target_to_player = max(dist_x_to_player, dist_y_to_player)
 
+                            # Precisa ficar consistente com o gate real de ataque
+                            # (in_attack_range, acima) — senão o mob anda até um
+                            # tile que ERA suficiente pelo Chebyshev mas não é
+                            # mais pelo círculo real (Euclidiana), ficando preso
+                            # tentando se aproximar pra sempre. Ver §135.
                             is_in_desired_range = False
                             if ai_control.attack_range_tiles == 1 and chebyshev_dist_from_target_to_player == 1:
                                 is_in_desired_range = True
-                            elif ai_control.attack_range_tiles > 1 and \
-                                 0 < chebyshev_dist_from_target_to_player <= ai_control.attack_range_tiles:
+                            elif ai_control.attack_range_tiles > 1 and chebyshev_dist_from_target_to_player > 0 and \
+                                 in_range(target_tile_around_player_x, target_tile_around_player_y,
+                                          player_current_tile_x, player_current_tile_y,
+                                          ai_control.attack_range_tiles):
                                 is_in_desired_range = True
 
 
@@ -4174,8 +4207,16 @@ class EnemyAISystem(System):
                         continue
                     if tilemap_comp.tile_matrix[ty][tx].is_solid:
                         continue
-                    cdist = chebyshev(tx, ty, px, py)
-                    if cdist != attack_range:
+                    # Anel de tiles bem na borda do alcance (Euclidiana, círculo
+                    # de verdade — mesma métrica do gate real de ataque, ver
+                    # §135): dentro de attack_range mas fora de attack_range-1.
+                    # NUNCA chebyshev()==attack_range aqui — isso incluiria
+                    # quinas diagonais com distância real bem maior que
+                    # attack_range, fazendo o mob kitar pra fora do próprio
+                    # alcance de ataque.
+                    if not in_range(tx, ty, px, py, attack_range):
+                        continue
+                    if attack_range > 1 and in_range(tx, ty, px, py, attack_range - 1):
                         continue
                     if (tx, ty) in all_occupied_tiles and (tx, ty) != current_tile:
                         continue

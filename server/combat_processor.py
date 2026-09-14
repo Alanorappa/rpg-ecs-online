@@ -67,7 +67,7 @@ class CombatProcessorMixin:
         já processados)."""
         from engine.world_systems import deal_damage
         from engine.components import CombatState, Equipment, CharacterStats, PlayerSkills
-        from engine.utils import chebyshev
+        from engine.utils import chebyshev, in_range
         from debug.archer_debug import ADBG_SERVER
 
         attacker_cst = self.world.get_component(attacker_eid, CombatState)
@@ -113,8 +113,18 @@ class CombatProcessorMixin:
         _t_tx = getattr(target_tm,   "server_tile_x", 0) or target_tm.current_tile_x
         _t_ty = getattr(target_tm,   "server_tile_y", 0) or target_tm.current_tile_y
 
-        dist = chebyshev(_a_tx, _a_ty, _t_tx, _t_ty)
-        if dist > attack_range:
+        dist = chebyshev(_a_tx, _a_ty, _t_tx, _t_ty)  # melee usa isto; ranged só loga
+        # Alcance de ataque RANGED (arco) usa in_range() — Euclidiana em
+        # tile, círculo de verdade — NUNCA chebyshev() (que conta diagonal
+        # igual a reto, "esticando" o alcance na diagonal), 14/09/2026, ver
+        # PROBLEMAS_ARQUITETURA.md §135. MELEE continua em chebyshev() de
+        # propósito: adjacência de 8 direções (attack_range=1) precisa
+        # aceitar diagonal IGUAL a reto — com Euclidiana, diagonal
+        # adjacente (dist real ~1.41) ficaria fora de um alcance=1,
+        # quebrando ataque corpo-a-corpo em 4 das 8 direções.
+        _melee_out_of_range = not _is_ranged and dist > attack_range
+        _ranged_out_of_range = _is_ranged and not in_range(_a_tx, _a_ty, _t_tx, _t_ty, attack_range)
+        if _melee_out_of_range or _ranged_out_of_range:
             if _is_ranged:
                 ADBG_SERVER.log_block(attacker_eid, target_eid, "out_of_range",
                                       dist=dist, attack_range=attack_range)

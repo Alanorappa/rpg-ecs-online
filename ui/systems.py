@@ -35,7 +35,7 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        AoeTargeting, RemoteControlled, GhostState, MapLocation, Minion
 from engine.world import World
 from engine.tileset import TILE_SIZE, OBJECT_MAPPING
-from engine.utils import chebyshev, start_tile_movement
+from engine.utils import chebyshev, in_range, start_tile_movement
 from engine.damage_calculator import resolve_attack_outcome, calculate_base_damage
 from ui.combat_log import LOG
 from ui.sound_manager import SOUNDS
@@ -931,6 +931,12 @@ class PlayerInputSystem(System):
             # clique direito/Espaço) — garante que pelo menos alguma
             # ofensiva já esteja em alcance nesse caso.
             pursuit_range = combat_state.pursuit_skill_range or self._mage_attack_range(entity_id)
+            # pursuit_range é sempre alcance de skill (ranged, >1 tile) —
+            # usa in_range() (Euclidiana), igual ao gate real do servidor
+            # (SkillHandlers._resolve_target), não chebyshev() (dist,
+            # calculado acima só pra este fim). Ver §135. dist_attack
+            # (melee/adjacência) continua chebyshev(), sem mudança.
+            _mage_skill_in_range = in_range(pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, pursuit_range)
             if dist_attack <= self.PLAYER_ATTACK_RANGE:
                 # Adjacente: melee idêntico ao guerreiro (sem geração de Raiva)
                 if auto_move:
@@ -947,7 +953,7 @@ class PlayerInputSystem(System):
                         combat_state.pursuit_skill_range = 0
                         if auto_move:
                             auto_move.active = False
-            elif dist <= pursuit_range:
+            elif _mage_skill_in_range:
                 # Dentro do alcance de skill: para e aguarda cast manual
                 if auto_move:
                     auto_move.path.clear()
@@ -1077,7 +1083,11 @@ class PlayerInputSystem(System):
 
         _PRE_DRAW_THRESHOLD = 1.0   # segundos antes do disparo para tocar o nock
 
-        if dist <= bow_range:
+        # in_range() (Euclidiana), igual ao gate real do servidor
+        # (server/combat_processor.py::_resolve_auto_attack pro arco) — não
+        # chebyshev() (`dist`, ainda usado abaixo só como fallback de
+        # dist_attack). Ver §135.
+        if in_range(pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, bow_range):
             # Limpa perseguição apenas quando não há ground_target — se houver,
             # _process_ground_move cuida do movimento e active deve permanecer True.
             if auto_move and not auto_move.ground_target:
@@ -1154,13 +1164,23 @@ class PlayerInputSystem(System):
 
     def _ranged_stop_tile(self, pl_x: int, pl_y: int,
                           tgt_x: int, tgt_y: int, attack_range: int) -> tuple:
-        """Tile de parada para ranged: (attack_range-1) tiles do alvo na direção do player."""
+        """Tile de parada para ranged: (attack_range-1) tiles REAIS (Euclidiana)
+        do alvo, na direção do player.
+
+        Escala pela distância REAL (√(dx²+dy²)), não Chebyshev — precisa ficar
+        consistente com o gate de alcance autoritativo (in_range(), círculo de
+        verdade, ver §135). Escalar por Chebyshev fazia o destino, numa
+        aproximação diagonal, pousar numa distância REAL de até attack_range×√2
+        do alvo — o personagem parava de andar "achando" que já tinha
+        chegado, mas o servidor (e o check de skill do próprio cliente)
+        considerava fora de alcance.
+        """
         dx = pl_x - tgt_x
         dy = pl_y - tgt_y
-        cheb = max(abs(dx), abs(dy))
-        if cheb == 0:
+        real_dist = math.sqrt(dx * dx + dy * dy)
+        if real_dist == 0:
             return (pl_x, pl_y)
-        ratio = (attack_range - 1) / cheb
+        ratio = (attack_range - 1) / real_dist
         return (tgt_x + int(round(dx * ratio)), tgt_y + int(round(dy * ratio)))
 
     def _auto_move_step(self, entity_id, position, tile_movement,
@@ -4596,24 +4616,30 @@ class SkillSystem(System, SkillHandlers):
                                                      __import__("engine.components", fromlist=["Position"]).Position)
                 _tgt_pos = self.world.get_component(_target_local,
                                                      __import__("engine.components", fromlist=["Position"]).Position)
-                # Chebyshev em tile, igual ao check autoritativo do servidor
-                # (SkillHandlers._resolve_target, engine/skill_handlers.py) —
-                # NUNCA Euclidiana em pixel aqui. Diagonal e reto contam igual
-                # (mesmo custo de passo no movimento em tile), então medir a
-                # distância "de verdade" em pixel fazia a diagonal parecer mais
-                # longe do que o servidor considerava — cliente rejeitava
-                # ("Fora de alcance") um alvo que o servidor aceitaria, ou o
-                # inverso, dependendo da direção (bug real relatado pelo
-                # usuário, 14/09/2026, ver PROBLEMAS_ARQUITETURA.md).
+                # Mesma métrica do check autoritativo do servidor
+                # (SkillHandlers._resolve_target, engine/skill_handlers.py):
+                # in_range() (Euclidiana em tile, círculo de verdade) pra
+                # alcance ranged de verdade (>1 tile); chebyshev() (8
+                # direções) só pra adjacência melee (_max_range_tiles<=1) —
+                # diagonal precisa contar igual a reto NESSE caso, senão
+                # golpe corpo-a-corpo quebra em 4 das 8 direções. NUNCA
+                # Euclidiana em PIXEL contínuo aqui (bug real relatado pelo
+                # usuário, 14/09/2026, ver PROBLEMAS_ARQUITETURA.md §134/§135).
                 _tgt_tm = self.world.get_component(_target_local,
                                                     __import__("engine.components", fromlist=["TileMovement"]).TileMovement)
                 if _tile_move_sk and _tgt_tm and _pl_pos and _tgt_pos:
-                    _dist_tiles = chebyshev(_tile_move_sk.current_tile_x, _tile_move_sk.current_tile_y,
-                                             _tgt_tm.current_tile_x, _tgt_tm.current_tile_y)
-                    if _dist_tiles > _max_range_tiles:
+                    if _max_range_tiles <= 1:
+                        _atk_ok = chebyshev(_tile_move_sk.current_tile_x, _tile_move_sk.current_tile_y,
+                                             _tgt_tm.current_tile_x, _tgt_tm.current_tile_y) <= _max_range_tiles
+                    else:
+                        _atk_ok = in_range(_tile_move_sk.current_tile_x, _tile_move_sk.current_tile_y,
+                                            _tgt_tm.current_tile_x, _tgt_tm.current_tile_y, _max_range_tiles)
+                    if not _atk_ok:
                         WARN.add("Fora de alcance")
                         return False
-                    if _min_range_tiles > 0 and _dist_tiles < _min_range_tiles:
+                    if _min_range_tiles > 0 and in_range(_tile_move_sk.current_tile_x, _tile_move_sk.current_tile_y,
+                                                          _tgt_tm.current_tile_x, _tgt_tm.current_tile_y,
+                                                          _min_range_tiles - 1):
                         WARN.add("Alvo muito próximo")
                         return False
                     # LOS check para skills com projétil: bloqueia se há parede no caminho.

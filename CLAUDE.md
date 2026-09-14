@@ -708,20 +708,33 @@ padrão a quebrar, não só os bugs individuais.
   skill de mira curta na hotbar fazia o personagem parar de andar cedo
   demais mesmo tentando usar uma skill de alcance maior. Ver
   PROBLEMAS_ARQUITETURA.md §133.
-- **Check de alcance de skill (cliente preditivo vs. servidor
-  autoritativo) usa SEMPRE a mesma métrica de distância — Chebyshev em
-  tile (`engine.utils.chebyshev`, `TileMovement.current_tile_x/y`),
-  nunca Euclidiana em pixel** — `SkillHandlers._resolve_target`
-  (`engine/skill_handlers.py`, autoritativo) e
-  `PlayerInputSystem._use_skill_visual_only` (`ui/systems.py`,
-  preditivo) precisam concordar. Diagonal e reto custam o mesmo 1 passo
-  no movimento em tile deste jogo (sem penalidade de `√2`) — medir
-  Euclidiana em pixel faz a diagonal "parecer" mais longe do que o
-  servidor considera, rejeitando no cliente ("Fora de alcance") um alvo
-  que o servidor aceitaria, ou o inverso perto da borda reta (bug real,
-  14/09/2026, ver PROBLEMAS_ARQUITETURA.md §134). Tolerância de rede/
-  animação (`RANGE_TOLERANCE_PX`) cobre lag, nunca serve pra "converter"
-  entre duas métricas estruturalmente diferentes.
+- **Alcance de ATAQUE de alvo único (skill/auto-attack/torre/minion/
+  mob)** → `engine.utils.in_range(ax, ay, bx, by, max_range)` —
+  Euclidiana em tile (`dx²+dy² <= max_range²`, círculo de verdade),
+  NUNCA `chebyshev()` (que conta diagonal igual a reto e "estica" o
+  alcance ~41% na diagonal pro mesmo número — bug real relatado pelo
+  usuário, 14/09/2026, ver PROBLEMAS_ARQUITETURA.md §134/§135).
+  **EXCEÇÃO obrigatória: alcance melee (`attack_range<=1`, adjacência de
+  8 direções) continua `chebyshev()`** — diagonal adjacente tem
+  distância real ~1.41, ficaria fora de `in_range(max_range=1)` e
+  quebraria golpe corpo-a-corpo em 4 das 8 direções (regressão real,
+  pega antes de commitar). `chebyshev()` continua o certo pra
+  movimento/pathing/leash/adjacência/aggro-detecção (`MinionSystem.
+  _in_range_los` usa `aggro_range_tiles` — raio de PERCEPÇÃO, não de
+  ataque — NUNCA trocar pra `in_range()` aí, quebra
+  `tests/test_minions.py`, geometria desenhada em Chebyshev de
+  propósito). Raio de ÁREA (AoE — Calamidade Flamejante, Canção de
+  Ninar, Impacto, Fatiador, Brado Provocativo) fica de fora de
+  propósito, continua Chebyshev — decisão explícita do usuário de não
+  encolher essas áreas nas quinas por enquanto. **Cliente preditivo e
+  servidor autoritativo (e qualquer código que decide "até onde
+  andar/reposicionar" pra ficar em alcance — chase do mago,
+  `_ranged_stop_tile`, kiting de mob) precisam usar a MESMA métrica**:
+  `SkillHandlers._resolve_target`/`_use_skill_visual_only` (skill),
+  `combat_processor._resolve_auto_attack` (auto-attack),
+  `TowerSystem`/`MinionSystem`/`EnemyAISystem` (torre/minion/mob) — ver
+  PROBLEMAS_ARQUITETURA.md §135 pra lista completa e a lição de mapear
+  TODOS os call sites antes de trocar qualquer um.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

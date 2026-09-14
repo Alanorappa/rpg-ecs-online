@@ -1252,13 +1252,15 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def _enemy_towers_covering(self, map_file: str, tile: tuple, my_faction_id: str) -> list:
         """Torres INIMIGAS (Faction != `my_faction_id`) cujo alcance de
-        ataque cobre `tile` — mesma métrica (Chebyshev ≤
+        ataque cobre `tile` — mesma métrica (in_range Euclidiana ≤
         `attack_range_tiles`) que `TowerSystem._in_range_los` já usa
-        (`engine/world_systems.py`), só lendo componentes direto (mesmo
+        (`engine/world_systems.py`, 14/09/2026, ver
+        PROBLEMAS_ARQUITETURA.md §135), só lendo componentes direto (mesmo
         padrão de `_get_tower_tiles_for_map`, nunca chama `TowerSystem`).
         Usado pelo dive-gate do bot (16/08/2026, pedido do usuário)."""
         from engine.components import Tower as _TwrCov, Position as _PosCov, \
             MapLocation as _MLCov, Faction as _FacCov
+        from engine.utils import in_range as _in_range_cov
         tx, ty = tile
         result: list = []
         for eid, twr, pos, ml, fac in self.world.get_entities_with(
@@ -1266,7 +1268,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             if ml.map_file != map_file or fac.faction_id == my_faction_id:
                 continue
             ttx, tty = int(pos.x // TILE_SIZE), int(pos.y // TILE_SIZE)
-            if max(abs(tx - ttx), abs(ty - tty)) <= twr.attack_range_tiles:
+            if _in_range_cov(tx, ty, ttx, tty, twr.attack_range_tiles):
                 result.append(eid)
         return result
 
