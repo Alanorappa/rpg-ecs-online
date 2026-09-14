@@ -544,8 +544,8 @@ class CombatState:
         # mínimo entre TODAS as skills da hotbar, `_mage_attack_range`,
         # ui/systems.py). Setado em `_use_skill_visual_only` no mesmo
         # ponto em que o range check roda (mesmo valor, `_max_range_tiles`)
-        # — mago que aperta Bola de Fogo (cast_range 7) passa a perseguir
-        # até 7, mesmo com Calamidade Flamejante (cast_range 3, mira mais
+        # — mago que aperta Bola de Fogo (cast_range 6) passa a perseguir
+        # até 6, mesmo com Calamidade Flamejante (cast_range 3, mira mais
         # curta) na hotbar; antes o mínimo global fazia QUALQUER skill
         # parar de perseguir na distância da skill de menor alcance
         # equipada (bug real relatado pelo usuário, 14/09/2026 — "a bola

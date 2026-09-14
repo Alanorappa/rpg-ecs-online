@@ -93,10 +93,10 @@ TOWER_TABLE: dict[str, dict] = {
             "acerto": 100, 
             "crit_chance": 5,
         },
-        # reduzido de 8 pra 7 (14/09/2026, decisão do usuário — mesmo
-        # nivelamento de alcance de ranged em geral nesta sessão. 1º
-        # ajuste tinha ido pra 5, subiu de volta pra 7 no mesmo dia).
-        "attack_range_tiles": 7,
+        # nivelado em 6 (14/09/2026, decisão do usuário — mesmo nivelamento
+        # de alcance de ranged em geral nesta sessão. Passou por 8→5→7→6 —
+        # 7 media 6 tiles LIVRES até o alvo, não 5 como pretendido).
+        "attack_range_tiles": 6,
         "vision_radius_tiles": 8,
         "xp_reward": 250,
         # Rebalance de economia da BG (16/08/2026, pedido do usuário) —
@@ -135,10 +135,10 @@ TOWER_TABLE: dict[str, dict] = {
             "acerto": 100, 
             "crit_chance": 10,
         },
-        # reduzido de 8 pra 7 (14/09/2026, decisão do usuário — mesmo
-        # nivelamento de alcance de ranged em geral nesta sessão. 1º
-        # ajuste tinha ido pra 5, subiu de volta pra 7 no mesmo dia).
-        "attack_range_tiles": 7,
+        # nivelado em 6 (14/09/2026, decisão do usuário — mesmo nivelamento
+        # de alcance de ranged em geral nesta sessão. Passou por 8→5→7→6 —
+        # 7 media 6 tiles LIVRES até o alvo, não 5 como pretendido).
+        "attack_range_tiles": 6,
         "vision_radius_tiles": 8,
         "xp_reward": 250,
         "gold_min": 80,  # rebalance 16/08/2026 — ver torre_de_fogo acima

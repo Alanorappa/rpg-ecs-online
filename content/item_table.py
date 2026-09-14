@@ -169,29 +169,29 @@ _RAW_ITEMS = {
         damage_min=1, damage_max=6, attack_speed=2.6, two_handed=True, subtype="Axe"),
 
     # ── Bows (arqueiro) ───────────────────────────────────────────────────────
-    # cast_range dos 3 arcos nivelado em 7 (14/09/2026, decisão do usuário —
+    # cast_range dos 3 arcos nivelado em 6 (14/09/2026, decisão do usuário —
     # alcance de ranged em geral estava grande demais; era 7/8/9, progredindo
-    # com a raridade. 1º ajuste tinha ido pra 5, mas o usuário percebeu que a
-    # distância JOGÁVEL real fica visivelmente menor que o número puro de
-    # tiles — subiu de volta pra 7 no mesmo dia. Dano/crit continuam
-    # diferenciando os arcos, alcance não).
+    # com a raridade. Passou por 5→7→6 no mesmo dia: cast_range=7 media 6
+    # tiles LIVRES até o alvo em jogo, não 5 como pretendido (fórmula real é
+    # cast_range-1 = tiles livres). Dano/crit continuam diferenciando os
+    # arcos, alcance não).
     "short_bow": lambda: Item(
         "Arco Curto", "weapon", "mainhand",
         modifiers=[],
         rarity="common", value=20,
-        damage_min=5, damage_max=25, attack_speed=2.1, subtype="Bow", cast_range=7),
+        damage_min=5, damage_max=25, attack_speed=2.1, subtype="Bow", cast_range=6),
 
     "hunter_bow": lambda: Item(
         "Arco do Caçador", "weapon", "mainhand",
         modifiers=[Modifier("crit_rating", 0.01)],
         rarity="uncommon", value=38,
-        damage_min=6, damage_max=31, attack_speed=2.0, subtype="Bow", cast_range=7),
+        damage_min=6, damage_max=31, attack_speed=2.0, subtype="Bow", cast_range=6),
 
     "elven_bow": lambda: Item(
         "Arco Élfico", "weapon", "mainhand",
         modifiers=[Modifier("agility", 1), Modifier("crit_rating", 0.01), Modifier("attack_power", 3)],
         rarity="rare", value=95,
-        damage_min=12, damage_max=42, attack_speed=1.6, subtype="Bow", cast_range=7),
+        damage_min=12, damage_max=42, attack_speed=1.6, subtype="Bow", cast_range=6),
 
     # ── Quivers (arqueiro off-hand) ────────────────────────────────────────────
     "basic_quiver": lambda: Item(

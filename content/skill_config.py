@@ -182,11 +182,11 @@ SKILL_CATALOG: dict[str, dict] = {
         "cooldown":          0.0,
         "mana_cost":         25,
         "cast_time":         1.5,
-        # cast_range reduzido de 6 pra 7 (14/09/2026, decisão do usuário —
-        # mesmo nivelamento das skills de alvo único do arqueiro; 1º ajuste
-        # tinha ido pra 5, subiu de volta pra 7 no mesmo dia — distância
-        # JOGÁVEL real de 5 tiles é menor do que o número sozinho sugere).
-        "cast_range":        7,
+        # cast_range nivelado em 6 (14/09/2026, decisão do usuário — mesmo
+        # nivelamento das skills de alvo único do arqueiro; passou por 6→5→7
+        # antes de fechar em 6: 7 media 6 tiles LIVRES até o alvo, não 5
+        # como pretendido — fórmula real é cast_range-1 = tiles livres).
+        "cast_range":        6,
         "interruptible":     True,
         "dmg_weapon_pct":    0.5,
         "dmg_sp_coeff":      1.0,
@@ -289,10 +289,10 @@ SKILL_CATALOG: dict[str, dict] = {
         "cooldown":         0.0,
         "mana_cost":        25,
         "cast_time":        0.6,
-        # cast_range reduzido de 8 pra 7 (14/09/2026, decisão do usuário —
-        # mesmo nivelamento das outras skills de alvo único; 1º ajuste
-        # tinha ido pra 5, subiu de volta pra 7 no mesmo dia).
-        "cast_range":       7,
+        # cast_range nivelado em 6 (14/09/2026, decisão do usuário — mesmo
+        # nivelamento das outras skills de alvo único; passou por 8→5→7→6 —
+        # 7 media 6 tiles LIVRES até o alvo, não 5 como pretendido).
+        "cast_range":       6,
         "interruptible":          False,
         "base_dmg":               50,
         "dmg_sp_coeff":           0.25,
@@ -319,15 +319,15 @@ SKILL_CATALOG: dict[str, dict] = {
     },
 
     # ── Arqueiro ─────────────────────────────────────────────────────────────
-    # cast_range das skills de alvo único nivelado em 7 (14/09/2026, decisão
+    # cast_range das skills de alvo único nivelado em 6 (14/09/2026, decisão
     # do usuário — era 8 pra tiro_repulsivo/picada_escorpiao/flecha_reiterada,
-    # mesmo alcance dos arcos, ver content/item_table.py). 1º ajuste do dia
-    # tinha ido pra 5 — usuário testou em jogo e achou a distância JOGÁVEL
-    # real menor do que o número de tiles sugeria (a leitura de "5" não bate
-    # com "5 tiles livres até o alvo"), subiu de volta pra 7 no mesmo dia.
-    # Tiro Múltiplo (cone, range_tiles=12) e Canção de Ninar (raio 5 EM VOLTA
-    # do próprio arqueiro, não alcance até um alvo) ficaram de fora de
-    # propósito — decisão explícita do usuário de não tocar nesses dois.
+    # mesmo alcance dos arcos, ver content/item_table.py). Passou por 8→5→7
+    # antes de fechar em 6: cast_range=7 mediu 6 tiles LIVRES até o alvo em
+    # jogo, não 5 como pretendido (fórmula real é cast_range-1 = tiles
+    # livres, não cast_range-2 como assumido no ajuste 5→7). Tiro Múltiplo
+    # (cone, range_tiles=12) e Canção de Ninar (raio 5 EM VOLTA do próprio
+    # arqueiro, não alcance até um alvo) ficaram de fora de propósito —
+    # decisão explícita do usuário de não tocar nesses dois.
     "tiro_multiplo": {
         "name":      "Tiro Múltiplo",
         "desc":      "Dispara flechas em cone de 90° na direção do mouse. 1pt=2 alvos, 2pt=3 alvos, 3pt=ilimitado.",
@@ -366,7 +366,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "desc":      "Repele o alvo 5 tiles na direção oposta. Colisão com parede = stun 3s. 100% arma + 150% AP. 100 Concentração.",
         "cooldown":  45.0,
         "cast_time": 2.5,
-        "cast_range": 7,
+        "cast_range": 6,
         "class_id":  "arqueiro",
         "offensive": True,
         "effects":   {
@@ -429,7 +429,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "desc":      "Flecha precisa: dano da arma + 50% AP. Aplica slow 30% por 3s. 20 Concentração.",
         "cooldown":  5.0,
         "cast_time": 0.8,
-        "cast_range": 7,
+        "cast_range": 6,
         "class_id":  "arqueiro",
         "offensive": True,
         "effects":   {
@@ -451,7 +451,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "desc":      "Dispara 2 flechas em sequência. Requer arco + aljava. 80 Concentração.",
         "cooldown":  12.0,
         "cast_time": 2.0,
-        "cast_range": 7,
+        "cast_range": 6,
         "class_id":  "arqueiro",
         "offensive": True,
         "effects":   {
