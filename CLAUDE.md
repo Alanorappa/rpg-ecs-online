@@ -735,6 +735,23 @@ padrão a quebrar, não só os bugs individuais.
   `TowerSystem`/`MinionSystem`/`EnemyAISystem` (torre/minion/mob) — ver
   PROBLEMAS_ARQUITETURA.md §135 pra lista completa e a lição de mapear
   TODOS os call sites antes de trocar qualquer um.
+- **`TalentTree.allocated` recebido via rede (`talent_allocated` no
+  payload de STATS_UPDATE, emitido só por `server/
+  instance_progression.py::enter_/exit_normalized_progression`)
+  precisa chamar `self._talent_system.apply_talent_effects()`
+  (`ui/talent_system.py`) logo depois de trocar o dict — NUNCA só
+  `_tt_alloc.allocated = dict(payload[...])` sozinho.** `allocated` é
+  dado bruto; `cs_flags` comportamentais (ex: `ice_cast_time_reduction`
+  de Precisão Elemental), modifiers de atributo e skills desbloqueadas
+  por talento só existem de verdade depois de `apply_talent_effects()`
+  rodar — fora da instância isso sempre acontece junto (roda no mesmo
+  clique que aloca um ponto), então o gap só aparece nesse ÚNICO ponto
+  de entrada alternativo (sync de rede). Bug real: Nova Congelante
+  continuava com 1s de cast visível dentro da BG mesmo com Precisão
+  Elemental maxada pela normalização de instância — o servidor sempre
+  recalculou certo (efeito real disparava na hora), só a barra de cast
+  do CLIENTE ficava presa no valor de fora da instância. Ver
+  PROBLEMAS_ARQUITETURA.md §136.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

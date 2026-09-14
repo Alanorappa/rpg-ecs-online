@@ -17913,3 +17913,66 @@ andar/reposicionar" pra ficar consistente com a nova autoridade — uma
 troca de métrica só na decisão final, sem tocar no que decide a
 aproximação, reproduz a mesma classe de bug de "personagem para de
 andar achando que já chegou" só que por um motivo novo.
+
+## 136. Nova Congelante com cast dentro da BG mesmo com Precisão Elemental maxada — `talent_allocated` só trocava o dict, nunca reaplicava os efeitos (14/09/2026)
+
+Usuário relatou: dentro da BG (onde `server/instance_progression.py::
+enter_normalized_progression` aloca TODOS os talentos no máximo pra
+todo mundo), Nova Congelante devia ser instantânea (Precisão Elemental
+maxada = -1.0s de cast, zerando o 1.0s base) mas continuava mostrando
+cast — "o som é emitido no momento que aperta a skill e depois do cast
+[que não era pra acontecer]". Fora da BG, funcionava perfeitamente.
+
+**Causa raiz**: `client/network_handlers.py::_handle_msg_stats_update`
+recebe o campo `talent_allocated` (emitido por `instance_progression.
+py::_push_stats_update`, ver docstring dessa função — mecanismo já
+existia desde 02/08/2026 especificamente pra sincronizar a árvore de
+talentos da instância pro cliente) e fazia só `_tt_alloc.allocated =
+dict(payload["talent_allocated"])` — trocava o DICT, mas nunca chamava
+`ui.talent_system.TalentSystem.apply_talent_effects()`, a ÚNICA função
+que recalcula os `cs_flags` comportamentais (`ice_cast_time_reduction`
+entre outros, e também modifiers de atributo + skills desbloqueadas por
+talento) a partir de `TalentTree.allocated`. Fora da instância, isso
+nunca aparecia como bug porque `apply_talent_effects()` SEMPRE é
+chamada no mesmo lugar que aloca um ponto (`ui/talent_system.py`,
+handle_events) — o gap só existia nesse ÚNICO ponto de entrada
+alternativo (sync de rede, não ação do jogador).
+
+O SERVIDOR nunca teve esse bug: `WorldServer._apply_talent_modifiers`
+(chamado por `enter_normalized_progression` na mesma função que monta
+`new_tt.allocated`) sempre recalculou `CombatStats.ice_cast_time_reduction`
+certo — por isso a skill em si (o efeito real, resolvido
+server-side) já completava instantaneamente, e o SOM (disparado pela
+confirmação do servidor) tocava na hora certa. O que ficava "grudado"
+era só a barra de cast VISUAL do cliente (`ui/systems.py::
+_use_skill_visual_only`, que lê `CombatStats.ice_cast_time_reduction`
+LOCAL pra decidir se cria um `SpellCast` visual com barra) — o valor
+local nunca saía de 0.0 (o real, de fora da instância), então o
+cliente sempre desenhava 1s de cast, mesmo a skill já tendo resolvido.
+
+**Fix**: `_handle_msg_stats_update` chama `self._talent_system.
+apply_talent_effects()` (mesmo padrão já usado em `client/
+save_sync_handlers.py::apply_save_state`, `try/except` porque
+`_talent_system` pode não existir em todo fixture/contexto) logo depois
+de trocar `tt.allocated`. Como `chosen_build` já bate com a classe
+(instância normalizada sempre usa `CLASS_BUILD_MAP` correto,
+`apply_talent_effects()` só reembolsa/limpa quando NÃO bate), a
+re-aplicação é segura — recalcula cs_flags, modifiers e skills
+desbloqueadas por talento a partir da alocação NOVA, sem tocar em nada
+que já estava certo.
+
+**Teste automatizado**: `tests/test_instance_talent_effects_sync.py`
+(novo) — reproduz o cenário exato (talent_allocated com Precisão
+Elemental maxada → `ice_cast_time_reduction` deve ir a 1.0) e o
+oposto (voltar a 0 ao sair da instância). Confirmado por revert-to-
+confirm que os 2 testes falham sem o fix. Suíte completa sem regressão.
+
+**Lição pra não repetir**: um campo de sync novo que espelha um
+sub-componente inteiro (`TalentTree.allocated`, `Inventory`, etc.) só
+resolve o problema de EXIBIÇÃO/validação direta desse dado — se esse
+dado ALIMENTA um recálculo derivado em algum outro lugar (cs_flags,
+modifiers, stats compostos), o sync precisa disparar esse recálculo
+também, não só copiar o valor bruto. Mesma classe de gap já visto em
+`recalculate_preserving_hp_pct`/`grant_visible_buff` (mutação de um
+dado que alimenta outro cálculo precisa passar pelo pipeline completo,
+nunca só escrever o campo final).

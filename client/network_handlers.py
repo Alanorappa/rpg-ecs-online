@@ -1666,6 +1666,27 @@ class NetworkHandlers:
                 _tt_alloc = self.world.get_component(self.player_entity, _TTAlloc)
                 if _tt_alloc is not None:
                     _tt_alloc.allocated = dict(payload["talent_allocated"])
+                    # Sem isso, só o dict `allocated` mudava — os EFEITOS
+                    # derivados (cs_flags comportamentais, ex:
+                    # ice_cast_time_reduction de Precisão Elemental, e
+                    # modifiers/skills desbloqueadas por talento) continuavam
+                    # com o valor de FORA da instância, porque só
+                    # `apply_talent_effects()` (chamado normalmente ao gastar
+                    # ponto de talento, `ui/talent_system.py`) recalcula isso
+                    # a partir de `tt.allocated` — nunca acontece sozinho só
+                    # por mudar o dict. Bug real relatado pelo usuário
+                    # (14/09/2026): Nova Congelante devia ser instantânea
+                    # dentro da BG (Precisão Elemental maxada na normalização
+                    # de instância) mas continuava com 1s de cast visível —
+                    # o efeito (skill em si) já disparava na hora porque o
+                    # SERVIDOR recalcula certo (`WorldServer.
+                    # _apply_talent_modifiers`); só a barra de cast do
+                    # CLIENTE ficava presa no valor antigo. Ver
+                    # PROBLEMAS_ARQUITETURA.md §136.
+                    try:
+                        self._talent_system.apply_talent_effects()
+                    except Exception:
+                        pass
             # "level" (01/08/2026, bug real relatado pelo usuário: level
             # do player não aparecia 1 no client depois de entrar na
             # progressão normalizada de instância). DIFERENTE do level-up
