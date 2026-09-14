@@ -38,7 +38,7 @@ class CombatProcessorMixin:
         has_bow_equipped = bow is not None and getattr(bow, "subtype", "") == "Bow"
         if not has_bow_equipped:
             return False, 1
-        return True, (getattr(bow, "cast_range", 0) or 5)
+        return True, (getattr(bow, "cast_range", 0) or 7)
 
     def _resolve_auto_attack(self, attacker_eid: int, target_eid: int, session_id: str, dt: float,
                              attacker_cs, attacker_tm, target_cs, target_tm) -> "dict | None":
@@ -81,8 +81,9 @@ class CombatProcessorMixin:
         # verdade equipado agora — sem arco, ou com arma melee equipada,
         # cai pro MESMO caminho de dano melee (deal_damage) que
         # guerreiro/mago já usam. Range: ranged usa o cast_range REAL do
-        # arco equipado (Arco Curto=7, do Caçador=8, Élfico=9...) — nunca
-        # hardcoded (`_ranged_weapon_range`, ponto único de verdade).
+        # arco equipado — os 3 arcos nivelados em 7 (14/09/2026, decisão do
+        # usuário, ver content/item_table.py) — nunca hardcoded
+        # (`_ranged_weapon_range`, ponto único de verdade).
         _class_is_ranged = getattr(attacker_cs, "is_ranged", False)
         _is_ranged, attack_range = self._ranged_weapon_range(attacker_eid, _class_is_ranged)
         _qv = None
