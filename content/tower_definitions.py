@@ -93,7 +93,9 @@ TOWER_TABLE: dict[str, dict] = {
             "acerto": 100, 
             "crit_chance": 5,
         },
-        "attack_range_tiles": 8,
+        # reduzido de 8 pra 5 (14/09/2026, decisão do usuário — mesmo
+        # nivelamento de alcance de ranged em geral nesta sessão).
+        "attack_range_tiles": 5,
         "vision_radius_tiles": 8,
         "xp_reward": 250,
         # Rebalance de economia da BG (16/08/2026, pedido do usuário) —
@@ -132,7 +134,9 @@ TOWER_TABLE: dict[str, dict] = {
             "acerto": 100, 
             "crit_chance": 10,
         },
-        "attack_range_tiles": 8,
+        # reduzido de 8 pra 5 (14/09/2026, decisão do usuário — mesmo
+        # nivelamento de alcance de ranged em geral nesta sessão).
+        "attack_range_tiles": 5,
         "vision_radius_tiles": 8,
         "xp_reward": 250,
         "gold_min": 80,  # rebalance 16/08/2026 — ver torre_de_fogo acima

@@ -339,12 +339,15 @@ class TestBotAISystem(unittest.TestCase):
         pos_after = (tm_after.current_tile_x, tm_after.current_tile_y)
         self.assertNotEqual(pos_before, pos_after, "deveria continuar avançando, não parar a 2 tiles")
 
-    def test_mago_engaja_a_6_tiles_sem_precisar_chegar_mais_perto(self):
-        """Mago não devia andar até quase melee pra usar uma skill de
-        alcance 6 (`bola_de_fogo.cast_range`, content/skill_config.py) —
+    def test_mago_engaja_no_alcance_da_bola_de_fogo_sem_precisar_chegar_mais_perto(self):
+        """Mago não devia andar até quase melee pra usar a skill de
+        alcance do catálogo (`bola_de_fogo.cast_range`, content/
+        skill_config.py, lido aqui dinamicamente — nunca hardcoded, senão
+        quebra a cada ajuste de balanceamento como o de 14/09/2026) —
         `_effective_engage_range` lê o cast_range da 1ª skill ofensiva
         aprendida em vez do raio genérico de 1/2 tiles."""
         from server.bot_ai_system import BotAISystem as _BotAI2
+        from content.skill_config import SKILL_CATALOG as _SC_bf
         mago = self.ws._spawn_bot_player(class_id="mago")
         from tests.helpers import clear_login_immunity as _cli2
         _cli2(self.ws, mago)
@@ -352,7 +355,8 @@ class TestBotAISystem(unittest.TestCase):
         from engine.utils import snap_to_tile as _stt2
         _stt2(self.ws.world, mago, 20, 20, carry_prev=False)
 
-        enemy = self._spawn_enemy(26, 20)  # dist=6, exatamente o cast_range da Bola de Fogo
+        _bf_range = _SC_bf["bola_de_fogo"]["cast_range"]
+        enemy = self._spawn_enemy(20 + _bf_range, 20)  # exatamente o cast_range da Bola de Fogo
         tm_before = self.ws.world.get_component(mago, TileMovement)
         pos_before = (tm_before.current_tile_x, tm_before.current_tile_y)
         _BotAI2.update(self.ws, dt=999.0)

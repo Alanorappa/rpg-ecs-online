@@ -182,7 +182,9 @@ SKILL_CATALOG: dict[str, dict] = {
         "cooldown":          0.0,
         "mana_cost":         25,
         "cast_time":         1.5,
-        "cast_range":        6,
+        # cast_range reduzido de 6 pra 5 (14/09/2026, decisão do usuário —
+        # mesmo nivelamento das skills de alvo único do arqueiro).
+        "cast_range":        5,
         "interruptible":     True,
         "dmg_weapon_pct":    0.5,
         "dmg_sp_coeff":      1.0,
@@ -285,7 +287,9 @@ SKILL_CATALOG: dict[str, dict] = {
         "cooldown":         0.0,
         "mana_cost":        25,
         "cast_time":        0.6,
-        "cast_range":       8,
+        # cast_range reduzido de 8 pra 5 (14/09/2026, decisão do usuário —
+        # mesmo nivelamento das outras skills de alvo único).
+        "cast_range":       5,
         "interruptible":          False,
         "base_dmg":               50,
         "dmg_sp_coeff":           0.25,
