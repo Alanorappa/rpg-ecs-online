@@ -17757,3 +17757,63 @@ sobre TODOS os outros (qualquer skill do mago), sem nenhuma mudança de
 código relacionada a eles. Balanceamento de conteúdo que alimenta um
 "mínimo/máximo compartilhado" precisa considerar esse acoplamento
 antes de declarar "só mudei o número de uma skill".
+
+## 134. Check de alcance de skill no cliente usava distância real (Euclidiana em pixel) em vez de Chebyshev — diagonal e reto davam resultado diferente (14/09/2026)
+
+Durante o mesmo nivelamento de alcance de ranged, usuário percebeu (sem
+ainda ter reportado como bug — pergunta exploratória: "medir alcance em
+tiles é ruim pq a diagonal é maior, medir em pixel dá o mesmo
+resultado") que a distância "sentida" em jogo variava com a direção.
+
+**Causa raiz**: dois pontos do código mediam "distância até o alvo" com
+métricas DIFERENTES pro mesmo conceito (alcance de skill):
+- **Servidor, autoritativo** — `SkillHandlers._resolve_target`
+  (`engine/skill_handlers.py`) usa `chebyshev()` (`engine/utils.py`) —
+  `max(|dx|,|dy|)` em TILE, "distância de rei do xadrez": diagonal conta
+  IGUAL a reto. Consistente com o movimento em tile do jogo, onde andar
+  na diagonal custa o mesmo 1 passo que andar reto (mesmo
+  `move_duration`, sem penalidade de `√2`).
+- **Cliente, preditivo** — `PlayerInputSystem._use_skill_visual_only`
+  (`ui/systems.py`) media Euclidiana em PIXEL contínuo
+  (`Position.x/y`, `dx²+dy² > max_px²`) pra decidir se mostra "Fora de
+  alcance" antes de mandar `CAST_SKILL`.
+
+Pra um cast_range de N tiles, "N passos" na diagonal cobre ~41% mais
+distância real em pixel do que "N passos" reto (N×32×√2 vs N×32). Como
+o servidor aceita os dois igualmente (mesmo custo de passo) mas o
+cliente só aceitava dentro de um CÍRCULO de raio N×32px, o cliente podia
+rejeitar como "Fora de alcance" um alvo que o servidor aceitaria na
+diagonal — ou, perto da borda reta, aceitar algo que a régua "tiles
+livres" do usuário não bateria. A métrica de tile (Chebyshev) em si não
+é o problema — é o padrão certo dado que o movimento também é
+Chebyshev; o problema era o cliente usar uma métrica DIFERENTE da
+autoritativa pro mesmo check.
+
+**Fix**: `_use_skill_visual_only` passou a calcular a distância com
+`chebyshev(tile_move.current_tile_x, ..., alvo.current_tile_x, ...)`
+— mesma função, mesmos campos (`TileMovement.current_tile_x/y`) que o
+servidor usa em `_resolve_target` — em vez de Euclidiana em
+`Position.x/y` convertida pra pixel. `_max_range_tiles`/
+`_min_range_tiles` (já em tiles, lidos do catálogo) comparam direto
+contra o inteiro de tiles, sem conversão pra pixel nem tolerância
+(`RANGE_TOLERANCE_PX` não se aplica mais aqui — o servidor não usa
+tolerância nesse check, comparar exatamente igual evita o cliente ser
+mais permissivo OU mais restritivo que a autoridade). O check de LOS
+(linha de visão pra skill com projétil), que já vinha depois no mesmo
+bloco, continua usando `Position.x/y` pra achar o tile atual — não
+mudou, só passou a rodar dentro da guarda de `TileMovement` em vez de
+`Position` (ambos sempre existem juntos em entidade com movimento,
+efeito prático nulo).
+
+**Sem teste automatizado dedicado** — mesmo motivo do §133 (lógica
+client-only, dentro do mesmo método grande e acoplado,
+`PlayerInputSystem._use_skill_visual_only`). Suíte completa validada
+sem regressão antes de fechar (ver commit).
+
+**Lição pra não repetir**: quando duas camadas (cliente preditivo vs.
+servidor autoritativo) fazem o MESMO check de gameplay, elas precisam
+usar a MESMA métrica/função — nunca reimplementar com uma métrica
+"equivalente" (pixel vs. tile, Euclidiana vs. Chebyshev) achando que dá
+no mesmo. A malha de tolerância (`RANGE_TOLERANCE_PX`) cobria só lag de
+rede/animação — nunca foi desenhada pra cobrir uma DIFERENÇA
+estrutural de métrica entre as duas pontas.

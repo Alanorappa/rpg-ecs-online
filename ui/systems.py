@@ -4592,21 +4592,28 @@ class SkillSystem(System, SkillHandlers):
                 # esse caso que precisa fazer o personagem ANDAR até aqui.
                 combat_state.pursuit_skill_range = _max_range_tiles
                 _min_range_tiles = _params.get("min_range", 0)
-                _tol = SkillHandlers.RANGE_TOLERANCE_PX
-                _max_px = _max_range_tiles * TILE_SIZE + _tol
-                _min_px = max(0.0, _min_range_tiles * TILE_SIZE - _tol) if _min_range_tiles > 0 else 0.0
                 _pl_pos  = self.world.get_component(self.player_entity_id,
                                                      __import__("engine.components", fromlist=["Position"]).Position)
                 _tgt_pos = self.world.get_component(_target_local,
                                                      __import__("engine.components", fromlist=["Position"]).Position)
-                if _pl_pos and _tgt_pos:
-                    _dx_r = _pl_pos.x - _tgt_pos.x
-                    _dy_r = _pl_pos.y - _tgt_pos.y
-                    _d_sq = _dx_r*_dx_r + _dy_r*_dy_r
-                    if _d_sq > _max_px * _max_px:
+                # Chebyshev em tile, igual ao check autoritativo do servidor
+                # (SkillHandlers._resolve_target, engine/skill_handlers.py) —
+                # NUNCA Euclidiana em pixel aqui. Diagonal e reto contam igual
+                # (mesmo custo de passo no movimento em tile), então medir a
+                # distância "de verdade" em pixel fazia a diagonal parecer mais
+                # longe do que o servidor considerava — cliente rejeitava
+                # ("Fora de alcance") um alvo que o servidor aceitaria, ou o
+                # inverso, dependendo da direção (bug real relatado pelo
+                # usuário, 14/09/2026, ver PROBLEMAS_ARQUITETURA.md).
+                _tgt_tm = self.world.get_component(_target_local,
+                                                    __import__("engine.components", fromlist=["TileMovement"]).TileMovement)
+                if _tile_move_sk and _tgt_tm and _pl_pos and _tgt_pos:
+                    _dist_tiles = chebyshev(_tile_move_sk.current_tile_x, _tile_move_sk.current_tile_y,
+                                             _tgt_tm.current_tile_x, _tgt_tm.current_tile_y)
+                    if _dist_tiles > _max_range_tiles:
                         WARN.add("Fora de alcance")
                         return False
-                    if _min_px > 0 and _d_sq < _min_px * _min_px:
+                    if _min_range_tiles > 0 and _dist_tiles < _min_range_tiles:
                         WARN.add("Alvo muito próximo")
                         return False
                     # LOS check para skills com projétil: bloqueia se há parede no caminho.

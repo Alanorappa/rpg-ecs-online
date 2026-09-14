@@ -708,6 +708,20 @@ padrão a quebrar, não só os bugs individuais.
   skill de mira curta na hotbar fazia o personagem parar de andar cedo
   demais mesmo tentando usar uma skill de alcance maior. Ver
   PROBLEMAS_ARQUITETURA.md §133.
+- **Check de alcance de skill (cliente preditivo vs. servidor
+  autoritativo) usa SEMPRE a mesma métrica de distância — Chebyshev em
+  tile (`engine.utils.chebyshev`, `TileMovement.current_tile_x/y`),
+  nunca Euclidiana em pixel** — `SkillHandlers._resolve_target`
+  (`engine/skill_handlers.py`, autoritativo) e
+  `PlayerInputSystem._use_skill_visual_only` (`ui/systems.py`,
+  preditivo) precisam concordar. Diagonal e reto custam o mesmo 1 passo
+  no movimento em tile deste jogo (sem penalidade de `√2`) — medir
+  Euclidiana em pixel faz a diagonal "parecer" mais longe do que o
+  servidor considera, rejeitando no cliente ("Fora de alcance") um alvo
+  que o servidor aceitaria, ou o inverso perto da borda reta (bug real,
+  14/09/2026, ver PROBLEMAS_ARQUITETURA.md §134). Tolerância de rede/
+  animação (`RANGE_TOLERANCE_PX`) cobre lag, nunca serve pra "converter"
+  entre duas métricas estruturalmente diferentes.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem
