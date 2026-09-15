@@ -1389,6 +1389,65 @@ def test_clique_seleciona_torre_pelo_2o_tile_do_sprite_nao_so_pelo_retangulo_ant
         "clique no 2º tile do sprite deveria selecionar a torre"
 
 
+def test_live_target_at_world_pos_usa_sprite_real_igual_enemy_at_world_pos():
+    """Item 5 da revisão de performance (15/09/2026,
+    arquitetura/CLIENT_PERFORMANCE_REVIEW.md) — `_live_target_at_world_pos`
+    (usado por LootSystem pra nunca competir com um alvo vivo pelo
+    clique) reimplementava só o retângulo pequeno, divergindo de
+    `_enemy_at_world_pos` (que já usava o sprite real desde 12/08/2026).
+    Agora os dois passam pelo mesmo `_entity_click_rect()`."""
+    from engine.world import World
+    from engine.components import Position, Renderable, Enemy, Visible, TileMovement, CombatStats
+    from engine.tileset import TILE_SIZE as _TS_live_test
+    from ui.systems import _live_target_at_world_pos
+
+    world = World()
+    me = world.create_entity()
+    world.add_component(me, Position(x=0, y=0))
+
+    tower = world.create_entity()
+    tpx, tpy = 5 * _TS_live_test + _TS_live_test // 2, 5 * _TS_live_test + _TS_live_test // 2
+    world.add_component(tower, Position(x=tpx, y=tpy))
+    world.add_component(tower, Renderable(color=(120, 120, 130), width=40, height=40, sprite_id="gcn_19"))
+    world.add_component(tower, Enemy())
+    world.add_component(tower, Visible())
+    world.add_component(tower, TileMovement(current_tile_x=5, current_tile_y=5))
+    world.add_component(tower, CombatStats(base_stamina=100))
+
+    # 2º tile do sprite — fora do retângulo antigo de 40px, dentro do sprite real.
+    assert _live_target_at_world_pos(world, me, tpx + 48, tpy), \
+        "deveria detectar a torre pelo sprite real, igual _enemy_at_world_pos"
+
+
+def test_live_target_at_world_pos_ignora_inimigo_fora_do_fog_of_war():
+    """Item 5 — antes, `_live_target_at_world_pos` nunca checava
+    FogOfWar.visible: um inimigo escondido no fog ainda "roubava" o
+    clique do LootSystem (loot nunca abria perto de um mob invisível)."""
+    from engine.world import World
+    from engine.components import Position, Renderable, Enemy, Visible, TileMovement, CombatStats, FogOfWar
+    from engine.tileset import TILE_SIZE as _TS_fog_test
+    from ui.systems import _live_target_at_world_pos
+
+    world = World()
+    me = world.create_entity()
+    world.add_component(me, Position(x=0, y=0))
+    _fog = FogOfWar()
+    _fog.visible = set()
+    world.add_component(world.create_entity(), _fog)
+
+    mob = world.create_entity()
+    mpx, mpy = 5 * _TS_fog_test + _TS_fog_test // 2, 5 * _TS_fog_test + _TS_fog_test // 2
+    world.add_component(mob, Position(x=mpx, y=mpy))
+    world.add_component(mob, Renderable(color=(90, 10, 10), width=24, height=24))
+    world.add_component(mob, Enemy())
+    world.add_component(mob, Visible())
+    world.add_component(mob, TileMovement(current_tile_x=5, current_tile_y=5))
+    world.add_component(mob, CombatStats(base_stamina=100))
+
+    assert not _live_target_at_world_pos(world, me, mpx, mpy), \
+        "mob fora do fog-of-war (tile não visível) não devia bloquear o clique de loot"
+
+
 def test_space_engage_mira_oponente_de_pvp_engajavel():
     from engine.world import World
     from engine.components import (Position, TileMovement, Visible,
@@ -3299,6 +3358,76 @@ def test_render_harvestable_com_sprite_nao_desenha_por_cima_do_personagem_no_mes
     assert (10, 20, 30) in draw_order and (40, 50, 60) in draw_order
     assert draw_order.index((40, 50, 60)) > draw_order.index((10, 20, 30)), \
         "personagem (sprite menor) deveria desenhar DEPOIS (por cima) do harvestable no mesmo tile"
+
+
+# ── Culling de viewport (15/09/2026, item 8 da revisão de performance,
+# arquitetura/CLIENT_PERFORMANCE_REVIEW.md) — entidade com Position/
+# Renderable dentro do raio de AOI do servidor mas fora da tela não deve
+# mais entrar no Y-sort/desenho de RenderSystem.render().
+
+def test_render_system_nao_desenha_entidade_muito_longe_da_camera():
+    from engine.world import World
+    from engine.components import Position, Renderable
+    from ui.systems import RenderSystem
+
+    world = World()
+    near = world.create_entity()
+    world.add_component(near, Position(x=100, y=100, prev_x=100, prev_y=100))
+    world.add_component(near, Renderable(color=(10, 20, 30), width=24, height=24))
+
+    far = world.create_entity()
+    world.add_component(far, Position(x=5000, y=5000, prev_x=5000, prev_y=5000))
+    world.add_component(far, Renderable(color=(200, 100, 50), width=24, height=24))
+
+    screen = pygame.display.get_surface()
+    rs = RenderSystem(world, screen)
+
+    draw_order = []
+    orig_rect = pygame.draw.rect
+    def _spy_rect(surface, color, rect, *a, **k):
+        draw_order.append(tuple(color[:3]))
+        return orig_rect(surface, color, rect, *a, **k)
+    pygame.draw.rect = _spy_rect
+    try:
+        rs.render(0, 0)
+    finally:
+        pygame.draw.rect = orig_rect
+
+    assert (10, 20, 30) in draw_order, "entidade perto da câmera devia ser desenhada"
+    assert (200, 100, 50) not in draw_order, \
+        "entidade muito longe da câmera (fora do culling de viewport) não devia ser desenhada"
+
+
+def test_render_system_desenha_entidade_dentro_da_margem_de_culling():
+    """Margem de 200px (ver RenderSystem.render, _CULL_MARGIN_PX) cobre
+    sprite grande + nameplate empilhado logo fora da tela — entidade a
+    100px além da borda direita da tela (320px de largura no teste)
+    ainda precisa ser desenhada."""
+    from engine.world import World
+    from engine.components import Position, Renderable
+    from ui.systems import RenderSystem
+
+    world = World()
+    just_outside = world.create_entity()
+    world.add_component(just_outside, Position(x=420, y=100, prev_x=420, prev_y=100))
+    world.add_component(just_outside, Renderable(color=(70, 80, 90), width=24, height=24))
+
+    screen = pygame.display.get_surface()
+    rs = RenderSystem(world, screen)
+
+    draw_order = []
+    orig_rect = pygame.draw.rect
+    def _spy_rect(surface, color, rect, *a, **k):
+        draw_order.append(tuple(color[:3]))
+        return orig_rect(surface, color, rect, *a, **k)
+    pygame.draw.rect = _spy_rect
+    try:
+        rs.render(0, 0)
+    finally:
+        pygame.draw.rect = orig_rect
+
+    assert (70, 80, 90) in draw_order, \
+        "entidade dentro da margem de culling (perto da borda) devia continuar sendo desenhada"
 
 
 # ── Shift+V: ciclo de 3 níveis de detalhe do nameplate (29/07/2026,

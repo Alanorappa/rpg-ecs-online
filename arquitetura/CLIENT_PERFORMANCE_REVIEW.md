@@ -169,6 +169,17 @@ entre os dois.
 
 ## 5. Hit-test de clique/alvo reimplementado de forma DIVERGENTE em 3-4 lugares — já é uma classe de bug conhecida do projeto
 
+**Status:** ✅ Implementado (15/09/2026) — novo `ui/systems.py::
+_entity_click_rect()` (ponto único, sprite real vs. retângulo), usado por
+`_enemy_at_world_pos`/`_live_target_at_world_pos`/
+`_remote_player_at_world_pos`. `_live_target_at_world_pos` também ganhou
+o check de `FogOfWar.visible` que faltava. Decisão do usuário: ampliar a
+área clicável onde fizer sentido, não só preservar o comportamento atual.
+`_corpse_click_rect` ficou de fora de propósito (semântica diferente,
+tolerância pequena deliberada). 2 testes novos em
+`tests/test_client_ui.py`. Suíte completa: 1653 passed, 1 failed
+pré-existente/timing flake sem relação.
+
 **Gravidade:** Alta
 
 **Impacto no desempenho:** Nenhum — é corretude. Achado de forma
@@ -275,6 +286,11 @@ no meio de 54 `elif`).
 ---
 
 ## 8. `RenderSystem` sem culling de viewport pra entidades — só objetos estáticos de mapa (tiles/props) têm janela de visibilidade calculada
+
+**Status:** ✅ Implementado e testado (15/09/2026) — margem fixa de 200px
+em `RenderSystem.render()`, `ui/systems.py`. 2 testes novos em
+`tests/test_client_ui.py`. Suíte completa: 1653 passed, 1 failed
+pré-existente/timing flake sem relação.
 
 **Gravidade:** Média-alta
 

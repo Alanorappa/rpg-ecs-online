@@ -272,13 +272,49 @@ def _corpse_click_rect(world, entity_id: int, pos) -> tuple[float, float, float,
     return pos.x - 14, pos.y - 10, pos.x + 14, pos.y + 10
 
 
+def _entity_click_rect(world: World, entity_id: int, pos,
+                       renderable) -> tuple[float, float, float, float]:
+    """(left, top, right, bottom) da área clicável de uma entidade VIVA
+    (mob/player) — ponto único de verdade, 15/09/2026 (item 5 da revisão
+    de performance, arquitetura/CLIENT_PERFORMANCE_REVIEW.md). Usa o
+    sprite REAL do catálogo (`TILE_SPRITES`) quando `renderable.sprite_id`
+    existe (torre, mob com sprite fixo) — mesma âncora de base que
+    `RenderSystem.render()` usa pra desenhar (12/08/2026, bug real:
+    clique não acertava sprite grande de torre, só um retângulo pequeno
+    de sempre). Cai pro retângulo simples (`renderable.width/height`)
+    quando não há sprite no catálogo (players, que desenham via
+    animação de personagem — `engine/character_animation.py` — nunca
+    via `Renderable.sprite_id`).
+
+    Antes desta função, `MouseTargetingSystem._enemy_at_world_pos` já
+    fazia essa conta certa (sprite real), mas `_live_target_at_world_pos`
+    (abaixo) e `_remote_player_at_world_pos`
+    (`MouseTargetingSystem`) reimplementavam só o retângulo simples —
+    mob/torre grande podia ficar clicável num caminho e não no outro.
+    NUNCA usada pra corpse — `_corpse_click_rect` (acima) é caso à parte,
+    com tolerância pequena deliberada pra quando não há sprite."""
+    from ui.tile_sprite_manager import TILE_SPRITES
+    spr = TILE_SPRITES.get_raw_sprite(renderable.sprite_id) if renderable.sprite_id else None
+    if spr:
+        sw, sh = spr.get_size()
+        left   = pos.x - TILE_SIZE / 2
+        right  = left + sw
+        bottom = pos.y + TILE_SIZE / 2
+        top    = bottom - sh
+        return left, top, right, bottom
+    hw = renderable.width / 2
+    hh = renderable.height / 2
+    return pos.x - hw, pos.y - hh, pos.x + hw, pos.y + hh
+
+
 def _live_target_at_world_pos(world: World, player_entity_id: int,
                               world_x: float, world_y: float) -> bool:
     """True se há um inimigo vivo OU player remoto vivo na posição mundo
-    (mesmas bounding boxes de MouseTargetingSystem._enemy_at_world_pos/
-    _remote_player_at_world_pos, duplicadas aqui em vez de acopladas —
-    LootSystem e MouseTargetingSystem são Systems independentes no mesmo
-    frame, sem referência uma à outra).
+    (mesma bounding box de `_entity_click_rect`/`MouseTargetingSystem.
+    _enemy_at_world_pos`/`_remote_player_at_world_pos` — LootSystem e
+    MouseTargetingSystem são Systems independentes no mesmo frame, sem
+    referência uma à outra, então cada um chama a função compartilhada
+    em vez de acoplar).
 
     Usado por LootSystem pra NUNCA competir pelo clique quando um alvo
     (NPC/Player/Mob) ocupa o mesmo tile de um cadáver — bug real relatado
@@ -288,13 +324,23 @@ def _live_target_at_world_pos(world: World, player_entity_id: int,
     ali, e até cancelava o CombatState.target_entity_id que
     MouseTargetingSystem já tinha setado no MESMO evento). Prioridade de
     clique pedida pelo usuário: alvo (NPC/Player/Mob) sempre antes de
-    loot."""
+    loot.
+
+    Checa FogOfWar.visible pro Enemy (15/09/2026 — antes não checava,
+    então um inimigo escondido no fog ainda "roubava" o clique do loot;
+    RemoteControlled nunca é fog-gated, mesma regra de
+    RenderSystem.render(), player real nunca some por fog)."""
+    _fog_vis = None
+    for _, _fw in world.get_entities_with(FogOfWar):
+        _fog_vis = _fw.visible
+        break
     for entity_id, pos, renderable, _, _, etm in world.get_entities_with(
             Position, Renderable, Enemy, Visible, TileMovement):
-        hw = renderable.width / 2
-        hh = renderable.height / 2
-        if (pos.x - hw <= world_x <= pos.x + hw and
-                pos.y - hh <= world_y <= pos.y + hh):
+        if _fog_vis is not None and \
+                (etm.current_tile_x, etm.current_tile_y) not in _fog_vis:
+            continue
+        left, top, right, bottom = _entity_click_rect(world, entity_id, pos, renderable)
+        if left <= world_x <= right and top <= world_y <= bottom:
             cs = world.get_component(entity_id, CombatStats)
             if not cs or cs.current_hp > 0:
                 return True
@@ -302,10 +348,8 @@ def _live_target_at_world_pos(world: World, player_entity_id: int,
             Position, Renderable, Visible, RemoteControlled):
         if entity_id == player_entity_id or rc.hp <= 0:
             continue
-        hw = renderable.width / 2
-        hh = renderable.height / 2
-        if (pos.x - hw <= world_x <= pos.x + hw and
-                pos.y - hh <= world_y <= pos.y + hh):
+        left, top, right, bottom = _entity_click_rect(world, entity_id, pos, renderable)
+        if left <= world_x <= right and top <= world_y <= bottom:
             return True
     return False
 
@@ -326,8 +370,10 @@ class MouseTargetingSystem(System):
         return get_camera_offset(self.world, self.world_surf.get_width(), self.world_surf.get_height())
 
     def _enemy_at_world_pos(self, world_x: float, world_y: float) -> int:
-        """Retorna o entity_id do inimigo vivo e visível na posição mundo, ou -1."""
-        from ui.tile_sprite_manager import TILE_SPRITES as _TS_click
+        """Retorna o entity_id do inimigo vivo e visível na posição mundo, ou -1.
+
+        Área clicável via `_entity_click_rect()` (ponto único de verdade,
+        sprite real do catálogo quando existe — ver docstring lá)."""
         _fog_vis = None
         for _, _fw in self.world.get_entities_with(FogOfWar):
             _fog_vis = _fw.visible
@@ -337,24 +383,7 @@ class MouseTargetingSystem(System):
             if _fog_vis is not None and \
                     (etm.current_tile_x, etm.current_tile_y) not in _fog_vis:
                 continue
-            # Sprite real (torre, 12/08/2026, bug real relatado pelo
-            # usuário) é maior que o retângulo antigo — clique precisa
-            # acertar a área VISUAL de verdade, não só o quadrado pequeno
-            # de sempre. Mesma âncora de base do RenderSystem
-            # (`ui/systems.py::RenderSystem.render`, branch `_sprite_rnd`).
-            _spr_click = (_TS_click.get_raw_sprite(renderable.sprite_id)
-                         if renderable.sprite_id else None)
-            if _spr_click:
-                _sw_click, _sh_click = _spr_click.get_size()
-                left   = pos.x - TILE_SIZE / 2
-                right  = left + _sw_click
-                bottom = pos.y + TILE_SIZE / 2
-                top    = bottom - _sh_click
-            else:
-                hw = renderable.width / 2
-                hh = renderable.height / 2
-                left, right = pos.x - hw, pos.x + hw
-                top, bottom = pos.y - hh, pos.y + hh
+            left, top, right, bottom = _entity_click_rect(self.world, entity_id, pos, renderable)
             if left <= world_x <= right and top <= world_y <= bottom:
                 cs = self.world.get_component(entity_id, CombatStats)
                 if not cs or cs.current_hp > 0:
@@ -374,10 +403,8 @@ class MouseTargetingSystem(System):
                 continue  # não seleciona a si mesmo
             if _rc.hp <= 0:
                 continue  # player morto
-            hw = renderable.width / 2
-            hh = renderable.height / 2
-            if (pos.x - hw <= world_x <= pos.x + hw and
-                    pos.y - hh <= world_y <= pos.y + hh):
+            left, top, right, bottom = _entity_click_rect(self.world, entity_id, pos, renderable)
+            if left <= world_x <= right and top <= world_y <= bottom:
                 return entity_id
         return -1
 
@@ -1550,8 +1577,28 @@ class RenderSystem(System):
         # ── Coleta drawables: (sort_y_world, tipo, dados) ─────────────────────
         drawables = []
 
+        # Culling de viewport (15/09/2026, item 8 da revisão de performance
+        # — arquitetura/CLIENT_PERFORMANCE_REVIEW.md): antes disso, TODA
+        # entidade com Position+Renderable entrava no Y-sort/desenho, mesmo
+        # fora da tela mas dentro do raio de AOI do servidor (AOI_RADIUS=15
+        # tiles — bem maior que a tela). AOI existe pra replicação de rede,
+        # nunca foi pensado como filtro de render. Mesmo espírito de
+        # `_object_visible_tile_range()` (que já faz isso pra tile-objetos),
+        # com margem FIXA generosa (não dinâmica por catálogo, como lá) —
+        # cobre o maior sprite de personagem conhecido (CHAR_TILE_SIZE=96px)
+        # + a pilha de nameplate/HUD/ícones acima da entidade
+        # (ui/world_labels.py), sem precisar calcular o maior sprite de
+        # mob/NPC do jogo inteiro.
+        _CULL_MARGIN_PX = 200.0
+        _cull_l = camera_offset_x - _CULL_MARGIN_PX
+        _cull_t = camera_offset_y - _CULL_MARGIN_PX
+        _cull_r = camera_offset_x + self.world_surf.get_width()  + _CULL_MARGIN_PX
+        _cull_b = camera_offset_y + self.world_surf.get_height() + _CULL_MARGIN_PX
+
         # Entidades vivas
         for entity_id, position, renderable in self.world.get_entities_with(Position, Renderable):
+            if not (_cull_l <= position.x <= _cull_r and _cull_t <= position.y <= _cull_b):
+                continue
             combat_stats = self.world.get_component(entity_id, CombatStats)
             _gst_rnd = self.world.get_component(entity_id, GhostState)
             # Corpo (morto, espírito ainda não liberado): permanece visível no
