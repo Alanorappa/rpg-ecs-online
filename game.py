@@ -1663,6 +1663,19 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if PROFILE_FRAMES:
                 self._prof_record("events", _time.perf_counter() - _ts)
 
+            # Instrumentado (15/09/2026, #143 follow-up) — usuário relatou
+            # spike de ~111ms num teste em que NÃO apertou DELETE (o
+            # call site que eu tinha corrigido antes por suspeita, sem
+            # confirmar que era a causa DAQUELE frame específico — erro
+            # meu, ver PROBLEMAS_ARQUITETURA.md). Este bloco (os 2 "for
+            # event in events:", handlers de tecla/clique/chat/menu) nunca
+            # teve NENHUM _prof_record cobrindo, do mesmo jeito que o
+            # DELETE ficava invisível — em vez de caçar call site por call
+            # site de novo, mede o bloco INTEIRO de uma vez: o próximo log
+            # mostra com certeza se o tempo sai daqui ou de outro lugar.
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
+
             # God Mode consome eventos quando ativo (bloqueia input do jogo).
             # Salva estado ANTES de handle_events: se o god mode fechar via F10/Esc
             # dentro de handle_events, o estado pré-frame ainda bloqueia os eventos.
@@ -2050,6 +2063,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             _loot_was_open_before  = self._loot_system.open_corpse_id != -1
             _ps_before = self.world.get_component(self.player_entity, PlayerSkills)
             _learned_count_before  = len(_ps_before.learned_skill_ids) if _ps_before else 0
+            if PROFILE_FRAMES:
+                self._prof_record("input_dispatch", _time.perf_counter() - _ts)
             for system in self.systems:
                 # LootSystem recebe eventos BRUTOS só quando é seguro: seu
                 # PRÓPRIO modal está aberto (precisa detectar clique dentro

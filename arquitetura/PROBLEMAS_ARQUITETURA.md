@@ -18433,7 +18433,7 @@ momento exato de fechar o jogo, não durante o gameplay) — não corrigido
 por ser cosmético pra um instante que o jogador já está saindo, mas
 registrado aqui pra não confundir uma futura análise de log.
 
-## 143. Spike periódico de ~104-110ms sem correlação com rede/loot — hipótese do gc.collect() REFUTADA, causa real era um 4º call site de _send_save_state perdido — RESOLVIDO
+## 143. Spike periódico de ~104-110ms sem correlação com rede/loot — hipótese do gc.collect() REFUTADA; DELETE-key era um bug real mas NÃO CONFIRMADO como causa do spike relatado — investigação reaberta com instrumentação nova
 
 15/09/2026, achado analisando um TERCEIRO log de playtest do usuário
 (pós-fix completo de §141/§142, incluindo o follow-up dos 4 call sites
@@ -18553,5 +18553,35 @@ assert genérico que falha se `_send_save_state()` sem `include_fog`
 explícito for chamado de um novo call site — mas isso não foi proposto
 nem decidido com o usuário ainda, só uma ideia registrada aqui.
 
-**Status**: RESOLVIDO. Suíte completa 1658 passed, 1 failed
-pré-existente/timing flake sem relação.
+**Correção no mesmo dia (erro meu, achado pelo usuário)**: eu declarei
+"RESOLVIDO" acima achando que o `[SPIKE] 111ms` do log era causado pela
+tecla DELETE — mas nunca confirmei isso, só notei que o call site
+tinha o formato certo (sem `net_msgs`, quase nada explicado no
+breakdown, dentro de um bloco sem profiling) e assumi. O usuário
+perguntou direto: **não apertou DELETE naquele teste**. Isso quebra a
+regra já escrita no próprio CLAUDE.md ("'Corrigido' exige reproduzir o
+cenário que foi relatado, não só um cenário sintético plausível") — eu
+mesmo violei essa regra ao declarar resolvido sem ter reproduzido o
+cenário exato, só por analogia de formato.
+
+O fix da tecla DELETE continua correto e vale a pena manter (é um bug
+real da mesma família, só que sua causalidade PRA ESTE spike específico
+nunca foi confirmada) — mas a causa raiz do `[SPIKE] 111ms` relatado
+continua **desconhecida**. Em vez de caçar call site por call site de
+novo (achando "mais um" plausível), instrumentei o bloco INTEIRO onde
+qualquer call site desse tipo poderia estar escondido: todo o
+processamento de eventos de teclado/mouse a nível de jogo (os 2
+`for event in events:`, chat/menu/hotbar/clique — tudo entre o
+`_prof_record("events", ...)` que só mede o `pygame.event.get()` e o
+início do loop de `Systems.update()`) agora vira 1 label só,
+`input_dispatch`, via `_prof_record`. Se o próximo spike relatado
+mostrar `input_dispatch` alto no breakdown, confirma que a causa mora
+nesse bloco (call site ainda não identificado, mas pelo menos
+localizado); se `input_dispatch` ficar baixo, o mistério está em OUTRO
+lugar — provavelmente algo fora do loop de eventos totalmente, o que
+mudaria a direção da investigação.
+
+**Status**: investigação REABERTA — o `[SPIKE] 111ms` original
+continua sem causa confirmada. Fix da tecla DELETE mantido (correto,
+independente). `input_dispatch` instrumentado, aguardando novo log.
+Suíte completa 1659 passed, 0 failed.
