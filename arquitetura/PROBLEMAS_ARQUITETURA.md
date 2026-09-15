@@ -18581,7 +18581,39 @@ localizado); se `input_dispatch` ficar baixo, o mistério está em OUTRO
 lugar — provavelmente algo fora do loop de eventos totalmente, o que
 mudaria a direção da investigação.
 
-**Status**: investigação REABERTA — o `[SPIKE] 111ms` original
-continua sem causa confirmada. Fix da tecla DELETE mantido (correto,
-independente). `input_dispatch` instrumentado, aguardando novo log.
-Suíte completa 1659 passed, 0 failed.
+**Follow-up 2 no mesmo dia (usuário testou de novo, sentiu engasgos,
+mandou log com `input_dispatch` instrumentado)**: `input_dispatch`
+ficou baixo o tempo inteiro (peak máximo ~1.5ms em 14 relatórios `[PROF]`
+diferentes) — descartado como causa. Mas o `[SPIKE] 111ms` (mesma
+magnitude de sempre, de novo só ~4.5ms explicados no breakdown, dessa
+vez COM `net_msgs=1(AOI_UPDATEx1)` mas sem `network_recv` no
+breakdown — ou seja, nem o processamento da mensagem é o gargalo)
+continua acontecendo, confirmando que o mistério está em outro lugar.
+
+Mapeei TODOS os pares `_ts=.../self._prof_record(...)` do frame em
+ordem cronológica (script + leitura) procurando o próximo trecho sem
+cobertura nenhuma — achado: entre `hud:map_title` e `display_flip`
+existe um bloco de ~100 linhas ("por cima de tudo" — `self._loot_system.
+render()`, `self._shop_system.render()`, `self._quest_dialog.render()`,
+`self._quest_journal.render()`, `self._crafting_system.render()`,
+`self._trainer_system.render()`, render do mapa overlay, o menu de
+pausa (`_draw_pause_menu`), God Mode update+render, overlay de
+performance) **completamente sem profiling** — mesma classe de bug do
+§140 original (métodos de render chamados INDIVIDUALMENTE, fora de
+qualquer loop genérico já medido), só que num conjunto de métodos
+DIFERENTE (as renderizações de MODAL/UI desses sistemas, não as de
+mundo — `_loot_system.render_world()`, por exemplo, já está medido
+desde §140; `_loot_system.render()`, o modal de loot em si, nunca
+esteve).
+
+Instrumentado (mesmo padrão de `input_dispatch` — medir o bloco
+INTEIRO de uma vez, sem sub-dividir call site por call site ainda):
+novo label `ui_modals_overlay` cobre esse trecho inteiro. Suíte
+completa: 1658 passed, 1 failed pré-existente/timing flake sem relação
+(`test_perf_push_pop_grava_no_caminho`).
+
+**Status**: investigação REABERTA, 2ª rodada — `input_dispatch`
+descartado como causa (medido, baixo). `ui_modals_overlay` é o novo
+candidato, ainda NÃO confirmado — aguardando próximo log de playtest
+pra ver se o tempo aparece ali. Fix da tecla DELETE continua mantido
+(correto, independente do spike específico relatado).

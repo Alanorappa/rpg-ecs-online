@@ -2538,6 +2538,20 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if PROFILE_FRAMES:
                 self._prof_record("hud:map_title", _time.perf_counter() - _ts)
 
+            # Instrumentado (15/09/2026, #143 follow-up 2) — o bloco de
+            # eventos de teclado/mouse (input_dispatch) NÃO explicou o
+            # spike de 111ms do log anterior (peak lá ficou < 2ms). Este
+            # bloco "por cima de tudo" (render de loot/shop/quest/crafting/
+            # trainer, mapa overlay, menu de pausa, God Mode, perf overlay)
+            # é outro candidato do mesmo formato do §140 original — vários
+            # `.render()`/`.update()` chamados INDIVIDUALMENTE, fora de
+            # qualquer loop genérico já medido, cada um com assinatura
+            # própria. Mede o bloco INTEIRO de uma vez, mesmo raciocínio
+            # do input_dispatch: confirma ou descarta esta região antes de
+            # sub-dividir call site por call site.
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
+
             # Loot modal por cima de tudo (inclusive inventory panel)
             self._loot_system.render(cam_x, cam_y)
             if self._loot_system.pending_tooltip:
@@ -2639,6 +2653,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # Overlay de performance (F11) — por cima de tudo, antes do flip
             if self._show_perf_overlay:
                 self._draw_perf_overlay()
+
+            if PROFILE_FRAMES:
+                self._prof_record("ui_modals_overlay", _time.perf_counter() - _ts)
 
             # Copia surface interna → janela (resolução nativa, sem escala)
             if PROFILE_FRAMES:
