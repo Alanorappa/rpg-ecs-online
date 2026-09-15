@@ -18083,3 +18083,79 @@ usada em ~20 lugares neste projeto pra compor `GameEngine`), o dict
 precisa guardar o NOME e resolver via `getattr(self, name)` — nunca
 assumir que "está definido em algum lugar que o self.método() original
 achava" significa "está definido nesta classe especificamente".
+
+## 139. `BlacksmithSystem`/`TrainerSystem` chamavam métodos privados de outro System direto — e um deles chamava um método que nunca existiu
+
+15/09/2026, item 4 (crítico) da revisão de performance/arquitetura
+(`arquitetura/CLIENT_PERFORMANCE_REVIEW.md`). Achado pelos 3 agentes de
+análise (arquitetura, código, mercado) de forma independente: `ui/
+crafting_system.py::BlacksmithSystem` e `ui/trainer_system.py::
+TrainerSystem` recebiam `shop_system`/`quest_dialog`/`quest_system`
+injetados no construtor (`game.py`) e chamavam métodos PRIVADOS
+(`self._shop_system.open_for(eid)`, `self._quest_dialog._open_dialog(eid)`,
+`self._quest_dialog._get_available_quests(eid)`, etc.) — violação direta
+da regra do projeto ("um System nunca chama outro System diretamente").
+
+**Achado extra fazendo o refactor**: `BlacksmithSystem._draw_action_menu`
+chamava `self._quest_system.can_start(qid)` pra decidir se uma quest
+"iniciável" aparece no menu do ferreiro — `can_start` **nunca existiu**
+em `QuestSystem` (`grep -rn "def can_start"` no projeto inteiro: zero
+resultados). Como `game.py` sempre injeta um `QuestSystem` real
+(`quest_system=self._quest_system`, nunca `None` em produção), essa
+linha quebraria com `AttributeError` assim que QUALQUER ferreiro do jogo
+tivesse uma quest disponível pra iniciar (`quest_ids` com algo ainda não
+ativo/completo) — nunca pego porque nenhum teste automatizado
+exercitava esse caminho antes de agora.
+
+**Fix, em duas partes**:
+
+1. **Comandos** ("abra isto pra mim" — `open_for`/`_open_dialog`): novo
+   componente `NPCInteractionRequest` (`engine/components.py`, `kind` +
+   `target_eid`). Quem PEDE (Blacksmith/Trainer) só escreve o
+   componente no player; quem ABRE (`ShopSystem`/`QuestDialogSystem`)
+   lê e consome (remove) no INÍCIO do próprio `update()` — SÓ remove
+   quando `kind` bate com o seu próprio, pra não "roubar" um request de
+   outro `kind` dependendo da ordem de `update()` entre Systems no
+   mesmo frame.
+2. **Consultas** (`can_turn_in`/`_get_available_quests`/
+   `_get_completable_quests`/`_get_inprogress_quests` — leitura pura de
+   `QuestLog`/`QuestGiver`/`CharacterStats`, sem side-effect): extraídas
+   pra função de MÓDULO em `engine/quest_logic.py`
+   (`get_available_quests`/`get_completable_quests`/
+   `get_inprogress_quests`/`player_level`/`player_class_id`/
+   `turn_in_ids_for`/`quests_claimed_for_turn_in`) — chamáveis por
+   QUALQUER System com `(world, player_eid, npc_id)`, sem precisar de
+   referência a nenhuma instância de `QuestSystem`/`QuestDialogSystem`.
+   `QuestDialogSystem`'s métodos privados viraram wrappers finos
+   delegando pra essas funções (call sites internos do próprio arquivo
+   continuam intocados). O `can_start` quebrado virou uma chamada real
+   a `get_completable_quests`/`get_available_quests` (que JÁ faziam
+   exatamente essa checagem, com requires/level/class — mais completo
+   que o inline original, que só checava not-active/not-completed).
+
+`game.py` não injeta mais `shop_system=`/`quest_dialog=`/
+`quest_system=` em `BlacksmithSystem`/`TrainerSystem` — os construtores
+ficaram mais simples (só `world`/`player_entity`/`screen`).
+
+**Teste automatizado**: `tests/test_npc_interaction_request.py` (novo)
+— confirma que `_do_negociar()` escreve o componente e `ShopSystem.
+update()` consome (abre a loja certa, remove o componente); confirma
+que `ShopSystem` NUNCA consome um request de `kind` diferente do seu
+(guarda contra a corrida entre Systems); confirma que
+`_draw_action_menu` lista uma quest disponível sem lançar
+`AttributeError` (regressão do bug do `can_start`).
+`tests/test_quest_talk_completable_priority.py` adaptado (a asserção
+que checava `QuestDialogSystem._dialog_state` direto após
+`TrainerSystem._open_menu()` agora chama `QuestDialogSystem.update()`
+explicitamente antes de checar — no jogo real isso acontece sozinho no
+próximo tick do game loop, o teste só precisa simular esse passo).
+Suíte completa sem regressão.
+
+**Lição pra não repetir**: violação de "System nunca chama System" quase
+sempre esconde uma consulta pública (fácil de decompor em função pura de
+módulo, chamável por todo mundo) misturada com um comando (fácil de
+decompor em componente request/consume) — não precisa de UM mecanismo
+só pros dois casos. Refatorar pra decoupling também é uma chance real de
+achar bug latente: um método privado chamado por poucos call sites, sem
+teste cobrindo, é exatamente onde um nome errado (`can_start` que nunca
+existiu) sobrevive sem ninguém notar.

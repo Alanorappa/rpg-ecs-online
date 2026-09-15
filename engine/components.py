@@ -1840,6 +1840,30 @@ class AoeTargeting:
 
 
 @dataclass
+class NPCInteractionRequest:
+    """Pedido client-only de "abrir isto pra mim" entre Systems de
+    interação com NPC amigável — 15/09/2026, item 4 da revisão de
+    performance (arquitetura/CLIENT_PERFORMANCE_REVIEW.md).
+
+    Antes, `BlacksmithSystem`/`TrainerSystem` chamavam métodos PRIVADOS
+    de `ShopSystem`/`QuestDialogSystem` DIRETO (`self._shop_system.
+    open_for(eid)`, `self._quest_dialog._open_dialog(eid)`), violando a
+    regra do projeto de "um System nunca chama outro System
+    diretamente" — precisavam de uma referência à instância do outro
+    System injetada no construtor. Agora: quem PEDE a abertura só
+    escreve este componente no player (`kind` + `target_eid`); quem
+    ABRE (`ShopSystem.update()`/`QuestDialogSystem.update()`) lê e
+    consome (remove) no início do próprio update(), sem nenhuma
+    referência cruzada entre as classes.
+
+    `kind`: "open_shop" | "open_quest_dialog" — string, não enum, pra
+    não criar acoplamento de import extra num componente (mesmo padrão
+    de `AoeTargeting.spell_id` acima)."""
+    kind:       str = ""
+    target_eid: int = -1
+
+
+@dataclass
 class TrainingDummy:
     """Tag: boneco de treino. HP resetado ao atingir 0 em vez de morrer."""
     pass

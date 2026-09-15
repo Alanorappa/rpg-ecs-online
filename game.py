@@ -471,17 +471,14 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._quest_journal = QuestJournalSystem(
             self.world, self.player_entity, self.screen, self._quest_system)
         from ui.crafting_system import BlacksmithSystem
-        self._crafting_system = BlacksmithSystem(
-            self.world, self.player_entity, self.screen,
-            shop_system=self._shop_system,
-            quest_dialog=self._quest_dialog,
-            quest_system=self._quest_system,
-        )
+        # BlacksmithSystem não recebe mais shop_system/quest_dialog/
+        # quest_system injetados (15/09/2026, item 4 da revisão de
+        # performance) — comunica com ShopSystem/QuestDialogSystem via
+        # componente `NPCInteractionRequest`, nunca chamada direta a
+        # método de outro System. Ver arquitetura/CLIENT_PERFORMANCE_REVIEW.md.
+        self._crafting_system = BlacksmithSystem(self.world, self.player_entity, self.screen)
         from ui.trainer_system import TrainerSystem
-        self._trainer_system = TrainerSystem(
-            self.world, self.player_entity, self.screen,
-            quest_dialog=self._quest_dialog,
-        )
+        self._trainer_system = TrainerSystem(self.world, self.player_entity, self.screen)
         # Empurra a escala de UI atual pra todos os sistemas de painel que
         # vivem fora de GameEngine — eles não têm acesso a self._u()/
         # self.font_* direto, então precisam de set_ui_scale() explícito

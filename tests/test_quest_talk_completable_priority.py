@@ -66,7 +66,7 @@ class TestQuestTalkCompletablePriority(unittest.TestCase):
         self.qs.set_ui_scale(1.0)
         self.dlg = QuestDialogSystem(self.world, self.player, screen, self.qs)
         self.dlg.set_ui_scale(1.0)
-        self.trainer = TrainerSystem(self.world, self.player, screen, quest_dialog=self.dlg)
+        self.trainer = TrainerSystem(self.world, self.player, screen)
         self.trainer.set_ui_scale(1.0)
 
     def tearDown(self):
@@ -87,6 +87,12 @@ class TestQuestTalkCompletablePriority(unittest.TestCase):
         self.trainer._open_menu(self.npc)
         self.assertEqual(self.trainer._state, self.trainer.STATE_CLOSED,
                          "deveria ter pulado o menu de ação (STATE_MENU) direto pro diálogo de quest")
+        # 15/09/2026 (item 4 da revisão de performance): TrainerSystem não
+        # chama mais QuestDialogSystem._open_dialog() direto — escreve
+        # NPCInteractionRequest no player, consumido por
+        # QuestDialogSystem.update() no MESMO frame (aqui, explicitamente,
+        # já que o teste não roda um game loop de verdade).
+        self.dlg.update()
         self.assertEqual(self.dlg._dialog_state, "turnin")
         self.assertEqual(self.dlg._dialog_selected_qid, QID)
 

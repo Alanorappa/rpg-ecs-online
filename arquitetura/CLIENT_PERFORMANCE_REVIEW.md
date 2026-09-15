@@ -133,6 +133,13 @@ corrigir também melhora legibilidade.
 
 ## 4. `BlacksmithSystem`/`TrainerSystem` chamam outros `System` diretamente, inclusive métodos privados — viola a regra própria do projeto
 
+**Status:** ✅ Implementado (15/09/2026) — componente
+`NPCInteractionRequest` (comandos "abra isto") + funções de módulo em
+`engine/quest_logic.py` (consultas puras). Achado de quebra: um dos
+métodos privados chamados (`can_start`) NUNCA existiu de verdade —
+bug real corrigido de graça. Novo `tests/test_npc_interaction_request.py`.
+Ver `PROBLEMAS_ARQUITETURA.md` §139 pro design completo.
+
 **Gravidade:** Crítica
 
 **Impacto no desempenho:** Nenhum mensurável em FPS — é violação de

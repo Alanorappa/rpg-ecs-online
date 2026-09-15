@@ -13,13 +13,15 @@ from ui.fonts import make as _font
 from ui.systems import System
 from ui.ui_scale_mixin import UIScaleMixin
 from engine.components import (Position, Renderable, TileMovement,
-                        CombatState, Inventory, Wallet, NPC, QuestGiver, Equipment)
+                        CombatState, Inventory, Wallet, NPC, Equipment,
+                        NPCInteractionRequest)
 from content.crafting_data import (MATERIALS, RECYCLE_TABLE, RECIPES, RECIPE_ITEMS,
                            RARITY_RECYCLE_COST, RARITY_FORGE_COST,
                            get_recycle_materials)
 from ui.combat_log import LOG
 from engine.tileset import TILE_SIZE
 from engine.utils import get_camera_offset
+import engine.quest_logic as quest_logic
 from ui.ui_helpers import item_tooltip_lines, fill_surf
 from ui.ui_sizes import UI
 from ui.npc_interaction import walk_to_npc, suppress_chase
@@ -77,15 +79,11 @@ class BlacksmithSystem(UIScaleMixin, System):
 
     _FONT_BASES = {"_font_sm": 20, "_font_md": 26, "_font_lg": 32}
 
-    def __init__(self, world, player_entity, screen,
-                 shop_system=None, quest_dialog=None, quest_system=None):
+    def __init__(self, world, player_entity, screen):
         super().__init__()
         self.world          = world
         self.player_entity  = player_entity
         self.hud_surf         = screen
-        self._shop_system   = shop_system
-        self._quest_dialog  = quest_dialog
-        self._quest_system  = quest_system
         # Débito A4 (11/08/2026, ver PROBLEMAS_ARQUITETURA.md) — envia
         # CRAFT_REQUEST/RECYCLE_REQUEST ao servidor em vez de mutar ouro/
         # mochila só localmente. Injetado pelo GameEngine (game.py), None
@@ -296,8 +294,8 @@ class BlacksmithSystem(UIScaleMixin, System):
                         self._reset_forge()
                     elif key.startswith("quest:"):
                         qid = key[6:]
-                        if self._quest_dialog:
-                            self._quest_dialog._open_dialog(self._bs_eid)
+                        self.world.add_component(self.player_entity, NPCInteractionRequest(
+                            kind="open_quest_dialog", target_eid=self._bs_eid))
                         self._state = self.STATE_CLOSED
                     return
 
@@ -360,9 +358,8 @@ class BlacksmithSystem(UIScaleMixin, System):
         self._frg_pending  = False
 
     def _do_negociar(self):
-        if not self._shop_system:
-            return
-        self._shop_system.open_for(self._bs_eid)
+        self.world.add_component(self.player_entity, NPCInteractionRequest(
+            kind="open_shop", target_eid=self._bs_eid))
         self._state = self.STATE_CLOSED
 
     def _do_recycle(self):
@@ -519,24 +516,25 @@ class BlacksmithSystem(UIScaleMixin, System):
         PAD_V = self._u(10)
 
         options = []
-        # Quests disponíveis no NPC
-        if self._quest_system and self._bs_eid != -1:
-            from engine.components import QuestLog
+        # Quests disponíveis no NPC — via engine.quest_logic (ponto único
+        # de verdade, ver PROBLEMAS_ARQUITETURA.md item 4/§139), não mais
+        # `self._quest_system.can_start(qid)` — método que NUNCA existiu
+        # em QuestSystem (bug real achado corrigindo este item: essa
+        # chamada quebraria com AttributeError assim que um ferreiro
+        # tivesse uma quest disponível pra iniciar, já que quest_system
+        # sempre é injetado de verdade pelo GameEngine).
+        if self._bs_eid != -1:
             from content.quests_data import QUESTS
-            qg = self.world.get_component(self._bs_eid, QuestGiver)
-            ql = self.world.get_component(self.player_entity, QuestLog)
-            if qg and ql:
-                for qid in (qg.turn_in_ids or []):
-                    if self._quest_system.can_turn_in(qid):
-                        qdef = QUESTS.get(qid)
-                        if qdef:
-                            options.append(("quest:" + qid, f"[?] {qdef.title}", _COL_GOLD))
-                for qid in (qg.quest_ids or []):
-                    if (qid not in ql.active and qid not in ql.completed
-                            and self._quest_system.can_start(qid)):
-                        qdef = QUESTS.get(qid)
-                        if qdef:
-                            options.append(("quest:" + qid, f"[!] {qdef.title}", (220, 160, 40)))
+            for qid in quest_logic.get_completable_quests(
+                    self.world, self.player_entity, self._bs_eid):
+                qdef = QUESTS.get(qid)
+                if qdef:
+                    options.append(("quest:" + qid, f"[?] {qdef.title}", _COL_GOLD))
+            for qid in quest_logic.get_available_quests(
+                    self.world, self.player_entity, self._bs_eid):
+                qdef = QUESTS.get(qid)
+                if qdef:
+                    options.append(("quest:" + qid, f"[!] {qdef.title}", (220, 160, 40)))
 
         from engine.components import Blacksmith
         bs = self.world.get_component(self._bs_eid, Blacksmith)

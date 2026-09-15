@@ -14,8 +14,9 @@ from __future__ import annotations
 import pygame
 from ui.systems import System
 from engine.components import (Position, Renderable, TileMovement,
-                        NPC, Trainer, Wallet)
+                        NPC, Trainer, Wallet, NPCInteractionRequest)
 from engine.utils import get_camera_offset
+import engine.quest_logic as quest_logic
 from content.skill_config import (SKILL_CATALOG, SKILL_LEVEL_REQUIREMENTS, SKILL_COSTS,
                           NUM_SLOTS, SKILL_ORDER_BY_CLASS)
 from ui.icon_manager import ICONS
@@ -76,13 +77,11 @@ class TrainerSystem(UIScaleMixin, System):
 
     _FONT_BASES = {"_font_sm": 20, "_font_md": 26, "_font_lg": 32, "_font_xl": 38}
 
-    def __init__(self, world, player_entity: int, screen,
-                 quest_dialog=None):
+    def __init__(self, world, player_entity: int, screen):
         super().__init__()
         self.world         = world
         self.player_entity = player_entity
         self.hud_surf        = screen
-        self._quest_dialog = quest_dialog
 
         SW, SH = screen.get_size()
 
@@ -239,8 +238,8 @@ class TrainerSystem(UIScaleMixin, System):
                         self._state = self.STATE_TRAINING
                         self._list_scroll = 0
                     elif key.startswith("quest:"):
-                        if self._quest_dialog:
-                            self._quest_dialog._open_dialog(self._tr_eid)
+                        self.world.add_component(self.player_entity, NPCInteractionRequest(
+                            kind="open_quest_dialog", target_eid=self._tr_eid))
                         self._state = self.STATE_CLOSED
                     elif key == "_none":
                         self._close()
@@ -275,10 +274,9 @@ class TrainerSystem(UIScaleMixin, System):
         tr_class = tr.class_id if tr else "guerreiro"
         if cs and cs.class_id == tr_class:
             options.append(("treinamento", "Treinamento"))
-        if self._quest_dialog and (
-                self._quest_dialog._get_available_quests(eid) or
-                self._quest_dialog._get_completable_quests(eid, self._tr_name) or
-                self._quest_dialog._get_inprogress_quests(eid)):
+        if (quest_logic.get_available_quests(self.world, self.player_entity, eid) or
+                quest_logic.get_completable_quests(self.world, self.player_entity, eid, self._tr_name) or
+                quest_logic.get_inprogress_quests(self.world, self.player_entity, eid)):
             options.append(("quest:0", "Quests"))
         return options
 
@@ -300,8 +298,9 @@ class TrainerSystem(UIScaleMixin, System):
         # primeiro, e a quest só se resolvia depois de já estar dentro do
         # diálogo — mesma checagem que `_open_dialog` já faz certo, só que
         # ANTES de decidir se pula o menu.
-        if self._quest_dialog and self._quest_dialog._get_completable_quests(eid, self._tr_name):
-            self._quest_dialog._open_dialog(eid)
+        if quest_logic.get_completable_quests(self.world, self.player_entity, eid, self._tr_name):
+            self.world.add_component(self.player_entity, NPCInteractionRequest(
+                kind="open_quest_dialog", target_eid=eid))
             self._state = self.STATE_CLOSED
             self._open_cooldown = 0.3
             return
@@ -316,8 +315,8 @@ class TrainerSystem(UIScaleMixin, System):
                 self._state = self.STATE_TRAINING
                 self._list_scroll = 0
             elif key.startswith("quest:"):
-                if self._quest_dialog:
-                    self._quest_dialog._open_dialog(eid)
+                self.world.add_component(self.player_entity, NPCInteractionRequest(
+                    kind="open_quest_dialog", target_eid=eid))
                 self._state = self.STATE_CLOSED
             else:
                 from engine.components import CharacterStats

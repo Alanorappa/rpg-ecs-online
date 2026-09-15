@@ -767,6 +767,24 @@ padrão a quebrar, não só os bugs individuais.
   definem `"effects"` no catálogo. `skip_local_caster` afeta só o
   branch `is_local` — outros players continuam ouvindo normal. Ver
   PROBLEMAS_ARQUITETURA.md §137.
+- **Sistema de NPC amigável (Loja/Ferreiro/Treinador/Diálogo de quest)
+  que precisa "abrir" outro sistema de NPC** → componente
+  `NPCInteractionRequest` (`engine/components.py`, `kind`+`target_eid`)
+  — quem PEDE só escreve o componente no player; quem ABRE
+  (`ShopSystem`/`QuestDialogSystem`) lê e consome (remove) no INÍCIO do
+  próprio `update()`, só quando `kind` bate com o seu — NUNCA chamar
+  método (principalmente privado) de outra instância de System
+  injetada no construtor. Consulta pura sobre quest (disponível/
+  completável/em progresso pra um NPC) → `engine/quest_logic.py::
+  get_available_quests`/`get_completable_quests`/`get_inprogress_quests`
+  (função de módulo, `(world, player_eid, npc_id)`, sem precisar de
+  instância de `QuestSystem`/`QuestDialogSystem`) — NUNCA reimplementar
+  essa lógica inline nem guardar referência cruzada só pra isso. Bug
+  real achado fazendo esse refactor: `BlacksmithSystem` chamava
+  `self._quest_system.can_start(qid)`, método que NUNCA existiu em
+  `QuestSystem` — quebraria com `AttributeError` assim que um ferreiro
+  tivesse quest disponível pra iniciar. Ver PROBLEMAS_ARQUITETURA.md
+  §139.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

@@ -32,7 +32,8 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        EnemyAbilities, EnemyAbilitySlot, EntityIdentity, \
                        NpcSounds, PendingDeath, XPReward, SpawnZoneOwner, SpawnZone, \
                        PlayerSkills, NPC, ActiveRegen, ConsumableBar, \
-                       AoeTargeting, RemoteControlled, GhostState, MapLocation, Minion
+                       AoeTargeting, RemoteControlled, GhostState, MapLocation, Minion, \
+                       NPCInteractionRequest
 from engine.world import World
 from engine.tileset import TILE_SIZE, OBJECT_MAPPING
 from engine.utils import chebyshev, in_range, start_tile_movement, get_camera_offset
@@ -2803,6 +2804,18 @@ class ShopSystem(UIScaleMixin, System):
     # ------------------------------------------------------------------
 
     def update(self, events=None, dt: float = 0) -> None:
+        # Pedido de abertura vindo de outro System (ex: BlacksmithSystem
+        # "Negociar") — 15/09/2026, item 4 da revisão de performance
+        # (ver docstring de NPCInteractionRequest, engine/components.py).
+        # Só remove o componente quando o `kind` é DESTE system — outro
+        # `kind` (ex: "open_quest_dialog") fica intocado pro dono real
+        # consumir no MESMO frame, sem depender de ordem de update() entre
+        # Systems.
+        _npc_req = self.world.get_component(self.player_entity, NPCInteractionRequest)
+        if _npc_req is not None and _npc_req.kind == "open_shop":
+            self.open_for(_npc_req.target_eid)
+            self.world.remove_component(self.player_entity, NPCInteractionRequest)
+
         self._right_click_consumed = False
         if self._open_cooldown > 0:
             self._open_cooldown = max(0.0, self._open_cooldown - dt)

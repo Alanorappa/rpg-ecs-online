@@ -338,3 +338,119 @@ def roll_conditional_loot(ql, enemy_name: str, enemy_race: str) -> list:
                 if factory:
                     extras.append(factory())
     return extras
+
+
+# ── Consultas de disponibilidade de quest por NPC (15/09/2026, item 4 da
+# revisão de performance — arquitetura/CLIENT_PERFORMANCE_REVIEW.md) ──────
+#
+# Extraídas de ui/quest_system.py::QuestDialogSystem (métodos PRIVADOS
+# `_get_available_quests`/`_get_completable_quests`/`_get_inprogress_quests`
+# de lá viraram wrappers finos chamando isto) — `ui/crafting_system.py::
+# BlacksmithSystem` e `ui/trainer_system.py::TrainerSystem` chamavam esses
+# métodos privados DIRETO numa instância de QuestDialogSystem injetada no
+# construtor, violando a regra do projeto ("um System nunca chama outro
+# System diretamente"). Como são consultas PURAS sobre componentes
+# públicos (QuestLog/QuestGiver/CharacterStats), viram função de módulo
+# aqui — chamável por QUALQUER System com (world, player_eid, npc_id),
+# sem precisar de referência a nenhuma instância de QuestSystem/
+# QuestDialogSystem.
+
+def player_level(world, player_eid: int) -> int:
+    from engine.components import CharacterStats
+    char = world.get_component(player_eid, CharacterStats)
+    return char.level if char else 1
+
+
+def player_class_id(world, player_eid: int) -> str:
+    from engine.components import CharacterStats
+    char = world.get_component(player_eid, CharacterStats)
+    return char.class_id if char else ""
+
+
+def quests_claimed_for_turn_in(world) -> set:
+    """Quest ids que algum QuestGiver do mundo reivindica EXPLICITAMENTE
+    em turn_in_ids (não-vazio). Usado por turn_in_ids_for pra impedir que
+    o NPC que só DÁ uma quest (turn_in_ids vazio, cai no fallback =
+    quest_ids) também apareça como aceitando a entrega quando um NPC
+    diferente já foi configurado como o entregador de verdade."""
+    from engine.components import QuestGiver
+    claimed = set()
+    for _eid, other_giver in world.get_entities_with(QuestGiver):
+        claimed.update(other_giver.turn_in_ids)
+    return claimed
+
+
+def turn_in_ids_for(world, giver) -> tuple:
+    """ids que ESTE giver aceita pra entrega — turn_in_ids explícito se
+    houver; senão (fallback pra quests simples de 1 NPC só) quest_ids,
+    excluindo qualquer qid já reivindicado por OUTRO NPC."""
+    if giver.turn_in_ids:
+        return giver.turn_in_ids
+    claimed_elsewhere = quests_claimed_for_turn_in(world)
+    return tuple(qid for qid in giver.quest_ids if qid not in claimed_elsewhere)
+
+
+def get_available_quests(world, player_eid: int, npc_id: int) -> list:
+    """Quests que o NPC pode oferecer (não iniciadas, pré-req ok, nível ok,
+    classe ok). Quest com class_req != classe do player é tratada como se
+    não existisse pra ele."""
+    from engine.components import QuestLog, QuestGiver
+    giver = world.get_component(npc_id, QuestGiver)
+    if giver is None:
+        return []
+    ql = world.get_component(player_eid, QuestLog)
+    if ql is None:
+        return []
+    plvl   = player_level(world, player_eid)
+    pclass = player_class_id(world, player_eid)
+    result = []
+    for qid in giver.quest_ids:
+        if qid in ql.active or qid in ql.completed:
+            continue
+        qdef = QUESTS.get(qid)
+        if qdef is None or (qdef.class_req and qdef.class_req != pclass):
+            continue
+        if all(r in ql.completed for r in qdef.requires):
+            if qdef.level_req <= plvl:
+                result.append(qid)
+    return result
+
+
+def get_completable_quests(world, player_eid: int, npc_id: int,
+                           pending_npc_name: str = "") -> list:
+    """Quests que o NPC aceita para entrega e estão 100% concluídas.
+
+    pending_npc_name: se fornecido, também inclui quests cujo único
+    objetivo pendente é talk_to_npc direcionado a este NPC — espelha o
+    comportamento do servidor que aplica talk_to_npc antes de
+    can_turn_in."""
+    from engine.components import QuestGiver, QuestLog
+    giver = world.get_component(npc_id, QuestGiver)
+    if giver is None:
+        return []
+    ids    = turn_in_ids_for(world, giver)
+    ql     = world.get_component(player_eid, QuestLog)
+    result = []
+    for qid in ids:
+        if ql and can_turn_in(ql, qid):
+            result.append(qid)
+        elif pending_npc_name and ql and can_turn_in_after_talk(ql, qid, pending_npc_name):
+            result.append(qid)
+    return result
+
+
+def get_inprogress_quests(world, player_eid: int, npc_id: int) -> list:
+    """Quests aceitas e em progresso (incompletas)."""
+    from engine.components import QuestGiver, QuestLog
+    giver = world.get_component(npc_id, QuestGiver)
+    if giver is None:
+        return []
+    ids    = turn_in_ids_for(world, giver)
+    ql     = world.get_component(player_eid, QuestLog)
+    result = []
+    for qid in ids:
+        if ql and can_turn_in(ql, qid):
+            continue   # completável, não em progresso
+        if ql and qid in ql.active:
+            result.append(qid)
+    return result
