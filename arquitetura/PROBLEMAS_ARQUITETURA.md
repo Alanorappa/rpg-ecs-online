@@ -18645,8 +18645,46 @@ cometido com a tecla DELETE nesta mesma investigação.
 Suíte completa: 1658 passed, 1 failed pré-existente/timing flake sem
 relação.
 
-**Status**: investigação REABERTA, 3ª rodada — `ui_modals_overlay`
-CONFIRMADO como a causa real (não mais hipótese), agora dividido em 10
-labels granulares pra identificar QUAL dos 10 sub-blocos é o
-responsável. Aguardando próximo log. Fix da tecla DELETE continua
-mantido (correto, independente).
+**Follow-up 4 no mesmo dia (usuário testou de novo, "senti alguns
+engasgos" — sem certeza se pequeno-repetitivo ou grande-isolado, pediu
+pra investigar os dois)**: o log NÃO reproduziu o spike grande de
+90-121ms desta vez (nenhum `[SPIKE]` além do de inicialização, já
+esperado) — `ui:map_overlay` ficou consistentemente ~0.001ms (peak
+máximo 0.025ms) em 20+ relatórios `[PROF]`, **hipótese do mapa
+REFUTADA**. Sem reprodução, não dá pra avançar mais na causa do spike
+grande por ora — instrumentação (10 labels `ui:*`) continua no lugar
+pra próxima ocorrência.
+
+Separado disso, achado um segundo padrão real e CONSISTENTE (presente
+em todo `[PROF]` do log, ~24 ocorrências): `gc_collect` com peak de
+~22-28ms a cada disparo (a cada ~10s) — pequeno comparado ao spike
+grande, mas confiável/recorrente, plausível candidato pro "engasgo
+pequeno e repetitivo" que o usuário descreveu. Decisão do usuário:
+tratar já que está confirmado por medição (diferente do spike grande,
+que ainda não tem causa certa) — opção escolhida: gen0/gen1 (baratas)
+voltam a coletar automaticamente no modo padrão do Python; só a
+geração 2 (a cara, a que estava sendo medida) continua manual, no
+mesmo timer de ~10s.
+
+Implementado: `_gc.disable()` (que desligava TODA coleta automática)
+virou `_gc.set_threshold(700, 10, 2_000_000_000)` — thresholds 0/1 no
+padrão do CPython (gen0/gen1 disparam sozinhas, sem controle nenhum
+daqui), threshold2 gigantesco o suficiente pra gen2 nunca disparar
+sozinha no meio de um frame qualquer (o motivo original do GC manual,
+19/07/2026) — só o `_gc.collect(2)` explícito no timer periódico
+continua forçando ela. Efeito esperado: menos garbage sobra acumulado
+pra geração 2 processar (gen0/1 já limpam sozinhas o tempo todo),
+então a pausa de ~22-28ms a cada 10s deve ficar menor — não eliminada
+(a geração 2 ainda roda no mesmo timer), mas mais barata por já não
+carregar objetos que gen0/1 já teriam limpado.
+
+Suíte completa: 1658 passed, 1 failed pré-existente/timing flake sem
+relação.
+
+**Status**: 2 investigações em paralelo, estados diferentes —
+1. **Spike grande (90-121ms, `ui_modals_overlay`)**: aberto, não
+   reproduzido nesta rodada, `ui:map_overlay` descartado. 10 labels
+   granulares continuam ativos aguardando a próxima ocorrência.
+2. **Pausa pequena e recorrente (`gc_collect`, ~22-28ms/10s)**:
+   ação tomada (gen0/1 automáticas, só gen2 manual) — aguardando
+   confirmação do usuário em jogo se a sensação de engasgo melhorou.

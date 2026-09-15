@@ -1564,7 +1564,16 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         reconecta e volta pra seleção de personagem, mantendo o processo/pygame
         vivos) ou None (saída normal — "Sair do jogo" ou fechar a janela;
         main.py encerra o processo)."""
-        _gc.disable()          # GC manual — evita pauses aleatórias no loop de jogo
+        # GC das gerações baratas (0/1) fica AUTOMÁTICO, no modo padrão do
+        # Python — só a coleta completa (geração 2, a cara, confirmada por
+        # profiling em ~22-28ms a cada disparo, ver PROBLEMAS_ARQUITETURA.md
+        # §143) continua manual, no timer abaixo. Decisão do usuário
+        # (15/09/2026): threshold2 gigante impede o Python de disparar gen2
+        # sozinho no meio de um frame qualquer (o motivo original do GC
+        # manual, discutido 19/07/2026), mas gen0/gen1 (rápidas, raramente
+        # perceptíveis) não precisam desse controle — deixá-las automáticas
+        # reduz o quanto de garbage sobra pra geração 2 lidar depois.
+        _gc.set_threshold(700, 10, 2_000_000_000)
         _gc_counter = 0
         running = True
         # Descarta o tempo acumulado durante __init__: sem este tick, o primeiro
@@ -1582,20 +1591,19 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # ARQUITETURA_ONLINE.md.
             dt = self.clock.tick(FPS) / 1000.0
             _gc_counter += 1
-            if _gc_counter >= FPS * 10:   # coleta a cada ~10s, entre frames
-                # Instrumentado (15/09/2026, #141/#142 follow-up) — log real
-                # do usuário mostrou 2 spikes de ~104-109ms sem quase nada
-                # explicado no breakdown (só 3-4ms noutras seções do MESMO
-                # frame). gc.collect() roda ANTES de qualquer _ts do frame
-                # ser marcado, então nunca aparecia em nenhum label — hipótese
-                # forte (não confirmada ainda, ver PROBLEMAS_ARQUITETURA.md),
-                # mas o objetivo aqui é só medir, não mudar o comportamento.
+            if _gc_counter >= FPS * 10:   # coleta completa (geração 2) a cada ~10s
+                # Instrumentado (15/09/2026, #141/#142/#143) — confirmado
+                # por profiling real: essa coleta completa custa ~22-28ms.
+                # gen0/gen1 já rodam automáticas (ver set_threshold acima),
+                # então só a geração 2 (a cara, "full collect") continua
+                # aqui, deliberadamente — nunca deixar disparar sozinha no
+                # meio de um frame qualquer.
                 if PROFILE_FRAMES:
                     _gc_ts = _time.perf_counter()
-                    _gc.collect()
+                    _gc.collect(2)
                     self._prof_record("gc_collect", _time.perf_counter() - _gc_ts)
                 else:
-                    _gc.collect()
+                    _gc.collect(2)
                 _gc_counter = 0
             self._dt = dt
             SOUNDS.new_frame()  # limpa deduplicação de sons
