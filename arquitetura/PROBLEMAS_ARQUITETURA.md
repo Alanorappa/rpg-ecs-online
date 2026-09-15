@@ -18612,8 +18612,41 @@ novo label `ui_modals_overlay` cobre esse trecho inteiro. Suíte
 completa: 1658 passed, 1 failed pré-existente/timing flake sem relação
 (`test_perf_push_pop_grava_no_caminho`).
 
-**Status**: investigação REABERTA, 2ª rodada — `input_dispatch`
-descartado como causa (medido, baixo). `ui_modals_overlay` é o novo
-candidato, ainda NÃO confirmado — aguardando próximo log de playtest
-pra ver se o tempo aparece ali. Fix da tecla DELETE continua mantido
-(correto, independente do spike específico relatado).
+**Follow-up 3 no mesmo dia (usuário jogou "por um momento", mandou o
+log — confirmação positiva)**: `ui_modals_overlay` apareceu como o
+grosso de DOIS spikes reais:
+- `[SPIKE] 90ms ... >> ui_modals_overlay 79.3ms >> display_flip 4.6ms`
+- `[SPIKE] 121ms ... >> ui_modals_overlay 109.0ms >> display_flip 3.9ms`
+
+Confirmado: o bloco "por cima de tudo" É a causa real (não mais
+hipótese) — primeira vez nesta investigação inteira (§141→§143) que um
+[SPIKE] de 90ms+ aparece com o culpado NOMEADO no próprio breakdown,
+em vez de tempo invisível. Os 2 casos têm `is_moving=False,
+is_pursuing=True` no primeiro/`is_pursuing=False` no segundo — jogador
+parado nos dois, consistente com estar com algum modal ABERTO parado
+olhando (mapa, inventário, etc.), não com movimento/combate.
+
+`ui_modals_overlay` ainda era um bloco genérico só (loot/shop/quest/
+crafting/trainer modal + mapa overlay + menu de pausa + God Mode + perf
+overlay, todos somados). Dividido em 10 labels granulares — mesma
+disciplina de sempre, achar o culpado exato em vez de mais um "bloco
+inteiro": `ui:loot_modal`, `ui:shop_modal`, `ui:quest_dialog_journal`,
+`ui:crafting_modal`, `ui:trainer_modal`, `ui:tooltip_flush_debug_modal`
+(fechando um gap residual achado durante esta divisão — tooltip flush +
+modal de debug F12 também ficavam sem cobertura entre trainer e mapa),
+`ui:map_overlay`, `ui:pause_menu`, `ui:god_mode`, `ui:perf_overlay`.
+Hipótese mais provável pra confirmar no próximo log, dado o padrão
+"parado" dos 2 casos: `ui:map_overlay` (`_map_overlay.render()`,
+gated por `is_open`, envolve `collect_markers()`/`collect_quest_circles()`
++ desenhar o fog explorado — trabalho genuinamente pesado se não
+cacheado) — mas não assumir sem o dado confirmando, mesmo erro já
+cometido com a tecla DELETE nesta mesma investigação.
+
+Suíte completa: 1658 passed, 1 failed pré-existente/timing flake sem
+relação.
+
+**Status**: investigação REABERTA, 3ª rodada — `ui_modals_overlay`
+CONFIRMADO como a causa real (não mais hipótese), agora dividido em 10
+labels granulares pra identificar QUAL dos 10 sub-blocos é o
+responsável. Aguardando próximo log. Fix da tecla DELETE continua
+mantido (correto, independente).

@@ -2538,44 +2538,59 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if PROFILE_FRAMES:
                 self._prof_record("hud:map_title", _time.perf_counter() - _ts)
 
-            # Instrumentado (15/09/2026, #143 follow-up 2) — o bloco de
-            # eventos de teclado/mouse (input_dispatch) NÃO explicou o
-            # spike de 111ms do log anterior (peak lá ficou < 2ms). Este
-            # bloco "por cima de tudo" (render de loot/shop/quest/crafting/
-            # trainer, mapa overlay, menu de pausa, God Mode, perf overlay)
-            # é outro candidato do mesmo formato do §140 original — vários
-            # `.render()`/`.update()` chamados INDIVIDUALMENTE, fora de
-            # qualquer loop genérico já medido, cada um com assinatura
-            # própria. Mede o bloco INTEIRO de uma vez, mesmo raciocínio
-            # do input_dispatch: confirma ou descarta esta região antes de
-            # sub-dividir call site por call site.
-            if PROFILE_FRAMES:
-                _ts = _time.perf_counter()
+            # Instrumentado (15/09/2026, #143 follow-up 3) — o bloco
+            # inteiro "por cima de tudo" (ui_modals_overlay) já confirmou
+            # ser a causa dos spikes de 79-109ms (follow-up 2: input_dispatch
+            # descartado, este bloco flagrado). Agora granular por
+            # call site — mesmo motivo de sempre, achar o culpado exato em
+            # vez de mais um "bloco inteiro" genérico.
 
             # Loot modal por cima de tudo (inclusive inventory panel)
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             self._loot_system.render(cam_x, cam_y)
             if self._loot_system.pending_tooltip:
                 self._pending_tooltip = self._loot_system.pending_tooltip
+            if PROFILE_FRAMES:
+                self._prof_record("ui:loot_modal", _time.perf_counter() - _ts)
 
             # Shop modal: por cima de tudo
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             self._shop_system.render(cam_x, cam_y)
             if self._shop_system.pending_tooltip:
                 self._pending_tooltip = self._shop_system.pending_tooltip
+            if PROFILE_FRAMES:
+                self._prof_record("ui:shop_modal", _time.perf_counter() - _ts)
 
             # Quest dialog e diário: por cima de tudo
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             self._quest_dialog.render()
             if self._quest_dialog.pending_tooltip:
                 self._pending_tooltip = self._quest_dialog.pending_tooltip
             self._quest_journal.render()
+            if PROFILE_FRAMES:
+                self._prof_record("ui:quest_dialog_journal", _time.perf_counter() - _ts)
 
             # Crafting (ferreiro): por cima de tudo
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             self._crafting_system.render()
             if self._crafting_system.pending_tooltip:
                 self._pending_tooltip = self._crafting_system.pending_tooltip
+            if PROFILE_FRAMES:
+                self._prof_record("ui:crafting_modal", _time.perf_counter() - _ts)
 
             # Trainer (treinador): por cima de tudo
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             self._trainer_system.render()
+            if PROFILE_FRAMES:
+                self._prof_record("ui:trainer_modal", _time.perf_counter() - _ts)
 
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             if self._pending_tooltip:
                 self._flush_tooltip()
             if self._pending_skill_tooltip:
@@ -2584,8 +2599,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # Modal de debug (F12): por cima de tudo exceto mapa
             if self._show_debug and DEBUG_MODE and self.is_gm:
                 self._draw_debug_modal()
+            if PROFILE_FRAMES:
+                self._prof_record("ui:tooltip_flush_debug_modal", _time.perf_counter() - _ts)
 
             # Mapa por cima de tudo
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             if self._map_overlay.is_open:
                 player_tm = self.world.get_component(self.player_entity, TileMovement)
                 tx = player_tm.current_tile_x if player_tm else -1
@@ -2599,8 +2618,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                                          circles=collect_quest_circles(
                                              self.world, self.player_entity, self._quest_system,
                                              self._current_map_file, self._spawn_points))
+            if PROFILE_FRAMES:
+                self._prof_record("ui:map_overlay", _time.perf_counter() - _ts)
 
             # Menu de pausa (por cima de tudo)
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             if self._pending_quit or self._pending_logout:
                 running = False
             elif self._show_pause:
@@ -2645,17 +2668,24 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         self._apply_window_mode(action.split(":")[1])
                     except Exception as _win_mode_err:
                         print(f"[GameEngine] aviso: falha ao trocar modo de janela — {_win_mode_err}")
+            if PROFILE_FRAMES:
+                self._prof_record("ui:pause_menu", _time.perf_counter() - _ts)
 
             # God Mode: por cima de tudo (grade + seleção + painel)
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             self._god_mode.update(cam_x, cam_y, dt)
             self._god_mode.render(cam_x, cam_y)
+            if PROFILE_FRAMES:
+                self._prof_record("ui:god_mode", _time.perf_counter() - _ts)
 
             # Overlay de performance (F11) — por cima de tudo, antes do flip
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             if self._show_perf_overlay:
                 self._draw_perf_overlay()
-
             if PROFILE_FRAMES:
-                self._prof_record("ui_modals_overlay", _time.perf_counter() - _ts)
+                self._prof_record("ui:perf_overlay", _time.perf_counter() - _ts)
 
             # Copia surface interna → janela (resolução nativa, sem escala)
             if PROFILE_FRAMES:
