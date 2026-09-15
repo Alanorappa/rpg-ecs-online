@@ -240,7 +240,16 @@ SKILL_CATALOG: dict[str, dict] = {
         "needs_target":     False,
         "class_id":         "mago",
         "school":           "gelo",
-        "effects":          {"impact": {"sound": "skill_nova_congelante_impact"}},
+        # skip_local_caster (14/09/2026, bug real relatado pelo usuário: som
+        # de impacto tocava 2x — uma vez na previsão local do cast completando
+        # em ui/spell_system.py::_apply_nova_congelante, outra quando o
+        # SKILL_EFFECT do servidor chegava de volta pro PRÓPRIO conjurador via
+        # broadcast AOI). Continua tocando normal pra QUALQUER outro player
+        # perto — só suprime a duplicata pra quem já ouviu localmente. Ver
+        # client/network_handlers.py::_handle_msg_skill_effect,
+        # PROBLEMAS_ARQUITETURA.md §137.
+        "effects":          {"impact": {"sound": "skill_nova_congelante_impact",
+                                         "skip_local_caster": True}},
         "effect_durations": {"root": 5.0},
     },
     "bloco_de_gelo": {

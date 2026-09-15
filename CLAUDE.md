@@ -752,6 +752,21 @@ padrão a quebrar, não só os bugs individuais.
   recalculou certo (efeito real disparava na hora), só a barra de cast
   do CLIENTE ficava presa no valor de fora da instância. Ver
   PROBLEMAS_ARQUITETURA.md §136.
+- **Skill com handler de previsão LOCAL (`ui/spell_system.py::
+  SpellCastSystem._CAST_HANDLERS`) que TAMBÉM define
+  `effects.<evento>.sound` no catálogo (`content/skill_config.py`, pra
+  espectador ouvir) precisa marcar `effects.<evento>.skip_local_caster:
+  True`** — sem isso, o broadcast AOI do `SKILL_EFFECT` de conclusão
+  (`server/spell_completion_processor.py`, genérico pra toda skill sem
+  projétil) volta pro PRÓPRIO conjurador (que está dentro do seu
+  próprio raio de AOI) e `client/network_handlers.py::
+  _handle_msg_skill_effect` toca o mesmo som DE NOVO, duplicando o que
+  a previsão local já tocou quando o cast do cliente terminou. Bug
+  real: Nova Congelante tocava o som de impacto 2x (local + eco de
+  rede) — Calcinar/Polimorfia nunca tiveram esse bug só porque não
+  definem `"effects"` no catálogo. `skip_local_caster` afeta só o
+  branch `is_local` — outros players continuam ouvindo normal. Ver
+  PROBLEMAS_ARQUITETURA.md §137.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

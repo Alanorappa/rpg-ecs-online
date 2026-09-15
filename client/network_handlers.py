@@ -863,6 +863,15 @@ class NetworkHandlers:
         if not snd and not snds:
             return
         if is_local:
+            # skip_local_caster (ver skill_config.py, ex: nova_congelante):
+            # o PRÓPRIO conjurador já ouviu esse som via previsão local
+            # (ui/spell_system.py::SpellCastSystem._CAST_HANDLERS, tocado
+            # quando o cast local completa) — tocar de novo aqui duplicava
+            # (bug real relatado pelo usuário, 14/09/2026, ver
+            # PROBLEMAS_ARQUITETURA.md §137). Outros players continuam
+            # ouvindo normal (branch `else` abaixo, nunca afetado).
+            if fx.get("skip_local_caster"):
+                return
             if snd:
                 SOUNDS.play_skill(snd)
             else:

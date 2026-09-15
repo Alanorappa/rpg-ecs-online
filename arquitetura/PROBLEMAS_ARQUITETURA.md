@@ -17976,3 +17976,61 @@ também, não só copiar o valor bruto. Mesma classe de gap já visto em
 `recalculate_preserving_hp_pct`/`grant_visible_buff` (mutação de um
 dado que alimenta outro cálculo precisa passar pelo pipeline completo,
 nunca só escrever o campo final).
+
+## 137. Som de impacto da Nova Congelante tocava 2x — previsão local + eco do próprio SKILL_EFFECT de rede (14/09/2026)
+
+Usuário relatou, mesmo dia do §136, mas confirmado que acontece em
+QUALQUER lugar (não só BG): "o som é emitido no momento que aperta a
+skill, e a outra parece que acontece quando o servidor confirma a
+skill, por conta do delay".
+
+**Causa raiz**: dois caminhos INDEPENDENTES tocam o mesmo som de
+impacto pro conjurador:
+1. **Previsão local** — `ui/spell_system.py::SpellCastSystem.
+   _apply_nova_congelante` (`_CAST_HANDLERS["nova_congelante"]`),
+   chamada quando o `SpellCast` LOCAL do próprio cliente termina
+   (`spell_cast.elapsed >= spell_cast.cast_time`) — toca
+   `SOUNDS.play_spell("nova_congelante", "impact")` na hora que a
+   barra de cast do jogador enche.
+2. **Confirmação de rede** — `server/spell_completion_processor.py`
+   (bloco genérico "SKILL_EFFECT: evento de apresentação da
+   conclusão", usado por TODA skill sem projétil) enfileira um
+   `SKILL_EFFECT{event: "impact"}` na conclusão real (servidor),
+   broadcast via AOI — **pensado pra QUALQUER OUTRO player perto ouvir
+   a skill**, mas o PRÓPRIO conjurador também está dentro do seu
+   próprio raio de AOI e recebe a mensagem de volta.
+   `client/network_handlers.py::_handle_msg_skill_effect` lia
+   `SKILL_CATALOG[sid]["effects"]["impact"]["sound"]` e tocava de novo
+   sempre que existia, sem checar se o caster já tinha ouvido local.
+
+Calcinar/Polimorfia (mesma categoria — cast_time>0, handler local
+próprio) NUNCA tiveram esse bug porque simplesmente não têm
+`"effects"` no catálogo — `_handle_msg_skill_effect` não acha nada pra
+tocar e retorna cedo. Nova Congelante é a ÚNICA skill nessa categoria
+que definia `effects.impact.sound` (pensado originalmente só pros
+espectadores).
+
+**Fix**: flag nova no catálogo, `effects.<evento>.skip_local_caster:
+True` (`content/skill_config.py::nova_congelante`) — checada em
+`_handle_msg_skill_effect` ANTES de tocar som pro `is_local` (branch do
+próprio conjurador); o branch `else` (outros players, som posicional)
+nunca é afetado — continuam ouvindo a skill normalmente. Decisão
+confirmada com o usuário: manter espectadores ouvindo, só suprimir a
+duplicata pro próprio conjurador (não remover o SKILL_EFFECT inteiro).
+
+**Teste automatizado**: `tests/test_skill_effect_no_local_dup_sound.py`
+(novo) — confirma que o conjurador NÃO ouve de novo (`caster_eid ==
+my_eid`), que outro player continua ouvindo normal (`caster_eid !=
+my_eid`), e guarda de regressão pra Calcinar (sem `"effects"` no
+catálogo, handler de rede nunca toca nada). Confirmado por
+revert-to-confirm que o teste do conjurador falha sem o fix.
+
+**Lição pra não repetir**: uma skill com handler de PREVISÃO LOCAL
+(`ui/spell_system.py::_CAST_HANDLERS`) que TAMBÉM define
+`effects.<evento>.sound` no catálogo (pra espectador ouvir) duplica o
+som pro próprio conjurador por padrão — o broadcast AOI do servidor não
+distingue "quem já sabe" de "quem precisa saber agora". Toda skill nova
+dessa categoria (cast_time>0 + handler local + som no catálogo) precisa
+decidir explicitamente se o conjurador já ouviu localmente e, se sim,
+marcar `skip_local_caster` — não assumir que o broadcast genérico é
+sempre seguro pra quem já previu o resultado.
