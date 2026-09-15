@@ -7,6 +7,7 @@ self.world, self._my_eid, self._net e os demais atributos referenciados aqui.
 import random
 from engine.components import PlayerSkills, TileMovement
 from engine.tileset import TILE_SIZE
+from shared.messages import MsgType
 from ui.combat_log import LOG
 from ui.floating_text import PROC
 from ui.sound_manager import SOUNDS
@@ -15,115 +16,29 @@ from ui.sound_manager import SOUNDS
 class NetworkHandlers:
 
     def _handle_net_message(self, msg_type, payload: dict) -> None:
-        from shared.messages import MsgType
-        if msg_type == MsgType.LOGIN_OK:
-            self._handle_msg_login_ok(payload)
-        elif msg_type == MsgType.LOGIN_ERROR:
-            self._handle_msg_login_error(payload)
-        elif msg_type == MsgType.WORLD_STATE:
-            self._handle_msg_world_state(payload)
-        elif msg_type == MsgType.ENTITY_SPAWN:
-            self._handle_msg_entity_spawn(payload)
-        elif msg_type == MsgType.COMBAT_RESULT:
-            self._handle_msg_combat_result(payload)
-        elif msg_type == MsgType.SKILL_RESULT:
-            self._handle_msg_skill_result(payload)
-        elif msg_type == MsgType.SKILL_EFFECT:
-            self._handle_msg_skill_effect(payload)
-        elif msg_type == MsgType.ENTITY_DESPAWN:
-            self._handle_msg_entity_despawn(payload)
-        elif msg_type == MsgType.ENTITY_MOVE:
-            self._handle_msg_entity_move(payload)
-        elif msg_type == MsgType.AOI_UPDATE:
-            self._handle_msg_aoi_update(payload)
-        elif msg_type == MsgType.STATS_UPDATE:
-            self._handle_msg_stats_update(payload)
-        elif msg_type == MsgType.SKILL_LEVELS_UPDATE:
-            self._handle_msg_skill_levels_update(payload)
-        elif msg_type == MsgType.CHAR_STATS_DATA:
-            self._char_stats_ui.set_data(payload)
-        elif msg_type == MsgType.QUEST_UPDATE:
-            self._handle_msg_quest_update(payload)
-        elif msg_type == MsgType.PLAYER_DEATH:
-            self._handle_msg_player_death(payload)
-        elif msg_type == MsgType.PLAYER_REVIVE:
-            self._handle_msg_player_revive(payload)
-        elif msg_type == MsgType.GHOST_STATE:
-            self._handle_msg_ghost_state(payload)
-        elif msg_type == MsgType.ENTITY_DEATH:
-            self._handle_msg_entity_death(payload)
-        elif msg_type == MsgType.LOOT_AVAILABLE:
-            self._handle_msg_loot_available(payload)
-        elif msg_type == MsgType.SOUND_EVENT:
-            self._handle_msg_sound_event(payload)
-        elif msg_type == MsgType.LOOT_RESULT:
-            self._handle_msg_loot_result(payload)
-        elif msg_type == MsgType.LOOT_UPDATE:
-            self._handle_msg_loot_update(payload)
-        elif msg_type == MsgType.INVENTORY_UPDATE:
-            self._handle_msg_inventory_update(payload)
-        elif msg_type == MsgType.SKILL_GRANTED:
-            self._handle_msg_skill_granted(payload)
-        elif msg_type == MsgType.BUY_RESULT:
-            self._handle_msg_buy_result(payload)
-        elif msg_type == MsgType.SELL_RESULT:
-            self._handle_msg_sell_result(payload)
-        elif msg_type == MsgType.CRAFT_RESULT:
-            self._handle_msg_craft_result(payload)
-        elif msg_type == MsgType.RECYCLE_RESULT:
-            self._handle_msg_recycle_result(payload)
-        elif msg_type == MsgType.PONG:
-            self._handle_msg_pong(payload)
-        elif msg_type == MsgType.ZONE_CHANGE:
-            self._handle_msg_zone_change(payload)
-        elif msg_type == MsgType.EQUIP_REJECTED:
-            self._handle_msg_equip_rejected(payload)
-        elif msg_type == MsgType.TRADE_INVITE:
-            self._handle_msg_trade_invite(payload)
-        elif msg_type == MsgType.TRADE_OPEN:
-            self._handle_msg_trade_open(payload)
-        elif msg_type == MsgType.TRADE_STATE:
-            self._handle_msg_trade_state(payload)
-        elif msg_type == MsgType.TRADE_RESULT:
-            self._handle_msg_trade_result(payload)
-        elif msg_type == MsgType.TRADE_CANCELLED:
-            self._handle_msg_trade_cancelled(payload)
-        elif msg_type == MsgType.DUEL_INVITE:
-            self._handle_msg_duel_invite(payload)
-        elif msg_type == MsgType.DUEL_START:
-            self._handle_msg_duel_start(payload)
-        elif msg_type == MsgType.DUEL_END:
-            self._handle_msg_duel_end(payload)
-        elif msg_type == MsgType.PARTY_INVITE_RECEIVED:
-            self._handle_msg_party_invite_received(payload)
-        elif msg_type == MsgType.PARTY_INVITE_FAILED:
-            self._handle_msg_party_invite_failed(payload)
-        elif msg_type == MsgType.PARTY_STATE:
-            self._handle_msg_party_state(payload)
-        elif msg_type == MsgType.ARENA_QUEUE_STATE:
-            self._handle_msg_arena_queue_state(payload)
-        elif msg_type == MsgType.ARENA_MATCH_FOUND:
-            self._handle_msg_arena_match_found(payload)
-        elif msg_type == MsgType.ARENA_COUNTDOWN:
-            self._handle_msg_arena_countdown(payload)
-        elif msg_type == MsgType.ARENA_MATCH_START:
-            self._handle_msg_arena_match_start(payload)
-        elif msg_type == MsgType.ARENA_MATCH_END:
-            self._handle_msg_arena_match_end(payload)
-        elif msg_type == MsgType.ARENA_MATCH_RESULT:
-            self._handle_msg_arena_match_result(payload)
-        elif msg_type == MsgType.ARENA_GATE_OPEN:
-            self._handle_msg_arena_gate_open(payload)
-        elif msg_type == MsgType.BG_MATCH_RESULT:
-            self._handle_msg_bg_match_result(payload)
-        elif msg_type == MsgType.BG_QUEUE_STATE:
-            self._handle_msg_bg_queue_state(payload)
-        elif msg_type == MsgType.BG_MATCH_FOUND:
-            self._handle_msg_bg_match_found(payload)
-        elif msg_type == MsgType.BG_MATCH_START:
-            self._handle_msg_bg_match_start(payload)
-        elif msg_type == MsgType.CHAT_MESSAGE:
-            self._handle_msg_chat_message(payload)
+        """Dispatch O(1) via dict de módulo (`_NET_DISPATCH_NAMES`, montado
+        logo após a definição desta classe, no fim do arquivo) — antes
+        disso era uma cadeia if/elif de 54 ramos percorrida sequencialmente
+        pra CADA mensagem recebida do servidor (AOI_UPDATE/ENTITY_MOVE/
+        COMBAT_RESULT chegam em rajada durante combate, servidor tickando a
+        30Hz — ver arquitetura/CLIENT_PERFORMANCE_REVIEW.md item 7).
+
+        Guarda NOME (string) + `getattr(self, name)` em vez de referência
+        direta de função — 17 dos 54 handlers (duelo/grupo/arena/BG) não
+        são definidos nesta classe, e sim em mixins IRMÃOS
+        (`DuelHandlers`/`PartyHandlers`/`ArenaHandlers`/
+        `BattlegroundHandlers`/`BgQueueHandlers`, combinados em
+        `GameEngine`, ver game.py) — só existem no MRO de `self` em
+        runtime, nunca em `NetworkHandlers` isolada. Referenciar a função
+        direto pela classe (`NetworkHandlers._handle_msg_x`) quebraria
+        esses 17 com AttributeError no import do módulo (achado corrigindo
+        este item — a 1ª versão fazia exatamente isso)."""
+        name = self._NET_DISPATCH_NAMES.get(msg_type)
+        if name:
+            getattr(self, name)(payload)
+
+    def _handle_msg_char_stats_data(self, payload: dict) -> None:
+        self._char_stats_ui.set_data(payload)
 
 
     def _handle_msg_login_ok(self, payload: dict) -> None:
@@ -3125,3 +3040,67 @@ class NetworkHandlers:
         if sender_name == getattr(self, "_logged_char_name", None):
             return self.player_entity
         return -1
+
+
+# Dispatch O(1) de mensagem de rede -> NOME do handler (ver docstring
+# de _handle_net_message acima) -- string + getattr(self, name), nunca
+# referencia de funcao direto na classe: 17 desses handlers sao
+# definidos em mixins IRMAOS de NetworkHandlers (DuelHandlers/
+# PartyHandlers/ArenaHandlers/BattlegroundHandlers/BgQueueHandlers,
+# ver game.py::GameEngine), so existem no MRO de `self` em runtime.
+NetworkHandlers._NET_DISPATCH_NAMES = {
+    MsgType.LOGIN_OK: "_handle_msg_login_ok",
+    MsgType.LOGIN_ERROR: "_handle_msg_login_error",
+    MsgType.WORLD_STATE: "_handle_msg_world_state",
+    MsgType.ENTITY_SPAWN: "_handle_msg_entity_spawn",
+    MsgType.COMBAT_RESULT: "_handle_msg_combat_result",
+    MsgType.SKILL_RESULT: "_handle_msg_skill_result",
+    MsgType.SKILL_EFFECT: "_handle_msg_skill_effect",
+    MsgType.ENTITY_DESPAWN: "_handle_msg_entity_despawn",
+    MsgType.ENTITY_MOVE: "_handle_msg_entity_move",
+    MsgType.AOI_UPDATE: "_handle_msg_aoi_update",
+    MsgType.STATS_UPDATE: "_handle_msg_stats_update",
+    MsgType.SKILL_LEVELS_UPDATE: "_handle_msg_skill_levels_update",
+    MsgType.CHAR_STATS_DATA: "_handle_msg_char_stats_data",
+    MsgType.QUEST_UPDATE: "_handle_msg_quest_update",
+    MsgType.PLAYER_DEATH: "_handle_msg_player_death",
+    MsgType.PLAYER_REVIVE: "_handle_msg_player_revive",
+    MsgType.GHOST_STATE: "_handle_msg_ghost_state",
+    MsgType.ENTITY_DEATH: "_handle_msg_entity_death",
+    MsgType.LOOT_AVAILABLE: "_handle_msg_loot_available",
+    MsgType.SOUND_EVENT: "_handle_msg_sound_event",
+    MsgType.LOOT_RESULT: "_handle_msg_loot_result",
+    MsgType.LOOT_UPDATE: "_handle_msg_loot_update",
+    MsgType.INVENTORY_UPDATE: "_handle_msg_inventory_update",
+    MsgType.SKILL_GRANTED: "_handle_msg_skill_granted",
+    MsgType.BUY_RESULT: "_handle_msg_buy_result",
+    MsgType.SELL_RESULT: "_handle_msg_sell_result",
+    MsgType.CRAFT_RESULT: "_handle_msg_craft_result",
+    MsgType.RECYCLE_RESULT: "_handle_msg_recycle_result",
+    MsgType.PONG: "_handle_msg_pong",
+    MsgType.ZONE_CHANGE: "_handle_msg_zone_change",
+    MsgType.EQUIP_REJECTED: "_handle_msg_equip_rejected",
+    MsgType.TRADE_INVITE: "_handle_msg_trade_invite",
+    MsgType.TRADE_OPEN: "_handle_msg_trade_open",
+    MsgType.TRADE_STATE: "_handle_msg_trade_state",
+    MsgType.TRADE_RESULT: "_handle_msg_trade_result",
+    MsgType.TRADE_CANCELLED: "_handle_msg_trade_cancelled",
+    MsgType.DUEL_INVITE: "_handle_msg_duel_invite",
+    MsgType.DUEL_START: "_handle_msg_duel_start",
+    MsgType.DUEL_END: "_handle_msg_duel_end",
+    MsgType.PARTY_INVITE_RECEIVED: "_handle_msg_party_invite_received",
+    MsgType.PARTY_INVITE_FAILED: "_handle_msg_party_invite_failed",
+    MsgType.PARTY_STATE: "_handle_msg_party_state",
+    MsgType.ARENA_QUEUE_STATE: "_handle_msg_arena_queue_state",
+    MsgType.ARENA_MATCH_FOUND: "_handle_msg_arena_match_found",
+    MsgType.ARENA_COUNTDOWN: "_handle_msg_arena_countdown",
+    MsgType.ARENA_MATCH_START: "_handle_msg_arena_match_start",
+    MsgType.ARENA_MATCH_END: "_handle_msg_arena_match_end",
+    MsgType.ARENA_MATCH_RESULT: "_handle_msg_arena_match_result",
+    MsgType.ARENA_GATE_OPEN: "_handle_msg_arena_gate_open",
+    MsgType.BG_MATCH_RESULT: "_handle_msg_bg_match_result",
+    MsgType.BG_QUEUE_STATE: "_handle_msg_bg_queue_state",
+    MsgType.BG_MATCH_FOUND: "_handle_msg_bg_match_found",
+    MsgType.BG_MATCH_START: "_handle_msg_bg_match_start",
+    MsgType.CHAT_MESSAGE: "_handle_msg_chat_message",
+}
