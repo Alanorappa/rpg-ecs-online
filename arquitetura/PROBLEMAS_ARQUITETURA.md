@@ -18433,7 +18433,7 @@ momento exato de fechar o jogo, não durante o gameplay) — não corrigido
 por ser cosmético pra um instante que o jogador já está saindo, mas
 registrado aqui pra não confundir uma futura análise de log.
 
-## 143. Spike periódico de ~104-110ms sem correlação com rede/loot — hipótese forte (gc.collect() manual), instrumentado pra confirmar, NÃO corrigido ainda
+## 143. Spike periódico de ~104-110ms sem correlação com rede/loot — hipótese do gc.collect() REFUTADA, causa real era um 4º call site de _send_save_state perdido — RESOLVIDO
 
 15/09/2026, achado analisando um TERCEIRO log de playtest do usuário
 (pós-fix completo de §141/§142, incluindo o follow-up dos 4 call sites
@@ -18490,7 +18490,68 @@ gerações mais baratas coletarem automaticamente enquanto só a geração 2
 CPU idle — o GC manual foi decisão consciente na época, não descoberta
 agora).
 
-**Status**: investigação aberta — falta uma nova sessão de playtest com
-essa instrumentação pra confirmar a hipótese antes de propor qualquer
-fix. Suíte completa: 1659 passed, 0 failed (o flake de timing conhecido
-não ocorreu nesta rodada).
+**Status intermediário (agora superado)**: investigação aberta —
+instrumentação adicionada, aguardando novo log pra confirmar.
+
+**Follow-up no mesmo dia (usuário jogou de novo com a instrumentação e
+mandou um QUARTO log)**: a hipótese do `gc.collect()` foi REFUTADA por
+medição direta. O log novo mostra `gc_collect` com peak consistente de
+~25-30ms (real, mas bem menor que os ~104-110ms do mystery spike) — e,
+mais importante, uma análise da ORDEM do código mostra que
+`gc.collect()` estruturalmente NUNCA PODERIA explicar esse spike: ele
+roda ANTES de `_t0` ser capturado (`game.py::run()`, linha ~1650, "spike
+window cobre TUDO" — mas só a partir DAQUELE ponto), então seu custo é
+medido corretamente via `_prof_record` só pra fins de média/pico no
+`[PROF]`, mas nunca soma no `_frame_elapsed` que decide se um frame
+dispara `[SPIKE]` nem aparece no breakdown de spike de NENHUM frame —
+nem do seu próprio, nem de outro. Ou seja: a instrumentação cumpriu o
+papel (`Observabilidade vem antes de otimização` — a régua funcionou),
+só que devolveu "não é isto" em vez de confirmar.
+
+Script escrito pra somar automaticamente `total do [SPIKE]` contra a
+soma do breakdown, em todo o log — achou o mesmo padrão (gap grande,
+quase nada explicado) num `[SPIKE] 111ms` (só 4ms explicados). Causa
+raiz real: **outro call site de `_send_save_state()` perdido** —
+`game.py`, tecla DELETE dentro do inventário (descartar item), ainda
+com `include_fog` no default (`True`). Esse é o **4º** call site desse
+tipo achado nesta mesma investigação (depois dos 6 de
+`network_handlers.py` + o `_on_recarregar_changed` do fix original,
+mais os 4 de `_autosave()`/autosave periódico do follow-up de §142) —
+e explica por que nunca apareceu na varredura por `grep`: está dentro
+do laço de eventos de teclado (`for event in events:`), um trecho de
+~400 linhas de `game.py` (entre o `_prof_record("events", ...)` e o
+início do loop de `Systems.update()`) que não tem NENHUM `_prof_record`
+cobrindo ele — é o mesmo "buraco cego" do profiler já catalogado em
+§140 (RenderSystem e os 4 systems fora do loop genérico), só que dessa
+vez no bloco de INPUT, não no de render.
+
+Corrigido: `include_fog=False` nessa chamada (descartar item não tem
+relação com exploração, mesma regra de sempre). Suíte completa: 1658
+passed, 1 failed pré-existente/timing flake sem relação.
+
+**2 spikes menores no mesmo log (~52ms, ~4ms explicados) não
+investigados** — bem menores que o padrão de 100ms+ que motivou toda
+essa investigação, sem contexto (`net_msgs` ausente num, presente
+noutro) que aponte pra uma causa de código específica; hipótese mais
+provável é jitter normal de driver de vídeo/compositor da janela
+(vsync/DWM), não um bug — registrado aqui só pra não confundir uma
+futura análise, não investigado a fundo por ser pequeno e sem padrão
+claro.
+
+**Lição pra não repetir, reforçando a de §142**: a regra "buscar TODOS
+os call sites no codebase inteiro" já tinha sido escrita no CLAUDE.md
+depois do follow-up de §142 — e MESMO ASSIM esta 4ª ocorrência não foi
+achada por leitura/grep, só foi achada porque o USUÁRIO testou de novo
+e um script comparando total-do-spike-vs-soma-do-breakdown apontou o
+frame exato. Escrever a regra 1 vez não garante aplicá-la
+retroativamente a TODO call site já existente — quando o padrão
+"grep-based call site audit" falha silenciosamente (por estar dentro de
+um bloco sem profiling, nesse caso), a ferramenta certa é comparar
+dado real (spike total vs breakdown) contra o código, não confiar só
+na leitura estática. Considerar, se aparecer um 5º caso: um teste/
+assert genérico que falha se `_send_save_state()` sem `include_fog`
+explícito for chamado de um novo call site — mas isso não foi proposto
+nem decidido com o usuário ainda, só uma ideia registrada aqui.
+
+**Status**: RESOLVIDO. Suíte completa 1658 passed, 1 failed
+pré-existente/timing flake sem relação.

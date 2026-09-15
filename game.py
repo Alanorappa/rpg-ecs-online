@@ -1751,7 +1751,16 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                             inv.items.pop(self._selected_inv_idx)
                             self._selected_inv_idx = -1
                             if getattr(self, "_net", None):
-                                self._send_save_state()
+                                # include_fog=False (15/09/2026, #141/#142/#143) —
+                                # descartar item não tem relação com exploração.
+                                # Achado analisando um 4º log de playtest: este
+                                # call site fica dentro do laço de eventos de
+                                # teclado, NUNCA coberto por nenhum _prof_record
+                                # (entre "events" e o loop de systems) — por
+                                # isso o [SPIKE] de ~111ms não mostrava quase
+                                # nada no breakdown (só o que rodou DEPOIS,
+                                # não o próprio custo desta chamada).
+                                self._send_save_state(include_fog=False)
                     elif event.key == self._menu_keys.get("talentos", pygame.K_t):
                         already_open = self._show_talents
                         self._close_all_modals()
