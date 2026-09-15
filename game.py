@@ -929,7 +929,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._save_config()  # sincroniza layout da hotbar com o config local
             # Sincroniza com servidor imediatamente para não perder dados em crashes.
             # Sem isso, compras no treinador (skills, etc.) só chegam ao DB no fechamento normal.
-            self._send_save_state()
+            # include_fog=False (15/09/2026, #141/#142) — chamadores de request_autosave()
+            # (compra de skill, talento, quest, level-up) e transição de mapa/morte (abaixo)
+            # não têm nenhuma relação com exploração; achado tarde, revendo um log de
+            # profiling novo do usuário: essa chamada é a mesma classe de bug do #142,
+            # só que num call site que a varredura original não cobriu.
+            self._send_save_state(include_fog=False)
 
     # ------------------------------------------------------------------
     # Validação de ordem de sistemas
@@ -2103,7 +2108,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._save_frame_counter += 1
             if self._save_frame_counter >= 7200:
                 self._save_frame_counter = 0
-                self._send_save_state()
+                # include_fog=False (15/09/2026, #141/#142) — autosave
+                # periódico não tem relação com exploração; decisão
+                # explícita do usuário de não mandar fog aqui também —
+                # fog só é garantido fresco no logout/quit de verdade
+                # (game.py, ações "quit"/"logout" do menu + pygame.QUIT).
+                self._send_save_state(include_fog=False)
 
             # Aprender nova skill: salva só as skills
             _ps_after = self.world.get_component(self.player_entity, PlayerSkills)

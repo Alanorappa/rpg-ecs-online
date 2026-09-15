@@ -802,8 +802,17 @@ padrão a quebrar, não só os bugs individuais.
   os únicos 2 pontos de saída pelo MENU de pausa ("Sair"/"Deslogar")
   nunca mandavam save nenhum antes desta correção (só o botão X da
   janela mandava) — sem o `_send_save_state()` explícito adicionado
-  ali, fog nunca chegaria fresco ao servidor por esses 2 caminhos. Ver
-  PROBLEMAS_ARQUITETURA.md §141/§142.
+  ali, fog nunca chegaria fresco ao servidor por esses 2 caminhos.
+  Bug real achado num follow-up desta mesma correção (log de playtest
+  novo): a busca original por chamadores de `_send_save_state` só
+  cobriu `client/network_handlers.py` — 4 chamadas diretas em `game.py`
+  (`_autosave()`, disparado por compra de skill/talento/quest/level-up/
+  morte/transição de mapa, + autosave local periódico de 2min) ficaram
+  de fora, todas ainda mandando fog. Ao adicionar QUALQUER novo
+  `_send_save_state`/função equivalente, buscar TODOS os call sites no
+  codebase inteiro (`grep -rn` sem filtro de diretório), nunca só nos
+  arquivos onde o sintoma original apareceu. Ver PROBLEMAS_ARQUITETURA.md
+  §141/§142.
 - **Trabalho pesado de CPU pura em Python confirmado por profiling,
   dentro de uma coroutine do servidor** → `loop.run_in_executor(pool, ...)`
   com `ProcessPoolExecutor` (nunca `ThreadPoolExecutor` — GIL não

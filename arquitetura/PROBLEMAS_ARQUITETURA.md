@@ -18374,3 +18374,61 @@ pedaço pequeno dele, escala mal — o custo de montar o campo mais caro
 com ele. Campo caro de montar → parâmetro explícito de inclusão no
 ponto de chamada, decidido pelo QUE mudou, não "sempre manda tudo por
 simplicidade".
+
+**Follow-up no mesmo dia (usuário jogou de novo depois do fix e mandou
+um log novo pra confirmar)**: `LOOT_RESULT` sumiu completamente do log
+— causa raiz confirmada resolvida, `network_recv` de volta a valores
+normais (~0.06-0.08ms médio, sem spike de 100ms+). Mas apareceu um
+spike NOVO: `[SPIKE] 119ms` com `online_sync` custando 106.8ms durante
+combate (`is_pursuing=True`). Causa raiz: a varredura original desta
+seção (`grep` em `client/network_handlers.py` + `_on_recarregar_changed`)
+nunca cobriu `game.py` — 3 chamadas diretas de `_send_save_state()` que
+não passam por `network_handlers.py` continuavam com `include_fog`
+default (`True`):
+1. `game.py::_autosave()` (linha ~921) — callback genérico registrado
+   via `save_system.register_autosave()`/`request_autosave()`, chamado
+   por `ui/trainer_system.py` (compra de skill), `ui/talent_system.py`
+   (3 pontos de alocação), `ui/quest_system.py` (entrega de quest),
+   `engine/stats_system.py` (level-up) — nenhum tem relação com
+   exploração.
+2. `game.py` (linha ~2682) — mesmo `_autosave()`, chamado após morte/
+   respawn no MESMO mapa.
+3. `game.py` (linha ~2755) — mesmo `_autosave()`, chamado após
+   transição de mapa/zona.
+4. Autosave LOCAL periódico (linha ~2111, "a cada 2 minutos", 7200
+   frames @ 60fps) — chamada direta a `_send_save_state()`, mecanismo
+   TOTALMENTE separado de `_autosave()`/`request_autosave()` (contador
+   de frame simples, sem relação com evento nenhum).
+
+Corrigido: os 3 pontos de `_autosave()` (item 1-3, unívocos — nenhum
+tem relação com exploração, mesma regra dos 6 eventos já corrigidos)
+passaram pra `include_fog=False` direto. O autosave periódico de 2min
+(item 4) era uma decisão real de segurança-vs-performance (rede de
+segurança contra crash vs. zero soluço periódico) — perguntado ao
+usuário em vez de decidido sozinho: resposta foi remover fog daqui
+também (fog garantido só no logout/quit de verdade — pygame.QUIT,
+"Sair do jogo" e "Deslogar" do menu de pausa, os 3 pontos já
+adicionados nesta seção).
+
+**Lição pra não repetir, mais específica que a de cima**: antes de
+declarar um "SAVE_STATE não deve incluir X" resolvido, buscar TODOS os
+call sites de `_send_save_state`/função equivalente NO CODEBASE INTEIRO
+(`grep -rn` sem filtro de diretório) — não só nos arquivos onde o
+sintoma original foi observado (`network_handlers.py`, no caso). Um
+callback genérico registrado (`register_autosave`) que várias UIs
+disparam é fácil de não aparecer numa busca que já "achou o suficiente"
+pra explicar o sintoma relatado.
+
+**Achado adicional, não corrigido (custo aceito, um soluço já esperado)**:
+o `[SPIKE] 123ms` no fim do mesmo log tem só 4.2ms atribuídos no
+breakdown (`display_flip`) — os ~119ms restantes ficam FORA de qualquer
+seção medida por `_prof_record`. Coincide com o momento de sair do
+jogo: as 2 chamadas novas de `_send_save_state()` nas ações "quit"/
+"logout" do menu de pausa (adicionadas nesta mesma sessão, ver acima)
+rodam fora de qualquer bloco `if PROFILE_FRAMES:`/`_prof_record`, então
+o custo de montar o fog completo (o único save que ainda carrega fog de
+propósito) nunca aparece no breakdown — só infla o tempo total do
+frame sem explicação. Isso é esperado e aceitável (1 soluço só, no
+momento exato de fechar o jogo, não durante o gameplay) — não corrigido
+por ser cosmético pra um instante que o jogador já está saindo, mas
+registrado aqui pra não confundir uma futura análise de log.
