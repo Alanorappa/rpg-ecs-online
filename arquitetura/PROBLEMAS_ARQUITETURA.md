@@ -18432,3 +18432,65 @@ frame sem explicação. Isso é esperado e aceitável (1 soluço só, no
 momento exato de fechar o jogo, não durante o gameplay) — não corrigido
 por ser cosmético pra um instante que o jogador já está saindo, mas
 registrado aqui pra não confundir uma futura análise de log.
+
+## 143. Spike periódico de ~104-110ms sem correlação com rede/loot — hipótese forte (gc.collect() manual), instrumentado pra confirmar, NÃO corrigido ainda
+
+15/09/2026, achado analisando um TERCEIRO log de playtest do usuário
+(pós-fix completo de §141/§142, incluindo o follow-up dos 4 call sites
+perdidos em `game.py`). O bug original (fog em cada loot) e o follow-up
+(fog nos outros eventos de `game.py`) continuam confirmados resolvidos
+— zero `LOOT_RESULT` no log, `network_recv` normal. Mas apareceram 2
+`[SPIKE]` novos, ambos com o MESMO padrão suspeito:
+- `[SPIKE] 109ms ... — breakdown do frame: >> display_flip 3.8ms` (só
+  3.8ms de 109ms explicados).
+- `[SPIKE] 104ms ... — breakdown do frame: >> display_flip 4.0ms` (só
+  4.0ms de 104ms explicados).
+
+Nenhum dos dois tem `net_msgs=` na linha de contexto (nenhuma mensagem
+de rede processada naquele frame — descarta LOOT_RESULT/qualquer save
+de evento) nem correlação com `is_moving`/`is_pursuing` (um parado, um
+em combate). O padrão — praticamente NADA do tempo total atribuído a
+nenhum label conhecido — é o mesmo assinado já visto no `[SPIKE] 123ms`
+de sessão anterior (ver achado acima, esse sim explicado: save de fog
+no quit, fora de qualquer bloco medido). Esses 2 spikes NÃO são no fim
+do log (o jogo continuou rodando normalmente depois, com vários `[PROF]`
+subsequentes) — não é o mesmo mecanismo do quit.
+
+**Hipótese forte**: `game.py::run()`, linha ~1567 — `_gc.disable()`
+logo no início do loop principal ("GC manual — evita pauses aleatórias
+no loop de jogo") + um `_gc.collect()` MANUAL forçado a cada ~10s
+(`_gc_counter >= FPS * 10`, entre frames). Essa chamada roda **antes**
+de qualquer `_ts = _time.perf_counter()` do frame ser marcado — nunca
+apareceu em NENHUM label do profiler desde que o profiler existe.
+`gc.collect()` completo (não só geração 0) num mundo ECS com centenas
+de entidades/componentes/superfícies pygame vivas é plausível custar
+essa faixa de tempo. Ainda **não confirmado por medição direta** — só
+inferido pela ausência de qualquer outra explicação.
+
+**Instrumentado, NÃO corrigido** (mesma disciplina do §141 antes de
+propor fix — medir antes de mudar comportamento,
+"Observabilidade vem antes de otimização"): `_gc.collect()` agora roda
+dentro de `if PROFILE_FRAMES: _ts=...; _gc.collect();
+self._prof_record("gc_collect", ...)`, sem nenhuma mudança de cadência/
+comportamento do GC em si. Próxima sessão de playtest com essa
+instrumentação deve mostrar uma linha `gc_collect` no `[PROF]` — peak
+alto (~100ms+) confirma a hipótese; peak baixo aponta pra outro lugar
+ainda não identificado (nesse caso, precisaria olhar o que roda
+IMEDIATAMENTE antes do `_ts` de `online_sync`/primeiro label do frame,
+que também fica fora de qualquer seção medida hoje).
+
+**Se confirmado, fix NÃO decidido ainda** (arquitetural, precisa
+conversa com o usuário antes de codar, mesma regra de sempre) — opções
+a considerar quando/se confirmado: aumentar o intervalo de 10s pra
+reduzir frequência (troca frequência por pausas eventualmente maiores
+por acumular mais garbage); ajustar `gc.set_threshold()` pra deixar
+gerações mais baratas coletarem automaticamente enquanto só a geração 2
+(cara) fica no controle manual; ou aceitar como trade-off já conhecido
+("Discutido com o usuário 19/07/2026" no comentário do código, sobre
+CPU idle — o GC manual foi decisão consciente na época, não descoberta
+agora).
+
+**Status**: investigação aberta — falta uma nova sessão de playtest com
+essa instrumentação pra confirmar a hipótese antes de propor qualquer
+fix. Suíte completa: 1659 passed, 0 failed (o flake de timing conhecido
+não ocorreu nesta rodada).

@@ -1583,7 +1583,19 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             dt = self.clock.tick(FPS) / 1000.0
             _gc_counter += 1
             if _gc_counter >= FPS * 10:   # coleta a cada ~10s, entre frames
-                _gc.collect()
+                # Instrumentado (15/09/2026, #141/#142 follow-up) — log real
+                # do usuário mostrou 2 spikes de ~104-109ms sem quase nada
+                # explicado no breakdown (só 3-4ms noutras seções do MESMO
+                # frame). gc.collect() roda ANTES de qualquer _ts do frame
+                # ser marcado, então nunca aparecia em nenhum label — hipótese
+                # forte (não confirmada ainda, ver PROBLEMAS_ARQUITETURA.md),
+                # mas o objetivo aqui é só medir, não mudar o comportamento.
+                if PROFILE_FRAMES:
+                    _gc_ts = _time.perf_counter()
+                    _gc.collect()
+                    self._prof_record("gc_collect", _time.perf_counter() - _gc_ts)
+                else:
+                    _gc.collect()
                 _gc_counter = 0
             self._dt = dt
             SOUNDS.new_frame()  # limpa deduplicação de sons
