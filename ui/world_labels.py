@@ -39,6 +39,31 @@ _STACK_GAP_PX = 4   # respiro padrão entre elementos empilhados, e entre o
                      # primeiro elemento e o topo do sprite — em PX DE
                      # TELA reais, não escala com zoom (de propósito).
 
+# Cache de texto já renderizado por (text, color, id(font)) — add_text()
+# roda TODO FRAME pra CADA entidade visível com nameplate (player + todo
+# mob/NPC em campo de visão), e font.render() é o custo mais caro já
+# medido no cliente (mesmo motivo documentado em ui/hud_bars.py::
+# _level_surf_cache — bug de FPS real reportado pelo usuário, 13/07/2026,
+# corrigido lá só pro número de nível; nome nunca recebeu o mesmo cache,
+# achado na revisão de performance de 15/09/2026, ver
+# arquitetura/CLIENT_PERFORMANCE_REVIEW.md item 1). Nome de
+# player/mob/NPC muda raríssimo (login, troca de personagem) — cache
+# hit fica perto de 100% do tempo.
+_text_surf_cache: dict = {}
+_TEXT_CACHE_MAX = 256
+
+
+def _cached_text_surf(text: str, font, color: tuple):
+    key = (text, color, id(font))
+    cached = _text_surf_cache.get(key)
+    if cached is not None:
+        return cached
+    surf = font.render(text, False, color)
+    if len(_text_surf_cache) >= _TEXT_CACHE_MAX:
+        _text_surf_cache.clear()
+    _text_surf_cache[key] = surf
+    return surf
+
 
 class _WorldOverlayQueue:
     def __init__(self):
@@ -63,8 +88,11 @@ class _WorldOverlayQueue:
         demais — lido pelo usuário como "parece bold" comparado ao chat
         (que usa font.render() normal, mesma fonte, espaçamento
         correto). Sem font-specific bug pra corrigir aqui, o render
-        direto é o certo — mesmo caminho do chat."""
-        surf = font.render(text, False, color)
+        direto é o certo — mesmo caminho do chat.
+
+        Cacheado via _cached_text_surf() (ver comentário no topo do
+        arquivo) — nunca chamar font.render() direto aqui de novo."""
+        surf = _cached_text_surf(text, font, color)
         self._queue(world_x, world_y, surf, stack_key, gap_before)
 
     def add_icon(self, world_x: float, world_y: float, surf, stack_key=None,
