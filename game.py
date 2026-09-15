@@ -2253,14 +2253,39 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         self._prof_record(f"rnd:{type(system).__name__}", _time.perf_counter() - _ts)
                     else:
                         system.render(cam_x, cam_y)
-            self._loot_system.render_world(cam_x, cam_y)
+            # Os 5 systems abaixo (loot/render/projectile/pirofagia/
+            # spell_cast) ficam FORA do loop genérico acima (precisam de
+            # ordem/assinatura própria — render_world() em vez de render(),
+            # ou kwargs extras como world_objects/nameplate_mode) — por
+            # isso nunca passavam por _prof_record, e RenderSystem (o mais
+            # caro de todos, único com Y-sort de toda entidade visível)
+            # nunca aparecia no relatório de performance nem no overlay
+            # F11 (achado real, 15/09/2026, investigando o pedido do
+            # usuário de comparar antes/depois da revisão de performance —
+            # arquitetura/CLIENT_PERFORMANCE_REVIEW.md). Mesmo padrão
+            # `if PROFILE_FRAMES: ts→chama→_prof_record` do loop genérico,
+            # só que chamado individualmente.
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
+                self._loot_system.render_world(cam_x, cam_y)
+                self._prof_record(f"rnd:{type(self._loot_system).__name__}",
+                                  _time.perf_counter() - _ts)
+            else:
+                self._loot_system.render_world(cam_x, cam_y)
             # Objetos no_ysort (ex: escadas) renderizam aqui, abaixo das entidades
             self._tile_render_system.render_static_objects(cam_x, cam_y)
             DASH_TRAIL.render(self._zoom_surf, cam_x, cam_y)
             _world_objs = self._tile_render_system.get_world_objects(cam_x, cam_y)
             self._draw_remote_corpses(cam_x, cam_y)
-            self._render_system.render(cam_x, cam_y, world_objects=_world_objs,
-                                       nameplate_mode=self._nameplate_mode)
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
+                self._render_system.render(cam_x, cam_y, world_objects=_world_objs,
+                                           nameplate_mode=self._nameplate_mode)
+                self._prof_record(f"rnd:{type(self._render_system).__name__}",
+                                  _time.perf_counter() - _ts)
+            else:
+                self._render_system.render(cam_x, cam_y, world_objects=_world_objs,
+                                           nameplate_mode=self._nameplate_mode)
             self._shop_system.render_world(cam_x, cam_y)
             self._quest_dialog.render_world(cam_x, cam_y, self._zoom)
             self._crafting_system.render_world(cam_x, cam_y)
@@ -2268,12 +2293,30 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._draw_remote_players(cam_x, cam_y)
             self._draw_mob_hp_bars(cam_x, cam_y)
             self._tile_render_system.render_fog()
-            self._projectile_system.render(cam_x, cam_y)
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
+                self._projectile_system.render(cam_x, cam_y)
+                self._prof_record(f"rnd:{type(self._projectile_system).__name__}",
+                                  _time.perf_counter() - _ts)
+            else:
+                self._projectile_system.render(cam_x, cam_y)
             self._player_proj_system.render(cam_x, cam_y)
             self._channeling_system.render(cam_x, cam_y)
             self._aoe_targeting_system.render(cam_x, cam_y)
-            self._pirofagia_system.render(cam_x, cam_y)
-            self._spell_cast_system.render(cam_x, cam_y)
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
+                self._pirofagia_system.render(cam_x, cam_y)
+                self._prof_record(f"rnd:{type(self._pirofagia_system).__name__}",
+                                  _time.perf_counter() - _ts)
+            else:
+                self._pirofagia_system.render(cam_x, cam_y)
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
+                self._spell_cast_system.render(cam_x, cam_y)
+                self._prof_record(f"rnd:{type(self._spell_cast_system).__name__}",
+                                  _time.perf_counter() - _ts)
+            else:
+                self._spell_cast_system.render(cam_x, cam_y)
             # FLT (floating text) NÃO renderiza mais aqui (world-space, pré-
             # zoom) — movido pra screen-space, DEPOIS do WORLD_LABELS (ver
             # comentário em FLT.render() e no ponto de chamada abaixo).

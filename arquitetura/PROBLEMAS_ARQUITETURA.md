@@ -18159,3 +18159,55 @@ só pros dois casos. Refatorar pra decoupling também é uma chance real de
 achar bug latente: um método privado chamado por poucos call sites, sem
 teste cobrindo, é exatamente onde um nome errado (`can_start` que nunca
 existiu) sobrevive sem ninguém notar.
+
+## 140. Profiler client-side (F11/`logs/client_prof.log`) nunca mediu `RenderSystem.render()` — o ponto mais caro do frame ficava fora do relatório
+
+15/09/2026, usuário pediu pra comparar o antes/depois da revisão de
+performance (`CLIENT_PERFORMANCE_REVIEW.md`) e mandou o próprio
+`logs/client_prof.log` de uma sessão real, gravado com `profile_frames:
+true` em `config.json`. O relatório mostrava `rnd:TileRenderSystem`,
+`hud:*`, `upd:*` de vários Systems — mas nunca `rnd:RenderSystem`.
+
+**Causa raiz**: `game.py`, no passe de mundo do loop principal, tem um
+loop genérico que envolve `system.render()` em `_prof_record()` pra
+TODO system da lista — EXCETO 5, deliberadamente pulados desse loop
+porque precisam de assinatura/ordem própria: `_loot_system`
+(`render_world()`, não `render()`), `_render_system` (kwargs extras
+`world_objects`/`nameplate_mode`, e precisa rodar DEPOIS de
+`get_world_objects()`), `_projectile_system`/`_pirofagia_system`/
+`_spell_cast_system` (ordem relativa a outros draws). Esses 5 são
+chamados INDIVIDUALMENTE, mais abaixo no mesmo método — mas nenhuma
+dessas 5 chamadas individuais nunca foi envolvida em `_prof_record`,
+então nunca apareciam no relatório nem no overlay de F11.
+`RenderSystem` é justamente o mais caro de todos os cinco (único com
+Y-sort de toda entidade visível) — item 1/2/5/6/8 da revisão de
+performance mexeram TODOS nele, e o profiler nunca teria como confirmar
+esse ganho numa sessão real.
+
+**Fix**: mesmo padrão `if PROFILE_FRAMES: ts→chama→_prof_record` do loop
+genérico, replicado nos 5 pontos de chamada individual — label
+`rnd:{type(system).__name__}` idêntico ao já usado pelo loop, então o
+relatório/overlay não precisa de nenhuma mudança pra passar a mostrar
+essas 5 linhas novas.
+
+**Achado 2, corrigindo isso**: `tests/test_client_ui.py::
+test_render_system_desenha_entidade_dentro_da_margem_de_culling`
+(escrito no item 8, mesma sessão) usava `pygame.display.get_surface()`
+como `screen` — dependia do tamanho de tela AMBIENTE (o último
+`pygame.display.set_mode()` chamado por QUALQUER arquivo de teste antes
+deste, no mesmo processo pytest), não de um tamanho fixo conhecido.
+Rodando `test_client_ui.py` isolado, sempre passava (o próprio arquivo
+fixa 320×240 no import); combinado com outros arquivos de teste que
+chamam `set_mode()` com outro tamanho, o cálculo de margem de culling
+(calibrado pra 320px de largura) ficava errado e o teste falhava —
+confirmado como PRÉ-EXISTENTE (falha idêntica sem nenhuma mudança de
+`game.py`, via `git stash`). Fix: `pygame.Surface((320, 240))` própria
+em vez do display global, nos 2 testes de culling.
+
+**Lição pra não repetir**: teste que depende de um tamanho de tela
+EXATO pra calcular um limite/margem nunca deve usar
+`pygame.display.get_surface()` (estado GLOBAL do processo, mutável por
+qualquer outro arquivo de teste rodando antes no mesmo processo pytest)
+— sempre uma `pygame.Surface(tamanho_fixo)` própria. `pygame.display.
+get_surface()` é seguro só quando o teste não se importa com o tamanho
+exato (a maioria dos testes deste arquivo).

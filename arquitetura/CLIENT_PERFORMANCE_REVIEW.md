@@ -30,6 +30,44 @@ com aprovação do usuário ("vamos começar, pode me questionar o que
 precisar"); status de cada item abaixo é atualizado conforme
 implementado.
 
+## Verificação de ganho real (15/09/2026)
+
+Depois de implementar os itens 1/2/3/4/5/6/7/8/10, o usuário perguntou
+se dava pra confirmar o ganho de performance de verdade, não só por
+raciocínio. Duas fontes:
+
+**1. Benchmark sintético controlado** — `git worktree` isolado no commit
+de checkpoint ANTES de qualquer item (`70d6888`), mesmo cenário rodado
+nas duas versões do código (300 entidades, câmera fixa, 200 chamadas de
+`RenderSystem.render()`, sem tocar nos arquivos do usuário):
+
+| Cenário | Antes | Depois | Ganho |
+|---|---|---|---|
+| 300 entidades, todas dentro da tela | 9.58ms/frame | 5.02ms/frame | ~1.9× |
+| 60 dentro da tela + 240 fora (AOI grande, tela pequena) | 9.45ms/frame | 1.37ms/frame | ~6.9× |
+
+O 1º cenário isola o ganho de itens 1/2/6 (cache de nome + imports
+removidos + câmera unificada); o 2º mostra o efeito do item 8 (culling
+de viewport) quando há bastante coisa fora da tela — cenário comum em
+BG/dungeon cheia.
+
+**2. Achado analisando o log real de profiling do usuário**
+(`logs/client_prof.log`, `profile_frames: true`) — `RenderSystem.
+render()` (o mais caro dos cinco, único com Y-sort de toda entidade
+visível) nunca aparecia no relatório: fica FORA do loop genérico de
+`game.py` que grava profiling (junto com `loot`/`projectile`/
+`pirofagia`/`spell_cast`, que também precisam de assinatura/ordem
+própria). Corrigido — os 5 agora são medidos com o mesmo padrão já
+usado pros demais Systems. Ver `PROBLEMAS_ARQUITETURA.md` §140 pro
+detalhe completo (inclui uma fragilidade de teste pré-existente achada
+de quebra, corrigida junto).
+
+**Próximo passo pra confirmar em jogo real**: jogue uma sessão com
+`profile_frames: true` (já está); o próximo `logs/client_prof.log`
+vai ter as linhas `rnd:RenderSystem`/`rnd:LootSystem`/
+`rnd:ProjectileSystem`/`rnd:PirofagiaSystem`/`rnd:SpellCastSystem` que
+nunca existiram antes.
+
 ---
 
 ## 1. Nome de player/mob (`font.render()`) recriado do zero todo frame, sem cache — mesmo bug já documentado e corrigido só pro número de nível

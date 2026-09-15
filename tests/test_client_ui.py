@@ -3379,7 +3379,12 @@ def test_render_system_nao_desenha_entidade_muito_longe_da_camera():
     world.add_component(far, Position(x=5000, y=5000, prev_x=5000, prev_y=5000))
     world.add_component(far, Renderable(color=(200, 100, 50), width=24, height=24))
 
-    screen = pygame.display.get_surface()
+    # Surface PRÓPRIA de tamanho fixo — não pygame.display.get_surface()
+    # (achado real, 15/09/2026: outro arquivo de teste rodando ANTES
+    # deste no mesmo processo pytest pode ter chamado
+    # pygame.display.set_mode() com outro tamanho, e o cálculo de
+    # margem de culling deste teste depende do tamanho exato da tela).
+    screen = pygame.Surface((320, 240))
     rs = RenderSystem(world, screen)
 
     draw_order = []
@@ -3401,8 +3406,8 @@ def test_render_system_nao_desenha_entidade_muito_longe_da_camera():
 def test_render_system_desenha_entidade_dentro_da_margem_de_culling():
     """Margem de 200px (ver RenderSystem.render, _CULL_MARGIN_PX) cobre
     sprite grande + nameplate empilhado logo fora da tela — entidade a
-    100px além da borda direita da tela (320px de largura no teste)
-    ainda precisa ser desenhada."""
+    100px além da borda direita da tela (320px de largura, ver Surface
+    própria abaixo) ainda precisa ser desenhada."""
     from engine.world import World
     from engine.components import Position, Renderable
     from ui.systems import RenderSystem
@@ -3412,7 +3417,12 @@ def test_render_system_desenha_entidade_dentro_da_margem_de_culling():
     world.add_component(just_outside, Position(x=420, y=100, prev_x=420, prev_y=100))
     world.add_component(just_outside, Renderable(color=(70, 80, 90), width=24, height=24))
 
-    screen = pygame.display.get_surface()
+    # Surface PRÓPRIA de tamanho fixo — ver comentário equivalente em
+    # test_render_system_nao_desenha_entidade_muito_longe_da_camera acima
+    # (este teste em especial depende do tamanho EXATO da tela pro
+    # cálculo da margem de culling, então é ainda mais sensível ao
+    # tamanho ambiente de pygame.display.get_surface()).
+    screen = pygame.Surface((320, 240))
     rs = RenderSystem(world, screen)
 
     draw_order = []
