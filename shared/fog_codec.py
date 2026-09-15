@@ -53,6 +53,36 @@ def encode_fog(explored_maps: dict) -> dict:
     return result
 
 
+def merge_and_encode_fog(srv_fog_data: dict, cli_fog_data: dict) -> "dict | None":
+    """Decodifica o fog já salvo no servidor + o que o cliente mandou, faz
+    union por mapa e recomprime — só deve ser chamado quando `cli_fog_data`
+    tem conteúdo de verdade (ver server/session.py::_persist_character, que
+    pula esta função inteira quando o cliente não mandou fog novo — o save
+    então nem toca a coluna `fog_json`, mantendo o que já estava salvo).
+
+    Entrada/saída são só dict/set/tupla puros (sem objeto de sessão/ECS) de
+    propósito — 15/09/2026, item de performance §141: isto roda dentro de
+    `loop.run_in_executor(ProcessPoolExecutor, ...)` (server/session.py),
+    então precisa ser 100% "pickleable" e livre de estado externo. O custo
+    real medido (~100-150ms numa conta bem explorada) é o laço Python de
+    `encode_fog` montando o bitmap bit a bit — não a compressão zlib em si
+    (~15-20% do tempo) — por isso o ganho de tirar isso do event loop
+    principal é rodar em processo separado, não em outra estrutura de dado."""
+    if isinstance(srv_fog_data, str):
+        import json
+        try:
+            srv_fog_data = json.loads(srv_fog_data) if srv_fog_data else {}
+        except Exception:
+            srv_fog_data = {}
+    srv_fog = decode_fog(srv_fog_data or {})
+    cli_fog = decode_fog(cli_fog_data or {})
+    merged_sets: dict = dict(srv_fog)
+    for map_key, cli_set in cli_fog.items():
+        map_key = map_key.replace("\\", "/")
+        merged_sets[map_key] = merged_sets.get(map_key, set()) | cli_set
+    return encode_fog(merged_sets) or None
+
+
 def decode_fog(data: dict) -> dict:
     """→ {map_key: set[(x,y)]}. Aceita formato novo (dict com "bits") OU
     antigo (lista de [x,y]) por chave de mapa."""

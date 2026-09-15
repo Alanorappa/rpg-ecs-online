@@ -52,7 +52,7 @@ class _TradeFixture(NetworkHandlers):
         it.stack = d.get("stack", 1)
         return it
 
-    def _send_save_state(self) -> None:
+    def _send_save_state(self, include_fog: bool = True) -> None:
         pass
 
 

@@ -549,7 +549,7 @@ class _LootResultFixture(_NH_loot):
     def _on_loot_action(self, change_type: str = "item") -> None:
         self.loot_actions.append(change_type)
 
-    def _send_save_state(self) -> None:
+    def _send_save_state(self, include_fog: bool = True) -> None:
         self.save_state_calls += 1
 
 

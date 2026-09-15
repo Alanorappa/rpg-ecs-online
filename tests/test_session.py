@@ -138,40 +138,71 @@ def get_msgs_of_type(fake_ws: FakeWS, msg_type: MsgType) -> list[dict]:
 # 1. Login e sessão
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestBuildSaveMergeFog(unittest.TestCase):
-    """_build_save_merge — union de fog (servidor + cliente) com o novo
-    codec bitmap+zlib (shared/fog_codec.py, bug real 19/07/2026). Cobre a
-    migração transparente: DB pode ter o formato ANTIGO (lista de
-    coordenadas) de personagens salvos antes do fix."""
+class TestMergeAndEncodeFog(unittest.TestCase):
+    """merge_and_encode_fog (shared/fog_codec.py) — union de fog (servidor +
+    cliente) com o codec bitmap+zlib, bug real 19/07/2026. Cobre a migração
+    transparente: DB pode ter o formato ANTIGO (lista de coordenadas) de
+    personagens salvos antes do fix. Extraído de _build_save_merge em
+    15/09/2026 (§141/§142) — agora roda num ProcessPoolExecutor fora do
+    event loop principal, chamado só por _persist_character quando o
+    cliente manda fog de verdade (ver TestBuildSaveMergeFogPassthrough)."""
 
     def test_fog_do_cliente_sozinho_vira_formato_novo(self):
-        from server.session import SessionManager
-        from shared.fog_codec import encode_fog, decode_fog
+        from shared.fog_codec import encode_fog, decode_fog, merge_and_encode_fog
         cli_fog = encode_fog({"maps/map_1.csv": {(1, 1), (2, 2)}})
-        merged = SessionManager._build_save_merge(
-            {"fog_json": "{}"}, {"fog": cli_fog})
-        self.assertEqual(decode_fog(merged["fog"])["maps/map_1.csv"], {(1, 1), (2, 2)})
+        merged_fog = merge_and_encode_fog({}, cli_fog)
+        self.assertEqual(decode_fog(merged_fog)["maps/map_1.csv"], {(1, 1), (2, 2)})
 
     def test_fog_antigo_no_banco_faz_union_com_fog_novo_do_cliente(self):
         """Personagem salvo ANTES do fix (fog_json em formato de lista) —
         próximo save precisa unir com o que o cliente manda (já no formato
         novo) sem perder nada, e persistir tudo no formato novo."""
-        import json
-        from server.session import SessionManager
-        from shared.fog_codec import encode_fog, decode_fog
-        srv_data = {"fog_json": json.dumps({"maps/map_1.csv": [[1, 1], [2, 2]]})}
-        cli_fog  = encode_fog({"maps/map_1.csv": {(2, 2), (3, 3)}})
-        merged = SessionManager._build_save_merge(srv_data, {"fog": cli_fog})
-        self.assertEqual(decode_fog(merged["fog"])["maps/map_1.csv"],
+        from shared.fog_codec import encode_fog, decode_fog, merge_and_encode_fog
+        srv_fog_data = {"maps/map_1.csv": [[1, 1], [2, 2]]}
+        cli_fog      = encode_fog({"maps/map_1.csv": {(2, 2), (3, 3)}})
+        merged_fog = merge_and_encode_fog(srv_fog_data, cli_fog)
+        self.assertEqual(decode_fog(merged_fog)["maps/map_1.csv"],
                          {(1, 1), (2, 2), (3, 3)})
 
-    def test_sem_payload_do_cliente_mantem_fog_do_servidor(self):
+    def test_aceita_fog_json_do_servidor_como_string_ou_dict(self):
+        """srv_data["fog_json"] chega como string JSON (direto do banco) na
+        maioria dos casos, mas get_player_save_data pode devolver dict já
+        parseado — merge_and_encode_fog precisa aceitar os dois (mesma
+        normalização que _build_save_merge fazia antes de mover pra cá)."""
         import json
+        from shared.fog_codec import encode_fog, decode_fog, merge_and_encode_fog
+        cli_fog = encode_fog({"maps/map_1.csv": {(5, 5)}})
+        srv_as_dict = {"maps/map_1.csv": [[9, 9]]}
+        srv_as_str  = json.dumps(srv_as_dict)
+        merged_dict = decode_fog(merge_and_encode_fog(srv_as_dict, cli_fog))
+        merged_str  = decode_fog(merge_and_encode_fog(srv_as_str, cli_fog))
+        self.assertEqual(merged_dict["maps/map_1.csv"], {(5, 5), (9, 9)})
+        self.assertEqual(merged_str["maps/map_1.csv"], {(5, 5), (9, 9)})
+
+
+class TestBuildSaveMergeFogPassthrough(unittest.TestCase):
+    """_build_save_merge não decodifica/comprime fog nenhum desde 15/09/2026
+    (§141/§142) — só repassa o `merged_fog` já calculado por
+    _persist_character (ver merge_and_encode_fog acima). Sem esse
+    argumento, retorna None — o contrato com save_character (server/
+    auth.py) é que fog=None significa "não toque na coluna", não "salve
+    vazio": mantém intacto o que já estava no banco, sem nenhum trabalho de
+    decode/encode. Isso é o que faz os 6 saves de evento frequente (loot/
+    compra/venda/forja/troca/stats_update) custarem literalmente zero em
+    fog agora, em vez de recomprimir o mesmo dado à toa a cada vez."""
+
+    def test_sem_merged_fog_retorna_none_nao_toca_a_coluna(self):
         from server.session import SessionManager
-        from shared.fog_codec import decode_fog
-        srv_data = {"fog_json": json.dumps({"maps/map_1.csv": [[9, 9]]})}
-        merged = SessionManager._build_save_merge(srv_data, {})
-        self.assertEqual(decode_fog(merged["fog"])["maps/map_1.csv"], {(9, 9)})
+        merged = SessionManager._build_save_merge({"fog_json": "{}"}, {})
+        self.assertIsNone(merged["fog"])
+
+    def test_com_merged_fog_repassa_direto(self):
+        from server.session import SessionManager
+        from shared.fog_codec import encode_fog
+        fog = encode_fog({"maps/map_1.csv": {(1, 1)}})
+        merged = SessionManager._build_save_merge(
+            {"fog_json": "{}"}, {}, merged_fog=fog)
+        self.assertIs(merged["fog"], fog)
 
 
 class TestLogin(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):

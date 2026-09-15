@@ -785,6 +785,39 @@ padrão a quebrar, não só os bugs individuais.
   `QuestSystem` — quebraria com `AttributeError` assim que um ferreiro
   tivesse quest disponível pra iniciar. Ver PROBLEMAS_ARQUITETURA.md
   §139.
+- **SAVE_STATE novo disparado por um evento sem relação com exploração
+  de mapa (loot/compra/venda/forja/troca/stats/qualquer futuro)** →
+  `_send_save_state(include_fog=False)` (`client/save_sync_handlers.py`)
+  — NUNCA deixar no default `True` só porque "é mais simples chamar
+  sem parâmetro". Montar o fog (bitmap+zlib de TODA a exploração da
+  conta) é o campo mais caro de `_collect_save_state` por uma ordem de
+  grandeza (~100ms+ numa conta bem explorada, quase todo esse tempo no
+  laço Python de montagem do bitmap, não no zlib) — só o save de
+  logout/quit (`game.py`) precisa mandar fog de verdade, é o ÚNICO
+  ponto que garante fog fresco chegando ao servidor por sessão. Servidor
+  trata fog ausente/vazio como "sem mudança" (`server/session.py::
+  _persist_character` nem chama `merge_and_encode_fog`,
+  `_build_save_merge` devolve `fog: None`, `save_character` pula a
+  coluna) — nenhum risco de perda. Bug real evitado implementando isto:
+  os únicos 2 pontos de saída pelo MENU de pausa ("Sair"/"Deslogar")
+  nunca mandavam save nenhum antes desta correção (só o botão X da
+  janela mandava) — sem o `_send_save_state()` explícito adicionado
+  ali, fog nunca chegaria fresco ao servidor por esses 2 caminhos. Ver
+  PROBLEMAS_ARQUITETURA.md §141/§142.
+- **Trabalho pesado de CPU pura em Python confirmado por profiling,
+  dentro de uma coroutine do servidor** → `loop.run_in_executor(pool, ...)`
+  com `ProcessPoolExecutor` (nunca `ThreadPoolExecutor` — GIL não
+  libera CPU-bound puro), pool pequeno criado 1x (`SessionManager.
+  __init__`, `self._fog_executor`) e desligado em
+  `shutdown_dispatch_tasks` — 1ª aplicação real desta regra já
+  documentada abaixo ("O event loop asyncio do servidor é
+  single-thread"), com a função-alvo pura/pickleable (sem objeto de
+  sessão/ECS, só dict/set/tupla — `merge_and_encode_fog`,
+  `shared/fog_codec.py`). Sem isso, o cálculo caro trava TODOS os
+  players conectados, não só quem disparou o evento — bug real medido:
+  `_build_save_merge` (fog) chamado direto na coroutine de
+  `_handle_save_state`, ~100-150ms de freeze do servidor inteiro por
+  save de conta bem explorada. Ver PROBLEMAS_ARQUITETURA.md §142.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

@@ -2549,10 +2549,21 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     self._show_pause    = False
                     self._pause_submenu = ""
                     self._pending_quit  = True
+                    # Save completo (com fog) ANTES de sair — mesmo padrão
+                    # já usado pelo fechamento via botão X da janela (ver
+                    # pygame.QUIT abaixo no loop). Sem isto, "Sair do jogo"
+                    # pelo menu de pausa dependia só do último save de
+                    # evento (loot/compra/etc) por acaso já cacheado no
+                    # servidor — e desde 15/09/2026 (#141/#142) esses saves
+                    # de evento nem mandam fog mais, então esta chamada
+                    # explícita é o ÚNICO jeito de garantir fog fresco indo
+                    # pro servidor por este caminho de saída.
+                    self._send_save_state()
                 elif action == "logout":
                     self._show_pause     = False
                     self._pause_submenu  = ""
                     self._pending_logout = True
+                    self._send_save_state()  # ver comentário em "quit" acima
                 elif action == "resume":
                     self._show_pause    = False
                     self._pause_submenu = ""

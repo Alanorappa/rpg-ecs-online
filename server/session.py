@@ -14,6 +14,7 @@ import asyncio
 import time
 
 from shared.messages import MsgType, encode, decode
+from shared.fog_codec import merge_and_encode_fog
 from shared.constants import (AOI_RADIUS, AOI_EXIT_BUFFER, PROTOCOL_VERSION, TICK_RATE,
                                ALLY_VISION_RADIUS_PLAYER, ALLY_VISION_RADIUS_MINION)
 from engine.utils import in_aoi as _in_aoi, SpatialHash as _SpatialHash
@@ -187,6 +188,18 @@ class SessionManager:
         # padrão de registro-em-set-de-módulo já usado alhures no
         # projeto, aqui como atributo de instância por ser por-conexão.
         self._dispatch_tasks: set = set()
+        # Encode de fog-of-war (union + zlib) fora do event loop principal
+        # (15/09/2026, item de performance §141/§142) — profiling real
+        # confirmou ~100-150ms numa conta bem explorada; como o asyncio do
+        # servidor é single-thread, isso congelava TODOS os players
+        # conectados a cada save que incluísse fog. `merge_and_encode_fog`
+        # (shared/fog_codec.py) é pura/pickleable de propósito — só entra
+        # aqui quando o cliente mandou fog de verdade (ver
+        # `_persist_character`; a maioria dos saves nem chama isto, ver
+        # `_build_save_merge`). ProcessPoolExecutor (não Thread) porque é
+        # trabalho de CPU puro em Python — Thread não escapa do GIL.
+        from concurrent.futures import ProcessPoolExecutor as _PPE_fog
+        self._fog_executor = _PPE_fog(max_workers=2)
         # Serialização de escrita de accounts/characters NÃO mora aqui —
         # vive em `server/auth.py` (ponto único de verdade, módulo que de
         # fato abre a conexão). Pós-migração pra PostgreSQL/asyncpg
@@ -256,9 +269,30 @@ class SessionManager:
         _live_talents = self.world_server.get_player_talent_data(session.session_id)
         _live_inv = self.world_server.get_player_inventory_data(session.session_id)
         _live_recipes = self.world_server.get_player_learned_recipes_data(session.session_id)
+        # Fog (15/09/2026, §141/§142): cliente só manda "fog" no payload no
+        # save de logout/quit (ver client/save_sync_handlers.py::
+        # _send_save_state) — nos 6 saves de evento frequente (loot/compra/
+        # venda/forja/troca/stats) o campo vem ausente/vazio de propósito.
+        # Sem fog novo do cliente, NÃO HÁ TRABALHO NENHUM a fazer: nem
+        # decode, nem encode, nem executor — `merged["fog"]=None` faz
+        # `save_character` (server/auth.py) pular a coluna fog_json
+        # inteira, mantendo intacto o que já estava salvo (nenhum risco de
+        # perda, é só "não mudou nada mesmo"). Só quando o cliente manda
+        # fog de verdade é que o merge+recompressão roda — e roda fora do
+        # event loop principal (`_fog_executor`) pra não congelar quem
+        # mais está online durante esse save.
+        _cli_p = session.last_client_payload
+        _cli_fog_raw = (_cli_p.get("fog") if _cli_p else None) or None
+        if _cli_fog_raw:
+            _loop_fog = asyncio.get_running_loop()
+            merged_fog = await _loop_fog.run_in_executor(
+                self._fog_executor, merge_and_encode_fog,
+                srv_data.get("fog_json") or {}, _cli_fog_raw)
+        else:
+            merged_fog = None
         merged = self._build_save_merge(srv_data, session.last_client_payload,
                                         _live_eq, _live_hotbar, _live_talents,
-                                        _live_inv, _live_recipes)
+                                        _live_inv, _live_recipes, merged_fog)
         if patch_fn is not None:
             patch_fn(merged)
         try:
@@ -274,7 +308,8 @@ class SessionManager:
                           live_hotbar: list | None = None,
                           live_talents: dict | None = None,
                           live_inventory: "list | None" = None,
-                          live_learned_recipes: "list | None" = None) -> dict:
+                          live_learned_recipes: "list | None" = None,
+                          merged_fog: "dict | None" = None) -> dict:
         """
         Constrói o dict merged para save_character.
         Regras de autoridade:
@@ -364,6 +399,19 @@ class SessionManager:
           (WorldServer.get_player_hotbar_data, lido do PlayerSkills ao
           vivo na hora do save) elimina a dependência desse cache pra esse
           subcampo. Ver ARQUITETURA_ONLINE.md §34.74.47.
+        - fog: `merged_fog` já vem PRÉ-CALCULADO por `_persist_character`
+          (15/09/2026, §141/§142) — este método não decodifica/comprime
+          nada. Cliente só manda "fog" no payload no save de logout/quit
+          (nos 6 saves de evento frequente vem vazio de propósito, ver
+          client/save_sync_handlers.py); sem fog novo, `merged_fog` chega
+          `None` aqui e `save_character` (server/auth.py) pula a coluna
+          fog_json inteira — mantém o que já estava salvo, sem trabalho
+          nenhum. Quando chega fog novo, `_persist_character` já rodou
+          `merge_and_encode_fog` (shared/fog_codec.py) num
+          ProcessPoolExecutor, fora do event loop principal — o motivo é
+          que o merge+recompressão é medido em ~100-150ms numa conta bem
+          explorada, e o asyncio do servidor sendo single-thread isso
+          congelava TODOS os players conectados a cada save com fog.
         - quests: SEMPRE servidor (mesma regra de skill_levels — progresso/entrega de
           quest é server-autoritativo, ver quest_logic.py/PROBLEMAS_ARQUITETURA.md)
         - learned_recipes: SERVIDOR autoritativo quando `live_learned_recipes`
@@ -394,32 +442,6 @@ class SessionManager:
             _final_skills = dict(_final_skills) if _final_skills else {}
             _final_skills["hotbar"] = live_hotbar
 
-        # Fog: union de tiles explorados (servidor DB + cliente atual).
-        # O cliente sempre envia o conjunto completo (recebeu o fog do servidor
-        # no LOGIN_OK e acumulou novas descobertas), portanto a autoridade é
-        # do cliente — mas fazemos union para segurança em caso de múltiplos logins.
-        # Bitmap comprimido (shared/fog_codec.py) — decode_fog aceita formato
-        # novo E antigo (coordenada crua), encode_fog sempre grava no novo (ver
-        # PROBLEMAS_ARQUITETURA.md, bug real 19/07/2026 — fog_json passava de
-        # 1 MB numa conta bem explorada).
-        import json as _json
-        from shared.fog_codec import encode_fog as _encode_fog_sv, decode_fog as _decode_fog_sv
-        _srv_fog_raw = srv_data.get("fog_json", "{}")
-        try:
-            _srv_fog_data = _json.loads(_srv_fog_raw) if isinstance(_srv_fog_raw, str) else (_srv_fog_raw or {})
-        except Exception:
-            _srv_fog_data = {}
-        _srv_fog = _decode_fog_sv(_srv_fog_data)
-        _cli_fog = _decode_fog_sv((client_p.get("fog") or {}) if client_p else {})
-        if _cli_fog:
-            merged_sets: dict = dict(_srv_fog)
-            for _mk, _cli_set in _cli_fog.items():
-                _mk = _mk.replace("\\", "/")
-                merged_sets[_mk] = merged_sets.get(_mk, set()) | _cli_set
-            merged_fog = _encode_fog_sv(merged_sets)
-        else:
-            merged_fog = _encode_fog_sv(_srv_fog)
-
         return {
             "tile_x":    srv_data.get("tile_x", 10),
             "tile_y":    srv_data.get("tile_y", 10),
@@ -430,7 +452,7 @@ class SessionManager:
             "equipment": live_equipment if live_equipment else (client_p.get("equipment") if client_p else None),
             "talents":   live_talents if live_talents else (client_p.get("talents") if client_p else None),
             "skills":    _final_skills,
-            "fog":       merged_fog if merged_fog else None,
+            "fog":       merged_fog,
             # skill_levels: SEMPRE servidor — progressão por uso é
             # server-autoritativa, cliente nunca influencia (ver
             # stats_system.grant_skill_xp / PROBLEMAS_ARQUITETURA.md).
@@ -2593,6 +2615,12 @@ class SessionManager:
         "perdida" numa corrida entre o Ctrl+C e a limpeza automática do
         `asyncio.run()` — daí o ImportError cosmético no log durante o
         desligamento do interpretador (ver comentário em `__init__`)."""
+        # Desliga o pool de encode de fog (15/09/2026, §141/§142) no mesmo
+        # ponto — mesmo motivo de limpeza ordenada antes do asyncio.run()
+        # encerrar sozinho; sem espera (um save de fog em andamento no
+        # meio de um Ctrl+C não é crítico, mas o processo filho não pode
+        # ficar pendurado).
+        self._fog_executor.shutdown(wait=False, cancel_futures=True)
         tasks = list(self._dispatch_tasks)
         if not tasks:
             return

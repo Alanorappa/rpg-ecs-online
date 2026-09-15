@@ -155,8 +155,19 @@ class SaveSyncHandlers:
         # Fallback: reconstrói dos dados (itens de loja, consumíveis, etc.)
         return self._item_from_data(d)
 
-    def _collect_save_state(self) -> dict:
-        """Coleta estado completo do personagem para enviar ao servidor."""
+    def _collect_save_state(self, include_fog: bool = True) -> dict:
+        """Coleta estado completo do personagem para enviar ao servidor.
+
+        `include_fog=False` (15/09/2026, §141/§142) — montar o bitmap de
+        fog-of-war é o passo mais caro daqui (~100ms+ numa conta bem
+        explorada, medido por profiling): um laço Python bit-a-bit sobre
+        cada tile explorado, ANTES até da compressão zlib. Chamado com
+        False pelos 6 saves de evento (loot/compra/venda/forja/troca/
+        stats — ver client/network_handlers.py) que não têm nenhuma
+        relação com exploração; fog só viaja de verdade no save de
+        logout/quit (game.py). Servidor trata fog ausente como "sem
+        mudança" e mantém o que já tinha salvo — nenhum risco de perda
+        (ver server/session.py::_persist_character)."""
         import json
         from engine.components import (Inventory, Equipment, TalentTree,
                                  Wallet, CharacterStats, CombatStats, PlayerSkills as _PSCol)
@@ -222,17 +233,19 @@ class SaveSyncHandlers:
         # Fog of War — tiles explorados por mapa (servidor faz union, é aditivo).
         # Bitmap comprimido (shared/fog_codec.py) — formato de coordenada crua
         # antigo passava de 1 MB numa conta bem explorada (ver
-        # PROBLEMAS_ARQUITETURA.md, bug real 19/07/2026).
-        from engine.components import FogOfWar as _FogCol
-        from shared.fog_codec import encode_fog as _encode_fog_col
-        fog_comp = self.world.get_component(self.player_entity, _FogCol)
+        # PROBLEMAS_ARQUITETURA.md, bug real 19/07/2026). `include_fog=False`
+        # pula isto inteiro — nem decode/encode roda (ver docstring acima).
         fog = {}
-        if fog_comp:
-            _normalized_maps = {
-                map_key.replace("\\", "/"): tile_set
-                for map_key, tile_set in fog_comp._explored_maps.items()
-            }
-            fog = _encode_fog_col(_normalized_maps)
+        if include_fog:
+            from engine.components import FogOfWar as _FogCol
+            from shared.fog_codec import encode_fog as _encode_fog_col
+            fog_comp = self.world.get_component(self.player_entity, _FogCol)
+            if fog_comp:
+                _normalized_maps = {
+                    map_key.replace("\\", "/"): tile_set
+                    for map_key, tile_set in fog_comp._explored_maps.items()
+                }
+                fog = _encode_fog_col(_normalized_maps)
 
         return {
             "stats":     stats,
@@ -320,16 +333,25 @@ class SaveSyncHandlers:
         """Recarregar mudou bag (flechas consumidas) e aljava (arrow_count) —
         sincroniza o Inventory do servidor (Recarregar futuro/inventário cheio)
         e persiste o estado completo, senão a recarga se perde se o jogador
-        deslogar antes do próximo evento de save."""
+        deslogar antes do próximo evento de save. Sem relação com
+        exploração de mapa — include_fog=False (15/09/2026, §141/§142)."""
         self._on_loot_action("item")
-        self._send_save_state()
+        self._send_save_state(include_fog=False)
 
-    def _send_save_state(self) -> None:
-        """Envia estado completo do personagem ao servidor para persistência."""
+    def _send_save_state(self, include_fog: bool = True) -> None:
+        """Envia estado completo do personagem ao servidor para persistência.
+
+        `include_fog=False` (15/09/2026, §141/§142) — ver
+        `_collect_save_state`. Chamadores que sabem que o evento não tem
+        nenhuma relação com exploração de mapa (loot/compra/venda/forja/
+        troca/stats_update, client/network_handlers.py; e recarregar,
+        abaixo) passam False; só logout/quit (game.py) usa o default
+        True — é o ÚNICO ponto que garante fog fresco chegando ao
+        servidor por sessão."""
         if not self._net or not self._net.connected or self._my_eid == -1:
             return
         from shared.messages import MsgType
-        state = self._collect_save_state()
+        state = self._collect_save_state(include_fog=include_fog)
         self._net.send(MsgType.SAVE_STATE, state)
 
     def _restore_save_state(self, char_data: dict) -> None:

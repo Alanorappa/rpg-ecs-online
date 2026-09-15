@@ -18264,6 +18264,113 @@ eliminada).
 raiz for confirmada e a correção for de fato escrita, ESSA correção
 segue a disciplina normal (teste conforme o caso).
 
-**Status**: investigação aberta — falta uma nova sessão de playtest com
-essa instrumentação pra confirmar a hipótese antes de propor qualquer
-fix.
+**Status**: RESOLVIDO — a hipótese da rajada foi DESCARTADA pelo próprio
+log (ver §142): todo `[SPIKE]` de 100ms+ tinha só 1-5 mensagens, nunca
+dezenas/centenas. A causa raiz real (`LOOT_RESULT` → `encode_fog`) e o
+fix completo estão em §142.
+
+## 142. Causa raiz do travamento de `network_recv` (§141): `encode_fog()` disparado a cada save de evento — cliente E servidor, servidor bloqueando TODOS os players
+
+15/09/2026, resolução da investigação aberta em §141. Com a
+instrumentação de `net_msgs=` (§141) confirmada em log real: todo
+`[SPIKE]` de 100ms+ tinha 1-5 mensagens no frame, nunca uma rajada
+grande — a hipótese líder de §141 estava errada. Correlação real: TODO
+spike de 100ms+ continha `LOOT_RESULT`. Rastreamento da cadeia:
+`_handle_msg_loot_result` (client/network_handlers.py) → `_send_save_state()`
+→ `_collect_save_state()` (client/save_sync_handlers.py) → `encode_fog()`
+(shared/fog_codec.py) — recomprimindo o fog-of-war INTEIRO da conta a
+cada loot, sem relação nenhuma com o que o loot mudou de verdade.
+Confirmado com benchmark sintético (150k tiles/mapa 2000×2000,
+grandeza plausível pra conta bem explorada): **95ms total, sendo 77ms
+o laço Python que monta o bitmap tile-a-tile e só 17ms o zlib.compress
+em si** — o vilão é o laço, não a compressão.
+
+**Achado mais grave, achado investigando a segurança de omitir fog no
+save**: o MESMO `encode_fog()` roda de novo no SERVIDOR
+(`server/session.py::_build_save_merge`, dentro de `_persist_character`
+→ `_handle_save_state`) — e lá é pior: essa chamada acontece dentro da
+coroutine que atende a mensagem, sem `run_in_executor` nenhum. Como o
+event loop asyncio do servidor é single-thread (regra já documentada no
+CLAUDE.md, nunca confirmada por profiling até agora), esses ~100-150ms
+travavam o servidor INTEIRO — todos os players conectados, não só quem
+deu loot — a cada save de evento (loot/compra/venda/forja/troca/
+stats_update) de qualquer conta bem explorada.
+
+**Duas perguntas do usuário que moldaram o fix final** (não decidido
+sozinho — as duas envolviam arquitetura/protocolo, discutidas e
+aprovadas antes de codar):
+1. *"Refazer essa compressão é desnecessária em game, o correto seria
+   refazer só quando o personagem deslogasse"* — correto, e a resposta
+   ficou melhor que "logout only" puro: o servidor JÁ tinha (sem
+   ninguém ter notado) um contrato onde `fog=None` no dict retornado
+   por `_build_save_merge` faz `save_character` (server/auth.py) NUNCA
+   tocar a coluna `fog_json` — ou seja, "não fazer nada" é literalmente
+   grátis, sem nem precisar reescrever o mesmo valor de volta.
+2. *"Não é possível fragmentar o mapa pra compressão ficar mais
+   leve?"* — já existe fragmentação por MAPA (`encode_fog` processa
+   cada `map_key` separado); fragmentar MAIS, em chunks dentro do MESMO
+   mapa, foi testado e **piora** (151ms vs 95ms num benchmark
+   comparável) — o custo é por-tile no laço Python, dividir em chunks
+   não reduz o trabalho total, só soma overhead de N chamadas de
+   `zlib.compress()` em vez de 1.
+3. Pergunta de acompanhamento do usuário, batendo direto no ponto certo
+   — mesmo só no logout, dezenas de login/logout simultâneos em
+   servidor com centenas de players ainda travariam todo mundo por
+   ~100-150ms cada vez. Certo — frequência menor não é zero.
+
+**Fix final, 3 partes**:
+1. **Cliente** (`client/save_sync_handlers.py::_collect_save_state`/
+   `_send_save_state`, novo parâmetro `include_fog: bool = True`) — os
+   7 saves de evento sem relação com exploração (loot/compra/venda/
+   forja/troca/stats_update, `client/network_handlers.py`; recarregar,
+   mesmo arquivo) passam `include_fog=False` — nem monta o bitmap.
+   Único save que continua mandando fog: logout/quit
+   (`game.py`, ações "quit"/"logout" do menu de pausa — que, achado à
+   parte, NUNCA mandavam save nenhum antes desta correção, só o botão X
+   da janela mandava; sem esse ajuste, fog nunca chegaria fresco ao
+   servidor por nenhum caminho de saída pelo menu).
+2. **Servidor, correção estrutural** (`shared/fog_codec.py::
+   merge_and_encode_fog`, nova função pura extraída do que era o bloco
+   de fog dentro de `_build_save_merge`; `server/session.py::
+   _persist_character`) — quando o cliente não mandou fog
+   (`client_payload.get("fog")` vazio — o caso comum agora, pelos 7
+   saves do item 1), `_persist_character` NÃO CHAMA `merge_and_encode_fog`
+   NENHUMA VEZ — passa `merged_fog=None` direto pra `_build_save_merge`,
+   que devolve `"fog": None`, e `save_character` pula a coluna. Zero
+   decode, zero encode, zero trabalho.
+3. **Servidor, escala** (o que resolve a pergunta 3 do usuário) — quando
+   o cliente MANDA fog de verdade (só no logout agora), o merge+encode
+   roda em `loop.run_in_executor(self._fog_executor, ...)` — um
+   `ProcessPoolExecutor(max_workers=2)` criado 1x em
+   `SessionManager.__init__` (primeiro uso desse padrão no projeto;
+   `Thread` não serviria, é trabalho de CPU puro em Python, preso pelo
+   GIL). Mesmo com dezenas de logout simultâneos, cada encode roda num
+   processo separado — nunca bloqueia o loop principal, então nunca
+   trava nenhum outro player. `shutdown_dispatch_tasks` (chamado no
+   Ctrl+C, `server/main.py`) agora também derruba esse executor.
+
+**Por que não foi pro caminho "fog só local, nunca sobe pro servidor"**
+(opção que o usuário considerou e descartou depois de discutir):
+criptografia client-side não impede compartilhar o arquivo de fog pra
+revelar o mapa (a chave vai dentro do próprio executável, extraível por
+qualquer um — cripto aqui só impede edição manual casual, não
+compartilhamento deliberado) e local-only perde o fog ao trocar de
+máquina/reinstalar (hoje é ligado à conta no banco). Decisão: manter
+fog persistido no servidor (mesmo padrão do resto do projeto —
+servidor autoritativo mesmo pra dado cosmético), resolver o
+travamento pela FREQUÊNCIA + pelo EXECUTOR, não pela autoridade dos
+dados.
+
+**Testes**: `tests/test_session.py::TestMergeAndEncodeFog` (union +
+migração de formato antigo, movido de `TestBuildSaveMergeFog`),
+`TestBuildSaveMergeFogPassthrough` (contrato `merged_fog=None` → não
+toca a coluna). Suíte completa: 1657 passed, mesmos 2 flakes
+pré-existentes de timing (`test_perf_push_pop_*`), sem relação.
+
+**Lição pra não repetir**: um handler de evento "genérico" (SAVE_STATE)
+que sempre manda TODO o estado, mesmo quando o evento real só mudou um
+pedaço pequeno dele, escala mal — o custo de montar o campo mais caro
+(fog, aqui) é pago em TODA chamada, mesmo nas que não têm nada a ver
+com ele. Campo caro de montar → parâmetro explícito de inclusão no
+ponto de chamada, decidido pelo QUE mudou, não "sempre manda tudo por
+simplicidade".

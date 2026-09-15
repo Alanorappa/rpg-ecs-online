@@ -1894,7 +1894,7 @@ class NetworkHandlers:
                 # cache ainda reflete os 6 slots da instância — inofensivo
                 # nesse sentido, mas mandar aqui também mantém tudo
                 # consistente nos dois sentidos).
-                self._send_save_state()
+                self._send_save_state(include_fog=False)  # sem relacao com exploracao de mapa, ver #141/#142
             if "in_instance" in payload:
                 from ui.ui_components import InstanceInventoryUIState as _IIUS
                 _iius = self.world.get_component(self.player_entity, _IIUS)
@@ -2497,7 +2497,7 @@ class NetworkHandlers:
         # o servidor já dispara esse progresso de quest ele mesmo, direto
         # em `request_loot`/`_handle_loot_request`.
         # Gold/itens mudaram — sincroniza save com o servidor
-        self._send_save_state()
+        self._send_save_state(include_fog=False)  # sem relacao com exploracao de mapa, ver #141/#142
 
     def _handle_msg_loot_update(self, payload: dict) -> None:
         """Outro membro do grupo sacou algo do MESMO corpse (LOOT_RESULT
@@ -2656,7 +2656,7 @@ class NetworkHandlers:
             name  = item_data.get("name", "item")
             _LOG_BR.add(f"Comprado: {name} por {price}g", (255, 215, 0))
             # Salva imediatamente — inventário e gold foram alterados server-side
-            self._send_save_state()
+            self._send_save_state(include_fog=False)  # sem relacao com exploracao de mapa, ver #141/#142
         else:
             reason = payload.get("reason", "")
             _reason_msg = {
@@ -2679,7 +2679,7 @@ class NetworkHandlers:
             _LOG_SR.add(
                 f"Vendido: {payload.get('item_name','item')} por {payload.get('sell_price',0)}g",
                 (180, 220, 100))
-            self._send_save_state()
+            self._send_save_state(include_fog=False)  # sem relacao com exploracao de mapa, ver #141/#142
         else:
             # Falha rara (sessão inválida etc.) — reverte gold local se servidor informou
             # o valor correto
@@ -2716,7 +2716,7 @@ class NetworkHandlers:
             if _cs is not None:
                 _cs._frg_selected = None
                 _cs._frg_data     = None
-            self._send_save_state()
+            self._send_save_state(include_fog=False)  # sem relacao com exploracao de mapa, ver #141/#142
         else:
             srv_gold = payload.get("new_gold")
             if srv_gold is not None and wal_cr is not None:
@@ -2966,7 +2966,7 @@ class NetworkHandlers:
         _LOG_TR.add("Troca concluída!", (120, 220, 120))
         if tui is not None:
             tui.reset()
-        self._send_save_state()
+        self._send_save_state(include_fog=False)  # sem relacao com exploracao de mapa, ver #141/#142
 
     def _handle_msg_trade_cancelled(self, payload: dict) -> None:
         tui = self._get_trade_ui()
@@ -2997,7 +2997,7 @@ class NetworkHandlers:
         }.get(reason, "Troca cancelada")
         from ui.floating_text import WARN as _WARN_TC
         _WARN_TC.add(_reason_msg)
-        self._send_save_state()
+        self._send_save_state(include_fog=False)  # sem relacao com exploracao de mapa, ver #141/#142
 
     def _handle_msg_chat_message(self, payload: dict) -> None:
         """Mensagem de chat confirmada pelo servidor (server/session.py::
