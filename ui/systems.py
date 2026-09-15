@@ -35,8 +35,17 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        AoeTargeting, RemoteControlled, GhostState, MapLocation, Minion
 from engine.world import World
 from engine.tileset import TILE_SIZE, OBJECT_MAPPING
-from engine.utils import chebyshev, in_range, start_tile_movement
+from engine.utils import chebyshev, in_range, start_tile_movement, get_camera_offset
 from engine.damage_calculator import resolve_attack_outcome, calculate_base_damage
+# Hoisted pro topo (14/09/2026, revisão de performance — ver
+# arquitetura/CLIENT_PERFORMANCE_REVIEW.md item 2): estavam sendo
+# reimportados dentro de RenderSystem.render(), no loop de desenho mais
+# quente do cliente (uma vez por ENTIDADE visível, todo frame). Módulos
+# puros (`from __future__ import annotations` só), sem ciclo de import
+# com ui/systems.py — seguro no topo.
+from engine.entity_disguise import get_active_appearance_override, get_animated_disguise_frame
+from engine.character_animation import (get_character_frame, resolve_display_state,
+                                        character_anchor_offset)
 from ui.combat_log import LOG
 from ui.sound_manager import SOUNDS
 from ui.floating_text import FLT, PROC, WARN
@@ -314,11 +323,7 @@ class MouseTargetingSystem(System):
         self.hud_surf   = screen
 
     def _get_camera_offset(self) -> tuple:
-        sw = self.world_surf.get_width()
-        sh = self.world_surf.get_height()
-        for _, _, cam_pos in self.world.get_entities_with(Camera, Position):
-            return cam_pos.x - sw / 2, cam_pos.y - sh / 2
-        return 0.0, 0.0
+        return get_camera_offset(self.world, self.world_surf.get_width(), self.world_surf.get_height())
 
     def _enemy_at_world_pos(self, world_x: float, world_y: float) -> int:
         """Retorna o entity_id do inimigo vivo e visível na posição mundo, ou -1."""
@@ -414,7 +419,7 @@ class MouseTargetingSystem(System):
         sw = self.world_surf.get_width()
         sh = self.world_surf.get_height()
         player_pos = self.world.get_component(self.player_entity_id,
-                                              __import__("engine.components", fromlist=["Position"]).Position)
+                                              Position)
         from engine.faction_system import can_engage as _can_engage_tab_mob
         result = []
         for eid, pos, _, _ in self.world.get_entities_with(Position, Enemy, Visible):
@@ -454,7 +459,7 @@ class MouseTargetingSystem(System):
             return
 
         player_cs = self.world.get_component(self.player_entity_id,
-                                             __import__("engine.components", fromlist=["CombatState"]).CombatState)
+                                             CombatState)
         if not player_cs:
             return
 
@@ -1660,8 +1665,6 @@ class RenderSystem(System):
             # (get_active_appearance_override + tabela _APPEARANCE_SOURCES).
             # Nenhuma skill é hardcoded aqui; adicionar uma fonte nova de troca
             # de aparência não toca nesta função.
-            from engine.entity_disguise import (get_active_appearance_override,
-                                                get_animated_disguise_frame)
             _appearance = get_active_appearance_override(self.world, entity_id)
             if _appearance is not None:
                 _sprite_base, _ap_variant = _appearance
@@ -1745,12 +1748,11 @@ class RenderSystem(System):
                     if _char_id_rnd:
                         _tm_rnd = self.world.get_component(entity_id, TileMovement)
                         if _tm_rnd is not None:
-                            from engine.character_animation import (
-                                get_character_frame as _gcf, resolve_display_state as _rds)
-                            _state_rnd, _anim_t_rnd, _frame_ms_rnd = _rds(
+                            _state_rnd, _anim_t_rnd, _frame_ms_rnd = resolve_display_state(
                                 _tm_rnd, _char_id_rnd, pygame.time.get_ticks())
-                            _char_frame = _gcf(_char_id_rnd, _state_rnd, _tm_rnd.facing,
-                                               _anim_t_rnd, _frame_ms_rnd)
+                            _char_frame = get_character_frame(
+                                _char_id_rnd, _state_rnd, _tm_rnd.facing,
+                                _anim_t_rnd, _frame_ms_rnd)
 
                     if _char_frame is not None:
                         # Âncora pelo tile de colisão REAL (32×32) dentro
@@ -1760,8 +1762,7 @@ class RenderSystem(System):
                         # character_anchor_offset). Alinha o CENTRO desse
                         # tile com (draw_x, draw_y) — mesmo ponto que o
                         # ECS já usa como posição lógica da entidade.
-                        from engine.character_animation import character_anchor_offset as _cao
-                        _anchor_dx, _anchor_dy = _cao()
+                        _anchor_dx, _anchor_dy = character_anchor_offset()
                         _cblit_x = int(draw_x - _anchor_dx)
                         _cblit_y = int(draw_y - _anchor_dy)
                         self.world_surf.blit(_char_frame, (_cblit_x, _cblit_y))
@@ -3819,11 +3820,7 @@ class LootSystem(UIScaleMixin, System):
                             self._scroll_offset = max(0, min(self._scroll_offset - event.y, max_scroll))
 
     def _get_camera_offset(self):
-        sw = self.world_surf.get_width()
-        sh = self.world_surf.get_height()
-        for _, _, cam_pos in self.world.get_entities_with(Camera, Position):
-            return cam_pos.x - sw / 2, cam_pos.y - sh / 2
-        return 0.0, 0.0
+        return get_camera_offset(self.world, self.world_surf.get_width(), self.world_surf.get_height())
 
     def _try_open_corpse(self, mx: int, my: int) -> None:
         cam_x, cam_y = self._get_camera_offset()
@@ -3967,14 +3964,14 @@ class LootSystem(UIScaleMixin, System):
                 if self._row_rect(modal, screen_row).collidepoint(mx, my):
                     if self._try_send_online_loot_request("gold"):
                         return True
-                    for _, wallet, _ in self.world.get_entities_with(Wallet, PlayerControlled):
+                    wallet = self.world.get_component(self.player_entity, Wallet)
+                    if wallet:
                         wallet.gold += corpse.coins
                         LOG.add(f"+{corpse.coins} moedas coletadas!", (255, 215, 0))
                         corpse.coins = 0
                         SOUNDS.play_ui("loot_gold")
                         if self._on_loot_collected:
                             self._on_loot_collected("gold")
-                        break
                     self._check_auto_close(corpse)
                     return True
                 screen_row += 1
@@ -3985,7 +3982,8 @@ class LootSystem(UIScaleMixin, System):
                 if self._row_rect(modal, screen_row).collidepoint(mx, my):
                     if self._try_send_online_loot_request("item", item.item_id):
                         return True
-                    for _, inv, _ in self.world.get_entities_with(Inventory, PlayerControlled):
+                    inv = self.world.get_component(self.player_entity, Inventory)
+                    if inv:
                         # Tenta empilhar em stack existente
                         stacked = False
                         if item.max_stack > 1:
@@ -3996,6 +3994,7 @@ class LootSystem(UIScaleMixin, System):
                                     existing.stack += item.stack
                                     stacked = True
                                     break
+                        _inv_full = False
                         if stacked:
                             corpse.loot.pop(i)
                         elif len(inv.items) < inv.max_slots:
@@ -4003,17 +4002,17 @@ class LootSystem(UIScaleMixin, System):
                             corpse.loot.pop(i)
                         else:
                             LOG.add("Inventario cheio!", (255, 160, 0))
-                            break
-                        col = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
-                        LOG.add(f"Coletado: {item.name} ({item.rarity})", col)
-                        SOUNDS.play_ui("loot_item")
-                        quest_fire("collect_item", item_id=item.item_id)
-                        if self._on_loot_collected:
-                            self._on_loot_collected("item")
-                        # Corrige scroll se necessário
-                        total = (1 if corpse.coins > 0 else 0) + len(corpse.loot)
-                        self._scroll_offset = min(self._scroll_offset, max(0, total - self.MAX_ROWS))
-                        break
+                            _inv_full = True
+                        if not _inv_full:
+                            col = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
+                            LOG.add(f"Coletado: {item.name} ({item.rarity})", col)
+                            SOUNDS.play_ui("loot_item")
+                            quest_fire("collect_item", item_id=item.item_id)
+                            if self._on_loot_collected:
+                                self._on_loot_collected("item")
+                            # Corrige scroll se necessário
+                            total = (1 if corpse.coins > 0 else 0) + len(corpse.loot)
+                            self._scroll_offset = min(self._scroll_offset, max(0, total - self.MAX_ROWS))
                     self._check_auto_close(corpse)
                     return True
                 screen_row += 1
@@ -4049,18 +4048,9 @@ class LootSystem(UIScaleMixin, System):
                     # não equipa direto — trade-off aceitável por segurança.
                     if self._try_send_online_loot_request("item", item.item_id):
                         return True
-                    equip        = None
-                    inv          = None
-                    combat_stats = None
-                    for _, eq, _pc in self.world.get_entities_with(Equipment, PlayerControlled):
-                        equip = eq
-                        break
-                    for _, iv, _pc in self.world.get_entities_with(Inventory, PlayerControlled):
-                        inv = iv
-                        break
-                    for _, cs, _pc in self.world.get_entities_with(CombatStats, PlayerControlled):
-                        combat_stats = cs
-                        break
+                    equip        = self.world.get_component(self.player_entity, Equipment)
+                    inv          = self.world.get_component(self.player_entity, Inventory)
+                    combat_stats = self.world.get_component(self.player_entity, CombatStats)
 
                     if not (equip and combat_stats):
                         return False
@@ -4309,10 +4299,7 @@ class LootSystem(UIScaleMixin, System):
         if hovered_item is not None:
             lines = item_tooltip_lines(hovered_item, _viewer_cls)
             lines.append(("Clique p/ pegar | Shift p/ comparar", (140, 140, 140)))
-            equip = None
-            for _, eq, _ in self.world.get_entities_with(Equipment, PlayerControlled):
-                equip = eq
-                break
+            equip = self.world.get_component(self.player_entity, Equipment)
             equipped_item = equip.slots.get(hovered_item.slot) if equip else None
             name_col = self.RARITY_COLORS.get(hovered_item.rarity, (255, 220, 100))
             self.pending_tooltip = (mx, my, hovered_item.name, lines, name_col,
@@ -4464,7 +4451,7 @@ class SkillSystem(System, SkillHandlers):
         combat_state  = self.world.get_component(self.player_entity_id, CombatState)
         player_skills = self.world.get_component(self.player_entity_id, PlayerSkills)
         _tile_move_sk = self.world.get_component(self.player_entity_id,
-                                                  __import__("engine.components", fromlist=["TileMovement"]).TileMovement)
+                                                  TileMovement)
 
         # 0. Talent lock: skill requer talento que não está alocado
         if skill.skill_id and skill.skill_id in _TALENT_SKILL_REQ_SYS:
@@ -4515,17 +4502,17 @@ class SkillSystem(System, SkillHandlers):
             _aoe_handler = getattr(self, f"_skill_{skill.skill_id}", None)
             if _aoe_handler:
                 _cs_aoe   = self.world.get_component(self.player_entity_id,
-                                                      __import__("engine.components", fromlist=["CombatStats"]).CombatStats)
+                                                      CombatStats)
                 _tm_aoe   = self.world.get_component(self.player_entity_id,
-                                                      __import__("engine.components", fromlist=["TileMovement"]).TileMovement)
+                                                      TileMovement)
                 _cst_aoe  = self.world.get_component(self.player_entity_id,
-                                                      __import__("engine.components", fromlist=["CombatState"]).CombatState)
+                                                      CombatState)
                 return bool(_aoe_handler(skill, _cs_aoe, _cst_aoe, _tm_aoe))
             return False
         _char = self.world.get_component(self.player_entity_id,
-                                          __import__("engine.components", fromlist=["CharacterStats"]).CharacterStats)
+                                          CharacterStats)
         _cs   = self.world.get_component(self.player_entity_id,
-                                          __import__("engine.components", fromlist=["CombatStats"]).CombatStats)
+                                          CombatStats)
 
         # 4. Para ofensivas: resolve alvo + inicia chase + verifica range
         _needs_target = getattr(skill, "needs_target", True)
@@ -4535,16 +4522,16 @@ class SkillSystem(System, SkillHandlers):
                 # Limpa target inválido: removido do mundo OU fora da visão (fog/parede)
                 if _target_local != -1:
                     _stale_pos = self.world.get_component(_target_local,
-                                     __import__("engine.components", fromlist=["Position"]).Position)
+                                     Position)
                     _stale_vis = self.world.get_component(_target_local,
-                                     __import__("engine.components", fromlist=["Visible"]).Visible)
+                                     Visible)
                     # Alvo morto (mob com HP<=0 ou player remoto cujo corpo
                     # ficou no chão): não é mais alvo válido — limpa igual
                     # entidade removida, evita tocar som/iniciar cast num corpo.
                     _stale_cs = self.world.get_component(_target_local,
-                                     __import__("engine.components", fromlist=["CombatStats"]).CombatStats)
+                                     CombatStats)
                     _stale_rc = self.world.get_component(_target_local,
-                                     __import__("engine.components", fromlist=["RemoteControlled"]).RemoteControlled)
+                                     RemoteControlled)
                     _is_dead_target = (
                         (_stale_cs is not None and _stale_cs.current_hp <= 0) or
                         (_stale_rc is not None and _stale_rc.hp <= 0)
@@ -4613,9 +4600,9 @@ class SkillSystem(System, SkillHandlers):
                 combat_state.pursuit_skill_range = _max_range_tiles
                 _min_range_tiles = _params.get("min_range", 0)
                 _pl_pos  = self.world.get_component(self.player_entity_id,
-                                                     __import__("engine.components", fromlist=["Position"]).Position)
+                                                     Position)
                 _tgt_pos = self.world.get_component(_target_local,
-                                                     __import__("engine.components", fromlist=["Position"]).Position)
+                                                     Position)
                 # Mesma métrica do check autoritativo do servidor
                 # (SkillHandlers._resolve_target, engine/skill_handlers.py):
                 # in_range() (Euclidiana em tile, círculo de verdade) pra
@@ -4626,7 +4613,7 @@ class SkillSystem(System, SkillHandlers):
                 # Euclidiana em PIXEL contínuo aqui (bug real relatado pelo
                 # usuário, 14/09/2026, ver PROBLEMAS_ARQUITETURA.md §134/§135).
                 _tgt_tm = self.world.get_component(_target_local,
-                                                    __import__("engine.components", fromlist=["TileMovement"]).TileMovement)
+                                                    TileMovement)
                 if _tile_move_sk and _tgt_tm and _pl_pos and _tgt_pos:
                     if _max_range_tiles <= 1:
                         _atk_ok = chebyshev(_tile_move_sk.current_tile_x, _tile_move_sk.current_tile_y,
@@ -4785,13 +4772,9 @@ class SkillSystem(System, SkillHandlers):
             _dir_x, _dir_y = 0.0, 0.0
             _pos_cast = self.world.get_component(self.player_entity_id, Position)
             if _pos_cast:
-                _cam_x_cast = _cam_y_cast = 0.0
-                for _, _camc_cast, _camp_cast in self.world.get_entities_with(Camera, Position):
-                    _lw_cast = self.world_surf.get_width()  if self.world_surf else 1280
-                    _lh_cast = self.world_surf.get_height() if self.world_surf else 720
-                    _cam_x_cast = _camp_cast.x - _lw_cast / 2
-                    _cam_y_cast = _camp_cast.y - _lh_cast / 2
-                    break
+                _lw_cast = self.world_surf.get_width()  if self.world_surf else 1280
+                _lh_cast = self.world_surf.get_height() if self.world_surf else 720
+                _cam_x_cast, _cam_y_cast = get_camera_offset(self.world, _lw_cast, _lh_cast)
                 _scale_cast = (self.world_surf.get_width() / max(1, self.hud_surf.get_width())
                                if self.world_surf and self.hud_surf else 1.0)
                 _msx_cast, _msy_cast = pygame.mouse.get_pos()

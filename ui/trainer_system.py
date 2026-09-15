@@ -14,7 +14,8 @@ from __future__ import annotations
 import pygame
 from ui.systems import System
 from engine.components import (Position, Renderable, TileMovement,
-                        Camera, NPC, Trainer, Wallet)
+                        NPC, Trainer, Wallet)
+from engine.utils import get_camera_offset
 from content.skill_config import (SKILL_CATALOG, SKILL_LEVEL_REQUIREMENTS, SKILL_COSTS,
                           NUM_SLOTS, SKILL_ORDER_BY_CLASS)
 from ui.icon_manager import ICONS
@@ -181,11 +182,7 @@ class TrainerSystem(UIScaleMixin, System):
             # game.py::_assign_world_surf rodar — equivale a zoom=1.0).
             _wsurf = self.world_surf or self.hud_surf
             SW, SH = _wsurf.get_size()
-            cx, cy = 0.0, 0.0
-            for _, _, _cam_pos in self.world.get_entities_with(Camera, Position):
-                cx = _cam_pos.x - SW / 2
-                cy = _cam_pos.y - SH / 2
-                break
+            cx, cy = get_camera_offset(self.world, SW, SH)
             _sc = _wsurf.get_width() / max(1, self.hud_surf.get_width())
 
             for eid, pos, rend, _ in self.world.get_entities_with(

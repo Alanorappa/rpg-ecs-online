@@ -19,6 +19,7 @@ from content.crafting_data import (MATERIALS, RECYCLE_TABLE, RECIPES, RECIPE_ITE
                            get_recycle_materials)
 from ui.combat_log import LOG
 from engine.tileset import TILE_SIZE
+from engine.utils import get_camera_offset
 from ui.ui_helpers import item_tooltip_lines, fill_surf
 from ui.ui_sizes import UI
 from ui.npc_interaction import walk_to_npc, suppress_chase
@@ -236,14 +237,9 @@ class BlacksmithSystem(UIScaleMixin, System):
                     # em systems.py, que já faz certo). Fallback pra hud_surf se
                     # world_surf ainda não foi atribuído (1º frame, antes de
                     # game.py::_assign_world_surf rodar — equivale a zoom=1.0).
-                    from engine.components import Camera
                     _wsurf = self.world_surf or self.hud_surf
                     SW, SH = _wsurf.get_size()
-                    cx, cy = 0.0, 0.0
-                    for _, _, _cam_pos in self.world.get_entities_with(Camera, Position):
-                        cx = _cam_pos.x - SW / 2
-                        cy = _cam_pos.y - SH / 2
-                        break
+                    cx, cy = get_camera_offset(self.world, SW, SH)
                     _sc = _wsurf.get_width() / max(1, self.hud_surf.get_width())
                     wx = ev.pos[0] * _sc + cx
                     wy = ev.pos[1] * _sc + cy

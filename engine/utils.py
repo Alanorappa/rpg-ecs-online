@@ -315,6 +315,24 @@ def is_target_alive(world, target_id: int) -> bool:
     return meta is not None and meta.hp > 0
 
 
+def get_camera_offset(world, screen_w: float, screen_h: float) -> tuple:
+    """Único ponto de verdade pra "canto superior-esquerdo do mundo
+    visível em tela" — 15/09/2026, revisão de performance (ver
+    arquitetura/CLIENT_PERFORMANCE_REVIEW.md item 6). Antes disso, o
+    mesmo loop (`for _, _, cam_pos in world.get_entities_with(Camera,
+    Position): return cam_pos.x - sw/2, cam_pos.y - sh/2`) estava
+    reimplementado em 13+ pontos — inclusive DUAS definições idênticas
+    de `_get_camera_offset()` no mesmo arquivo (`ui/systems.py`,
+    `MouseTargetingSystem` e `LootSystem`, copy-paste em vez de função
+    de módulo). Sem câmera no mundo (ex: cena de login/tela de
+    transição): (0.0, 0.0), mesmo fallback que todas as cópias já
+    usavam."""
+    from engine.components import Camera, Position
+    for _, _, cam_pos in world.get_entities_with(Camera, Position):
+        return cam_pos.x - screen_w / 2, cam_pos.y - screen_h / 2
+    return 0.0, 0.0
+
+
 def reengage_chase(world, player_entity: int) -> None:
     """Único ponto de verdade pra "reativar a perseguição de combate"
     (09/09/2026) — inverso simétrico de `ui/npc_interaction.py::

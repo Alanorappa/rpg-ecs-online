@@ -25,7 +25,7 @@ from engine.components import (
     PendingDeath, PlayerAutoMove, NpcSounds,
 )
 from engine.tileset import TILE_SIZE
-from engine.utils import chebyshev
+from engine.utils import chebyshev, get_camera_offset
 from ui.combat_log import LOG
 from ui.floating_text import FLT, WARN
 from ui.sound_manager import SOUNDS
@@ -1819,10 +1819,7 @@ class AoeTargetingSystem(System):
         self._net          = None   # injetado por game.py no modo online
 
     def _camera_offset(self) -> tuple[float, float]:
-        sw, sh = self.world_surf.get_width(), self.world_surf.get_height()
-        for _, _, cam_pos in self.world.get_entities_with(Camera, Position):
-            return cam_pos.x - sw / 2, cam_pos.y - sh / 2
-        return 0.0, 0.0
+        return get_camera_offset(self.world, self.world_surf.get_width(), self.world_surf.get_height())
 
     @property
     def is_targeting(self) -> bool:
@@ -2088,13 +2085,9 @@ class PirofagiaSystem(System):
 
         # Ângulo do cone baseado na posição atual do mouse
         mx, my = self._mouse_screen()
-        cam_x = cam_y = 0.0
-        for _, cam, cam_pos in self.world.get_entities_with(Camera, Position):
-            lw = self.world_surf.get_width()  if self.world_surf else 1280
-            lh = self.world_surf.get_height() if self.world_surf else 720
-            cam_x = cam_pos.x - lw / 2
-            cam_y = cam_pos.y - lh / 2
-            break
+        lw = self.world_surf.get_width()  if self.world_surf else 1280
+        lh = self.world_surf.get_height() if self.world_surf else 720
+        cam_x, cam_y = get_camera_offset(self.world, lw, lh)
 
         px    = pos.x - cam_x
         py    = pos.y - cam_y
