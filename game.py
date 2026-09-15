@@ -628,9 +628,17 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         _os.makedirs(_log_dir, exist_ok=True)
         self._prof_log = open(_os.path.join(_log_dir, "client_prof.log"), "w",
                               encoding="utf-8", buffering=1)
-        # Overlay de performance (F11)
+        # Overlay de performance (F11) — fonte criada JÁ AQUI, não mais
+        # lazy no primeiro _draw_perf_overlay (15/09/2026, #143 follow-up
+        # 5). pygame.font.SysFont() varre as fontes do sistema no Windows
+        # e é lenta na primeira chamada (~185ms medido por profiling real)
+        # — lazy-load parecia razoável (só paga o custo se o usuário usar
+        # F11), mas na prática move um custo de carregamento invisível
+        # pra um engasgo visível NO MEIO do jogo, no exato frame em que o
+        # usuário aperta F11 pela primeira vez. Pagar aqui, durante o
+        # carregamento, é estritamente melhor.
         self._show_perf_overlay: bool = False
-        self._perf_font = None                     # lazy-loaded em _draw_perf_overlay
+        self._perf_font = pygame.font.SysFont("Consolas,Courier New,monospace", 13)
 
         # Nível de detalhe dos nameplates (Shift+V, cíclico 3 estados —
         # pedido do usuário 29/07/2026): 0=completo (sprite/badge PNG+HP+
@@ -1454,11 +1462,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._prof_frame_accum: dict[str, float] = {}   # acumulado do frame atual (spike)
 
     def _draw_perf_overlay(self) -> None:
-        """Overlay de performance (F11): FPS + seções mais lentas do último frame."""
-        import pygame as _pg
-        if self._perf_font is None:
-            self._perf_font = _pg.font.SysFont("Consolas,Courier New,monospace", 13)
-
+        """Overlay de performance (F11): FPS + seções mais lentas do último frame.
+        `_perf_font` já vem pronto do __init__ (ver comentário lá) — nunca
+        lazy-load aqui, senão o custo de SysFont() volta a aparecer como
+        engasgo no primeiro F11 em vez de durante o carregamento."""
         fps      = self.clock.get_fps()
         frame_ms = (1000.0 / fps) if fps > 0 else 0.0
         budget   = 1000.0 / FPS
@@ -1478,7 +1485,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         lh   = self._perf_font.get_linesize()
         w    = max(self._perf_font.size(l)[0] for l, _ in lines) + pad * 2
         h    = lh * len(lines) + pad * 2
-        surf = _pg.Surface((w, h), _pg.SRCALPHA)
+        surf = pygame.Surface((w, h), pygame.SRCALPHA)
         surf.fill((0, 0, 0, 180))
         for i, (txt, col) in enumerate(lines):
             self._perf_font.render_to(surf, (pad, pad + i * lh), txt, col) \

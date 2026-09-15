@@ -18681,10 +18681,71 @@ carregar objetos que gen0/1 já teriam limpado.
 Suíte completa: 1658 passed, 1 failed pré-existente/timing flake sem
 relação.
 
-**Status**: 2 investigações em paralelo, estados diferentes —
-1. **Spike grande (90-121ms, `ui_modals_overlay`)**: aberto, não
+**Follow-up 5 no mesmo dia (usuário fez um teste completo — menus,
+inventário, mapa, alt-tab — e relatou 2 travadas específicas: uma no
+alt-tab, outra apertando F11; "no restante do tempo, mesmo abrindo
+menus e modais não senti travar")**:
+
+1. **F11 — CONFIRMADO e CORRIGIDO.** `[SPIKE] 197ms | ... >>
+   ui:perf_overlay 185.1ms`. Causa raiz: `self._perf_font` nascia
+   `None` no `__init__` com comentário explícito "lazy-loaded em
+   _draw_perf_overlay" — `pygame.font.SysFont(...)` só era chamado na
+   PRIMEIRA vez que o overlay desenhava de verdade (1ª vez que F11 é
+   apertado na sessão). `SysFont()` varre as fontes do sistema
+   (Windows) e é lenta na primeira chamada — o lazy-load "poupava" o
+   custo só se o usuário nunca usasse F11, mas na prática trocava um
+   custo invisível de carregamento por um engasgo visível NO MEIO do
+   jogo, no exato frame do primeiro F11. Fix: fonte criada direto no
+   `__init__` (mesmo momento de várias outras fontes/recursos já
+   carregados ali), lazy-load removido de `_draw_perf_overlay`.
+
+2. **Alt-tab — explicado, NÃO é bug de código, decisão pendente sobre
+   mitigação.** O log mostra um cluster de ~15 frames consecutivos com
+   spikes gigantes (`events`/`display_flip` até 504ms/286ms, um frame
+   de 512ms total) e `net_msgs` bem acima do normal (16, 10, 8, 5 — o
+   normal é 0-1) — sinal claro de que o processo ficou tempo real
+   suspenso pelo Windows enquanto a janela estava sem foco (comum:
+   SO/compositor throttling um processo em segundo plano), e ao voltar
+   o foco a janela tem uma rede/fila de evento acumulada pra
+   processar de uma vez. Nenhum código do jogo "trava" aqui — o próprio
+   sistema operacional pausa o processo; o que aparece no profiler é o
+   CATCH-UP acontecendo depois que o SO devolve tempo de CPU.
+   Mitigação possível (NÃO implementada, decisão em aberto com o
+   usuário): detectar perda/retorno de foco (`pygame.ACTIVEEVENT` ou
+   similar, hoje nem sequer permitido pelo `pygame.event.set_allowed`)
+   e, ao retomar, descartar a fila de eventos acumulada / resetar o
+   `clock` pra não deixar um `dt` gigante contaminar física de 1 frame
+   só. Fora de escopo até o usuário decidir se quer esse tratamento.
+
+3. **Achado à parte, não perguntado, mas grave**: `[SPIKE] 1283ms |
+   ... net_msgs=1(ZONE_CHANGEx1) >> network_recv 1263.1ms` — uma
+   transição de mapa (ZONE_CHANGE) travou o cliente por **1.28
+   segundos** inteiros. Isso é MUITO maior que qualquer coisa desta
+   investigação inteira (§141-§143 juntos nunca passaram de ~150ms).
+   `network_recv` engloba o handler completo de `ZONE_CHANGE`
+   (`_do_transition` — descarrega entidades do mapa antigo, carrega
+   CSV do mapa novo, reconstrói `Tilemap`, spawna entidades, zonas de
+   ambiente/PvP, etc., ver `game.py::_do_transition`) — plausível que
+   isso seja genuinamente pesado (carregar um mapa novo do disco +
+   reconstruir toda a estrutura de tiles), mas 1.28s é uma trava real
+   e perceptível, MUITO fora da faixa que motivou toda essa
+   investigação. NÃO investigado a fundo ainda — reportado ao usuário,
+   fora do escopo original (fog/engasgo geral), decisão de investigar
+   ou não fica com ele.
+
+Suíte completa: 1659 passed, 0 failed.
+
+**Status**: 3 investigações em paralelo, estados diferentes —
+1. **Spike grande de UI (90-121ms, `ui_modals_overlay`)**: aberto, não
    reproduzido nesta rodada, `ui:map_overlay` descartado. 10 labels
    granulares continuam ativos aguardando a próxima ocorrência.
-2. **Pausa pequena e recorrente (`gc_collect`, ~22-28ms/10s)**:
-   ação tomada (gen0/1 automáticas, só gen2 manual) — aguardando
+2. **Pausa pequena e recorrente (`gc_collect`, ~22-28ms/10s)**: ação
+   tomada (gen0/1 automáticas, só gen2 manual) — aguardando
    confirmação do usuário em jogo se a sensação de engasgo melhorou.
+3. **F11 (`ui:perf_overlay`, ~185ms na 1ª vez)**: RESOLVIDO, corrigido
+   e testado.
+4. **Alt-tab**: explicado (SO suspendendo o processo, não é bug),
+   mitigação em aberto — decisão do usuário se quer tratamento.
+5. **ZONE_CHANGE de 1.28s (`network_recv`)**: achado novo, não
+   investigado, fora do escopo original — decisão do usuário se
+   investiga agora ou depois.
