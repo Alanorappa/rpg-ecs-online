@@ -24,14 +24,17 @@ achados por só 1 agente, têm evidência de código muito concreta e/ou
 gravidade alta. Os 20 achados restantes estão resumidos no apêndice, pra
 não perder o trabalho, sem diluir os 10 principais.
 
-**Nenhuma mudança de código foi feita.** Isto é só o levantamento —
-qualquer item abaixo precisa de aprovação explícita antes de eu tocar em
-qualquer arquivo (regra do projeto: pesquisar/desenhar antes de codar,
-nunca decidir sozinho em mudança de arquitetura).
+**Nenhuma mudança de código foi feita** na publicação original deste
+documento — era só o levantamento. Implementação começou em 15/09/2026,
+com aprovação do usuário ("vamos começar, pode me questionar o que
+precisar"); status de cada item abaixo é atualizado conforme
+implementado.
 
 ---
 
 ## 1. Nome de player/mob (`font.render()`) recriado do zero todo frame, sem cache — mesmo bug já documentado e corrigido só pro número de nível
+
+**Status:** ✅ Implementado (15/09/2026) — `ui/world_labels.py::_cached_text_surf()`.
 
 **Gravidade:** Alta
 
@@ -67,6 +70,8 @@ muitas entidades (BG, dungeon, várias torres/minions/players à vista).
 
 ## 2. Import de módulo dentro do loop de desenho mais executado do jogo (`RenderSystem.render()`)
 
+**Status:** ✅ Implementado (15/09/2026) — imports movidos pro topo de `ui/systems.py`.
+
 **Gravidade:** Alta
 
 **Impacto no desempenho:** Achado de forma independente por 2 dos 3
@@ -96,6 +101,8 @@ repetido dezenas de milhares de vezes por segundo em cena cheia —
 ---
 
 ## 3. `__import__("engine.components", fromlist=[...])` no caminho de uso de skill — reimportando nomes que já são globals do módulo
+
+**Status:** ✅ Implementado (15/09/2026) — 15 ocorrências removidas de `ui/systems.py`.
 
 **Gravidade:** Alta
 
@@ -198,6 +205,11 @@ já corrigida uma vez (25/07/2026) e nunca generalizada.
 
 ## 6. Cálculo de offset de câmera duplicado — inclusive DUAS definições idênticas byte-a-byte no mesmo arquivo, mais 11+ cópias inline
 
+**Status:** ✅ Implementado (15/09/2026) — `engine.utils.get_camera_offset()`
+novo, 7 dos 13 call sites unificados (os 6 restantes tinham semântica
+genuinamente diferente — `_is_on_screen`/escrita de `cam.offset_x/y`/
+`CameraSystem.update` — e ficaram de fora de propósito, ver commit).
+
 **Gravidade:** Alta
 
 **Impacto no desempenho:** Pequeno por chamada (Camera é entidade única,
@@ -228,6 +240,12 @@ virar função única).
 ---
 
 ## 7. Dispatch de mensagens de rede via cadeia if/elif de 53-54 ramos
+
+**Status:** ✅ Implementado (15/09/2026) — `NetworkHandlers._NET_DISPATCH_NAMES`
+(dict `MsgType -> nome do método`, resolvido via `getattr(self, name)`
+em vez de referência direta de função — 17 dos 54 handlers são definidos
+em mixins IRMÃOS de `NetworkHandlers`, não nela mesma, ver
+`arquitetura/PROBLEMAS_ARQUITETURA.md` pra essa pegadinha).
 
 **Gravidade:** Média
 
@@ -319,6 +337,9 @@ via `get_entities_with`.
 ---
 
 ## 10. `LootSystem` re-escaneia o ECS inteiro pra achar a MESMA entidade que já guarda em `self.player_entity`
+
+**Status:** ✅ Implementado (15/09/2026) — 8 call sites trocados por
+`get_component(self.player_entity, ...)` em `ui/systems.py`.
 
 **Gravidade:** Média
 

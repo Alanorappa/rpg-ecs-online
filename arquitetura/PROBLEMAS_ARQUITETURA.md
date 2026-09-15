@@ -18034,3 +18034,52 @@ dessa categoria (cast_time>0 + handler local + som no catálogo) precisa
 decidir explicitamente se o conjurador já ouviu localmente e, se sim,
 marcar `skip_local_caster` — não assumir que o broadcast genérico é
 sempre seguro pra quem já previu o resultado.
+
+## 138. Dispatch de mensagem de rede virando dict quebrou 17 handlers na 1ª tentativa — método existe só no MRO de `GameEngine`, não em `NetworkHandlers`
+
+15/09/2026, implementando o item 7 de `CLIENT_PERFORMANCE_REVIEW.md`
+(trocar a cadeia if/elif de 54 ramos de `client/network_handlers.py::
+_handle_net_message` por um dict de despacho O(1)).
+
+**1ª tentativa (errada)**: montar `NetworkHandlers._NET_DISPATCH = {
+MsgType.X: NetworkHandlers._handle_msg_x, ...}` — um dict de módulo
+referenciando a FUNÇÃO diretamente pela classe `NetworkHandlers`,
+assinado uma vez no import. Quebrou imediatamente
+(`AttributeError: type object 'NetworkHandlers' has no attribute
+'_handle_msg_duel_invite'`) — pego ANTES de commitar, rodando o módulo
+isolado.
+
+**Causa raiz**: `client/network_handlers.py::NetworkHandlers` é uma
+MIXIN — nunca instanciada sozinha, só herdada por `GameEngine`
+(`game.py`) junto de ~20 outras mixins (`DuelHandlers`, `PartyHandlers`,
+`ArenaHandlers`, `BattlegroundHandlers`, `BgQueueHandlers`, etc.). O
+código ORIGINAL (`if msg_type == MsgType.DUEL_INVITE:
+self._handle_msg_duel_invite(payload)`) funcionava porque `self.método()`
+resolve pelo MRO INTEIRO de `GameEngine` em runtime — 17 dos 54 métodos
+chamados ali (todos de duelo/grupo/arena/BG) são definidos em mixins
+IRMÃOS, nunca em `NetworkHandlers` propriamente. Um dict estático
+referenciando `NetworkHandlers.método` direto só encontra o que está
+DEFINIDO NA PRÓPRIA CLASSE — quebra silenciosamente (na verdade
+ruidosamente, `AttributeError` no import) pra qualquer método herdado de
+outro lugar do MRO.
+
+**Fix**: dict guarda NOME (string) do método, não a função —
+`NetworkHandlers._NET_DISPATCH_NAMES = {MsgType.X: "_handle_msg_x", ...}`
+— resolvido em runtime via `getattr(self, name)(payload)` dentro de
+`_handle_net_message`. Isso preserva EXATAMENTE a mesma resolução
+dinâmica via MRO que o código original já fazia, só trocando "54
+comparações sequenciais" por "1 lookup de dict + 1 getattr".
+
+**Verificação**: script à parte (`getattr(GameEngine, name)` pra cada um
+dos 54 nomes) confirmou os 54 resolvendo certo contra a classe REAL
+`GameEngine`, não só `NetworkHandlers` isolada — teste que teria pegado
+o erro da 1ª tentativa também, se rodado antes.
+
+**Lição pra não repetir**: qualquer dispatch table (dict de
+despacho/registro/plugin) que substitui uma cadeia de `self.método()` só
+pode referenciar a FUNÇÃO direto quando o método é garantidamente
+definido na MESMA classe do dict. Se a classe é uma mixin (convenção já
+usada em ~20 lugares neste projeto pra compor `GameEngine`), o dict
+precisa guardar o NOME e resolver via `getattr(self, name)` — nunca
+assumir que "está definido em algum lugar que o self.método() original
+achava" significa "está definido nesta classe especificamente".
