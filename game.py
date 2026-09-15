@@ -605,6 +605,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._spell_cast_system._on_inventory_changed = self._on_recarregar_changed
 
         # --- Profiler de frames ---
+        # Diagnóstico do travamento periódico de ~100ms no network_recv
+        # (15/09/2026, ver PROBLEMAS_ARQUITETURA.md §141) — populado de
+        # verdade em client/online_mode_handlers.py::_process_network().
+        self._last_net_msg_count: int = 0
+        self._last_net_msg_types: list = []
         self._prof_accum:       dict[str, float] = {}   # tempo acumulado por seção
         self._prof_peak:        dict[str, float] = {}   # pico por seção
         self._prof_frame_accum: dict[str, float] = {}   # acumulado do frame atual (spike)
@@ -2612,6 +2617,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         ]
                         if _cbs_spk:
                             _parts.append(f"atk_cd={_cbs_spk.attack_cooldown_timer:.2f}")
+                        # Diagnóstico do travamento periódico de
+                        # network_recv (§141) — só aparece quando o
+                        # frame realmente processou mensagem de rede.
+                        if self._last_net_msg_count:
+                            _types_str = ",".join(f"{n}x{c}" for n, c in self._last_net_msg_types)
+                            _parts.append(f"net_msgs={self._last_net_msg_count}({_types_str})")
                         _ctx = " | " + " ".join(_parts)
                     except Exception:
                         pass

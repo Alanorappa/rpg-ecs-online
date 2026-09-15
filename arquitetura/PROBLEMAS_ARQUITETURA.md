@@ -18211,3 +18211,59 @@ qualquer outro arquivo de teste rodando antes no mesmo processo pytest)
 — sempre uma `pygame.Surface(tamanho_fixo)` própria. `pygame.display.
 get_surface()` é seguro só quando o teste não se importa com o tamanho
 exato (a maioria dos testes deste arquivo).
+
+## 141. Travamento periódico de ~105ms em `network_recv` — investigação em andamento, instrumentação adicionada pra confirmar a causa
+
+15/09/2026, achado analisando o log real de profiling do usuário
+(`logs/client_prof.log`, sessão pós-item-8/§140) — depois de corrigir o
+ponto cego que escondia `rnd:RenderSystem`, apareceram vários `[SPIKE]`
+com `network_recv` sozinho custando ~105-108ms (valores muito
+consistentes entre si: 106.6, 106.6, 108.1, 104.7 — não parece jitter
+aleatório de rede, mais parece algo periódico/estrutural), espalhados
+ao longo da sessão inteira, tanto em combate (`is_pursuing=True`) quanto
+fora.
+
+**Descartado como causa**: `client/network.py::NetworkClient.poll()` é
+não-bloqueante de verdade — só drena uma `queue.Queue` já populada por
+uma thread de rede separada (`_recv_loop`), sem tocar socket. O
+`decode()` de cada mensagem também acontece NA THREAD de rede, não em
+`poll()`. Ou seja, o único custo que `_process_network()` (o que
+`network_recv` mede) pode ter é: (a) o volume de mensagens dentro da
+LISTA já pronta que `poll()` devolve, e (b) o trabalho de cada handler
+despachado por `_handle_net_message` (já otimizado pro dispatch em si,
+§138, mas não pro CONTEÚDO de cada handler).
+
+**Hipótese líder, não confirmada ainda**: cliente conectado ao servidor
+de PRODUÇÃO real (Hetzner, `5.161.104.174` — confirmado em
+`config.json`, só leitura, nada alterado), não localhost — uma rajada
+de mensagens (várias chegando entre um `poll()` e o outro, por qualquer
+motivo de rede/scheduling) faria `_process_network()` processar N
+mensagens NUM FRAME SÓ, e o custo agregado de N handlers pode
+perfeitamente somar 100ms+ se N for grande (dezenas/centenas), mesmo
+com dispatch O(1). Consistente com os valores serem tão parecidos entre
+si SE o tamanho típico da rajada também for parecido (ex: mesma
+característica de rede se repetindo).
+
+**Instrumentação adicionada pra confirmar (ainda NÃO resolve o
+problema, só mede)**: `client/online_mode_handlers.py::
+_process_network()` agora guarda `self._last_net_msg_count` (quantas
+mensagens vieram juntas nesse frame) e `self._last_net_msg_types`
+(`Counter` dos 3 tipos mais frequentes, `.most_common(3)`) — populados
+a cada frame, custo desprezível (`poll()` já devolve uma lista pronta,
+isto só mede o que já existe). `game.py`'s `[SPIKE]` breakdown agora
+inclui `net_msgs=N(TIPOx contagem,...)` na linha de contexto quando o
+frame processou alguma mensagem — próxima sessão de profiling do
+usuário vai mostrar se os spikes de `network_recv` vêm de uma rajada
+grande (confirma a hipótese) ou de poucas mensagens (aponta pra um
+handler específico caro, hipótese descartada por ora mas não
+eliminada).
+
+**Sem teste automatizado** — é instrumentação de diagnóstico temporária
+(conta o que já existe, não muda comportamento de gameplay), não um
+"ponto único de verdade" no sentido da regra do projeto. Se a causa
+raiz for confirmada e a correção for de fato escrita, ESSA correção
+segue a disciplina normal (teste conforme o caso).
+
+**Status**: investigação aberta — falta uma nova sessão de playtest com
+essa instrumentação pra confirmar a hipótese antes de propor qualquer
+fix.

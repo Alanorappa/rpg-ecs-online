@@ -55,7 +55,22 @@ class OnlineModeHandlers:
         # Debug do bug "HP de mob/torre volta sozinho" (12/08/2026, ver
         # PROBLEMAS_ARQUITETURA.md §44) — RPG_DEBUG_HP_ROLLBACK=1.
         from debug.hp_rollback_debug import HPR as _HPR_net, DBG_ENABLED as _HPR_ON
-        for msg_type, payload, seq, ts in self._net.poll():
+        _msgs = self._net.poll()
+        # Diagnóstico do travamento periódico de ~100ms achado no
+        # profiler (15/09/2026, ver PROBLEMAS_ARQUITETURA.md §141) —
+        # conta quantas mensagens chegaram JUNTAS (rajada) neste frame e
+        # quais tipos, pra confirmar se o custo escala com o tamanho da
+        # rajada (rede/servidor) ou vem de UMA mensagem cara (handler
+        # lento). Lido pelo breakdown de [SPIKE] em game.py; nunca grava
+        # nada sozinho, e o custo de contar é desprezível (poll() já
+        # retorna uma lista pronta, isto só mede o que já existe).
+        self._last_net_msg_count = len(_msgs)
+        if _msgs:
+            from collections import Counter as _Counter_net
+            self._last_net_msg_types = _Counter_net(m[0].name for m in _msgs).most_common(3)
+        else:
+            self._last_net_msg_types = []
+        for msg_type, payload, seq, ts in _msgs:
             self._handle_net_message(msg_type, payload)
             if _HPR_ON:
                 _HPR_net.last_seq = seq
