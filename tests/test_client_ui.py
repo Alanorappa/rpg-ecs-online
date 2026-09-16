@@ -2016,6 +2016,54 @@ def test_recarregar_visual_only_nao_mexe_em_bag_nem_aljava_online():
     assert quiver.arrow_count == 0, "cliente não deve encher a aljava — só o servidor"
 
 
+# ── client/network_handlers.py::_handle_msg_stats_update — confirmação de
+# aljava (quiver_arrow_count) ignora update cujo quiver_item_id não bate com
+# a aljava equipada AGORA (16/09/2026, bug real relatado pelo usuário: trocar
+# de aljava logo após esvaziar a antiga fazia a NOVA nascer com 0 flechas —
+# ver PROBLEMAS_ARQUITETURA.md §154). A confirmação fica numa fila no
+# servidor (queue_stats_update) e pode chegar DEPOIS que o jogador já trocou
+# de aljava localmente (equipar é predição instantânea) — sem checar
+# identidade, o valor da aljava ANTIGA era aplicado cegamente na aljava
+# atual do slot.
+
+def test_quiver_arrow_count_ignorado_se_item_id_nao_bate_com_aljava_atual():
+    from engine.components import Equipment, Item
+    fx = _make_net_fixture()
+    quiver_nova = Item("Aljava de Batalha", "quiver", "offhand",
+                       arrow_count=999, max_arrows=999)
+    quiver_nova.item_id = "battleground_quiver"
+    equip = Equipment()
+    equip.slots["offhand"] = quiver_nova
+    fx.world.add_component(fx.player_entity, equip)
+
+    # Confirmação "órfã": gerada quando a aljava ANTIGA (basic_quiver) ainda
+    # estava equipada, mas só chega agora que já foi trocada.
+    fx._handle_msg_stats_update({
+        "eid": -1, "quiver_arrow_count": 0, "quiver_item_id": "basic_quiver",
+    })
+
+    assert quiver_nova.arrow_count == 999, \
+        "confirmação órfã (aljava diferente) nunca deveria zerar a aljava atual"
+
+
+def test_quiver_arrow_count_aplicado_quando_item_id_bate():
+    from engine.components import Equipment, Item
+    fx = _make_net_fixture()
+    quiver = Item("Aljava Básica", "quiver", "offhand",
+                  arrow_count=50, max_arrows=75)
+    quiver.item_id = "basic_quiver"
+    equip = Equipment()
+    equip.slots["offhand"] = quiver
+    fx.world.add_component(fx.player_entity, equip)
+
+    fx._handle_msg_stats_update({
+        "eid": -1, "quiver_arrow_count": 49, "quiver_item_id": "basic_quiver",
+    })
+
+    assert quiver.arrow_count == 49, \
+        "confirmação da MESMA aljava deveria ser aplicada normalmente"
+
+
 # ── ui/systems.py::PlayerInputSystem — CC bloqueia TODA movimentação ─────────
 # Bug real relatado pelo usuário 21/07/2026: alvo sob polimorfia (e, pelo
 # mesmo mecanismo, desorientado/sono) não conseguia andar com WASD, mas

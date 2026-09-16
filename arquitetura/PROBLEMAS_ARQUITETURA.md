@@ -19427,3 +19427,47 @@ todos, não relacionado).
 
 Achado #4 da mesma auditoria (perda de ouro sem entrega em
 `BUY_REQUEST`) segue pendente.
+
+## 154. Aljava nova "nasce vazia" ao trocar de aljava logo após esvaziar a antiga — race condition entre confirmação atrasada de flecha/Recarregar e troca de equipamento
+
+16/09/2026. Bug relatado pelo usuário FORA da auditoria de projeto
+inteiro (§150), enquanto discutíamos o achado #3 dela — sequência
+exata confirmada por pergunta direta antes de investigar: "comprei uma
+aljava comum, usei todas as flechas, e comprei a aljava de batalha, e
+dizia que não tinha flechas na aljava."
+
+**Causa raiz**: quando a última flecha é disparada (auto-attack ou
+skill de arco), o servidor manda uma confirmação
+(`queue_stats_update({"quiver_arrow_count": 0})`) — mas essa fila só é
+despachada no próximo tick, não instantaneamente. Se o jogador comprar
+e equipar uma aljava NOVA rápido o bastante, o cliente já trocou
+localmente (equipar é predição instantânea, `client/
+inventory_handlers.py::_equip_item` muta o slot na hora, só o pedido
+pro servidor viaja depois) antes dessa confirmação atrasada chegar. O
+handler que aplica `quiver_arrow_count`
+(`client/network_handlers.py::_handle_msg_stats_update`) nunca checava
+QUAL aljava gerou aquele valor — só escrevia em cima de qualquer coisa
+que estivesse no slot offhand no momento em que a mensagem chega, que
+já é a aljava nova. Mesmo mecanismo afeta a confirmação de Recarregar
+(`_server_recarregar`, mesmo problema).
+
+**Fix**: as 2 mensagens que mandam `quiver_arrow_count`
+(`server/spell_completion_processor.py` — consumo de flecha no
+disparo, e `_server_recarregar`) passam a incluir `quiver_item_id`
+(identidade da aljava que gerou o valor). O cliente
+(`_handle_msg_stats_update`) só aplica `quiver_arrow_count`/
+`max_arrows`/`subtype` se `quiver_item_id` bater com a aljava
+equipada AGORA — confirmação "órfã" (aljava já trocada) é
+silenciosamente ignorada, sem tentar reconciliar (o próximo AUTO_ATTACK/
+Recarregar corrige do jeito certo, contra o estado real). O bloco de
+dedução de munição da BAG (campo separado, `ammo_id`/`ammo_taken`) não
+depende de qual aljava está equipada — continua aplicando sempre,
+sem relação com esta checagem.
+
+**Testes**: `tests/test_client_ui.py` — 2 casos novos
+(`test_quiver_arrow_count_ignorado_se_item_id_nao_bate_com_aljava_atual`,
+`test_quiver_arrow_count_aplicado_quando_item_id_bate`). Revert-to-confirm:
+o primeiro falha contra o código antigo reproduzindo o bug EXATO
+relatado (aljava nova de 999 flechas vira 0 ao aplicar a confirmação
+órfã da aljava antiga). Suíte relacionada (quiver/recarregar/arrow, 10
+casos): sem regressão.

@@ -1266,9 +1266,19 @@ class SpellCompletionMixin:
             # não saía, sem nenhuma mensagem (bug real reportado pelo usuário
             # 13/07/2026: "tem 1 flecha na aljava mas ele não consegue atacar").
             # Mesmo padrão de confirmação já usado por Recarregar (linha ~1671).
+            # `quiver_item_id` (16/09/2026, bug real relatado pelo usuário:
+            # trocar de aljava logo após esvaziar a antiga fazia a aljava
+            # NOVA nascer com 0 flechas) — esta confirmação fica na fila
+            # (`queue_stats_update`) e só é despachada no próximo tick; se o
+            # jogador equipar uma aljava diferente antes dela chegar, o
+            # cliente (que já trocou localmente por predição instantânea)
+            # aplicava `quiver_arrow_count` cegamente na aljava ATUAL do
+            # slot — que já não é mais a que gerou este valor. Ver
+            # PROBLEMAS_ARQUITETURA.md §154.
             self.queue_stats_update({
                 "player_eid":         player_eid,
                 "quiver_arrow_count": _qv_ar.arrow_count,
+                "quiver_item_id":     _qv_ar.item_id,
             })
 
         if outcome in ("miss", "dodge", "parry"):
@@ -1873,6 +1883,13 @@ class SpellCompletionMixin:
         verdade mas o cliente nunca ficava sabendo, divergindo pra sempre
         depois do primeiro uso online (bug real reportado por testers —
         "aljava diz estar cheia mas não está"). Ver PROBLEMAS_ARQUITETURA.md.
+
+        `quiver_item_id` na confirmação (16/09/2026, §154) — esta função
+        roda no completion de um cast (fila, não instantâneo); se o
+        jogador trocar de aljava equipada antes desta confirmação chegar,
+        o cliente não pode aplicar `quiver_arrow_count` cegamente na
+        aljava que estiver no slot NA HORA que a mensagem chega — precisa
+        bater com a aljava que gerou o valor.
         """
         from engine.components import Equipment, Inventory
         equip = self.world.get_component(player_eid, Equipment)
@@ -1914,6 +1931,7 @@ class SpellCompletionMixin:
             "quiver_arrow_count": quiver.arrow_count,
             "quiver_max_arrows":  quiver.max_arrows,
             "quiver_subtype":     quiver.subtype,
+            "quiver_item_id":     quiver.item_id,
             "ammo_id":            _ammo_id,
             "ammo_name":          _ammo_name,
             "ammo_taken":         _ammo_taken,

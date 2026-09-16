@@ -1372,16 +1372,30 @@ class NetworkHandlers:
                 if self._consumable_system.pending_item_id == _cons_item:
                     self._consumable_system.pending_item_id = ""
 
-            # Confirmação de Recarregar — o servidor já reabasteceu a aljava
-            # de verdade; aqui só espelhamos o resultado real na bag/aljava
-            # LOCAIS. Sem isso, o cliente nunca ficava sabendo do reload
-            # (arrow_count/munição da bag divergiam do servidor pra sempre
-            # após o primeiro uso online — bug real "aljava diz estar cheia
-            # mas não está"). Ver PROBLEMAS_ARQUITETURA.md.
+            # Confirmação de Recarregar/consumo de flecha — o servidor já
+            # reabasteceu/gastou a aljava de verdade; aqui só espelhamos o
+            # resultado real na bag/aljava LOCAIS. Sem isso, o cliente nunca
+            # ficava sabendo do reload (arrow_count/munição da bag divergiam
+            # do servidor pra sempre após o primeiro uso online — bug real
+            # "aljava diz estar cheia mas não está"). Ver PROBLEMAS_ARQUITETURA.md.
+            #
+            # `quiver_item_id` (16/09/2026, §154, bug real relatado pelo
+            # usuário: trocar de aljava logo após esvaziar a antiga fazia a
+            # NOVA nascer com 0 flechas) — esta confirmação fica numa fila
+            # (queue_stats_update, servidor) e pode chegar DEPOIS que o
+            # jogador já trocou de aljava aqui (equipar é predição local
+            # instantânea). Sem checar identidade, um `quiver_arrow_count`
+            # gerado pra aljava ANTIGA era aplicado cegamente na aljava que
+            # estiver no slot agora — nunca aplicar em cima de uma aljava
+            # diferente da que gerou o valor; confirmação "órfã" é ignorada
+            # (o próximo AUTO_ATTACK/Recarregar reconcilia do jeito certo).
             if "quiver_arrow_count" in payload:
                 from engine.components import Equipment as _EqRec
                 _eq_rec = self.world.get_component(self.player_entity, _EqRec)
                 _quiver_rec = _eq_rec.slots.get("offhand") if _eq_rec else None
+                if (_quiver_rec is not None
+                        and _quiver_rec.item_id != payload.get("quiver_item_id")):
+                    _quiver_rec = None
                 if _quiver_rec is not None:
                     _quiver_rec.arrow_count = payload["quiver_arrow_count"]
                     # max_arrows: servidor é quem resolve o fallback de aljavas
