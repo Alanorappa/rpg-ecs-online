@@ -19612,3 +19612,32 @@ PROPOSTO, não garante que o fix cobre TODO o código relacionado ao
 sintoma — vale, ao corrigir um bug de sincronização de estado, buscar
 por TODOS os pontos que mutam o mesmo campo, não só o que o achado
 original apontou.
+
+**Correção do teste, a pedido do usuário (mesmo dia)**: o usuário
+apontou, corretamente, que
+`test_apply_combat_result_nao_decrementa_arrow_count_diretamente` só
+provava que UMA função isolada não tocava mais `arrow_count` — não
+reproduzia o SINTOMA real (jogo dizendo "sem flechas" com a aljava
+cheia). Pediu explicitamente o cenário fiel: comprar aljava comum, usar
+até sobrar pouco, comprar/trocar pra aljava de batalha, atirar de novo
+e confirmar que não acusa "sem flechas" achando que ainda é a aljava
+velha. Antes de escrever o teste, nova varredura por TODO ponto que
+muda `.arrow_count =` no cliente inteiro (não só o que os achados
+anteriores já apontavam) — confirmou só 2 pontos vivos em produção:
+`_handle_msg_stats_update` (já corrigido) e `client/
+save_sync_handlers.py::_restore_item` (restauração de save no login,
+sem relação com o bug em combate). Novo
+`tests/test_client_ui.py::test_troca_de_aljava_durante_combate_nao_causa_falso_aljava_vazia`
+— usa o código de produção REAL de equipar
+(`client/inventory_handlers.py::_equip_item`, não uma reconstrução
+simplificada), reproduz a sequência completa (atira aljava comum até
+sobrar 7 → equipa aljava de batalha → confirmação órfã da aljava
+antiga chega atrasada → 10 tiros com a aljava nova) e verifica
+explicitamente, a cada tiro, a condição EXATA que dispara "Aljava
+vazia! Use Recarregar." (`arrow_count<=0`, `ui/systems.py:1141`) nunca
+fica verdadeira enquanto a aljava realmente tem flechas. Revert-to-confirm
+mais rigoroso: revertendo os 2 arquivos do fix (§154 E §156) juntos —
+o teste falha reproduzindo o sintoma EXATO relatado (confirmação órfã
+de `arrow_count=6` da aljava antiga aplicada por cima dos 999 da
+aljava nova, virando 6). Com o fix restaurado, passa — suíte completa
+`test_client_ui.py` (175 casos): sem regressão.

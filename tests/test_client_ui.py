@@ -2064,6 +2064,92 @@ def test_quiver_arrow_count_aplicado_quando_item_id_bate():
         "confirmação da MESMA aljava deveria ser aplicada normalmente"
 
 
+# ── Reprodução fiel do cenário relatado pelo usuário em produção (16/09/2026,
+# §154/§156): aljava comum quase vazia → compra/equipa aljava de batalha →
+# confirmação ATRASADA da aljava ANTIGA chega DEPOIS da troca → tiros com a
+# aljava NOVA. Usa o código de produção REAL de equipar (`client/
+# inventory_handlers.py::_equip_item`), não uma reconstrução simplificada —
+# o teste anterior só provava que uma função isolada não tocava mais
+# `arrow_count`, o que não é o mesmo que provar que o FLUXO completo nunca
+# deixa a aljava atual com `arrow_count<=0` tendo flechas de sobra (a
+# condição exata que dispara "Aljava vazia! Use Recarregar.",
+# `ui/systems.py:1141`).
+
+def test_troca_de_aljava_durante_combate_nao_causa_falso_aljava_vazia():
+    from engine.world import World
+    from engine.components import Equipment, Inventory, Item, CharacterStats, CombatStats
+    from client.inventory_handlers import InventoryHandlers
+    from client.network_handlers import NetworkHandlers
+
+    class _Fixture(InventoryHandlers, NetworkHandlers):
+        def __init__(self, world, player_entity):
+            self.world = world
+            self.player_entity = player_entity
+            self._my_eid = 1
+            self._remote_players = {}
+            self._remote_mobs = {}
+
+        def _send_equip_item(self, inv_index):
+            pass  # rede real fora de escopo deste teste
+
+    world  = World()
+    player = world.create_entity()
+    world.add_component(player, CharacterStats(class_id="arqueiro"))
+    world.add_component(player, CombatStats())
+
+    old_quiver = Item("Aljava Básica", "quiver", "offhand",
+                      arrow_count=10, max_arrows=75)
+    old_quiver.item_id = "basic_quiver"
+    equip = Equipment()
+    equip.slots["offhand"] = old_quiver
+    world.add_component(player, equip)
+
+    new_quiver = Item("Aljava de Batalha", "quiver", "offhand",
+                      arrow_count=999, max_arrows=999)
+    new_quiver.item_id = "battleground_quiver"
+    world.add_component(player, Inventory(items=[new_quiver]))
+
+    fx = _Fixture(world, player)
+
+    # 1. Atira com a aljava comum até sobrar pouco — confirmações legítimas
+    # do servidor (identidade bate com "basic_quiver").
+    for remaining in (9, 8, 7):
+        fx._handle_msg_stats_update({
+            "eid": 1, "quiver_arrow_count": remaining, "quiver_item_id": "basic_quiver",
+        })
+    assert old_quiver.arrow_count == 7
+
+    # 2. Equipa a aljava de batalha — mesmo código de produção real usado
+    # pelo jogo (não uma reconstrução simplificada do fluxo).
+    fx._equip_item(new_quiver)
+    assert equip.slots["offhand"] is new_quiver
+
+    # 3. Confirmação ATRASADA de um tiro disparado com a aljava ANTIGA, que
+    # só chega DEPOIS da troca (fila do servidor/latência de rede) — tem
+    # que ser ignorada, nunca aplicada na aljava NOVA que está equipada agora.
+    fx._handle_msg_stats_update({
+        "eid": 1, "quiver_arrow_count": 6, "quiver_item_id": "basic_quiver",
+    })
+    assert new_quiver.arrow_count == 999, \
+        "confirmação órfã da aljava antiga não pode afetar a aljava nova"
+
+    # 4. Atira 10 vezes com a aljava NOVA — confirmações legítimas (identidade
+    # bate com "battleground_quiver") decrementam normalmente, e em NENHUM
+    # momento arrow_count pode chegar a <=0 tendo 999 flechas de sobra (a
+    # condição exata de "Aljava vazia! Use Recarregar.").
+    for shot in range(10):
+        novo_valor = 999 - (shot + 1)
+        fx._handle_msg_stats_update({
+            "eid": 1, "quiver_arrow_count": novo_valor, "quiver_item_id": "battleground_quiver",
+        })
+        assert new_quiver.arrow_count == novo_valor
+        assert new_quiver.arrow_count > 0, (
+            "aljava nova ficou com arrow_count<=0 cedo demais — dispararia "
+            "'Aljava vazia! Use Recarregar.' incorretamente")
+
+    assert new_quiver.arrow_count == 989
+
+
 # ── client/remote_entity_handlers.py::_apply_combat_result — NÃO decrementa
 # mais arrow_count diretamente (removido 16/09/2026, mesmo bug do teste acima
 # — PROBLEMAS_ARQUITETURA.md §154/§156). Esse decremento "espelhado" (sem
