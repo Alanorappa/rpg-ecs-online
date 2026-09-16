@@ -378,26 +378,24 @@ class RemoteEntityHandlers:
             if source == "auto" and _is_archer_arrow and pos is not None:
                 _arrow_entry = self._spawn_archer_auto_arrow(_attacker_local_remote, _is_self_archer_attacker,
                                               local_eid, pos, _lx, _ly)
-                # Desconto REAL da aljava local acontece só AQUI agora — mesmo
-                # evento que cria a flecha visual, nunca antecipado (ver
-                # ui/systems.py::_process_archer_combat, bug real 10/07/2026:
-                # cooldown local não congelava igual ao do servidor durante
-                # bloqueio, causando descontos "fantasma" sem tiro real por
-                # trás). Espelha a regra do servidor
-                # (spell_completion_processor.py::_server_apply_ranged_physical):
-                # a flecha é gasta sempre que o tiro é autorizado e resolvido —
-                # inclusive em miss/dodge/parry (quem atira e erra ainda gastou
-                # a flecha; correção do usuário 10/07/2026, versão anterior só
-                # consumia em dano>0). Só "evade" (alvo em modo evasão/RETURNING)
-                # não consome — nesse caso o servidor nem chega a soltar a
-                # flecha de verdade. Só o PRÓPRIO player tem Equipment/aljava
-                # local.
-                if _is_self_archer_attacker and outcome != "evade":
-                    from engine.components import Equipment as _Eq_arrow
-                    _eq_arrow = self.world.get_component(self.player_entity, _Eq_arrow)
-                    _qv_arrow = _eq_arrow.slots.get("offhand") if _eq_arrow else None
-                    if _qv_arrow is not None and getattr(_qv_arrow, "item_type", "") == "quiver":
-                        _qv_arrow.arrow_count = max(0, _qv_arrow.arrow_count - 1)
+                # Desconto da aljava local NÃO acontece mais aqui (removido
+                # 16/09/2026, ver PROBLEMAS_ARQUITETURA.md §154/§156) — este
+                # bloco fazia um decremento "espelhado" (-1, sem checar
+                # identidade) toda vez que um COMBAT_RESULT confirmava um
+                # tiro do próprio arqueiro. `_server_apply_ranged_physical`
+                # (servidor, mesmo evento) já manda `quiver_arrow_count` +
+                # `quiver_item_id` via STATS_UPDATE pra ISSO — mas esse
+                # decremento aqui era uma SEGUNDA via, paralela, sem
+                # nenhuma checagem de qual aljava o tiro realmente gastou.
+                # Bug real relatado pelo usuário: trocar de aljava durante
+                # combate ativo (várias flechas "em voo" — COMBAT_RESULT
+                # atrasado) fazia esse bloco decrementar a aljava NOVA pra
+                # tiros que na verdade gastaram a aljava ANTIGA — o fix do
+                # STATS_UPDATE (§154) não cobria esta segunda via, que
+                # nunca teve checagem de identidade nenhuma. Fonte única
+                # de verdade agora é só o STATS_UPDATE (já idempotente e
+                # com a checagem de identidade), mesmo evento/timing,
+                # nunca um segundo caminho paralelo.
 
             def _set_arrow_result(entry: dict) -> None:
                 """Prende o resultado do servidor DIRETO na flecha específica

@@ -19557,3 +19557,58 @@ traceback idêntico em todos, não relacionado).
 
 Com este item, os 4 achados de severidade Alta da auditoria §150 estão
 todos corrigidos.
+
+## 156. Bug da aljava (§154) reaberto pelo usuário em produção — fix cobriu só metade do código vulnerável (STATS_UPDATE), faltava a via paralela via COMBAT_RESULT
+
+16/09/2026, poucos minutos depois do deploy do §155 pro Hetzner. Usuário
+testou em produção (partida de BG real) e reportou, com print de tela:
+aljava mostrando 986/999 no HUD, mas o jogo recusando o tiro com "Aljava
+vazia! Use Recarregar." — exatamente o sintoma do §154, aparentemente
+não corrigido.
+
+**Causa raiz**: o fix do §154 corrigiu `client/network_handlers.py::
+_handle_msg_stats_update` — o handler do `STATS_UPDATE` que carrega
+`quiver_arrow_count`/`quiver_item_id`, mandado por
+`_server_apply_ranged_physical` (auto-attack) e `_server_recarregar`.
+Só que existia uma SEGUNDA via, totalmente separada, decrementando
+`arrow_count` no cliente: `client/remote_entity_handlers.py::
+_apply_combat_result` (linha ~395-400), acionada pelo `COMBAT_RESULT`
+(mensagem DIFERENTE do `STATS_UPDATE`) toda vez que o próprio arqueiro
+confirmava um tiro de auto-attack — fazia `arrow_count -= 1`
+diretamente no que quer que estivesse no slot offhand NO MOMENTO,
+sem NENHUMA checagem de identidade (nem antes do §154, nem depois —
+o fix anterior nunca tocou este código, só o `STATS_UPDATE`). Mesma
+classe de race condition do §154: trocar de aljava com tiros "em voo"
+(`COMBAT_RESULT` atrasado, referente à aljava ANTIGA) fazia esse
+decremento cego bater na aljava NOVA.
+
+**Por que passou pela revisão cruzada de §154 sem ser achado**: a
+revisão cruzada analisou o achado e o fix EXATAMENTE como propostos
+(só o `STATS_UPDATE`) — nenhum dos dois agentes foi instruído a
+procurar OUTRAS vias que também mutassem `arrow_count`, e a busca
+"quiver_arrow_count" (usada como contexto de pesquisa) não aparece
+nesta segunda via (ela nunca usou esse campo, só decrementa
+diretamente). Lição: ao corrigir um campo específico sendo mal
+sincronizado, vale grep pelo NOME DO CAMPO MUTADO (`arrow_count =`),
+não só pelo nome da mensagem que uma pesquisa inicial já achou.
+
+**Fix**: removido o decremento em `_apply_combat_result` (linhas
+395-400 antigas) — o `STATS_UPDATE` (já corrigido no §154, idempotente
+e com checagem de identidade) já é o único evento necessário pra
+manter a cópia local sincronizada, mesmo timing/gatilho
+(`_server_apply_ranged_physical` manda os dois a partir do MESMO
+evento server-side). Fonte de verdade única agora, sem via paralela.
+
+**Testes**: `tests/test_client_ui.py::
+test_apply_combat_result_nao_decrementa_arrow_count_diretamente`
+(novo) — confirma que `_apply_combat_result` não mexe mais em
+`arrow_count`. Revert-to-confirm: falha contra o código antigo
+(999→998, decremento cego confirmado). Suíte `test_client_ui.py`
+completa (174 casos) e `test_character_animation.py` (65 casos): sem
+regressão.
+
+**Lição de processo**: revisão cruzada valida o design do fix
+PROPOSTO, não garante que o fix cobre TODO o código relacionado ao
+sintoma — vale, ao corrigir um bug de sincronização de estado, buscar
+por TODOS os pontos que mutam o mesmo campo, não só o que o achado
+original apontou.

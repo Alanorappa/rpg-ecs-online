@@ -2064,6 +2064,46 @@ def test_quiver_arrow_count_aplicado_quando_item_id_bate():
         "confirmação da MESMA aljava deveria ser aplicada normalmente"
 
 
+# ── client/remote_entity_handlers.py::_apply_combat_result — NÃO decrementa
+# mais arrow_count diretamente (removido 16/09/2026, mesmo bug do teste acima
+# — PROBLEMAS_ARQUITETURA.md §154/§156). Esse decremento "espelhado" (sem
+# checar identidade da aljava) era uma SEGUNDA via paralela ao STATS_UPDATE
+# já testado acima — corrigir só o STATS_UPDATE não bastava, porque esta via
+# nunca checava qual aljava o tiro confirmado realmente gastou.
+
+def test_apply_combat_result_nao_decrementa_arrow_count_diretamente():
+    from engine.components import (Equipment, Item, CharacterStats, Position)
+    fx = _make_net_fixture()
+    fx._my_eid = 1
+
+    class _NoopPnq:
+        def _increment_pnq_counter(self, *a, **k):
+            pass
+    fx._player_input_system = _NoopPnq()
+
+    fx.world.add_component(fx.player_entity, CharacterStats(class_id="arqueiro"))
+    fx.world.add_component(fx.player_entity, Position(x=0.0, y=0.0))
+    quiver = Item("Aljava de Batalha", "quiver", "offhand",
+                  arrow_count=999, max_arrows=999)
+    quiver.item_id = "battleground_quiver"
+    equip = Equipment()
+    equip.slots["offhand"] = quiver
+    fx.world.add_component(fx.player_entity, equip)
+
+    mob = fx.world.create_entity()
+    fx.world.add_component(mob, Position(x=32.0, y=32.0))
+    fx._remote_mobs = {20: mob}
+
+    fx._apply_combat_result({
+        "attacker": 1, "target": 20, "damage": 15,
+        "outcome": "hit", "hp_after": 85, "source": "auto",
+    })
+
+    assert quiver.arrow_count == 999, \
+        ("_apply_combat_result não deveria mais mexer em arrow_count — só o "
+         "STATS_UPDATE (quiver_arrow_count/quiver_item_id) faz isso agora")
+
+
 # ── ui/systems.py::PlayerInputSystem — CC bloqueia TODA movimentação ─────────
 # Bug real relatado pelo usuário 21/07/2026: alvo sob polimorfia (e, pelo
 # mesmo mecanismo, desorientado/sono) não conseguia andar com WASD, mas
