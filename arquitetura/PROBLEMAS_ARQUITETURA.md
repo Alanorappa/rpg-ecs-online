@@ -18967,3 +18967,47 @@ imediato, mencionados pra não se perder):
 - `[SPIKE] 1106ms` com `events` custando 1094.7ms, achado em algum
   ponto do log — mesmo padrão de alt-tab/backlog de evento já
   documentado em §143 (achado 2), não reinvestigado aqui.
+
+## 147. Verificação pós-§146: log novo confirma o fix e fecha 2 achados secundários pendentes — 1 novo ponto cego achado, não corrigido (baixa prioridade)
+
+16/09/2026, usuário testou o fix do §146 na BG e relatou "bem menos
+[travamentos] que antes, mas em alguns momentos ainda travou". Log
+novo (13978 linhas) comparado ao anterior (62684 linhas, pré-fix):
+
+- **Fix confirmado por dado**: `upd:FogSystem` não mostra mais o
+  padrão de crescimento constante — oscila avg≈0.03-0.8ms a sessão
+  inteira, sem tendência de subida. Spikes >40ms caíram de
+  232-em-10272 (pré-fix) pra 10-em-1214 (pós-fix) — redução
+  proporcional grande, compatível com o relato do usuário.
+- **`network_recv=73.5ms` (linha 1872, spike de 193ms, `net_msgs=7`
+  incluindo `ZONE_CHANGE`)**: investigado a pedido do usuário. NÃO é
+  recorrência do bug §141/§142 (fog pesado no autosave) —
+  `_autosave()` já confirmado no código usando `include_fog=False`
+  (`game.py:949`), e uma varredura no log inteiro por qualquer
+  `network_recv` alto achou só 3 ocorrências em 13978 linhas (isolado,
+  não periódico). É o custo de `_do_transition()` (troca de mapa)
+  rodando de forma síncrona dentro do mesmo trecho medido como
+  `network_recv` (`_handle_msg_zone_change` → `_do_transition`,
+  `client/network_handlers.py`/`game.py`) — mesma categoria já aceita
+  pelo usuário em §143 follow-up ("super compreensível travar numa
+  troca de mapa"), só que numa escala bem menor aqui (193ms vs os
+  1.28s do caso original).
+- **Achado novo, não corrigido**: desse frame de 193ms, só 88.7ms
+  aparecem em algum label do profiler — sobram ~104ms sem NENHUMA
+  medição, dentro do próprio `_do_transition` (`load_map_csv`,
+  `create_tilemap`, spawn de entidades não têm `_prof_record`
+  individual, só o `network_recv` que os envolve por fora). Mesma
+  classe de "ponto cego" do achado do `hud:combat_log`/`_draw_chat_log`
+  acima, só que maior e em local diferente. Usuário decidiu não
+  instrumentar agora — só 1 ocorrência no log inteiro, categoria já
+  aceita, 193ms já bem menor que o caso que motivou a aceitação
+  original. Registrado pra não se perder, caso o padrão volte a
+  incomodar ou alguém queira otimizar `_do_transition` no futuro.
+- Os 2 achados secundários de §146 (label `hud:combat_log`
+  enganoso/`_draw_chat_log` sem profiling, padrão de spike tipo
+  alt-tab) permanecem como estavam — não foram tocados nesta sessão,
+  usuário optou por não investigar agora.
+
+Nenhuma mudança de código nesta entrada — só investigação de log e
+leitura de código pra confirmar/descartar hipótese, a pedido do
+usuário.
