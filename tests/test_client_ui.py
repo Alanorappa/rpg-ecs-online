@@ -3207,7 +3207,7 @@ class _StubClosable:
 
 
 def _make_modal_stack_fixture(quest_dialog_open=False, show_inventory=False,
-                              loot_open=False):
+                              loot_open=False, show_char_stats=False):
     from client.modal_stack_handlers import ModalStackHandlers
 
     class _Fixture(ModalStackHandlers):
@@ -3235,6 +3235,7 @@ def _make_modal_stack_fixture(quest_dialog_open=False, show_inventory=False,
             self._show_debug       = False
             self._show_talents     = False
             self._show_skills      = False
+            self._show_char_stats  = show_char_stats
             self._show_inventory   = show_inventory
             self._show_pause       = False
 
@@ -3314,6 +3315,19 @@ def test_bg_result_modal_e_reconhecido_pelo_esc():
     fx = _make_modal_stack_fixture()
     fx._bg_result = {"winner_faction": "arena_time_a", "players": []}
     assert fx._topmost_open_modal() == "bg_result"
+
+
+# ── Modal de estatísticas (tecla C) no registro (16/09/2026, bug real
+# relatado pelo usuário: ESC não fechava o modal de estatísticas — mesma
+# classe de bug do §34.34.1 acima, `_show_char_stats` nunca tinha entrada
+# em `_modal_registry()`, então `_close_top_modal()` nunca o via como
+# aberto e caía pro `else: self._show_pause = True` de `game.py`.
+
+def test_char_stats_modal_e_reconhecido_e_fechado_pelo_esc():
+    fx = _make_modal_stack_fixture(show_char_stats=True)
+    assert fx._topmost_open_modal() == "char_stats"
+    assert fx._close_top_modal() is True
+    assert fx._show_char_stats is False
 
 
 # ── ui/systems.py::RenderSystem — Y-sort do harvestable com sprite

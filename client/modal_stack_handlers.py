@@ -60,6 +60,7 @@ class ModalStackHandlers:
             ("debug",         lambda: self._show_debug,                       self._close_debug),
             ("talents",       lambda: self._show_talents,                     self._close_talents),
             ("skill_level",   lambda: self._show_skills,                      self._close_skill_level),
+            ("char_stats",    lambda: self._show_char_stats,                  self._close_char_stats),
             ("inventory",     lambda: self._show_inventory,                   self._close_inventory),
             ("pause",         lambda: self._show_pause,                       self._close_pause),
         ]
@@ -110,6 +111,9 @@ class ModalStackHandlers:
 
     def _close_skill_level(self) -> None:
         self._show_skills = False
+
+    def _close_char_stats(self) -> None:
+        self._show_char_stats = False
 
     def _close_inventory(self) -> None:
         SOUNDS.play_ui("inventory_close")

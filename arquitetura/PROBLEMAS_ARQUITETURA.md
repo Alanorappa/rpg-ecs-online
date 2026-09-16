@@ -19078,3 +19078,39 @@ não tem mais skip pra suprimir o eco). Revert-to-confirm: `git stash`
 nos 2 arquivos do fix — 3 dos 5 testes do arquivo falham sem o fix
 (os 2 que sobram são casos que já eram independentes da mudança).
 Suíte completa rodando ao final da sessão.
+
+## 149. ESC não fechava o modal de estatísticas (tecla C) — `_show_char_stats` nunca tinha entrada em `_modal_registry()`
+
+16/09/2026, usuário relatou: apertar ESC com o modal de estatísticas
+(tecla C, `CharStatsUI`) aberto não fechava — mesma classe de bug já
+catalogada em 10/08/2026 pros 5 modais de PvP (ver comentário já
+existente em `client/modal_stack_handlers.py::_modal_registry()`),
+achada de novo num modal diferente.
+
+**Causa raiz**: `_modal_registry()` (`client/modal_stack_handlers.py`)
+é o ponto único de verdade que `_close_top_modal()` (chamado pelo ESC,
+`game.py`) e `_any_modal_open()` consultam pra saber "o que está
+aberto agora" — mas `_show_char_stats` nunca teve uma entrada na
+lista, apesar de já ser resetado corretamente por `_close_all_modals()`
+(usado ao ABRIR outro modal) desde que a skill foi implementada. Com
+só o modal de estatísticas aberto, `_close_top_modal()` percorria a
+lista inteira, não achava nada `is_open()==True`, retornava `False` —
+e o handler de ESC em `game.py` (`elif not self._close_top_modal():
+self._show_pause = True`) abria o menu de pausa por cima, sem fechar
+as estatísticas.
+
+**Fix**: nova entrada `("char_stats", lambda: self._show_char_stats,
+self._close_char_stats)` no registry, na mesma posição relativa dos
+outros painéis de personagem simples (`skill_level`/`talents`), e novo
+`_close_char_stats()` (só `self._show_char_stats = False`, mesmo
+padrão de `_close_debug`/`_close_skill_level` — `CharStatsUI` não tem
+estado próprio de servidor pra desfazer ao fechar, diferente de
+`_close_arena_result`/`_close_trade`).
+
+**Teste**: novo `test_char_stats_modal_e_reconhecido_e_fechado_pelo_esc`
+em `tests/test_client_ui.py`, mesmo padrão diferencial dos testes de
+PvP já existentes (`_topmost_open_modal()` reconhece, `_close_top_modal()`
+fecha de verdade). Revert-to-confirm: falha sem o fix
+(`_topmost_open_modal()` retorna `None` em vez de `"char_stats"`).
+Suíte completa de `test_client_ui.py` (171 casos, sem dependência de
+banco): sem regressão.
