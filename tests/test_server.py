@@ -889,23 +889,105 @@ class TestQuestItemInventorySync(unittest.TestCase):
         self.assertEqual(sanitized[0]["name"], "Presa de Lobo")
 
     def test_inv_sync_com_item_de_quest_avanca_progresso_da_quest(self):
-        """Fluxo completo: INV_SYNC com item de quest → Inventory ao vivo do
-        servidor → sync_collect_progress conta certo (quest 'wolf_fangs',
-        objetivo collect_item 'Presa de Lobo', count=5)."""
-        from engine.components import QuestLog
+        """Fluxo completo: item de quest JÁ no Inventory ao vivo do servidor
+        (16/09/2026, achado #3 da auditoria de projeto inteiro, ver
+        PROBLEMAS_ARQUITETURA.md §153 — sync_player_inventory agora exige
+        posse real ANTES de aceitar qualquer item, então este teste passa
+        a simular o item já concedido, como aconteceria de verdade após um
+        loot real, e o INV_SYNC só confirma/reorganiza) → sync_collect_progress
+        conta certo (quest 'wolf_fangs', objetivo collect_item 'Presa de
+        Lobo', count=5)."""
+        from engine.components import QuestLog, Inventory
         ql = self.ws.world.get_component(self.eid, QuestLog)
         ql.active["wolf_fangs"] = [0]
 
+        inv = self.ws.world.get_component(self.eid, Inventory)
+        presa = self.ws._reconstruct_item({"name": "Presa de Lobo", "stack": 3})
+        inv.items.append(presa)
+
         sanitized = self.ws.sanitize_inventory_payload(
-            [{"name": "Presa de Lobo", "item_type": "material", "stack": 3}])
+            [{"item_id": presa.item_id, "name": "Presa de Lobo",
+              "item_type": "material", "stack": 3}])
         self.ws.sync_player_inventory("s1", sanitized)
 
-        from engine.components import Inventory
         import engine.quest_logic as quest_logic
-        inv = self.ws.world.get_component(self.eid, Inventory)
         changed = quest_logic.sync_collect_progress(ql, inv)
         self.assertTrue(changed)
         self.assertEqual(ql.active["wolf_fangs"][0], 3)
+
+
+class TestSyncPlayerInventoryOwnershipValidation(unittest.TestCase):
+    """16/09/2026 — achado #3 da auditoria de projeto inteiro (ver
+    PROBLEMAS_ARQUITETURA.md §153): sync_player_inventory (INV_SYNC) fazia
+    inv.items.clear() e reconstruía do zero confiando cegamente na lista do
+    cliente — um payload reportando itens nunca possuídos persistia como
+    se fossem reais. Fix: rejeita TUDO (mantém o Inventory antigo intacto)
+    se o payload pede mais de algum item_id do que o servidor já tinha."""
+
+    def setUp(self):
+        self.ws  = make_world_server()
+        self.eid = spawn_player(self.ws, "s1", 130, 374)
+        from engine.components import Inventory
+        self.inv = self.ws.world.get_component(self.eid, Inventory)
+
+    def test_item_nunca_possuido_e_rejeitado_sem_aplicar_nada(self):
+        sanitized = self.ws.sanitize_inventory_payload(
+            [{"item_id": "hp_potion", "name": "Poção de Vida",
+              "item_type": "consumable", "stack": 1}])
+        self.ws.sync_player_inventory("s1", sanitized)
+        self.assertEqual(self.inv.items, [],
+                         "item nunca possuído não deveria ter sido aceito")
+
+    def test_quantidade_maior_que_a_possuida_e_rejeitada_sem_aplicar_nada(self):
+        potion = self.ws._reconstruct_item({"item_id": "hp_potion", "stack": 2})
+        self.inv.items.append(potion)
+
+        sanitized = self.ws.sanitize_inventory_payload(
+            [{"item_id": "hp_potion", "name": "Poção de Vida",
+              "item_type": "consumable", "stack": 5}])
+        self.ws.sync_player_inventory("s1", sanitized)
+
+        self.assertEqual(len(self.inv.items), 1,
+                         "Inventory antigo deveria continuar intacto (rejeita tudo)")
+        self.assertEqual(self.inv.items[0].stack, 2,
+                         "stack não deveria ter mudado pro valor forjado")
+
+    def test_quantidade_igual_ou_menor_a_possuida_e_aceita(self):
+        potion = self.ws._reconstruct_item({"item_id": "hp_potion", "stack": 5})
+        self.inv.items.append(potion)
+
+        sanitized = self.ws.sanitize_inventory_payload(
+            [{"item_id": "hp_potion", "name": "Poção de Vida",
+              "item_type": "consumable", "stack": 3}])
+        self.ws.sync_player_inventory("s1", sanitized)
+
+        self.assertEqual(len(self.inv.items), 1)
+        self.assertEqual(self.inv.items[0].stack, 3)
+
+    def test_soma_entre_multiplos_slots_do_mesmo_item_conta_certo(self):
+        """2 stacks parciais do mesmo item_id em slots diferentes (ex: 99+1)
+        remontados como 1 stack só no payload não deveria ser rejeitado —
+        a soma bate, só a FORMA muda."""
+        stack_a = self.ws._reconstruct_item({"item_id": "hp_potion", "stack": 4})
+        stack_b = self.ws._reconstruct_item({"item_id": "hp_potion", "stack": 3})
+        self.inv.items.append(stack_a)
+        self.inv.items.append(stack_b)
+
+        sanitized = self.ws.sanitize_inventory_payload(
+            [{"item_id": "hp_potion", "name": "Poção de Vida",
+              "item_type": "consumable", "stack": 7}])
+        self.ws.sync_player_inventory("s1", sanitized)
+
+        self.assertEqual(len(self.inv.items), 1)
+        self.assertEqual(self.inv.items[0].stack, 7)
+
+    def test_lista_maior_que_max_slots_e_rejeitada(self):
+        max_slots = self.inv.max_slots
+        payload = [{"item_id": "hp_potion", "name": "Poção de Vida",
+                   "item_type": "consumable", "stack": 1}] * (max_slots + 1)
+        sanitized = self.ws.sanitize_inventory_payload(payload)
+        self.ws.sync_player_inventory("s1", sanitized)
+        self.assertEqual(self.inv.items, [])
 
 
 class TestRecarregarNaoConsomeEmDobro(unittest.TestCase):

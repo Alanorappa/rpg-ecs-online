@@ -197,6 +197,16 @@ class SpellCastSystem(System):
             # exatamente o dobro). O resultado real vem só do servidor
             # (client/network_handlers.py, confirmação de queue_stats_update)
             # — aqui só toca som/cast-bar, igual os PROJ_SPELLS_LOCAL acima.
+            # AVISO (16/09/2026, ver PROBLEMAS_ARQUITETURA.md §153): manter
+            # "recarregar" aqui também é o que garante que INV_SYNC nunca
+            # precisa introduzir item novo no servidor — `_apply_recarregar`
+            # é o único caminho que ainda montaria um INV_SYNC "cheio" (via
+            # `_on_inventory_changed`), e `sync_player_inventory` agora
+            # REJEITA qualquer INV_SYNC que peça mais de um item_id do que o
+            # servidor já tinha. Tirar "recarregar" daqui sem revisar aquele
+            # fix quebraria Recarregar silenciosamente (INV_SYNC pós-reload
+            # passaria a ser rejeitado sempre que a bag local divergir, ainda
+            # que pouco, do servidor).
             _SELF_TARGET_SERVER_ONLY = {"recarregar"}
             if spell_cast.spell_id not in _PROJ_SPELLS_LOCAL and spell_cast.spell_id not in _SELF_TARGET_SERVER_ONLY:
                 handler_name = self._CAST_HANDLERS.get(spell_cast.spell_id)

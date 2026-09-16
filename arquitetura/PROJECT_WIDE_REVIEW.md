@@ -73,6 +73,14 @@ catálogo. Com `item_id=""` (passa a validação de borda, que só exige
 repetível sem cooldown/rate-limit.
 
 ### 3. Duplicação/forja de itens via `INV_SYNC`
+**Status:** ✅ Implementado (16/09/2026) — ver `PROBLEMAS_ARQUITETURA.md`
+§153. Pesquisa prévia (antes do rascunho) achou que a validação óbvia
+pareceria quebrar Recarregar — investigação mais funda mostrou que essa
+premissa estava errada (Recarregar já é 100% autoritativo por outro
+canal, o caminho que "precisaria" do INV_SYNC é código morto há tempos).
+Revisão cruzada confirmou a pesquisa de forma independente e achou 2
+testes que documentavam o exploit como comportamento esperado.
+
 `server/world_server.py:3973-4031` (`sync_player_inventory`) aceita o
 inventário INTEIRO que o cliente reporta como verdade — sanitiza stats
 contra o catálogo (não dá pra inventar dano/armadura), mas não valida

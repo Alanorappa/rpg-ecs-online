@@ -939,15 +939,24 @@ class TestInventoryPersistedFromLiveECS(AuthPoolCleanupMixin, unittest.IsolatedA
             "bag real vazia deveria persistir como lista vazia, não None/cache")
 
     async def test_inventario_normal_fora_de_instancia_continua_funcionando(self):
-        """Regressão: fluxo comum (nunca entra em BG, item lootado/comprado
-        de verdade) continua persistindo normalmente. INV_SYNC (não
-        SAVE_STATE) é o canal real que mantém o Inventory AO VIVO
-        sincronizado — mesmo mecanismo do cliente real (loot/compra),
-        chamado por `_handle_inventory_update`/`sync_player_inventory`."""
-        from shared.messages import encode, MsgType
+        """Regressão: fluxo comum (nunca entra em BG) continua persistindo
+        normalmente. 16/09/2026 (achado #3 da auditoria de projeto inteiro,
+        ver PROBLEMAS_ARQUITETURA.md §153): INV_SYNC deixou de ser um canal
+        que "introduz" item novo — loot/compra já mutam o Inventory ao vivo
+        direto, e sync_player_inventory agora REJEITA qualquer item que o
+        servidor não tinha antes. Este teste simula o servidor já possuindo
+        o item (como aconteceria de verdade após loot/compra real) e o
+        INV_SYNC só confirma/reorganiza — não mais o caminho que concede."""
+        from engine.components import Inventory
         real_item = self._real_item("training_mace")
+        inv = self.ws.world.get_component(self.eid, Inventory)
+        inv.items.clear()
+        inv.items.append(real_item)
+
+        from shared.messages import encode, MsgType
         await self.mgr.on_message(self.session, encode(MsgType.INV_SYNC, {
-            "inventory": [{"name": real_item.name, "item_type": real_item.item_type}],
+            "inventory": [{"item_id": real_item.item_id, "name": real_item.name,
+                          "item_type": real_item.item_type, "stack": 1}],
         }))
 
         merged = await self.mgr._persist_character(self.session, context="test")

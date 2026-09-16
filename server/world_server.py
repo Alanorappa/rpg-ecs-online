@@ -4043,6 +4043,27 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         para que handlers de skill (Recarregar, Tiro Múltiplo, etc.) validem
         munição contra o Inventory real — sem isso o componente fica vazio/None
         e a validação sempre falha ou é pulada.
+
+        NUNCA aceita o payload introduzindo item/quantidade que o servidor
+        já não tinha (16/09/2026, achado #3 da auditoria de projeto inteiro,
+        ver PROBLEMAS_ARQUITETURA.md §153) — antes, `inv.items.clear()` +
+        reconstrução do zero confiava cegamente na lista do cliente; um
+        payload reportando 50 cópias de um item caro nunca possuído
+        persistia como se fosse real. Pesquisa confirmou (rastreando os 2
+        únicos emissores de INV_SYNC no cliente) que NENHUM caminho online
+        vivo hoje precisa que este canal ADICIONE item — loot e Recarregar
+        já são autoritativos por outro canal (`request_loot`/
+        `_server_recarregar`, mutam o Inventory ao vivo direto). Validação:
+        conta quanto de cada `item_id` o servidor JÁ TEM (soma de `.stack`
+        por id, ANTES de qualquer mutação — nunca depois do `clear()`, senão
+        a base de comparação zera e todo item passa a parecer "novo") e
+        rejeita TUDO (mantém o Inventory antigo intacto, nunca aplica
+        parcial — mesmo padrão de `craft_item`/achados #1/#2 da mesma
+        auditoria) se a lista excede `max_slots` ou se qualquer `item_id`
+        pede mais do que o servidor já possuía. PRÉ-CONDIÇÃO: `inventory_list`
+        precisa ser o retorno de `sanitize_inventory_payload` (já rodou
+        round-trip pelo catálogo, `stack` sempre presente e clampado
+        positivo) — nunca chamar isto com o dict cru do cliente.
         """
         from engine.components import Inventory
         eid = self._player_eids.get(session_id)
@@ -4051,6 +4072,35 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         inv = self.world.get_component(eid, Inventory)
         if inv is None or not isinstance(inventory_list, list):
             return
+
+        if len(inventory_list) > inv.max_slots:
+            log.warning(f"[INV_SYNC] rejeitado - {session_id}: lista com "
+                        f"{len(inventory_list)} entradas excede max_slots={inv.max_slots}")
+            return
+
+        _owned_before: dict[str, int] = {}
+        for it in inv.items:
+            if it is not None and it.item_id:
+                _owned_before[it.item_id] = _owned_before.get(it.item_id, 0) + it.stack
+
+        _requested: dict[str, int] = {}
+        for item_d in inventory_list:
+            if not isinstance(item_d, dict):
+                log.warning(f"[INV_SYNC] rejeitado - {session_id}: entrada não é dict")
+                return
+            _iid = item_d.get("item_id", "")
+            if not _iid:
+                log.warning(f"[INV_SYNC] rejeitado - {session_id}: entrada sem item_id")
+                return
+            _stack = max(1, int(item_d.get("stack", 1)))
+            _requested[_iid] = _requested.get(_iid, 0) + _stack
+
+        for _iid, _qty in _requested.items():
+            if _qty > _owned_before.get(_iid, 0):
+                log.warning(f"[INV_SYNC] rejeitado - {session_id}: pediu {_qty}x "
+                            f"'{_iid}', servidor só tinha {_owned_before.get(_iid, 0)}")
+                return
+
         inv.items.clear()
         for item_d in inventory_list:
             item = self._reconstruct_item(item_d)

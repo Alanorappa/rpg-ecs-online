@@ -19338,3 +19338,92 @@ reais.
 
 Achados #3/#4 da mesma auditoria (duplicação de item via `INV_SYNC`,
 perda de ouro em `BUY_REQUEST`) seguem pendentes.
+
+## 153. Duplicação/forja de item via `INV_SYNC` (item 3 da auditoria §150) — pesquisa achou que o canal não tem mais nenhum uso legítimo vivo, revisão cruzada confirmou e achou 2 testes que documentavam o exploit como comportamento esperado
+
+16/09/2026. Mesmo processo dos §151/§152. Diferente dos 2 anteriores,
+este item exigiu uma pesquisa mais funda ANTES de rascunhar qualquer
+fix, porque a correção óbvia ("validar que o payload é um subconjunto
+do que já existe") parecia entrar em conflito com um caso de uso
+legítimo conhecido (Recarregar) — precisou ser resolvida antes de ir
+pra revisão cruzada.
+
+**Achado original** (agente de mercado): `sync_player_inventory`
+(`server/world_server.py`) fazia `inv.items.clear()` e reconstruía o
+Inventory ao vivo do zero a partir da lista que o cliente reporta em
+`INV_SYNC` — sem validar quantidade nem proveniência (só stats reais,
+via `sanitize_inventory_payload`). Um cliente podia reportar 50 cópias
+de um item caro nunca possuído, persistindo no banco.
+
+**Pesquisa (antes de qualquer rascunho)**: inicialmente pareceu que
+"Recarregar" (reload de aljava) dependia do full-replace do INV_SYNC
+pra funcionar, o que tornaria uma validação simples de posse arriscada
+(quebraria a troca de tipo de munição). Investigação mais funda
+(seguindo a cadeia de chamadas real, não confiando em comentários)
+revelou que essa premissa estava ERRADA: `_apply_recarregar`
+(`ui/spell_system.py`) está no conjunto `_SELF_TARGET_SERVER_ONLY`,
+que faz o cliente ONLINE pular essa função inteira em `_complete_cast`
+— exclusão feita de propósito em 19/07/2026 (bug real de duplicação de
+consumo de flecha). O resultado real de Recarregar já vem 100% de
+`server/spell_completion_processor.py::_server_recarregar`, que muta
+Inventory/Equipment reais do servidor diretamente. Rastreamento
+similar do lado de loot achou que `_on_loot_action`/INV_SYNC também
+está morto ali — `_try_send_online_loot_request` sempre retorna `True`
+antes de alcançar esse código quando há requester online (sempre o
+caso), e o handler real de loot confirmado
+(`_handle_msg_loot_result`) já não chama isso desde o débito A4
+(11/08/2026) — confirmado por um teste já existente
+(`test_loot_result_com_item_nunca_manda_inv_sync`). Conclusão: hoje
+NENHUM caminho de gameplay online real dispara INV_SYNC pedindo pra
+ADICIONAR item — os únicos 2 emissores no cliente são código morto.
+
+**Revisão cruzada — arquitetura**: confirmou a pesquisa de forma
+independente (rastreou os mesmos 2 emissores, chegou à mesma
+conclusão), validou que "rejeitar tudo, nunca parcial" é o padrão já
+usado no projeto (`_handle_talent_update`, achados #1/#2). Achou 1
+detalhe de implementação (a validação precisa somar `.stack` por
+`item_id`, não contar entradas — já batia com o rascunho) e sugeriu um
+comentário de aviso perto de `_SELF_TARGET_SERVER_ONLY` pra não virar
+surpresa se algum dia alguém tirar "recarregar" de lá sem revisar este
+fix.
+
+**Revisão cruzada — qualidade de código**: confirmou a premissa
+lendo o código (quase contradisse, mas concluiu que o caminho do
+Recarregar é morto por 2 gates empilhados — frágil, mas morto hoje).
+Achou 3 coisas: (1) a contagem do que já é possuído precisa acontecer
+ANTES do `clear()`, nunca depois; (2) o fix só é seguro rodando em
+cima do payload JÁ sanitizado (`sanitize_inventory_payload`), nunca em
+dict cru do cliente — documentado como pré-condição explícita; (3)
+**2 testes existentes iam quebrar** (não só o que eu já esperava):
+`tests/test_hotbar_bg_leak.py::test_inventario_normal_fora_de_instancia_continua_funcionando`
+e `tests/test_server.py::test_inv_sync_com_item_de_quest_avanca_progresso_da_quest`
+— os dois mandavam INV_SYNC introduzindo item NOVO que o servidor
+nunca tinha, documentando esse fluxo como válido. Precisavam ser
+reescritos (conceder o item antes, simulando posse real) e não só
+ajustados mecanicamente, já que representavam uma premissa que o fix
+declara insegura por design.
+
+**Fix**: `sync_player_inventory` — conta quanto de cada `item_id` o
+servidor JÁ TEM (soma de `.stack`, antes de qualquer mutação); rejeita
+TUDO (mantém o Inventory antigo intacto) se a lista excede
+`inv.max_slots` ou se qualquer `item_id` pede mais do que já possuído;
+loga a rejeição (`log.warning`) pra não virar um "congelamento
+silencioso" se algum bug real (não malicioso) gerar um payload errado.
+Comentário de aviso adicionado perto de `_SELF_TARGET_SERVER_ONLY`
+(`ui/spell_system.py`) linkando pra este fix.
+
+**Testes**: os 2 testes que documentavam o exploit como esperado foram
+reescritos (item concedido ANTES do INV_SYNC, docstring atualizada
+explicando a mudança de premissa). Novo
+`tests/test_server.py::TestSyncPlayerInventoryOwnershipValidation` (5
+casos, sem dependência de banco — item nunca possuído rejeitado,
+quantidade maior que a possuída rejeitada, quantidade igual/menor
+aceita, soma correta entre múltiplos slots do mesmo item, lista maior
+que `max_slots` rejeitada). Revert-to-confirm: 3 dos 5 falham contra o
+código antigo. Suíte relacionada (server/craft/recycle/loot/protocolo,
+137 casos): 129 passed, 8 failed pré-existentes (Postgres via Docker
+fora do ar neste ambiente — confirmado por traceback idêntico em
+todos, não relacionado).
+
+Achado #4 da mesma auditoria (perda de ouro sem entrega em
+`BUY_REQUEST`) segue pendente.
