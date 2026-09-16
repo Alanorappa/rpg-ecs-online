@@ -18863,3 +18863,37 @@ pelo próprio review como referência):
 ECS. Nenhum teste precisou de lógica nova — só troca de mecanismo de
 acesso. Suíte completa: 1657 passed, 2 failed pré-existentes/timing
 flake sem relação.
+
+## 145. God Mode (F10) — cluster de spikes grandes (até 158ms) enquanto aberto, causa NÃO investigada (ferramenta de GM/debug, baixa prioridade)
+
+15/09/2026, achado analisando o log pedido pelo usuário como veredito
+final pós-§141-§144 (fog/gc/F11/item 9 todos confirmados sem
+regressão, `LOOT_RESULT` continua ausente do log). Enquanto o God Mode
+estava aberto, apareceu um cluster de ~15 `[SPIKE]` consecutivos
+(22-158ms) com `ui:god_mode` custando 5-17ms cada (esperado — é uma
+UI de edição com grade desenhada todo frame, `[PROF]` confirma que
+fica em ~0.002ms quando fechado, então o custo é real só enquanto
+ativo) — mas em 2 desses (158ms e 146ms) a maior parte do tempo total
+NÃO está no breakdown (`ui:god_mode` 17ms/8ms de 158ms/146ms). Mesmo
+padrão de "buraco" já caçado 3 vezes nesta investigação (§143), só que
+numa área ainda sem instrumentação granular — `god_mode.update()`/
+`.render()` já estão medidos como um bloco só (`ui:god_mode`, mesmo
+padrão do que foi feito pros modais em §143), mas não sub-divididos
+método a método como os modais foram.
+
+Logo depois (mesma janela, sem `ui:god_mode` no breakdown dessa vez)
+apareceram mais 2 spikes grandes (139ms, 127ms) com só
+`rnd:TileRenderSystem` parcialmente explicado (~10-15ms de cada) —
+pode ser cache de tile sendo invalidado/reconstruído ao fechar o God
+Mode (bug já documentado em §53 pra esse mesmo cache, mas nunca com
+essa magnitude), não confirmado.
+
+**Decisão do usuário**: não investigar agora — God Mode é ferramenta
+de GM/debug (`is_gm` + `"debug_mode": true` em `config.json`), jogador
+comum nunca abre essa tela, então não afeta a experiência de jogo
+normal. Registrado aqui pra não se perder, caso vire relevante depois
+(ex: se o próprio God Mode passar a ser usado com mais frequência, ou
+se o mesmo padrão aparecer em outro contexto).
+
+**Status**: investigação aberta, baixa prioridade — sem instrumentação
+adicional, sem fix.
