@@ -4097,8 +4097,24 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         o servidor não fez nada — item perdido, sem cura real, sem aviso
         nenhum (bug real reportado por testers: "consumível às vezes não
         regenera"). Ver PROBLEMAS_ARQUITETURA.md.
-        """
-        from engine.components import CombatStats, CombatState, ActiveRegen, CharacterStats, ActiveManaRegen
+
+        Efeito (heal_instant/mana_restore/hot/mana_hot/ooc_only) resolvido
+        SÓ a partir do catálogo (16/09/2026, achado #2 da auditoria de
+        projeto inteiro, ver PROBLEMAS_ARQUITETURA.md §152) — NUNCA do
+        payload que o cliente manda, e só depois de confirmar posse real
+        no Inventory ao vivo. Antes, os valores vinham direto do payload
+        (o cliente já lê o catálogo pra montar esses campos, então em
+        qualquer fluxo legítimo eles batiam — mas nada impedia um cliente
+        modificado de mandar valores arbitrários, ou `item_id=""` pra
+        pular a dedução do item mantendo o efeito) e a posse do item
+        nunca era exigida pra aplicar o efeito (só pra decrementar —
+        "não achou, não decrementa", mas o efeito rodava do mesmo jeito).
+        `item.consumable` no catálogo guarda os campos do HoT SOLTOS
+        (`heal_per_tick`/`interval`/`ticks`, sem chave `"hot"` própria) —
+        remontado aqui na mesma forma que o cliente já usa pra montar o
+        payload de rede (`ui/systems.py`), não lido direto."""
+        from engine.components import (CombatStats, CombatState, ActiveRegen, CharacterStats,
+                                       ActiveManaRegen, Inventory as _InvCons, LearnedRecipes as _LR_cons)
         eid = self._player_eids.get(session_id)
         if eid is None:
             return
@@ -4131,12 +4147,39 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             _reject("dead")
             return
 
-        if payload.get("ooc_only", False) and cstate and cstate.in_combat:
+        # Resolve o item de VOLTA pro catálogo — item_id vazio ou item que
+        # existe mas não é consumível de verdade (ex: reportar o item_id
+        # de uma espada) rejeita aqui, antes de qualquer efeito. Resolvido
+        # 1x só, reaproveitado pelo bloco de pergaminho de receita abaixo.
+        if not item_id:
+            _reject("no_item")
+            return
+        _item_factory = self._item_factory_by_id(item_id)
+        _consumable = getattr(_item_factory, "consumable", None) if _item_factory else None
+        if not isinstance(_consumable, dict):
+            _reject("not_consumable")
+            return
+
+        if _consumable.get("ooc_only", False) and cstate and cstate.in_combat:
             _reject("in_combat")
             return
 
-        _has_hp   = bool(payload.get("heal_instant", 0) or (isinstance(payload.get("hot"), dict)))
-        _has_mana = bool(payload.get("mana_restore", 0) or (isinstance(payload.get("mana_hot"), dict)))
+        # Campos do efeito, só do catálogo — hot/mana_hot remontados a
+        # partir dos campos soltos (mesma transformação que o cliente já
+        # faz em ui/systems.py pra montar o payload de rede).
+        heal_instant   = int(_consumable.get("heal_instant", 0))
+        mana_restore   = int(_consumable.get("mana_restore", 0))
+        _heal_per_tick = int(_consumable.get("heal_per_tick", 0))
+        _mana_per_tick = int(_consumable.get("mana_per_tick", 0))
+        _ticks         = int(_consumable.get("ticks", 0))
+        _interval      = float(_consumable.get("interval", 2.0))
+        hot      = ({"heal_per_tick": _heal_per_tick, "interval": _interval, "ticks": _ticks}
+                    if _heal_per_tick > 0 and _ticks > 0 else None)
+        mana_hot = ({"mana_per_tick": _mana_per_tick, "interval": _interval, "ticks": _ticks}
+                    if _mana_per_tick > 0 and _ticks > 0 else None)
+
+        _has_hp   = bool(heal_instant or hot)
+        _has_mana = bool(mana_restore or mana_hot)
 
         # Bloqueia apenas se o recurso relevante estiver cheio
         if _has_hp and not _has_mana and cs.current_hp >= cs.max_hp:
@@ -4146,67 +4189,63 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             _reject("mana_full")
             return
 
+        # Confere posse real ANTES de aplicar qualquer efeito — sem isso,
+        # o exploit sobrevivia mesmo com os valores vindo do catálogo:
+        # bastava reportar o item_id de QUALQUER item real do jogo, sem
+        # nunca tê-lo possuído. Mesmo critério de identificação do
+        # cliente (`ConsumableSystem._use_consumable`): primeiro item da
+        # bag com esse item_id e stack > 0.
+        _inv_cons  = self.world.get_component(eid, _InvCons)
+        _item_cons = next((it for it in (_inv_cons.items if _inv_cons else [])
+                           if it is not None and it.item_id == item_id and it.stack > 0), None)
+        if _item_cons is None:
+            _reject("not_owned")
+            return
+
         # Pergaminho de receita (débito A4, 11/08/2026 — bug real: o
         # scroll era consumido mas a receita nunca era aprendida online,
         # `apply_consumable` nunca olhava pra `LearnedRecipes`. Ver
-        # PROBLEMAS_ARQUITETURA.md). Resolve o item_id de VOLTA pro
-        # catálogo (nunca confia em recipe_id vindo do cliente) — só um
-        # pergaminho de verdade tem `consumable={"learn_recipe": ...}`.
+        # PROBLEMAS_ARQUITETURA.md). `_consumable` já é o dict do
+        # catálogo resolvido acima — só um pergaminho de verdade tem
+        # `consumable={"learn_recipe": ...}`.
         _learned_recipe_id = ""
-        if item_id:
-            _scroll = self._item_factory_by_id(item_id)
-            _recipe_effect = getattr(_scroll, "consumable", None) if _scroll else None
-            if isinstance(_recipe_effect, dict) and _recipe_effect.get("learn_recipe"):
-                from engine.components import LearnedRecipes as _LR_cons
-                from engine.stat_fns import learn_recipe as _learn_recipe_fn
-                _lr = self.world.get_component(eid, _LR_cons)
-                _candidate_recipe_id = _recipe_effect["learn_recipe"]
-                if _lr is not None and _learn_recipe_fn(_lr, _candidate_recipe_id):
-                    _learned_recipe_id = _candidate_recipe_id
+        if _consumable.get("learn_recipe"):
+            from engine.stat_fns import learn_recipe as _learn_recipe_fn
+            _lr = self.world.get_component(eid, _LR_cons)
+            _candidate_recipe_id = _consumable["learn_recipe"]
+            if _lr is not None and _learn_recipe_fn(_lr, _candidate_recipe_id):
+                _learned_recipe_id = _candidate_recipe_id
 
         # Decrementa o item de verdade no Inventory AO VIVO do servidor —
-        # débito A4 (11/08/2026, bug real relatado pelo usuário: pergaminho
-        # de receita reaparecia na bag a cada relog). Antes, só o cliente
-        # tirava o item da SUA cópia (`_finalize_consumable`) — o servidor
-        # nunca ficava sabendo, então qualquer save persistia o item como
-        # se nunca tivesse sido usado (mesma classe de duplicação já
-        # fechada pra equipar/forjar). Mesmo critério de identificação do
-        # cliente (`ConsumableSystem._use_consumable`): primeiro item da
-        # bag com esse item_id e stack > 0.
-        if item_id:
-            from engine.components import Inventory as _InvCons
-            _inv_cons = self.world.get_component(eid, _InvCons)
-            if _inv_cons is not None:
-                _item_cons = next((it for it in _inv_cons.items
-                                   if it is not None and it.item_id == item_id and it.stack > 0), None)
-                if _item_cons is not None:
-                    _item_cons.stack -= 1
-                    if _item_cons.stack <= 0:
-                        _inv_cons.items.remove(_item_cons)
+        # posse já confirmada acima (débito A4, 11/08/2026 — bug real
+        # relatado pelo usuário: pergaminho de receita reaparecia na bag
+        # a cada relog. Antes, só o cliente tirava o item da SUA cópia,
+        # o servidor nunca ficava sabendo, então qualquer save persistia
+        # o item como se nunca tivesse sido usado).
+        _item_cons.stack -= 1
+        if _item_cons.stack <= 0:
+            _inv_cons.items.remove(_item_cons)
 
         # Aceito — confirma ANTES de aplicar os efeitos: só agora o cliente
         # pode remover o item do Inventory local com segurança (o servidor
         # já garantiu que vai aplicar algo de verdade). `learned_recipe`
         # vai na MESMA confirmação (não precisa mensagem separada) — só
         # presente quando a receita era realmente nova.
-        if item_id:
-            _confirm = {
-                "player_eid":    eid,
-                "item_id":       item_id,
-                "consumable_ok": True,
-            }
-            if _learned_recipe_id:
-                _confirm["learned_recipe"] = _learned_recipe_id
-            self.queue_stats_update(_confirm)
+        _confirm = {
+            "player_eid":    eid,
+            "item_id":       item_id,
+            "consumable_ok": True,
+        }
+        if _learned_recipe_id:
+            _confirm["learned_recipe"] = _learned_recipe_id
+        self.queue_stats_update(_confirm)
 
         # Evento de quest "use_consumable" — uso aceito (passou pelos blocks
         # acima). Server-autoritativo — ver quest_logic.py/PROBLEMAS_ARQUITETURA.md.
-        if item_id:
-            from engine.quest_events import fire as _qfire_cons
-            _qfire_cons("use_consumable", player_eid=eid, item_id=item_id)
+        from engine.quest_events import fire as _qfire_cons
+        _qfire_cons("use_consumable", player_eid=eid, item_id=item_id)
 
         # 1. Cura instantânea de HP
-        heal_instant = int(payload.get("heal_instant", 0))
         if heal_instant > 0:
             healed = min(heal_instant, cs.max_hp - cs.current_hp)
             cs.current_hp = min(cs.max_hp, cs.current_hp + heal_instant)
@@ -4220,7 +4259,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 })
 
         # 2. Restauração instantânea de mana
-        mana_restore = int(payload.get("mana_restore", 0))
         if mana_restore > 0 and char and char.max_mana > 0:
             restored = min(mana_restore, char.max_mana - char.mana)
             char.mana = min(char.max_mana, char.mana + mana_restore)
@@ -4234,38 +4272,28 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 })
 
         # 3. HoT de HP (ActiveRegen)
-        hot = payload.get("hot")
-        if isinstance(hot, dict):
-            heal_per_tick = int(hot.get("heal_per_tick", 0))
-            interval      = float(hot.get("interval", 2.0))
-            ticks         = int(hot.get("ticks", 0))
-            if heal_per_tick > 0 and ticks > 0:
-                try:
-                    self.world.remove_component(eid, ActiveRegen)
-                except Exception:
-                    pass
-                self.world.add_component(eid, ActiveRegen(
-                    heal_per_tick=heal_per_tick,
-                    interval=interval,
-                    ticks_total=ticks,
-                ))
+        if hot is not None:
+            try:
+                self.world.remove_component(eid, ActiveRegen)
+            except Exception:
+                pass
+            self.world.add_component(eid, ActiveRegen(
+                heal_per_tick=hot["heal_per_tick"],
+                interval=hot["interval"],
+                ticks_total=hot["ticks"],
+            ))
 
         # 4. HoT de mana (ActiveManaRegen)
-        mana_hot = payload.get("mana_hot")
-        if isinstance(mana_hot, dict) and char and char.max_mana > 0:
-            mana_per_tick = int(mana_hot.get("mana_per_tick", 0))
-            interval      = float(mana_hot.get("interval", 5.0))
-            ticks         = int(mana_hot.get("ticks", 0))
-            if mana_per_tick > 0 and ticks > 0:
-                try:
-                    self.world.remove_component(eid, ActiveManaRegen)
-                except Exception:
-                    pass
-                self.world.add_component(eid, ActiveManaRegen(
-                    mana_per_tick=mana_per_tick,
-                    interval=interval,
-                    ticks_total=ticks,
-                ))
+        if mana_hot is not None and char and char.max_mana > 0:
+            try:
+                self.world.remove_component(eid, ActiveManaRegen)
+            except Exception:
+                pass
+            self.world.add_component(eid, ActiveManaRegen(
+                mana_per_tick=mana_hot["mana_per_tick"],
+                interval=mana_hot["interval"],
+                ticks_total=mana_hot["ticks"],
+            ))
 
     def get_entity_map(self, eid: int) -> "str | None":
         """Mapa (map_file) de qualquer entidade via MapLocation — fonte única

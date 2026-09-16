@@ -52,7 +52,7 @@ import pygame
 pygame.init()
 
 from tests.helpers import make_world_server, spawn_player, AuthPoolCleanupMixin
-from engine.components import Inventory, Wallet, Item, LearnedRecipes
+from engine.components import Inventory, Wallet, Item, LearnedRecipes, CombatStats
 from content.crafting_data import RARITY_FORGE_COST, RARITY_RECYCLE_COST
 
 
@@ -97,12 +97,40 @@ class TestLearnRecipeOnline(unittest.TestCase):
         self.eid = spawn_player(self.ws, "s1", 130, 374)
         self.lr  = self.ws.world.get_component(self.eid, LearnedRecipes)
 
+    def _give(self, item_id: str, stack: int = 1):
+        """Coloca uma unidade real do item no Inventory ao vivo do
+        player — 16/09/2026 (achado #2 da auditoria de projeto inteiro,
+        PROBLEMAS_ARQUITETURA.md §152): apply_consumable agora EXIGE
+        posse real, os testes desta classe precisam refletir isso."""
+        inv = self.ws.world.get_component(self.eid, Inventory)
+        item = self.ws._item_factory_by_id(item_id)
+        item.stack = stack
+        inv.items.append(item)
+        return item
+
     def test_consumir_pergaminho_aprende_receita_e_avisa_cliente(self):
+        self._give("recipe_espada_afiada")
         self.ws.apply_consumable("s1", {"item_id": "recipe_espada_afiada"})
         updates = self.ws.consume_stats_updates()
         ok = [u for u in updates if u.get("consumable_ok")]
         self.assertEqual(len(ok), 1)
         self.assertEqual(ok[0]["learned_recipe"], "espada_afiada")
+
+    def test_consumir_item_que_nao_possui_e_rejeitado_sem_aplicar_efeito(self):
+        """16/09/2026, mesmo achado #2 — antes, item_id de um consumível
+        real que o jogador NUNCA teve ainda assim curava/aprendia receita
+        (só não decrementava nada, porque não achava o item). Agora
+        precisa rejeitar (not_owned) sem aplicar nada."""
+        cs = self.ws.world.get_component(self.eid, CombatStats)
+        cs.current_hp = cs.max_hp - 10  # não cheio, pra descartar "hp_full" como motivo
+        hp_before = cs.current_hp
+        self.ws.apply_consumable("s1", {"item_id": "hp_potion"})
+        updates = self.ws.consume_stats_updates()
+        rejected = [u for u in updates if u.get("consumable_rejected")]
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(rejected[0]["reason"], "not_owned")
+        self.assertEqual(cs.current_hp, hp_before, "nao deveria ter curado nada")
+        self.assertEqual(self.lr.known, [])
 
     def test_consumir_pergaminho_remove_do_inventory_ao_vivo_do_servidor(self):
         """Bug #6 (playtest 11/08/2026): sem isso, o pergaminho reaparecia
@@ -124,12 +152,13 @@ class TestLearnRecipeOnline(unittest.TestCase):
         potion.stack = 5
         inv.items.append(potion)
 
-        self.ws.apply_consumable("s1", {"item_id": "hp_potion", "heal_instant": 50})
+        self.ws.apply_consumable("s1", {"item_id": "hp_potion"})
 
         self.assertIn(potion, inv.items)
         self.assertEqual(potion.stack, 4)
 
     def test_pergaminho_ja_conhecido_nao_manda_learned_recipe_de_novo(self):
+        self._give("recipe_espada_afiada")
         self.lr.known.append("espada_afiada")
         self.ws.apply_consumable("s1", {"item_id": "recipe_espada_afiada"})
         updates = self.ws.consume_stats_updates()
@@ -139,7 +168,8 @@ class TestLearnRecipeOnline(unittest.TestCase):
         self.assertEqual(self.lr.known.count("espada_afiada"), 1)
 
     def test_consumivel_normal_nao_aprende_receita_nenhuma(self):
-        self.ws.apply_consumable("s1", {"item_id": "hp_potion", "heal_instant": 50})
+        self._give("hp_potion")
+        self.ws.apply_consumable("s1", {"item_id": "hp_potion"})
         updates = self.ws.consume_stats_updates()
         ok = [u for u in updates if u.get("consumable_ok")]
         self.assertEqual(len(ok), 1)

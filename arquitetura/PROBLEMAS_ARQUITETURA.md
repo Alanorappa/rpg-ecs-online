@@ -19250,3 +19250,91 @@ Achados #2/#3/#4 da mesma auditoria (cura/mana infinitos via
 `CONSUMABLE_USE`, duplicação de item via `INV_SYNC`, perda de ouro em
 `BUY_REQUEST`) seguem pendentes — mesmo processo de revisão cruzada
 antes de corrigir, a pedido do usuário.
+
+## 152. Cura/mana infinitos via `CONSUMABLE_USE` (item 2 da auditoria §150) — revisão cruzada achou que o fix original ainda deixava o exploit vivo por outro caminho
+
+16/09/2026. Mesmo processo do §151: achado do agente de mercado
+reapresentado aos outros 2 especialistas (com um fix já rascunhado)
+antes de codar.
+
+**Achado original** (agente de mercado): `apply_consumable`
+(`server/world_server.py`) lia `heal_instant`/`mana_restore`/`hot`/
+`mana_hot`/`ooc_only` direto do payload do cliente, nunca comparados
+contra o catálogo. Com `item_id=""`, o bloco de dedução do item era
+pulado inteiramente, mas os efeitos rodavam do mesmo jeito — cura/mana
+grátis, repetível, sem cooldown.
+
+**Rascunho inicial** (meu, antes da revisão): resolver
+`heal_instant`/`mana_restore`/`hot`/`mana_hot`/`ooc_only` a partir de
+`item.consumable` (catálogo, via `self._item_factory_by_id`, mesmo
+mecanismo já usado ali perto pro pergaminho de receita) em vez do
+payload.
+
+**Revisão cruzada — arquitetura**: confirmou a direção (mesmo padrão
+já usado no bloco do pergaminho, nada novo inventado), mas achou uma
+incompatibilidade de schema que o rascunho não previu: `item.consumable`
+no catálogo guarda os campos do HoT SOLTOS (`heal_per_tick`/`interval`/
+`ticks` direto no dict — ex: `simple_bread`/`roasted_meat`/waterskins),
+NÃO aninhados numa chave `"hot"`/`"mana_hot"` — esse aninhamento é
+montado só pelo CLIENTE, na hora de montar o payload de rede
+(`ui/systems.py`). Ler `item.consumable.get("hot")` direto sempre
+devolveria `None` pra todo item de comida/água do jogo — HoT quebraria
+silenciosamente em produção, regressão da própria Fase 6 que a
+docstring do método já cita. Sugeriu também extrair a resolução de
+efeito pra uma função pura reusável entre cliente/servidor no futuro
+(não implementado agora, fora do escopo combinado).
+
+**Revisão cruzada — qualidade de código**: achou 2 problemas mais
+sérios que o rascunho não cobria:
+1. **Ordem**: `ooc_only` é lido do payload ANTES até do resto — se a
+   resolução do catálogo não subisse o suficiente na ordem (logo após
+   o guard de morte), o cliente continuaria podendo mentir
+   `ooc_only=False` pra usar poção restrita a fora-de-combate durante
+   combate.
+2. **Achado mais grave, novo**: mesmo com os valores vindo do catálogo,
+   o método NUNCA rejeitava quando o item não era encontrado no
+   Inventory — só pulava o decremento (`if achou: decrementa`, sem
+   `else: rejeita`) e seguia aplicando o efeito normalmente. Ou seja: o
+   exploit sobrevivia ao fix original, só mudando de vetor — em vez de
+   `item_id=""`, bastava reportar QUALQUER `item_id` real do catálogo
+   que o jogador nunca possuiu. Prova concreta encontrada no próprio
+   repo: `tests/test_craft_recycle_protocol.py::TestLearnRecipeOnline::
+   test_consumir_pergaminho_aprende_receita_e_avisa_cliente` tinha um
+   `setUp` que NÃO colocava o pergaminho no Inventory, e mesmo assim
+   esperava sucesso — o comportamento errado estava documentado como
+   "esperado" por um teste real.
+
+**Decisão do usuário**: tratar os 5 pontos juntos (resolução 1x só
+reaproveitada entre os blocos de pergaminho e cura/mana, reordenação
+com `ooc_only` migrado corretamente, `hot`/`mana_hot` remontados dos
+campos soltos, checagem de posse nova, testes atualizados).
+
+**Fix**: `apply_consumable` reescrito — resolve o item via
+`_item_factory_by_id` uma única vez logo após o guard de morte
+(`item_id` vazio ou item que não é consumível de verdade rejeita ali,
+`reason="no_item"`/`"not_consumable"`); `ooc_only`/`heal_instant`/
+`mana_restore` lidos do dict do catálogo; `hot`/`mana_hot` remontados
+a partir de `heal_per_tick`/`mana_per_tick`/`interval`/`ticks` soltos
+(mesma transformação que `ui/systems.py` já faz pro payload de rede);
+posse real confirmada no Inventory ao vivo ANTES de aplicar qualquer
+efeito (`reason="not_owned"` se não achar) — decremento e aplicação
+de heal/mana/HoT só acontecem depois disso. Bloco de pergaminho de
+receita reaproveita o mesmo `_consumable` já resolvido, sem 2º lookup.
+
+**Testes**: `tests/test_craft_recycle_protocol.py::TestLearnRecipeOnline`
+— novo helper `_give()` (insere item real no Inventory, usado pelos 4
+testes que precisavam dele mas não tinham antes); novo teste
+`test_consumir_item_que_nao_possui_e_rejeitado_sem_aplicar_efeito`
+(prova a posse real sendo exigida). `tests/test_consumables.py::
+TestConsumableRejectedWhenDead` (3 casos, guard de morte via
+`current_hp<=0` roda ANTES da resolução do catálogo, item_ids fictícios
+`pocao_vida`/`pocao_regen` continuam funcionando pro propósito do
+teste) — sem alteração, continuam passando. Revert-to-confirm: o teste
+novo falha contra o código antigo (0 rejeições em vez de 1). Suíte
+relacionada (consumable/regen/recipe, 66 casos reais + 12 falhas de
+`test_hotbar_bg_leak.py` — capturadas pelo filtro "hot" de "hotbar",
+mesmo Postgres fora do ar, não relacionado): sem regressão nos casos
+reais.
+
+Achados #3/#4 da mesma auditoria (duplicação de item via `INV_SYNC`,
+perda de ouro em `BUY_REQUEST`) seguem pendentes.

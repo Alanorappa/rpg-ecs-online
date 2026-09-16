@@ -58,6 +58,13 @@ ilimitado, repetível, sem gastar nada.
 posse real ANTES de aplicar — só `sell` tem essa lacuna.
 
 ### 2. Cura/mana infinitos via `CONSUMABLE_USE`
+**Status:** ✅ Implementado (16/09/2026) — ver `PROBLEMAS_ARQUITETURA.md`
+§152. Revisão cruzada achou que o fix rascunhado (só trocar payload por
+catálogo) ainda deixava o exploit vivo por outro vetor — faltava exigir
+posse real do item — e um problema de schema (HoT quebraria
+silenciosamente pra itens de comida/água se implementado ao pé da
+letra). Corrigido com os 2 ajustes incorporados.
+
 `server/world_server.py:4149-4241` (`apply_consumable`) lê
 `heal_instant`/`mana_restore`/`hot`/`mana_hot` **direto do payload do
 cliente**, nunca comparados contra o que o item concede de verdade no
