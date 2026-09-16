@@ -485,11 +485,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Inicializado aqui e resetado em _tick para evitar getattr() lazy
         self._pvp_damage_this_tick: dict[int, int] = {}
 
-        # Itens comprados em loja mas ainda não confirmados por SAVE_STATE.
-        # session_id → contagem de itens pendentes (limpo em confirm_inventory_save
-        # e em despawn_player). Substitui o padrão setattr/getattr/delattr anterior.
-        self._pending_inv: dict[str, int] = {}
-
         # Histórico de snapshots (deque com maxlen evita pop(0) O(n))
         self._snapshots: deque[tuple[int, dict]] = deque(maxlen=SNAPSHOT_HISTORY)
 
@@ -2432,7 +2427,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._player_eid_to_sid.pop(eid, None)
         self._player_maps.pop(session_id, None)
         self._despawned_this_tick.append({"eid": eid, "tx": None, "ty": None})
-        self._pending_inv.pop(session_id, None)
         self._attack_timers.pop(session_id, None)
         # Cancela spells pendentes do player (evita completions após disconnect)
         self._pending_spell_completions = [
@@ -3228,9 +3222,59 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             cs._recalculate_effective_stats()
         recalculate_preserving_hp_pct(cs, _mutate_eq)
 
+    def _plan_stack_delivery(self, inv, factory, qty: int, apply: bool) -> bool:
+        """Ponto único de verdade pra "cabe entregar `qty` unidades de um
+        item empilhável neste Inventory?" (16/09/2026, achado #4 da
+        auditoria de projeto inteiro, ver PROBLEMAS_ARQUITETURA.md §155) —
+        mesmo espírito de `loot_processor.py::_stack_or_add_item`, mas
+        pensado pra QUANTIDADE (pode precisar de mais de 1 slot novo, o
+        que loot nunca precisa — 1 candidato por vez).
+
+        `apply=False` (dry-run): só calcula se cabe, NUNCA muta `inv` —
+        usado pra checar espaço ANTES de debitar ouro. Aritmética O(1)
+        (divisão/teto), nunca um loop por unidade — `qty` vindo do
+        cliente não tem teto superior, um loop "por unidade" seria vetor
+        de trava do event loop single-thread do servidor.
+        `apply=True`: aplica de verdade (muta `inv.items`) — usado só
+        depois que um dry-run anterior já confirmou que cabe tudo; o
+        `break` defensivo aqui nunca deveria disparar nesse caso, mas
+        fica como cinto-de-segurança.
+
+        Retorna True se coube (ou cabe) TUDO, False caso contrário."""
+        preview    = factory()
+        max_stack  = max(1, getattr(preview, "max_stack", 1))
+        preview_id = getattr(preview, "item_id", "")
+        remaining  = qty
+
+        if max_stack > 1:
+            for existing in inv.items:
+                if existing is None or remaining <= 0:
+                    continue
+                if existing.item_id == preview_id and existing.stack < existing.max_stack:
+                    can_add = min(remaining, existing.max_stack - existing.stack)
+                    if apply:
+                        existing.stack += can_add
+                    remaining -= can_add
+
+        if not apply:
+            if remaining <= 0:
+                return True
+            slots_needed = -(-remaining // max_stack)  # ceil, sem loop
+            free_slots   = inv.max_slots - len(inv.items)
+            return slots_needed <= free_slots
+
+        while remaining > 0:
+            if len(inv.items) >= inv.max_slots:
+                return False
+            new_item = factory()
+            take = min(remaining, max(1, getattr(new_item, "max_stack", 1)))
+            new_item.stack = take
+            inv.items.append(new_item)
+            remaining -= take
+        return True
+
     def process_shop_buy(self, session_id: str, shop_id: str,
                          item_name: str, quantity: int,
-                         last_inventory: list | None = None,
                          item_id: str = "") -> dict:
         """Processa compra em loja — autoritativo no servidor.
 
@@ -3248,7 +3292,21 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         validação, antes de checar `total_cost` — um cliente podia
         comprar qualquer coisa reportando um `current_gold` arbitrário.
         Gold do servidor já é autoritativo de verdade, nunca precisou
-        de sync vindo do cliente."""
+        de sync vindo do cliente.
+
+        `last_inventory`/`_pending_inv` (removidos, 16/09/2026, achado #4
+        da mesma auditoria, ver PROBLEMAS_ARQUITETURA.md §155) — a
+        checagem de espaço usava `session.last_client_payload["inventory"]`
+        (cache do último payload reportado pelo cliente) em vez do
+        Inventory AO VIVO real; `_pending_inv` existia só pra compensar
+        esse cache ficando desatualizado até o próximo SAVE_STATE. Se o
+        cache estivesse desatualizado, a checagem liberava uma compra que
+        a bag real não comportava — ouro debitado incondicionalmente,
+        entrega real (passo 6) parava no meio silenciosamente. Agora o
+        espaço é checado contra o Inventory ao vivo de verdade
+        (`_plan_stack_delivery`, dry-run) ANTES de debitar qualquer ouro
+        — rejeita a compra INTEIRA se não couber tudo, nunca entrega
+        parcial."""
         from engine.components import Wallet, Inventory
 
         eid = self._player_eids.get(session_id)
@@ -3286,8 +3344,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     and not instance_shop_class_allows(item_preview, char.class_id)):
                 return {"success": False, "reason": "class"}
 
+        qty        = max(1, quantity)
         price      = int(entry["price"])
-        total_cost = price * max(1, quantity)
+        total_cost = price * qty
 
         # 2. Valida gold — contra o valor real do servidor (autoritativo).
         wallet = self.world.get_component(eid, Wallet)
@@ -3297,28 +3356,19 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             return {"success": False, "reason": "insufficient_gold",
                     "required": total_cost, "available": wallet.gold}
 
-        # 3. Valida espaço no inventário via last_client_payload
-        #    (inventário real mantido pelo cliente; servidor usa payload para contagem)
-        inv_count = len(last_inventory) if last_inventory is not None else 0
-        # Soma itens pendentes desta sessão ainda não confirmados por SAVE_STATE
-        pending = self._pending_inv.get(session_id, 0)
-        # max_slots REAL do Inventory vivo (01/08/2026, bug latente achado ao
-        # montar a loja de instância — inv de 6 slots, ver server/
-        # instance_progression.py) — antes era um "24" hardcoded aqui,
-        # dessincronizado do `inv.max_slots` que o passo 6 abaixo já respeita
-        # de verdade; com inventário menor que 24 (instância), essa checagem
-        # deixava passar uma compra que o passo 6 depois descartava
-        # silenciosamente (`break` ao bater o teto real), cobrando o gold
-        # sem entregar o item.
-        inv_for_slots = self.world.get_component(eid, Inventory)
-        max_slots = inv_for_slots.max_slots if inv_for_slots is not None else 24
-        if inv_count + pending + 1 > max_slots:
+        # 3. Valida espaço REAL no Inventory ao vivo (nunca contra cache do
+        # cliente — ver docstring acima, achado #4/§155). Dry-run: rejeita
+        # a compra INTEIRA se não couber tudo, ANTES de debitar ouro.
+        inv = self.world.get_component(eid, Inventory)
+        factory = entry.get("factory")
+        if inv is None or not callable(factory):
+            return {"success": False, "reason": "invalid_item"}
+        if not self._plan_stack_delivery(inv, factory, qty, apply=False):
             return {"success": False, "reason": "inventory_full"}
 
-        # 4. Aplica a compra — gold deduzido server-side
+        # 4. Aplica a compra — gold deduzido server-side, só depois de
+        # confirmar que cabe tudo.
         wallet.gold -= total_cost
-        # Rastreia item pendente até próximo SAVE_STATE
-        self._pending_inv[session_id] = pending + 1
 
         # 5. item_data pré-compilado no cache (sem factory() adicional)
         item_data = cached["item_data"]
@@ -3327,42 +3377,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         #    aparece nessa cópia após o próximo SAVE_STATE/INV_SYNC, e handlers
         #    de skill (Recarregar) validam munição contra um Inventory
         #    desatualizado, recusando "Não há flechas disponíveis" até relogar.
-        inv = self.world.get_component(eid, Inventory)
-        factory = entry.get("factory")
-        if inv is not None and callable(factory):
-            qty       = max(1, quantity)
-            preview   = factory()
-            max_stack = getattr(preview, "max_stack", 1)
-            remaining = qty
-            if max_stack > 1:
-                _preview_id = getattr(preview, "item_id", "")
-                for existing in inv.items:
-                    if existing is None or remaining <= 0:
-                        continue
-                    if existing.item_id == _preview_id and existing.stack < existing.max_stack:
-                        can_add = min(remaining, existing.max_stack - existing.stack)
-                        existing.stack += can_add
-                        remaining -= can_add
-            while remaining > 0:
-                if len(inv.items) >= inv.max_slots:
-                    break
-                new_item = factory()
-                take = min(remaining, getattr(new_item, "max_stack", 1))
-                new_item.stack = take
-                inv.items.append(new_item)
-                remaining -= take
+        #    Garantido entregar TUDO — o dry-run do passo 3 já confirmou que
+        #    cabe (síncrono, nada mais muta o Inventory entre os dois passos).
+        self._plan_stack_delivery(inv, factory, qty, apply=True)
 
         return {
             "success":  True,
             "item":     item_data,
-            "quantity": max(1, quantity),
+            "quantity": qty,
             "new_gold": wallet.gold,
             "price":    total_cost,
         }
-
-    def confirm_inventory_save(self, session_id: str) -> None:
-        """Chamado quando SAVE_STATE chega — zera contador de itens pendentes."""
-        self._pending_inv.pop(session_id, None)
 
     # ---- sell ratio igual ao ShopSystem do cliente ----
     _SELL_RATIO = 0.4

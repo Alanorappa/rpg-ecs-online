@@ -457,6 +457,98 @@ class TestShopSellRemovesFromLiveInventory(unittest.TestCase):
         self.assertEqual(result["reason"], "no_inventory")
 
 
+class TestShopBuyRealInventorySpaceCheck(unittest.TestCase):
+    """16/09/2026 — achado #4 da auditoria de projeto inteiro (ver
+    PROBLEMAS_ARQUITETURA.md §155): process_shop_buy checava espaço via
+    um cache do último payload que o cliente reportou (last_client_
+    payload), nunca contra o Inventory AO VIVO real do servidor — se
+    esse cache estivesse desatualizado, uma compra que a bag real não
+    comportava era liberada, ouro debitado, entrega parando no meio
+    silenciosamente. Fix: checa contra o Inventory real, rejeita a
+    compra INTEIRA (sem debitar nada) se não couber tudo."""
+
+    def setUp(self):
+        self.ws     = make_world_server()
+        self.eid    = spawn_player(self.ws, "s1", 130, 374)
+        self.inv    = self.ws.world.get_component(self.eid, Inventory)
+        self.wallet = self.ws.world.get_component(self.eid, Wallet)
+        self.wallet.gold = 10_000
+        self.inv.items.clear()
+
+    def _fill_slots(self, count: int):
+        """Ocupa `count` slots com itens genéricos não relacionados —
+        simula um Inventory real cheio, independente de qualquer cache
+        de payload do cliente (que este teste nunca popula de propósito,
+        pra provar que a checagem não depende mais dele)."""
+        for i in range(count):
+            filler = Item(f"Item de enchimento {i}", "material", "", max_stack=1)
+            filler.stack = 1
+            self.inv.items.append(filler)
+
+    def test_compra_rejeitada_quando_inventory_real_esta_cheio(self):
+        self._fill_slots(self.inv.max_slots)
+        result = self.ws.process_shop_buy("s1", "general", "Espada de Ferro", 1,
+                                          item_id="iron_sword")
+        self.assertFalse(result["success"])
+        self.assertEqual(result["reason"], "inventory_full")
+        self.assertEqual(self.wallet.gold, 10_000, "ouro nao deveria ter sido debitado")
+        self.assertEqual(len(self.inv.items), self.inv.max_slots)
+
+    def test_compra_multipla_de_item_nao_empilhavel_exige_slots_suficientes(self):
+        """Comprar quantity=3 de um item com max_stack=1 precisa de 3
+        slots novos — se só 2 estiverem livres, a compra inteira deveria
+        ser rejeitada (nunca entregar 2 e "perder" o resto)."""
+        self._fill_slots(self.inv.max_slots - 2)
+        result = self.ws.process_shop_buy("s1", "general", "Espada de Ferro", 3,
+                                          item_id="iron_sword")
+        self.assertFalse(result["success"])
+        self.assertEqual(result["reason"], "inventory_full")
+        self.assertEqual(self.wallet.gold, 10_000)
+        self.assertEqual(len(self.inv.items), self.inv.max_slots - 2,
+                         "nenhum item deveria ter sido adicionado")
+
+    def test_compra_empilha_em_stacks_parciais_existentes_sem_pedir_slot_novo(self):
+        """2 stacks parciais de flecha já na bag, com espaço somado
+        suficiente pra pedido — não deveria exigir NENHUM slot novo."""
+        arrow_a = self.ws._item_factory_by_id("arrow"); arrow_a.stack = 490
+        arrow_b = self.ws._item_factory_by_id("arrow"); arrow_b.stack = 480
+        self.inv.items.append(arrow_a)
+        self.inv.items.append(arrow_b)
+        self._fill_slots(self.inv.max_slots - 2)  # só essas 2 arrows têm espaço
+
+        result = self.ws.process_shop_buy("s1", "general", "Flecha", 20,
+                                          item_id="arrow")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["quantity"], 20)
+        self.assertEqual(len(self.inv.items), self.inv.max_slots,
+                         "nao deveria ter criado slot novo — coube nos 2 stacks existentes")
+        self.assertEqual(arrow_a.stack + arrow_b.stack, 490 + 480 + 20)
+
+    def test_compra_com_quantidade_grande_e_rejeitada_sem_travar(self):
+        """Quantidade absurda (bem maior que qualquer max_stack real) não
+        pode gerar um loop proporcional a ela — a checagem é aritmética
+        (O(1)), então isto termina rápido mesmo rejeitando. Ouro alto o
+        bastante pra passar do check de gold e chegar no de espaço, que é
+        o que este teste quer exercitar de verdade."""
+        self.wallet.gold = 10**12
+        self._fill_slots(self.inv.max_slots - 1)
+        result = self.ws.process_shop_buy("s1", "general", "Flecha", 10**9,
+                                          item_id="arrow")
+        self.assertFalse(result["success"])
+        self.assertEqual(result["reason"], "inventory_full")
+        self.assertEqual(self.wallet.gold, 10**12)
+
+    def test_compra_normal_com_espaco_real_sucede_e_debita_ouro_certo(self):
+        result = self.ws.process_shop_buy("s1", "general", "Espada de Ferro", 1,
+                                          item_id="iron_sword")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["quantity"], 1)
+        self.assertEqual(self.wallet.gold, 10_000 - 55)
+        self.assertEqual(len(self.inv.items), 1)
+        self.assertEqual(self.inv.items[0].item_id, "iron_sword")
+
+
 class TestCraftRecycleProtocolDispatch(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Fim-a-fim via protocolo real (encode/on_message)."""
 

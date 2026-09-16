@@ -875,8 +875,11 @@ class SessionManager:
         """Processa compra em loja — valida e aplica server-side.
 
         Gold é server-autoritativo: deduzido aqui, nunca confiado no SAVE_STATE.
-        Inventário: cliente mantém localmente, servidor confirma espaço pelo último
-        last_client_payload para evitar exploits de inventário infinito.
+        Inventário: espaço confirmado contra o Inventory AO VIVO do servidor
+        (16/09/2026, achado #4 da auditoria de projeto inteiro, ver
+        PROBLEMAS_ARQUITETURA.md §155 — antes usava `last_client_payload`,
+        um cache que podia estar desatualizado e liberar compra que a bag
+        real não comportava, cobrando ouro sem entregar).
         """
         if not session.authenticated:
             return
@@ -884,9 +887,8 @@ class SessionManager:
         item_name = str(payload.get("item_name", ""))
         item_id   = str(payload.get("item_id", ""))
         quantity  = max(1, int(payload.get("quantity", 1)))
-        last_inv  = session.last_client_payload.get("inventory") if session.last_client_payload else None
         result = self.world_server.process_shop_buy(
-            session.session_id, shop_id, item_name, quantity, last_inv,
+            session.session_id, shop_id, item_name, quantity,
             item_id=item_id)
         await session.send(MsgType.BUY_RESULT, result)
 
@@ -1032,8 +1034,6 @@ class SessionManager:
         else:
             payload.pop("inventory", None)
         session.last_client_payload = payload   # cache para o save no disconnect
-        # Inventário foi salvo — zera contador de compras pendentes
-        self.world_server.confirm_inventory_save(session.session_id)
 
         # Wallet.gold NÃO é sobrescrito aqui — é server-autoritativo via process_shop_buy/sell,
         # request_loot e GOLD_UPDATE (já validado/limitado, ver _handle_gold_update). SAVE_STATE

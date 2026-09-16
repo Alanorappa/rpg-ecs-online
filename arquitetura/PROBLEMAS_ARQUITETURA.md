@@ -19471,3 +19471,89 @@ o primeiro falha contra o código antigo reproduzindo o bug EXATO
 relatado (aljava nova de 999 flechas vira 0 ao aplicar a confirmação
 órfã da aljava antiga). Suíte relacionada (quiver/recarregar/arrow, 10
 casos): sem regressão.
+
+## 155. Perda de ouro sem entrega em `BUY_REQUEST` (item 4, último da auditoria §150) — checagem de espaço usava cache do cliente em vez do Inventory ao vivo; revisão cruzada pediu extrair função compartilhada
+
+16/09/2026. Mesmo processo dos §151/§152/§153, último achado da
+auditoria de projeto inteiro (§150).
+
+**Achado original** (agente de mercado): `process_shop_buy`
+(`server/world_server.py`) checava espaço no inventário usando
+`last_inventory` — uma lista vinda de `session.last_client_payload
+["inventory"]`, cache do ÚLTIMO payload que o cliente reportou, NUNCA
+o Inventory ao vivo real — mais `self._pending_inv[session_id]`
+(contador de compras da sessão ainda não confirmadas por um
+SAVE_STATE, existindo só pra compensar esse cache ficar desatualizado
+entre uma compra e o próximo save). Se o cache estivesse desatualizado
+(cenário comum: jogador lootou/comprou algo que já populou o Inventory
+ao vivo, mas ainda não mandou um payload fresco nesta sessão), a
+checagem liberava uma compra que a bag REAL não comportava — ouro
+debitado incondicionalmente ANTES da entrega real (que já usava o
+Inventory de verdade e só entregava até o limite real, `break`
+silencioso ao bater o teto) — cliente pagava o preço total mas podia
+receber só parte (ou nada), e o servidor ainda respondia
+`success:true, quantity:<pedido>` (não a quantidade real entregue).
+
+**Revisão cruzada — arquitetura**: confirmou que `craft_item`
+(mesmo arquivo) já faz exatamente o certo — calcula se cabe em stack
+existente, senão exige slot livre REAL, reject-all antes de debitar
+gold — e que `process_shop_buy` era o ÚNICO handler ainda usando cache
+do cliente pra essa checagem (grep em `max_slots`/`inv.items` no
+arquivo inteiro não achou outro caso). Confirmou por leitura que
+`last_inventory`/`_pending_inv` só têm uso dentro deste handler (5
+pontos: init, buy, despawn, confirm_inventory_save, chamada em
+`_handle_save_state`) — remoção segura, sem tocar em nenhum outro
+consumidor de `session.last_client_payload["inventory"]` (que tem
+outros usos legítimos fora deste parâmetro específico). Alertou pro
+detalhe de implementação: quantidade comprada pode precisar de MAIS de
+1 slot novo (`craft_item` só cria 1 item por vez, nunca precisa desse
+cálculo) — a simulação precisa fazer a divisão-teto certa, espelhando
+fielmente o loop de entrega real.
+
+**Revisão cruzada — qualidade de código**: achado mais importante —
+implementar a simulação de "cabe?" como uma cópia solta da lógica de
+entrega (passo 6) é risco de DIVERGÊNCIA futura (uma muda, a outra
+fica pra trás) — mesma classe de risco que motivou o projeto já
+extrair `loot_processor.py::_stack_or_add_item` como ponto único de
+verdade antes. Pediu pra extrair uma função só, usada tanto pelo check
+(dry-run) quanto pela entrega real. Também alertou: a aritmética da
+checagem tem que ser O(1) (divisão/teto), NUNCA um loop por unidade —
+`quantity` vindo do cliente não tem teto superior, um loop
+proporcional a ele seria vetor de trava do event loop single-thread do
+servidor (regra já documentada no projeto). Confirmado por leitura dos
+testes reais: nenhum teste chama `process_shop_buy`/`last_inventory`/
+`_pending_inv`/`confirm_inventory_save` diretamente — remoção não
+quebra nada existente.
+
+**Fix**: novo `WorldServer._plan_stack_delivery(inv, factory, qty,
+apply)` — ponto único de verdade pra "cabe entregar N unidades?",
+usado tanto no passo 3 de `process_shop_buy` (dry-run, `apply=False`,
+nunca muta o Inventory) quanto no passo 6 (entrega real, `apply=True`,
+reaproveitando a MESMA função em vez de uma 2ª cópia da lógica de
+empilhamento). Checagem de espaço passa a usar o Inventory AO VIVO
+real; rejeita a compra INTEIRA (`reason: "inventory_full"`) SEM
+debitar ouro nenhum se não couber tudo — nunca mais entrega parcial.
+`last_inventory` (parâmetro de `process_shop_buy` + cálculo em
+`_handle_buy_request`) e todo o mecanismo `_pending_inv` (dict,
+incremento, reset em `despawn_player`, método
+`confirm_inventory_save` inteiro + sua chamada em `_handle_save_state`)
+removidos — obsoletos pela mesma razão que motivou sua criação deixar
+de existir.
+
+**Testes**: novo `tests/test_craft_recycle_protocol.py::
+TestShopBuyRealInventorySpaceCheck` (5 casos, sem dependência de banco
+— compra rejeitada com Inventory real cheio mesmo sem cache de
+payload nenhum populado, compra múltipla de item não-empilhável
+exigindo slots suficientes, empilhamento em stacks parciais existentes
+sem pedir slot novo, quantidade absurda (10⁹) rejeitada rápido sem
+travar, compra normal com espaço real sucede e debita o valor certo).
+Revert-to-confirm: 3 dos 5 falham contra o código antigo (a chamada
+sem `last_inventory` cai no default `None` do parâmetro antigo,
+reproduzindo exatamente a condição de cache vazio/desatualizado — o
+bug real). Suíte relacionada (shop/buy/craft/recycle/inventory/
+instance_progression, 141 casos): 131 passed, 10 failed pré-existentes
+(Postgres via Docker fora do ar neste ambiente, confirmado por
+traceback idêntico em todos, não relacionado).
+
+Com este item, os 4 achados de severidade Alta da auditoria §150 estão
+todos corrigidos.

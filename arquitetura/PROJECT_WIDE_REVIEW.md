@@ -91,6 +91,13 @@ sobrevive a logout/login.
 `validate_talent_allocation` — `INV_SYNC` nunca recebeu o mesmo tratamento.
 
 ### 4. Perda de ouro sem entrega em `BUY_REQUEST`
+**Status:** ✅ Implementado (16/09/2026) — ver `PROBLEMAS_ARQUITETURA.md`
+§155. Último dos 4 achados Alta da auditoria. Revisão cruzada pediu
+extrair uma função compartilhada (`_plan_stack_delivery`) entre o
+check e a entrega real, em vez de duplicar a lógica de empilhamento —
+mesmo espírito de `loot_processor.py::_stack_or_add_item`, já um
+"ponto único de verdade" no projeto.
+
 `server/world_server.py:3296-3312` (`process_shop_buy`) checa espaço
 usando `session.last_client_payload` (cache que pode estar desatualizado)
 em vez do Inventory REAL — ouro debitado incondicionalmente antes de
@@ -225,8 +232,9 @@ focou nos 10 itens PRINCIPAIS da auditoria anterior, não no apêndice).
 
 ## Por onde começar (sugestão, não decisão)
 
-1. **Os 4 exploits de economia (Alta)** — servidor de produção real
-   rodando, risco crescente quanto mais tempo destrancado.
+1. ~~Os 4 exploits de economia (Alta)~~ — **✅ concluído 16/09/2026**, todos
+   os 4 corrigidos com revisão cruzada + revert-to-confirm (ver §151-§155
+   em `PROBLEMAS_ARQUITETURA.md`).
 2. **Task de autosave sem referência (Alta)** — perda de progresso
    silenciosa em escala (todos os players do lote).
 3. **`PlayerInputSystem` código morto + teste com falso positivo (Alta)**
