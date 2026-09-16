@@ -304,7 +304,22 @@ class SpellCastSystem(System):
         SOUNDS.play_spell("calcinar", "impact")
 
     def _apply_nova_congelante(self, attacker_id: int, target_id: int = -1) -> None:
-        """AOE: raiz 5s + dano 50% SP em todos os inimigos a 3 tiles."""
+        """AOE: raiz 5s + dano 50% SP em todos os inimigos a 3 tiles.
+
+        Som de impacto NÃO toca aqui — ver skill_config.py::SKILL_CATALOG
+        ["nova_congelante"]["effects"]. Com "Precisão Elemental" maxada
+        (5/5, ice_cast_time_reduction=1.0 == cast_time da skill), o cast
+        vira instantâneo e ui/systems.py nem cria o SpellCast local (de
+        propósito, evita cast dur=0 + interruptible cancelando sozinho) —
+        _complete_cast, e portanto este método, nunca roda nesse caso.
+        Som preso aqui + skip_local_caster no eco de rede resultava em
+        SILÊNCIO total pro conjurador com o talento maxado (bug real
+        relatado pelo usuário, 16/09/2026, ver PROBLEMAS_ARQUITETURA.md
+        §148). Fix: som passou a vir SÓ do SKILL_EFFECT do servidor
+        (mesmo caminho que já toca pra qualquer player por perto),
+        igual ao modelo já usado por Bola de Fogo — funciona idêntico
+        com cast normal ou instantâneo, sem precisar prever localmente.
+        """
         from ui.systems import apply_effect
         from ui.floating_text import FLT
         from ui.combat_log import LOG
@@ -331,8 +346,6 @@ class SpellCastSystem(System):
             apply_effect(self.world, eid, "root", 5.0)
             hit += 1
 
-        # Som toca sempre ao completar o cast — AoE não depende de acertar alvo
-        SOUNDS.play_spell("nova_congelante", "impact")
         if hit > 0:
             LOG.add(f"Nova Congelante — {hit} inimigo(s) enraizados.", (100, 180, 255))
         else:

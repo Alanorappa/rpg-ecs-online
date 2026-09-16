@@ -19011,3 +19011,70 @@ novo (13978 linhas) comparado ao anterior (62684 linhas, pré-fix):
 Nenhuma mudança de código nesta entrada — só investigação de log e
 leitura de código pra confirmar/descartar hipótese, a pedido do
 usuário.
+
+## 148. Nova Congelante mudo pro próprio conjurador com "Precisão Elemental" maxada — cast instantâneo nunca criava o SpellCast local que disparava o som (§137)
+
+16/09/2026, usuário relatou: o som de impacto de Nova Congelante
+(corrigido em §137 pra não duplicar) parou de tocar POR COMPLETO pro
+conjurador — só quem recebe a skill (outro player pego pela área)
+continuava ouvindo.
+
+**Causa raiz**: "Precisão Elemental" (talento, `content/talent_data.py`)
+reduz `ice_cast_time_reduction` em 0.2s/ponto, até 5 pontos = -1.0s —
+exatamente igual ao `cast_time` de Nova Congelante (1.0s). Com o
+talento maxado, o cast fica instantâneo (`_sc_cast == 0.0`,
+`ui/systems.py`). Nesse caso o cliente **nem cria o componente
+`SpellCast` local** (`if _sc_cast > 0.0:`, de propósito — evita um bug
+diferente, cast com duração 0 + `interruptible=True` cancelando sozinho
+ao mover). Sem `SpellCast`, `SpellCastSystem._complete_cast()` nunca
+roda pra essa skill — e é ali, via `_CAST_HANDLERS["nova_congelante"]
+→ _apply_nova_congelante()`, que morava o som local desde sempre.
+Resultado: `skip_local_caster` (§137) suprimia o eco de rede achando
+que o conjurador "já tinha ouvido local" — mas com o talento maxado
+essa premissa nunca foi verdade, sobrando silêncio total.
+
+Confirmado por instrumentação isolada (não achado por leitura só): um
+script que chama `_apply_nova_congelante`/`_complete_cast` direto, com
+`SOUNDS` mockado, mostra a chamada de som acontecendo normalmente
+nesse caminho — ou seja, o mecanismo em si nunca teve bug de exceção
+silenciosa; o problema é ele simplesmente nunca ser executado quando o
+cast é instantâneo.
+
+**Fix, a pedido explícito do usuário** ("deveria ser igual como
+funciona pra bola de fogo, independente do cast ou não, executa o som
+no momento que a skill sai"): em vez de consertar só o caso
+instantâneo (cogitei extrair um método compartilhado chamado nos dois
+casos — descartado), o som deixou de ter QUALQUER previsão local.
+Removida a chamada `SOUNDS.play_spell(...)` de dentro de
+`_apply_nova_congelante` (`ui/spell_system.py`) e removido
+`skip_local_caster` do catálogo (`content/skill_config.py`) — o som
+passa a vir SÓ do `SKILL_EFFECT` que o servidor já manda por broadcast
+AOI (o mesmo que qualquer OUTRO player por perto já recebe), igual ao
+modelo que Bola de Fogo já usa (efeito sempre confirmado pelo
+servidor, nunca previsto localmente). Funciona idêntico com cast
+normal ou instantâneo, sem precisar saber qual dos dois é — elimina
+também de vez a classe de bug "previsão local duplicando eco de rede"
+pra essa skill, já que não existe mais previsão local nenhuma pra
+duplicar. A previsão local de dano/raiz em `_apply_nova_congelante`
+(client-side, cosmética — servidor é autoritativo) continua intacta,
+só o som saiu de lá.
+
+Nenhuma outra skill afetada: `bola_de_fogo` também pode virar
+instantânea (proc `fire_instant_ready`), mas seu som/projétil já vem
+100% do servidor via `SKILL_RESULT` — nunca dependeu dessa barra de
+cast local. `calcinar`/`polimorfia` não têm `cast_time_reduction_attr`,
+cast_time nunca zera.
+
+**Testes**: `tests/test_skill_effect_no_local_dup_sound.py` reescrito
+— `test_nova_congelante_toca_pro_proprio_conjurador_via_servidor`
+(antes testava o oposto, que o eco de rede NÃO tocava pro conjurador —
+invertido, já que agora é a ÚNICA fonte do som), guarda de regressão
+`test_nova_congelante_nao_tem_mais_skip_local_caster_no_catalogo`
+(catálogo não pode reintroduzir a flag sem uma previsão local de
+verdade pra cobrir o caso instantâneo) e
+`test_apply_nova_congelante_local_nao_toca_som_diretamente` (se a
+chamada de som voltar pra cá, duplica de novo no cast NORMAL, já que
+não tem mais skip pra suprimir o eco). Revert-to-confirm: `git stash`
+nos 2 arquivos do fix — 3 dos 5 testes do arquivo falham sem o fix
+(os 2 que sobram são casos que já eram independentes da mudança).
+Suíte completa rodando ao final da sessão.

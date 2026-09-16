@@ -240,16 +240,19 @@ SKILL_CATALOG: dict[str, dict] = {
         "needs_target":     False,
         "class_id":         "mago",
         "school":           "gelo",
-        # skip_local_caster (14/09/2026, bug real relatado pelo usuário: som
-        # de impacto tocava 2x — uma vez na previsão local do cast completando
-        # em ui/spell_system.py::_apply_nova_congelante, outra quando o
-        # SKILL_EFFECT do servidor chegava de volta pro PRÓPRIO conjurador via
-        # broadcast AOI). Continua tocando normal pra QUALQUER outro player
-        # perto — só suprime a duplicata pra quem já ouviu localmente. Ver
-        # client/network_handlers.py::_handle_msg_skill_effect,
-        # PROBLEMAS_ARQUITETURA.md §137.
-        "effects":          {"impact": {"sound": "skill_nova_congelante_impact",
-                                         "skip_local_caster": True}},
+        # Som SÓ vem do SKILL_EFFECT do servidor (mesmo broadcast que qualquer
+        # outro player por perto já recebe) — NÃO tem previsão local (ver
+        # ui/spell_system.py::_apply_nova_congelante). Chegou a ter
+        # skip_local_caster (14/09/2026, §137, pra não duplicar o som da
+        # previsão local de então) — revertido em 16/09/2026 (§148): com
+        # "Precisão Elemental" maxada o cast vira instantâneo e o cliente
+        # nem cria a barra de cast local, então a previsão nunca rodava —
+        # skip_local_caster suprimia o eco de rede achando que já tinha
+        # tocado, e o conjurador ficava sem NENHUM som. Sem previsão local
+        # nem skip, o som funciona igual com cast normal ou instantâneo —
+        # mesmo modelo já usado por Bola de Fogo (som vem só da confirmação
+        # do servidor, nunca de previsão de cliente).
+        "effects":          {"impact": {"sound": "skill_nova_congelante_impact"}},
         "effect_durations": {"root": 5.0},
     },
     "bloco_de_gelo": {
