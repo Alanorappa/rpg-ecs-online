@@ -365,6 +365,16 @@ realmente em tela, não ao que está em AOI.
 
 ## 9. Sem object pooling pra entidades efêmeras de projétil — cada flecha/bola de fogo é `create_entity()`/`remove_entity()` no ECS
 
+**Status:** ✅ Implementado (15/09/2026) — só `PlayerProjectile` (projétil
+do JOGADOR), NUNCA o `Projectile` de mob/torre/minion (achado pesquisando
+antes de codar: esse é server-autoritativo de verdade, `deal_damage()`
+real dentro do `ProjectileSystem` compartilhado — mover ele pra fora do
+ECS quebraria o servidor). Escopo real achado foi bem maior que o
+estimado abaixo (16 pontos de import em 4 arquivos, não ~6) — ver
+PROBLEMAS_ARQUITETURA.md §144 pro relato completo, incluindo 2 achados de
+código morto no caminho (4 métodos inteiros em `spell_system.py` nunca
+chamados, e `_process_bdf_pending` nunca invocado por ninguém).
+
 **Gravidade:** Média
 
 **Impacto no desempenho:** Toda flecha de auto-attack, toda Bola de

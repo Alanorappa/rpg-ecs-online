@@ -21,7 +21,7 @@ from engine.components import (
     Position, PlayerControlled, CombatState, CombatStats, CharacterStats,
     Equipment, Enemy, AIControlled, TileMovement, StatusEffects, Camera,
     SpellCast, Channeling, IceBlockEffect, FireShieldEffect, PirofagiaAiming,
-    PlayerProjectile, AoeTargeting, PlayerSkills,
+    AoeTargeting, PlayerSkills,
     PendingDeath, PlayerAutoMove, NpcSounds,
 )
 from engine.tileset import TILE_SIZE
@@ -102,10 +102,16 @@ class SpellCastSystem(System):
     O método recebe (entity_id, target_id). Para AOE sem alvo, target_id = -1.
     """
 
-    def __init__(self, world: World, screen: pygame.Surface):
+    def __init__(self, world: World, screen: pygame.Surface, player_proj_system=None):
         self.world  = world
         self.world_surf = screen
         self.hud_surf   = screen
+        # Sistema que guarda a lista de flechas/projéteis visuais do jogador
+        # (`PlayerProjectileSystem`, ver `ui/spell_system.py`) — injetado por
+        # game.py (15/09/2026, item 9, ver PROBLEMAS_ARQUITETURA.md §144),
+        # `_launch_fireball` chama `.spawn(...)` nele em vez de
+        # `world.create_entity()` direto (projétil não é mais ECS).
+        self._player_proj_system = player_proj_system
         # Sprite da mira de Tiro Múltiplo — lazy-loaded e escalado na primeira renderização
         self._tiro_aim_img: "pygame.Surface | None" = None
         # Dispatch de conclusão de cast — sem if/elif por spell_id.
@@ -246,29 +252,27 @@ class SpellCastSystem(System):
             else:
                 print(f"[WARN] SpellCastSystem: handler '{handler_name}' não encontrado")
 
-    def _launch_fireball(self, attacker_id: int, target_id: int) -> None:
+    def _launch_fireball(self, attacker_id: int, target_id: int
+                         ) -> "PlayerProjectileEntry | None":
         pos = self.world.get_component(attacker_id, Position)
         target_pos = self.world.get_component(target_id, Position)
         if not pos or not target_pos:
-            return
+            return None
         target_cs = self.world.get_component(target_id, CombatStats)
         if target_cs and target_cs.current_hp <= 0:
-            return
+            return None
         from content.skill_config import SKILL_CATALOG as _SC_bdf
         _bdf = _SC_bdf.get("bola_de_fogo", {})
-        proj = self.world.create_entity()
-        self.world.add_component(proj, Position(pos.x, pos.y, pos.x, pos.y))
-        self.world.add_component(proj, PlayerProjectile(
+        entry = self._player_proj_system.spawn(
+            pos.x, pos.y, attacker_id, target_id,
             spell_id="bola_de_fogo",
-            attacker_id=attacker_id,
-            target_id=target_id,
             speed=300.0,
             dmg_weapon_pct=_bdf.get("dmg_weapon_pct", 0.5),
             dmg_sp_coeff=_bdf.get("dmg_sp_coeff",   1.0),
             color=(255, 120, 20),
             target_last_x=target_pos.x,
             target_last_y=target_pos.y,
-        ))
+        )
         LOG.add("Bola de Fogo!", (255, 160, 60))
         from engine.components import PlayerControlled as _PC_bdf
         _lpos_bdf = None
@@ -279,6 +283,7 @@ class SpellCastSystem(System):
             SOUNDS.play_spell_at("bola_de_fogo", "launch", pos.x, pos.y, _lpos_bdf[0], _lpos_bdf[1])
         else:
             SOUNDS.play_spell("bola_de_fogo", "launch")
+        return entry
 
     def _apply_calcinar(self, attacker_id: int, target_id: int) -> None:
         """Calcinar — hit instantâneo: 50 + 25% SP. Escola fogo. Pode ser castado em movimento.
@@ -357,162 +362,16 @@ class SpellCastSystem(System):
         _dlen = math.sqrt(_dx * _dx + _dy * _dy) or 1.0
         self.pending_dir_updates.append(("tiro_multiplo", _dx / _dlen, _dy / _dlen))
 
-    def _apply_tiro_multiplo(self, attacker_id: int, target_id: int) -> None:
-        """Dispara flechas em cone de 90° na direção do mouse."""
-        import math, pygame
-        from engine.components import (Position as _Pos, PlayerProjectile as _PP,
-                                Equipment as _EQ, Enemy as _Emy, Camera as _Cam,
-                                CombatStats as _CS2, Visible as _Vis)
-        from engine.stat_fns import enter_combat as _ec2
-        from engine.components import CombatState as _CS3
-        from content.skill_config import SKILL_CATALOG as _SC
-
-        att_pos = self.world.get_component(attacker_id, _Pos)
-        att_cs  = self.world.get_component(attacker_id, CombatStats)
-        equip   = self.world.get_component(attacker_id, _EQ)
-        if not att_pos or not att_cs:
-            return
-
-        quiver  = equip.slots.get("offhand") if equip else None
-        if not quiver or quiver.item_type != "quiver" or quiver.arrow_count < 1:
-            return
-
-        _params      = _SC.get("tiro_multiplo", {}).get("params", {})
-        _ap_mult     = _params.get("damage_multiplier", 3.0)
-        _half_angle  = _params.get("cone_half_angle", 45.0)
-        _range_tiles = _params.get("range_tiles",     12)
-        _range_px    = _range_tiles * TILE_SIZE
-        _cos_thresh  = math.cos(math.radians(_half_angle))
-
-        max_targets = getattr(att_cs, "tiro_multiplo_targets", 2)
-
-        # Direção do cone: do arqueiro ao mouse (espaço da zoom_surf, como PirofagiaSystem)
-        _sw, _sh = self.world_surf.get_size()
-        _cam_x, _cam_y = 0.0, 0.0
-        for _, _cp, _ in self.world.get_entities_with(_Pos, _Cam):
-            _cam_x = _cp.x - _sw / 2
-            _cam_y = _cp.y - _sh / 2
-            break
-        _surf_scale = (_sw / max(1, self.hud_surf.get_width())
-                       if self.world_surf and self.hud_surf else 1.0)
-        _sx, _sy = pygame.mouse.get_pos()
-        _mx = _sx * _surf_scale   # mouse em coords de zoom_surf
-        _my = _sy * _surf_scale
-        _px = att_pos.x - _cam_x  # player em coords de zoom_surf
-        _py = att_pos.y - _cam_y
-        _dx = _mx - _px           # direção screen-space == direção world-space
-        _dy = _my - _py
-        _dlen = math.sqrt(_dx * _dx + _dy * _dy) or 1.0
-        _dir_x, _dir_y = _dx / _dlen, _dy / _dlen
-
-        # Coleta inimigos no cone (visíveis, dentro do range)
-        _targets_in_cone = []
-        for _eid, _epos, _, _, _ecs in self.world.get_entities_with(_Pos, _Emy, _Vis, CombatStats):
-            if not _ecs or _ecs.current_hp <= 0:
-                continue
-            _ex = _epos.x - att_pos.x
-            _ey = _epos.y - att_pos.y
-            _edist = math.sqrt(_ex * _ex + _ey * _ey)
-            if _edist > _range_px or _edist < 1:
-                continue
-            _dot = (_ex / _edist) * _dir_x + (_ey / _edist) * _dir_y
-            if _dot >= _cos_thresh:
-                _targets_in_cone.append((_edist, _eid, _epos))
-
-        if not _targets_in_cone:
-            LOG.add("Nenhum alvo no cone.", (180, 180, 180))
-            return
-
-        # Ordena por distância; limita ao máximo de alvos (99 = ilimitado prático)
-        _targets_in_cone.sort(key=lambda t: t[0])
-        if max_targets < 99:
-            _targets_in_cone = _targets_in_cone[:max_targets]
-
-        # Limita pelo número de flechas disponíveis
-        _arrows_available = quiver.arrow_count
-        _targets_in_cone  = _targets_in_cone[:_arrows_available]
-
-        dmg_min  = getattr(quiver, "damage_min", 0)
-        dmg_max  = getattr(quiver, "damage_max", 0)
-        extra_ap = int(att_cs.attack_power * (_ap_mult - 1.0))
-
-        for _delay_idx, (_edist, _eid, _epos) in enumerate(_targets_in_cone):
-            proj_id = self.world.create_entity()
-            self.world.add_component(proj_id, _Pos(
-                x=att_pos.x, y=att_pos.y, prev_x=att_pos.x, prev_y=att_pos.y))
-            self.world.add_component(proj_id, _PP(
-                spell_id        = "arrow",
-                attacker_id     = attacker_id,
-                target_id       = _eid,
-                speed           = 700.0,
-                dmg_weapon_pct  = 1.0,
-                dmg_sp_coeff    = 0.0,
-                color           = (150, 210, 255),   # azul claro — tiro múltiplo
-                damage_type     = "physical",
-                arrow_dmg_min   = dmg_min,
-                arrow_dmg_max   = dmg_max,
-                launch_delay    = _delay_idx * 0.06, # leve escalonamento visual
-                ap_multiplier   = _ap_mult,
-                guaranteed_hit  = True,
-            ))
-
-        quiver.arrow_count -= len(_targets_in_cone)
-        attacker_state = self.world.get_component(attacker_id, _CS3)
-        if attacker_state:
-            _ec2(attacker_state)
-
-        n = len(_targets_in_cone)
-        SOUNDS.play_random(["arrow_release_1", "arrow_release_2"], channel_group=(10, 11))
-        LOG.add(f"Tiro Múltiplo! {n} flechas lançadas.", (150, 220, 255))
-
-    # ── Tiro Repulsivo ────────────────────────────────────────────────────────
-
-    def _apply_tiro_repulsivo(self, attacker_id: int, target_id: int) -> None:
-        """Dispara a flecha de Tiro Repulsivo. O knockback acontece em _on_hit."""
-        from engine.components import Position as _Pos, PlayerProjectile as _PP, Equipment as _EQ
-        from content.skill_config import SKILL_CATALOG as _SC
-
-        att_pos = self.world.get_component(attacker_id, _Pos)
-        tgt_cs  = self.world.get_component(target_id, CombatStats)
-        if not att_pos:
-            return
-        # Online: mob não tem CombatStats local — skip only if definitely dead
-        if tgt_cs is not None and tgt_cs.current_hp <= 0:
-            return
-
-        # Verifica e consome 1 flecha da aljava
-        equip  = self.world.get_component(attacker_id, _EQ)
-        quiver = equip.slots.get("offhand") if equip else None
-        if not quiver or quiver.item_type != "quiver" or quiver.arrow_count < 1:
-            return
-        quiver.arrow_count -= 1
-
-        _params  = _SC.get("tiro_repulsivo", {}).get("params", {})
-        _ap_mult = _params.get("damage_multiplier", 1.5)
-
-        att_cs   = self.world.get_component(attacker_id, CombatStats)
-        extra_ap = int(att_cs.attack_power * (_ap_mult - 1.0)) if att_cs else 0
-
-        proj_id = self.world.create_entity()
-        self.world.add_component(proj_id, _Pos(
-            x=att_pos.x, y=att_pos.y, prev_x=att_pos.x, prev_y=att_pos.y))
-        from engine.components import RemoteEntityMeta as _REM_tr
-        _tr_meta   = self.world.get_component(target_id, _REM_tr)
-        _tr_srv_id = _tr_meta.server_eid if _tr_meta else -1
-        self.world.add_component(proj_id, _PP(
-            spell_id         = "tiro_repulsivo",
-            attacker_id      = attacker_id,
-            target_id        = target_id,
-            speed            = 800.0,
-            dmg_weapon_pct   = 1.0,
-            dmg_sp_coeff     = 0.0,
-            color            = (80, 160, 255),
-            damage_type      = "physical",
-            ap_multiplier    = 1.5,
-            guaranteed_hit   = True,
-            target_server_id = _tr_srv_id,
-        ))
-        SOUNDS.play_random(["arrow_release_1", "arrow_release_2"], channel_group=(10, 11))
+    # NOTA (15/09/2026, item 9 da revisão de performance — object pooling de
+    # PlayerProjectile): `_apply_tiro_multiplo` e `_apply_tiro_repulsivo`
+    # (versões antigas destes handlers) foram REMOVIDOS aqui — código morto
+    # confirmado, nunca chamados em produção. `tiro_multiplo` desvia pra
+    # `_capture_tiro_multiplo_dir` (acima) ANTES de chegar no dispatch de
+    # `_CAST_HANDLERS`; `tiro_repulsivo` está em `_PROJ_SPELLS_LOCAL`
+    # (`_complete_cast`), também excluído do dispatch. As versões REAIS,
+    # que de fato disparam em produção, vivem em
+    # `client/network_handlers.py` (recebem o `is_completion` do servidor).
+    # Ver PROBLEMAS_ARQUITETURA.md §144.
 
     # ── Canção de Ninar ───────────────────────────────────────────────────────
 
@@ -543,164 +402,12 @@ class SpellCastSystem(System):
         char_stats.lullaby_targets.clear()
         LOG.add("Canção de Ninar interrompida — alvos acordaram.", (220, 180, 80))
 
-    # ── Handler genérico de skill shot (flecha) ───────────────────────────────
-
-    def _apply_arrow_skill(self, attacker_id: int, target_id: int) -> None:
-        """Handler genérico para skills de flecha — lê params do SKILL_CATALOG.
-
-        Campos suportados em params{}:
-          damage_multiplier  float  — coeficiente do AP (padrão 1.0); dano final
-                                      = arma + AP×(mult + 0.01×skill level do arco)
-          guaranteed_hit     bool   — ignora miss/dodge/parry (padrão False)
-          on_hit_effect      str    — efeito ao acertar (ex: "slow")
-          on_hit_duration    float  — duração do efeito
-          on_hit_magnitude   float  — magnitude do efeito
-          arrow_count        int    — número de flechas (padrão 1)
-          arrow_delay        float  — delay entre flechas (padrão 0)
-        """
-        from engine.components import Equipment, Position as _Pos, PlayerProjectile as _PP
-        from engine.stat_fns import enter_combat
-        from engine.components import CombatState
-        from content.skill_config import SKILL_CATALOG as _SC
-
-        equip   = self.world.get_component(attacker_id, Equipment)
-        pos     = self.world.get_component(attacker_id, _Pos)
-        tgt_pos = self.world.get_component(target_id,   _Pos)
-        tgt_cs  = self.world.get_component(target_id,   CombatStats)
-        if not equip or not pos or not tgt_pos:
-            return
-        # Offline: skip se alvo já morreu. Online: mob não tem CombatStats — projétil é visual.
-        if tgt_cs is not None and tgt_cs.current_hp <= 0:
-            return
-
-        quiver = equip.slots.get("offhand")
-        if not quiver or quiver.item_type != "quiver":
-            return
-
-        params   = _SC.get(self._current_spell_id, {}).get("params", {})
-        ap_mult  = params.get("damage_multiplier", 1.0)
-        g_hit    = params.get("guaranteed_hit",   False)
-        effect   = params.get("on_hit_effect",    "")
-        eff_dur  = params.get("on_hit_duration",  0.0)
-        eff_mag  = params.get("on_hit_magnitude", 0.0)
-        n_arrows = params.get("arrow_count",      1)
-        delay    = params.get("arrow_delay",      0.0)
-
-        if quiver.arrow_count < n_arrows:
-            LOG.add("Flechas insuficientes.", (220, 80, 80))
-            return
-
-        dmg_min = getattr(quiver, "damage_min", 0)
-        dmg_max = getattr(quiver, "damage_max", 0)
-
-        from engine.components import RemoteEntityMeta as _REM_as
-        _as_meta   = self.world.get_component(target_id, _REM_as)
-        _as_srv_id = _as_meta.server_eid if _as_meta else -1
-        for i in range(n_arrows):
-            proj_id = self.world.create_entity()
-            self.world.add_component(proj_id, _Pos(
-                x=pos.x, y=pos.y, prev_x=pos.x, prev_y=pos.y))
-            # Primeira flecha da skill: spell_id correto + target_server_id para PROJECTILE_HIT_CS
-            _as_sid = self._current_spell_id if i == 0 else "arrow"
-            _as_tsid = _as_srv_id if i == 0 else -1
-            self.world.add_component(proj_id, _PP(
-                spell_id         = _as_sid,
-                attacker_id      = attacker_id,
-                target_id        = target_id,
-                speed            = 700.0,
-                dmg_weapon_pct   = 1.0,
-                dmg_sp_coeff     = 0.0,
-                color            = (101, 67, 33),
-                damage_type      = "physical",
-                arrow_dmg_min    = dmg_min,
-                arrow_dmg_max    = dmg_max,
-                launch_delay     = i * delay,
-                ap_multiplier    = ap_mult,
-                guaranteed_hit   = g_hit,
-                on_hit_effect    = effect,
-                on_hit_duration  = eff_dur,
-                on_hit_magnitude = eff_mag,
-                target_server_id = _as_tsid,
-            ))
-
-        quiver.arrow_count -= n_arrows
-        attacker_state = self.world.get_component(attacker_id, CombatState)
-        if attacker_state:
-            enter_combat(attacker_state)
-
-        SOUNDS.play_random(["arrow_release_1", "arrow_release_2"], channel_group=(10, 11))
-
-    def _apply_flecha_reiterada(self, attacker_id: int, target_id: int) -> None:
-        """Dispara 2 flechas em sequência ao completar o cast."""
-        from engine.components import Equipment, Position as _Pos, PlayerProjectile as _PP
-        from engine.stat_fns import enter_combat
-        from engine.components import CombatState
-
-        equip  = self.world.get_component(attacker_id, Equipment)
-        pos    = self.world.get_component(attacker_id, _Pos)
-        tgt_cs = self.world.get_component(target_id, CombatStats)
-        if not equip or not pos or not tgt_cs or tgt_cs.current_hp <= 0:
-            return
-
-        quiver = equip.slots.get("offhand")
-        if not quiver or quiver.item_type != "quiver":
-            LOG.add("Precisa de uma aljava equipada.", (220, 80, 80))
-            return
-
-        dmg_min = getattr(quiver, "damage_min", 0)
-        dmg_max = getattr(quiver, "damage_max", 0)
-
-        from content.skill_config import SKILL_CATALOG as _SC
-        _params  = _SC.get("flecha_reiterada", {}).get("params", {})
-        _ap_mult = _params.get("damage_multiplier", 2.0)
-        _delay   = _params.get("arrow_delay",   0.25)
-
-        # Talento Sequência Final: 3ª flecha se alvo abaixo do threshold de HP
-        attacker_cs = self.world.get_component(attacker_id, CombatStats)
-        _threshold  = getattr(attacker_cs, "flecha_reiterada_hp_threshold", 0.0) if attacker_cs else 0.0
-        hp_ratio    = tgt_cs.current_hp / max(1, tgt_cs.max_hp)
-        extra_arrow = _threshold > 0 and hp_ratio < _threshold
-
-        n_arrows = 3 if extra_arrow else 2
-        if quiver.arrow_count < n_arrows:
-            n_arrows = quiver.arrow_count   # dispara com o que tiver (mínimo 1)
-        if n_arrows == 0:
-            LOG.add("Flechas insuficientes para Flecha Reiterada.", (220, 80, 80))
-            return
-
-        # Speeds e delays para cada flecha
-        _schedule = [(700.0, 0.0), (640.0, _delay)]
-        if extra_arrow:
-            _schedule.append((580.0, _delay * 2))
-
-        for i, (speed, launch_delay) in enumerate(_schedule[:n_arrows]):
-            proj_id = self.world.create_entity()
-            self.world.add_component(proj_id, _Pos(
-                x=pos.x, y=pos.y, prev_x=pos.x, prev_y=pos.y))
-            self.world.add_component(proj_id, _PP(
-                spell_id="arrow",
-                attacker_id=attacker_id,
-                target_id=target_id,
-                speed=speed,
-                dmg_weapon_pct=1.0,
-                dmg_sp_coeff=0.0,
-                color=(101, 67, 33),
-                damage_type="physical",
-                arrow_dmg_min=dmg_min,
-                arrow_dmg_max=dmg_max,
-                launch_delay=launch_delay,
-                ap_multiplier=_ap_mult,
-                guaranteed_hit=True,
-            ))
-
-        quiver.arrow_count -= n_arrows
-        attacker_state = self.world.get_component(attacker_id, CombatState)
-        if attacker_state:
-            enter_combat(attacker_state)
-
-        SOUNDS.play_random(["arrow_release_1", "arrow_release_2"], channel_group=(10, 11))
-        suffix = " (Sequência Final!)" if extra_arrow else ""
-        LOG.add(f"Flecha Reiterada! {n_arrows} flechas lançadas.{suffix}", (180, 220, 255))
+    # NOTA (15/09/2026, item 9 — object pooling de PlayerProjectile):
+    # `_apply_arrow_skill`/`_apply_flecha_reiterada` (versões antigas)
+    # foram REMOVIDOS aqui — código morto confirmado (`picada_escorpiao`/
+    # `flecha_reiterada` estão em `_PROJ_SPELLS_LOCAL`, `_complete_cast`,
+    # excluídos do dispatch de `_CAST_HANDLERS`). As versões REAIS vivem em
+    # `client/network_handlers.py`. Ver PROBLEMAS_ARQUITETURA.md §144.
 
     def _apply_recarregar(self, attacker_id: int, target_id: int) -> None:
         """Recarrega a aljava com flechas do inventário."""
@@ -886,6 +593,80 @@ class SpellCastSystem(System):
 # PlayerProjectileSystem
 # ---------------------------------------------------------------------------
 
+class PlayerProjectileEntry:
+    """Projétil lançado pelo jogador (magia ou flecha) — puramente visual,
+    NUNCA usado pelo servidor (confirmado por grep no repo inteiro, 15/09/2026,
+    item 9 da revisão de performance/§144). Fora do ECS de propósito, mesmo
+    padrão já usado por `ui/floating_text.py::FloatingTextEntry`: nada além
+    de `PlayerProjectileSystem` faz *query* sobre isto, então não precisa
+    passar por `World._index` — um dict novo + entrada de índice por flecha
+    era custo puro sem nenhum consumidor real. `x/y/prev_x/prev_y` substituem
+    o componente `Position` que cada flecha ganhava antes (irmã 1:1, mesma
+    entidade); `trail`/`fireball_anim_t` substituem os dicts
+    `_arrow_trails`/`_fireball_anim` (keyed por eid) que `PlayerProjectileSystem`
+    mantinha por fora — cada flecha já é seu próprio objeto agora, não
+    precisa mais de um dict externo pra guardar o estado dela."""
+    __slots__ = (
+        "x", "y", "prev_x", "prev_y",
+        "spell_id", "attacker_id", "target_id", "speed",
+        "dmg_weapon_pct", "dmg_sp_coeff", "color", "damage_type",
+        "arrow_dmg_min", "arrow_dmg_max",
+        "is_miss", "miss_end_x", "miss_end_y", "pre_outcome",
+        "damage_multiplier", "launch_delay", "ap_multiplier", "guaranteed_hit",
+        "on_hit_effect", "on_hit_duration", "on_hit_magnitude",
+        "deferred_result", "target_last_x", "target_last_y", "target_server_id",
+        "trail", "fireball_anim_t",
+    )
+
+    def __init__(self, x: float, y: float, attacker_id: int, target_id: int,
+                spell_id: str = "", speed: float = 350.0,
+                dmg_weapon_pct: float = 0.10, dmg_sp_coeff: float = 1.0,
+                color: tuple = (160, 80, 255), damage_type: str = "magical",
+                arrow_dmg_min: int = 0, arrow_dmg_max: int = 0,
+                damage_multiplier: float = 1.0, launch_delay: float = 0.0,
+                ap_multiplier: float = 1.0, guaranteed_hit: bool = False,
+                on_hit_effect: str = "", on_hit_duration: float = 0.0,
+                on_hit_magnitude: float = 0.0,
+                target_last_x: float = 0.0, target_last_y: float = 0.0,
+                target_server_id: int = -1):
+        self.x = x
+        self.y = y
+        self.prev_x = x
+        self.prev_y = y
+        self.spell_id          = spell_id
+        self.attacker_id       = attacker_id
+        self.target_id         = target_id
+        self.speed             = speed
+        self.dmg_weapon_pct    = dmg_weapon_pct
+        self.dmg_sp_coeff      = dmg_sp_coeff
+        self.color             = color
+        self.damage_type       = damage_type
+        self.arrow_dmg_min     = arrow_dmg_min
+        self.arrow_dmg_max     = arrow_dmg_max
+        # Flecha errando: desvia do alvo e voa além
+        self.is_miss           = False   # True = erro confirmado, vai ao ponto desviado
+        self.miss_end_x        = 0.0     # coordenada X do ponto final desviado
+        self.miss_end_y        = 0.0     # coordenada Y do ponto final desviado
+        self.pre_outcome       = ""      # outcome pré-rolado ("" = rolar normalmente)
+        # Configuração de skill shots
+        self.damage_multiplier = damage_multiplier
+        self.launch_delay      = launch_delay
+        self.ap_multiplier     = ap_multiplier
+        self.guaranteed_hit    = guaranteed_hit
+        # Efeito aplicado ao acertar o alvo (dados opcionais — "" = nenhum efeito)
+        self.on_hit_effect     = on_hit_effect
+        self.on_hit_duration   = on_hit_duration
+        self.on_hit_magnitude  = on_hit_magnitude
+        self.deferred_result: "dict | None" = None  # outcome/damage do servidor — SÓ FLT/som
+                                                       # ao colidir (online); HP nunca fica aqui,
+                                                       # aplicado direto na confirmação (§44)
+        self.target_last_x     = target_last_x  # última pos X conhecida do alvo
+        self.target_last_y     = target_last_y  # última pos Y conhecida do alvo
+        self.target_server_id  = target_server_id  # server eid do alvo — PROJECTILE_HIT_CS
+        self.trail: list        = []     # rastro visual da flecha (era _arrow_trails[eid])
+        self.fireball_anim_t   = 0.0     # timer da animação da Bola de Fogo (era _fireball_anim[eid])
+
+
 class PlayerProjectileSystem(System):
     """Move projéteis do jogador e aplica dano ao acertar o alvo."""
 
@@ -902,16 +683,21 @@ class PlayerProjectileSystem(System):
         self.world_surf = screen
         self.hud_surf   = screen
         self.player_entity = player_entity
-        # rastro de flechas: proj_id → [(x, y), ...]
-        self._arrow_trails: dict[int, list] = {}
+        # Lista de flechas/projéteis ativos — fora do ECS de propósito desde
+        # 15/09/2026 (item 9, ver `PlayerProjectileEntry` acima e
+        # PROBLEMAS_ARQUITETURA.md §144). Rastro de flecha e timer de
+        # animação da Bola de Fogo agora moram DENTRO de cada entrada
+        # (`entry.trail`/`entry.fireball_anim_t`) — não precisam mais de
+        # dict externo keyed por eid.
+        self._entries: list[PlayerProjectileEntry] = []
         # Knockbacks pendentes: (attacker_id, target_id, timer_restante)
         self._pending_knockbacks: list[tuple[int, int, float]] = []
         # Hits de projéteis em mobs online — game.py envia PROJECTILE_HIT_CS ao servidor
         self.pending_proj_hits: list[dict] = []
         # Outcome/dano do auto-attack de flecha (mob/torre, player local ou
         # remoto) não fica mais numa fila por ALVO aqui — cada flecha carrega
-        # o PRÓPRIO resultado em `PlayerProjectile.deferred_result` (engine/
-        # components.py), prendido no momento em que ela nasce (client/
+        # o PRÓPRIO resultado em `PlayerProjectileEntry.deferred_result`,
+        # prendido no momento em que ela nasce (client/
         # remote_entity_handlers.py::_spawn_archer_auto_arrow). Fila por alvo
         # entregava o resultado errado quando 2+ flechas convergiam pro mesmo
         # alvo fora da ordem em que foram disparadas (bug real, ver
@@ -923,7 +709,38 @@ class PlayerProjectileSystem(System):
         # ela ainda voava).
         # Animação da Bola de Fogo
         self._fireball_frames: "list[pygame.Surface] | None" = None
-        self._fireball_anim:   dict[int, float] = {}   # proj_id → elapsed
+
+    def spawn(self, x: float, y: float, attacker_id: int, target_id: int,
+             **kwargs) -> PlayerProjectileEntry:
+        """Cria e registra um projétil visual novo — ÚNICO ponto de entrada
+        pra isto desde 15/09/2026 (item 9), substitui
+        `world.create_entity()`+`add_component(Position(...))`+
+        `add_component(PlayerProjectile(...))`. `**kwargs` aceita qualquer
+        campo de `PlayerProjectileEntry` (spell_id, speed, color, etc.).
+        Retorna a entrada criada — guarde a referência se precisar mutá-la
+        depois (ex: `entry.target_server_id = ...`, `entry.deferred_result =
+        ...`), em vez de buscar de volta por eid como o código ECS fazia."""
+        entry = PlayerProjectileEntry(x, y, attacker_id, target_id, **kwargs)
+        self._entries.append(entry)
+        return entry
+
+    def find_pending_fireball(self, attacker_id: int, target_id: int
+                              ) -> "PlayerProjectileEntry | None":
+        """Acha a Bola de Fogo ainda sem `deferred_result` deste atacante
+        voando pro alvo `target_id` — substitui a query ECS que
+        `client/online_mode_handlers.py::_process_bdf_pending` (resultado do
+        servidor pode chegar em frame DIFERENTE do spawn — daí precisar de
+        busca, e não só usar a referência que `spawn()`/`_launch_fireball`
+        devolvem) e `client/network_handlers.py` (BdF completion, mesmo
+        motivo — o servidor manda `target_server_id` sem garantia de que já
+        seja o MESMO frame em que a bola nasceu) faziam antes com
+        `get_entities_with(PlayerProjectile, Position)`."""
+        for entry in self._entries:
+            if (entry.attacker_id == attacker_id
+                    and entry.target_id == target_id
+                    and not entry.deferred_result):
+                return entry
+        return None
 
     def _load_fireball_frames(self) -> None:
         """Carrega e fatia o spritesheet da Bola de Fogo (lazy, uma vez)."""
@@ -968,13 +785,13 @@ class PlayerProjectileSystem(System):
                     still.append((att_id, tgt_id, timer))
             self._pending_knockbacks = still
 
-        to_remove = []
-        for proj_id, proj_pos, proj in self.world.get_entities_with(
-                Position, PlayerProjectile):
+        to_remove: list[PlayerProjectileEntry] = []
+        for entry in self._entries:
+            proj, proj_pos = entry, entry   # aliases curtos — corpo do laço idêntico ao de antes
 
             # Incrementa timer de animação para projéteis com spritesheet
             if proj.spell_id == "bola_de_fogo":
-                self._fireball_anim[proj_id] = self._fireball_anim.get(proj_id, 0.0) + dt
+                entry.fireball_anim_t += dt
 
             # ── Delay de lançamento (ex: segunda flecha de Flecha Reiterada) ──
             if proj.launch_delay > 0:
@@ -987,9 +804,9 @@ class PlayerProjectileSystem(System):
                 dy   = proj.miss_end_y - proj_pos.y
                 dist = math.sqrt(dx * dx + dy * dy)
                 if dist <= self.HIT_THRESHOLD:
-                    to_remove.append(proj_id)
+                    to_remove.append(entry)
                 else:
-                    trail = self._arrow_trails.setdefault(proj_id, [])
+                    trail = entry.trail
                     trail.append((proj_pos.x, proj_pos.y))
                     if len(trail) > self.TRAIL_MAX_LEN:
                         trail.pop(0)
@@ -1003,21 +820,21 @@ class PlayerProjectileSystem(System):
 
             # Offline: remove projétil se alvo morreu
             if target_cs and target_cs.current_hp <= 0:
-                to_remove.append(proj_id)
+                to_remove.append(entry)
                 continue
 
             # Online: alvo despawnou mas projétil continua voando até a última posição conhecida
             if target_pos is None:
                 fx, fy = proj.target_last_x, proj.target_last_y
                 if fx == 0.0 and fy == 0.0:
-                    to_remove.append(proj_id)
+                    to_remove.append(entry)
                     continue
                 dx   = fx - proj_pos.x
                 dy   = fy - proj_pos.y
                 dist = math.sqrt(dx * dx + dy * dy)
                 if dist <= self.HIT_THRESHOLD:
                     self._on_hit(proj, proj_pos.x, proj_pos.y)
-                    to_remove.append(proj_id)
+                    to_remove.append(entry)
                 else:
                     step = proj.speed * dt
                     proj_pos.x += dx / dist * step
@@ -1055,7 +872,7 @@ class PlayerProjectileSystem(System):
                     _ttx = int(target_pos.x / _TS)
                     _tty = int(target_pos.y / _TS)
                     if not _EAIS._has_line_of_sight(_tmap, _ptx, _pty, _ttx, _tty):
-                        to_remove.append(proj_id)
+                        to_remove.append(entry)
                         continue
 
             dx   = target_pos.x - proj_pos.x
@@ -1075,7 +892,7 @@ class PlayerProjectileSystem(System):
                             # Online: mob/player remoto sem CombatStats (ou atacante é
                             # player remoto sem CombatStats local) — usa outcome
                             # pré-computado pelo servidor, prendido nesta MESMA flecha
-                            # (PlayerProjectile.deferred_result — nunca uma fila
+                            # (PlayerProjectileEntry.deferred_result — nunca uma fila
                             # compartilhada por alvo, ver PROBLEMAS_ARQUITETURA.md §44).
                             # Se ainda não chegou, assume "hit" para não travar o projétil.
                             if proj.deferred_result:
@@ -1114,11 +931,11 @@ class PlayerProjectileSystem(System):
                         proj.pre_outcome = outcome  # hit/crit/block pré-rolado
 
                 self._on_hit(proj, proj_pos.x, proj_pos.y)
-                to_remove.append(proj_id)
+                to_remove.append(entry)
             else:
                 # Guarda posição ANTES de mover (forma o rastro)
                 if proj.damage_type == "physical":
-                    trail = self._arrow_trails.setdefault(proj_id, [])
+                    trail = entry.trail
                     trail.append((proj_pos.x, proj_pos.y))
                     if len(trail) > self.TRAIL_MAX_LEN:
                         trail.pop(0)
@@ -1126,10 +943,8 @@ class PlayerProjectileSystem(System):
                 proj_pos.x += dx / dist * step
                 proj_pos.y += dy / dist * step
 
-        for pid in to_remove:
-            self.world.remove_entity(pid)
-            self._arrow_trails.pop(pid, None)
-            self._fireball_anim.pop(pid, None)
+        if to_remove:
+            self._entries = [e for e in self._entries if e not in to_remove]
 
     def _apply_knockback(self, attacker_id: int, target_id: int) -> None:
         """Aplica knockback ao target na direção oposta ao attacker (Tiro Repulsivo)."""
@@ -1220,7 +1035,7 @@ class PlayerProjectileSystem(System):
         else:
             LOG.add("Tiro Repulsivo! Alvo repelido.", (120, 200, 255))
 
-    def _on_hit(self, proj: PlayerProjectile,
+    def _on_hit(self, proj: PlayerProjectileEntry,
                 impact_x: float = None, impact_y: float = None) -> None:
         attacker_cs = self.world.get_component(proj.attacker_id, CombatStats)
         target_cs   = self.world.get_component(proj.target_id,   CombatStats)
@@ -1588,13 +1403,14 @@ class PlayerProjectileSystem(System):
                     _PROC.add("Chama Interna!", (255, 160, 60))
 
     def render(self, cam_x: float = 0, cam_y: float = 0) -> None:
-        for proj_id, pos, proj in self.world.get_entities_with(Position, PlayerProjectile):
+        for proj in self._entries:
+            pos = proj
             sx = pos.x - cam_x
             sy = pos.y - cam_y
 
             if proj.damage_type == "physical":
                 # ── Flecha: rastro desbotado + linha fina ──────────────────
-                trail = self._arrow_trails.get(proj_id, [])
+                trail = proj.trail
                 n = len(trail)
 
                 # Rastro: pontos de tamanho e brilho decrescentes
@@ -1626,7 +1442,7 @@ class PlayerProjectileSystem(System):
                     self._load_fireball_frames()
                 frames = self._fireball_frames
                 if frames:
-                    elapsed = self._fireball_anim.get(proj_id, 0.0)
+                    elapsed = proj.fireball_anim_t
                     fi = int(elapsed * self.FIREBALL_FPS) % self.FIREBALL_FRAMES
                     frame = frames[fi]
 

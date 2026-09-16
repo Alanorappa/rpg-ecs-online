@@ -163,30 +163,26 @@ class RemoteEntityHandlers:
 
     def _spawn_archer_auto_arrow(self, attacker_eid, is_self_attacker: bool,
                                   target_local_eid: int, target_pos, _lx: float, _ly: float,
-                                  color: tuple = (101, 67, 33)) -> "int | None":
-        """Cria a flecha visual (PlayerProjectile) do auto-attack do arqueiro e
-        toca os sons de saque/disparo (cheios para o player local, posicionais
-        com falloff para arqueiro remoto). Retorna o eid LOCAL da flecha
-        criada (ou None se não criou) — chamador usa isso pra prender o
-        resultado do servidor DIRETO nesta flecha específica via
-        `PlayerProjectile.deferred_result`, em vez de uma fila compartilhada
+                                  color: tuple = (101, 67, 33)) -> "object | None":
+        """Cria a flecha visual (`PlayerProjectileEntry`, fora do ECS desde
+        15/09/2026 — item 9, ver PROBLEMAS_ARQUITETURA.md §144) do auto-attack
+        do arqueiro e toca os sons de saque/disparo (cheios para o player
+        local, posicionais com falloff para arqueiro remoto). Retorna a
+        entrada criada (ou None se não criou) — chamador guarda essa
+        referência pra prender o resultado do servidor DIRETO nesta flecha
+        específica via `.deferred_result`, em vez de uma fila compartilhada
         por alvo (ver PROBLEMAS_ARQUITETURA.md §44 — fila por alvo entregava
         o resultado errado quando 2+ flechas convergiam pro mesmo alvo fora
         da ordem em que foram disparadas)."""
         import random as _rand_arrow
-        from engine.components import PlayerProjectile as _PParrow
         if attacker_eid is None:
             return None
         _ppos = self.world.get_component(attacker_eid, Position)
         if _ppos is None:
             return None
-        _arrow_id = self.world.create_entity()
-        self.world.add_component(_arrow_id, Position(
-            x=_ppos.x, y=_ppos.y, prev_x=_ppos.x, prev_y=_ppos.y))
-        self.world.add_component(_arrow_id, _PParrow(
+        _arrow_entry = self._player_proj_system.spawn(
+            _ppos.x, _ppos.y, attacker_eid, target_local_eid,
             spell_id="arrow",
-            attacker_id=attacker_eid,
-            target_id=target_local_eid,
             speed=700.0,
             dmg_weapon_pct=1.0,
             dmg_sp_coeff=0.0,
@@ -194,10 +190,10 @@ class RemoteEntityHandlers:
             damage_type="physical",
             target_last_x=target_pos.x,
             target_last_y=target_pos.y,
-        ))
+        )
         from debug.archer_debug import ADBG_CLIENT as _ADBG_c_spawn
         _ADBG_c_spawn.log("SOUND", attacker_eid, target_local_eid,
-                          which="release", is_self=is_self_attacker, proj_id=_arrow_id)
+                          which="release", is_self=is_self_attacker, proj_id=id(_arrow_entry))
         if is_self_attacker:
             if _rand_arrow.random() < 0.35:
                 SOUNDS.play_random(["arrow_draw_1", "arrow_draw_2"], channel_group=(8, 9))
@@ -208,7 +204,7 @@ class RemoteEntityHandlers:
                                       _ppos.x, _ppos.y, _lx, _ly, base=0.5)
             SOUNDS.play_random_at(["arrow_release_1", "arrow_release_2"],
                                   _ppos.x, _ppos.y, _lx, _ly, base=0.5)
-        return _arrow_id
+        return _arrow_entry
 
     def _bg_silence_nonplayer_combat_fx(self, server_attacker: int, server_target: int) -> bool:
         """True se este hit deve ficar sem som/FLT — pedido do usuário
@@ -378,9 +374,9 @@ class RemoteEntityHandlers:
             # nasce só no is_completion). Evita a corrida em que o servidor mata o
             # mob antes do timer client zerar e a flecha nunca chega a existir —
             # o golpe fatal ficava "invisível" (sem flecha, sem FLT, sem HP update).
-            _arrow_id = None
+            _arrow_entry = None
             if source == "auto" and _is_archer_arrow and pos is not None:
-                _arrow_id = self._spawn_archer_auto_arrow(_attacker_local_remote, _is_self_archer_attacker,
+                _arrow_entry = self._spawn_archer_auto_arrow(_attacker_local_remote, _is_self_archer_attacker,
                                               local_eid, pos, _lx, _ly)
                 # Desconto REAL da aljava local acontece só AQUI agora — mesmo
                 # evento que cria a flecha visual, nunca antecipado (ver
@@ -405,18 +401,18 @@ class RemoteEntityHandlers:
 
             def _set_arrow_result(entry: dict) -> None:
                 """Prende o resultado do servidor DIRETO na flecha específica
-                que acabou de nascer (`PlayerProjectile.deferred_result`) —
-                nunca numa fila compartilhada por ALVO. Uma fila por alvo
-                entrega o resultado errado quando 2+ flechas (de atacantes
-                diferentes, ou do mesmo atacante em distâncias diferentes)
-                convergem pro mesmo alvo fora da ordem em que foram
-                disparadas — bug real, ver PROBLEMAS_ARQUITETURA.md §44."""
-                if _arrow_id is None:
+                que acabou de nascer (`.deferred_result` na própria
+                `PlayerProjectileEntry` retornada por `_spawn_archer_auto_arrow`,
+                sem ECS desde 15/09/2026 — item 9, ver
+                PROBLEMAS_ARQUITETURA.md §144) — nunca numa fila compartilhada
+                por ALVO. Uma fila por alvo entrega o resultado errado quando
+                2+ flechas (de atacantes diferentes, ou do mesmo atacante em
+                distâncias diferentes) convergem pro mesmo alvo fora da ordem
+                em que foram disparadas — bug real, ver
+                PROBLEMAS_ARQUITETURA.md §44."""
+                if _arrow_entry is None:
                     return
-                from engine.components import PlayerProjectile as _PParrowSet
-                _pp_set = self.world.get_component(_arrow_id, _PParrowSet)
-                if _pp_set is not None:
-                    _pp_set.deferred_result = entry
+                _arrow_entry.deferred_result = entry
 
             if pos and damage > 0:
                 # LOG: jogador local causou dano (imediato — confirmação do servidor)
@@ -543,17 +539,14 @@ class RemoteEntityHandlers:
                 if _is_arrow_pl and source == "auto":
                     player_pos = self.world.get_component(self.player_entity, Position)
                     if player_pos:
-                        _arrow_id_pl = self._spawn_archer_auto_arrow(
+                        _arrow_entry_pl = self._spawn_archer_auto_arrow(
                             _atk_eid_pl, _is_self_atk_pl,
                             self.player_entity, player_pos, _lx, _ly)
-                        if _arrow_id_pl is not None:
-                            from engine.components import PlayerProjectile as _PParrowPl
-                            _pp_pl = self.world.get_component(_arrow_id_pl, _PParrowPl)
-                            if _pp_pl is not None:
-                                _pp_pl.deferred_result = {
-                                    "outcome": outcome, "damage": damage,
-                                    "is_ability": is_ability, "is_player_target": True,
-                                }
+                        if _arrow_entry_pl is not None:
+                            _arrow_entry_pl.deferred_result = {
+                                "outcome": outcome, "damage": damage,
+                                "is_ability": is_ability, "is_player_target": True,
+                            }
                         if damage > 0 and not _is_dot_hot:
                             from ui.combat_log import LOG as _LOG_arrow_pl
                             _suffix_arrow_pl = " (crítico)" if is_crit else ""
@@ -643,16 +636,13 @@ class RemoteEntityHandlers:
                 _is_arrow_rp, _atk_eid_rp, _is_self_atk_rp = \
                     self._resolve_archer_attack(cr, server_attacker, source)
                 if _is_arrow_rp and source == "auto":
-                    _arrow_id_rp = self._spawn_archer_auto_arrow(
+                    _arrow_entry_rp = self._spawn_archer_auto_arrow(
                         _atk_eid_rp, _is_self_atk_rp, local_eid, pos, _lx, _ly)
-                    if _arrow_id_rp is not None:
-                        from engine.components import PlayerProjectile as _PParrowRp
-                        _pp_rp = self.world.get_component(_arrow_id_rp, _PParrowRp)
-                        if _pp_rp is not None:
-                            _pp_rp.deferred_result = {
-                                "outcome": outcome, "damage": damage,
-                                "is_ability": is_ability, "is_player_target": True,
-                            }
+                    if _arrow_entry_rp is not None:
+                        _arrow_entry_rp.deferred_result = {
+                            "outcome": outcome, "damage": damage,
+                            "is_ability": is_ability, "is_player_target": True,
+                        }
                     return
             if is_regen:
                 healed = abs(damage)
@@ -1078,7 +1068,7 @@ class RemoteEntityHandlers:
         # ui/spell_system.py::_on_hit) — os sons desses ataques são
         # dirigidos por NpcSounds (disparo abaixo, impacto no
         # COMBAT_RESULT), nunca pelo projétil.
-        from engine.components import PlayerProjectile as _PPmob, EntityIdentity as _EIProj
+        from engine.components import EntityIdentity as _EIProj
         _atk_ident = None
         _atk_mirror = self._remote_mobs.get(data.get("attacker_seid", -1))
         if _atk_mirror is not None:
@@ -1101,14 +1091,12 @@ class RemoteEntityHandlers:
             # pipeline do player, mantendo cor/velocidade do servidor.
             _spell_id, _speed, _color, _dtype = "npc_bolt", speed, color, "magical"
 
-        local_eid = self.world.create_entity()
-        self.world.add_component(local_eid, _PP(x=px, y=py, prev_x=px, prev_y=py))
-        self.world.add_component(local_eid, _PPmob(
-            spell_id=_spell_id, attacker_id=-1, target_id=target_local,
-            speed=_speed, dmg_weapon_pct=0.0, dmg_sp_coeff=0.0, color=_color,
-            damage_type=_dtype, guaranteed_hit=True,
+        self._player_proj_system.spawn(
+            px, py, -1, target_local,
+            spell_id=_spell_id, speed=_speed, dmg_weapon_pct=0.0, dmg_sp_coeff=0.0,
+            color=_color, damage_type=_dtype, guaranteed_hit=True,
             target_last_x=_tlx, target_last_y=_tly, target_server_id=-3,
-        ))
+        )
         # NÃO registra em _remote_mob_projectiles de propósito: o ciclo de
         # vida agora é do PlayerProjectileSystem (remove na colisão visual /
         # fly-out), igual às flechas de espectador. Registrar faria o

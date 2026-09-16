@@ -14,7 +14,7 @@ import random
 
 
 # Velocidade de projétil (px/s) por skill — espelha os valores VISUAIS
-# de `ui/spell_system.py::PlayerProjectile.speed` (client-only, este
+# de `ui/spell_system.py::PlayerProjectileEntry.speed` (client-only, este
 # arquivo não pode importar `ui/`). Usado só pra calcular o tempo de voo
 # da auto-confirmação de acerto do BOT (`_schedule_bot_projectile_autohit`
 # abaixo) — se algum dia o valor visual mudar lá, revisar aqui junto pra

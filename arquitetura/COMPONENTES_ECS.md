@@ -152,7 +152,6 @@ Esses atributos existem na classe `Skill.__init__` (`fail_flash_timer` está lá
 |-----------|--------|-------|
 | `SpellCast(spell_id, cast_time, elapsed, target_id, mana_cost, interruptible)` | cast em andamento | mana deduzida só ao completar |
 | `Channeling(spell_id, duration, elapsed, tick_interval, mana_per_tick, target_x/y, radius_tiles, slow_pct, dmg_weapon_pct, dmg_sp_coeff)` | canalização ativa | apenas Calamidade Flamejante |
-| `PlayerProjectile(spell_id, attacker_id, target_id, speed, dmg_weapon_pct, dmg_sp_coeff, color)` | projétil do mago em voo | Bola de Fogo |
 | `AoeTargeting(spell_id, radius_tiles, cast_range_tiles, pending_x/y, waiting_for_range, cancel_pending)` | mira AOE de alvo | Calamidade Flamejante |
 | `PirofagiaAiming(elapsed)` | mira de cone ativa | presente enquanto player aponta; removido ao clicar |
 | `IceBlockEffect(duration, elapsed, heal_interval, last_heal)` | Bloco de Gelo ativo | imunidade + regen |

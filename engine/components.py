@@ -1794,40 +1794,6 @@ class IceBlockEffect:
 
 
 @dataclass
-class PlayerProjectile:
-    """Projétil lançado pelo jogador (magia ou flecha)."""
-    spell_id:       str   = ""
-    attacker_id:    int   = -1
-    target_id:      int   = -1
-    speed:          float = 350.0
-    dmg_weapon_pct: float = 0.10    # % do dano médio da arma
-    dmg_sp_coeff:   float = 1.0     # multiplicador de spell_power
-    color:          tuple = (160, 80, 255)  # roxo arcano
-    damage_type:    str   = "magical"  # "magical" | "physical"
-    arrow_dmg_min:  int   = 0  # bônus mínimo da flecha (0 = sem bônus)
-    arrow_dmg_max:  int   = 0  # bônus máximo da flecha
-    # Flecha errando: desvia do alvo e voa além
-    is_miss:        bool  = False   # True = erro confirmado, vai ao ponto desviado
-    miss_end_x:     float = 0.0     # coordenada X do ponto final desviado
-    miss_end_y:     float = 0.0     # coordenada Y do ponto final desviado
-    pre_outcome:    str   = ""      # outcome pré-rolado ("" = rolar normalmente)
-    # Configuração de skill shots
-    damage_multiplier: float = 1.0   # multiplicador de dano (1.0 = normal; 1.5 = +50%)
-    launch_delay:      float = 0.0    # segundos antes de começar a mover (0 = imediato)
-    ap_multiplier:    float = 1.0    # multiplicador extra de AP (1.0 = normal; 2.0 = +1x AP)
-    guaranteed_hit:   bool  = False  # True = ignora miss/dodge/parry, só rola crit
-    # Efeito aplicado ao acertar o alvo (dados opcionais — "" = nenhum efeito)
-    on_hit_effect:    str   = ""     # ID do efeito (ex: "slow", "burn", "stun")
-    on_hit_duration:  float = 0.0    # duração do efeito em segundos
-    on_hit_magnitude: float = 0.0    # magnitude (ex: 0.3 = 30% slow)
-    deferred_result:  dict  = None   # outcome/damage do servidor — SÓ FLT/som ao colidir (online);
-                                      # HP nunca fica aqui, aplicado direto na confirmação (§44)
-    target_last_x:    float = 0.0    # última pos X conhecida do alvo (voa até aqui se despawnar)
-    target_last_y:    float = 0.0    # última pos Y conhecida do alvo
-    target_server_id: int   = -1     # server eid do alvo — enviado em PROJECTILE_HIT_CS
-
-
-@dataclass
 class AoeTargeting:
     """Modo de mira AOE: próximo clique esquerdo posiciona a magia."""
     spell_id:          str   = ""

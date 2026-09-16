@@ -833,6 +833,12 @@ class _NetHandlerFixture(_NH, _REH):
         self._remote_harvestables = {}
         self._available_loot = {}
         self._remote_corpses = {}
+        # PlayerProjectileSystem real (15/09/2026, item 9 — projétil do
+        # jogador não é mais entidade ECS, ver PROBLEMAS_ARQUITETURA.md
+        # §144) — _spawn_archer_auto_arrow/_spawn_mob_projectile chamam
+        # self._player_proj_system.spawn(...) direto.
+        from ui.spell_system import PlayerProjectileSystem as _PPSysFixture
+        self._player_proj_system = _PPSysFixture(world, pygame.Surface((10, 10)), player_entity)
 
     def _player_world_pos(self):
         # Stub do mixin real (client/save_sync_handlers.py) — usado pelo som
@@ -2323,10 +2329,9 @@ def test_spawn_remote_mob_de_trainer_anexa_trainer_com_class_id():
 
 
 def _find_cosmetic_projectile(fx):
-    """Único PlayerProjectile cosmético (target_server_id=-3) no world."""
-    from engine.components import PlayerProjectile
-    projs = [pp for _, pp in fx.world.get_entities_with(PlayerProjectile)
-             if pp.target_server_id == -3]
+    """Único projétil visual cosmético (target_server_id=-3) na lista do
+    PlayerProjectileSystem (fora do ECS desde 15/09/2026, item 9)."""
+    projs = [e for e in fx._player_proj_system._entries if e.target_server_id == -3]
     return projs[0] if projs else None
 
 
@@ -3993,9 +3998,9 @@ def _make_archer_projectile_fixture():
     class_id=='arqueiro' no player local)."""
     from engine.world import World
     from engine.components import (Position, NpcSounds, EntityIdentity,
-                             PlayerControlled, RemoteEntityMeta, CharacterStats,
-                             PlayerProjectile)
+                             PlayerControlled, RemoteEntityMeta, CharacterStats)
     from ui.ui_components import InstanceInventoryUIState
+    from ui.spell_system import PlayerProjectileSystem
     import client.remote_entity_handlers as reh_mod
     from client.save_sync_handlers import SaveSyncHandlers
 
@@ -4013,6 +4018,11 @@ def _make_archer_projectile_fixture():
             self._mob_ghost_pos = {}
             self._fr_pending_target = {}
             self._player_input_system = _NoopPnq()
+            # PlayerProjectileSystem real (15/09/2026, item 9 — projétil do
+            # jogador não é mais entidade ECS, ver PROBLEMAS_ARQUITETURA.md
+            # §144).
+            self._player_proj_system = PlayerProjectileSystem(
+                world, pygame.Surface((10, 10)), player_entity)
 
     world = World()
     player_eid = world.create_entity()
@@ -4033,9 +4043,10 @@ def _make_archer_projectile_fixture():
     return fx, target_eid
 
 
-def _spawned_arrows(world):
-    from engine.components import PlayerProjectile
-    return [(eid, pp) for eid, pp in world.get_entities_with(PlayerProjectile)]
+def _spawned_arrows(fx):
+    """Flechas visuais ativas — lista de `PlayerProjectileEntry`, fora do
+    ECS desde 15/09/2026 (item 9, ver PROBLEMAS_ARQUITETURA.md §144)."""
+    return list(fx._player_proj_system._entries)
 
 
 def test_flecha_carrega_o_proprio_resultado_nunca_fila_por_alvo():
@@ -4054,12 +4065,12 @@ def test_flecha_carrega_o_proprio_resultado_nunca_fila_por_alvo():
                              "outcome": "hit", "hp_after": 950, "source": "auto",
                              "is_ranged": True})
 
-    arrows = _spawned_arrows(fx.world)
+    arrows = _spawned_arrows(fx)
     assert len(arrows) == 2, "cada golpe deveria nascer com sua própria flecha"
-    damages = sorted(pp.deferred_result["damage"] for _, pp in arrows)
+    damages = sorted(pp.deferred_result["damage"] for pp in arrows)
     assert damages == [20, 30], \
         "cada flecha deveria carregar o damage DELA, não um valor genérico"
-    assert all("hp_after" not in pp.deferred_result for _, pp in arrows), \
+    assert all("hp_after" not in pp.deferred_result for pp in arrows), \
         "HP não deveria mais viajar preso na flecha — é aplicado na hora"
 
     from engine.components import RemoteEntityMeta
@@ -4077,7 +4088,7 @@ def test_hp_de_flecha_atrasada_nao_sobrescreve_dano_mais_novo_de_outra_fonte():
     específico — desatualizado se algo mais acertou o alvo depois."""
     import client.remote_entity_handlers as reh_mod
     import ui.spell_system as ss_mod
-    from engine.components import RemoteEntityMeta, PlayerProjectile
+    from engine.components import RemoteEntityMeta
     fx, target_eid = _make_archer_projectile_fixture()
     _spy_flt_and_sounds(reh_mod)
     ss_mod.SOUNDS.play_random_at   = lambda *a, **k: None
@@ -4090,9 +4101,9 @@ def test_hp_de_flecha_atrasada_nao_sobrescreve_dano_mais_novo_de_outra_fonte():
     fx._apply_combat_result({"attacker": 1, "target": 50, "damage": 20,
                              "outcome": "hit", "hp_after": 980, "source": "auto",
                              "is_ranged": True})
-    arrows = _spawned_arrows(fx.world)
+    arrows = _spawned_arrows(fx)
     assert len(arrows) == 1
-    arrow_eid, _ = arrows[0]
+    arrow_entry = arrows[0]
 
     # ENQUANTO a flecha ainda voa: outro ataque (atacante 2, não-arqueiro —
     # ex: minion batendo corpo-a-corpo) acerta o MESMO alvo e aplica na
@@ -4105,10 +4116,13 @@ def test_hp_de_flecha_atrasada_nao_sobrescreve_dano_mais_novo_de_outra_fonte():
     assert meta.hp == 900, "dano mais novo de outra fonte deveria já estar aplicado"
 
     # SÓ AGORA a flecha do 1º golpe chega visualmente (ex: atacante longe).
+    # _on_hit não depende de self._entries (só lê/escreve o `proj` recebido
+    # + self.world) — uma instância nova de PlayerProjectileSystem serve
+    # igual à original pra chamar _on_hit direto, sem precisar reusar
+    # fx._player_proj_system.
     proj_sys = ss_mod.PlayerProjectileSystem(fx.world, pygame.Surface((10, 10)),
                                              player_entity=fx.player_entity)
-    proj = fx.world.get_component(arrow_eid, PlayerProjectile)
-    proj_sys._on_hit(proj, 12.0, 12.0)
+    proj_sys._on_hit(arrow_entry, 12.0, 12.0)
 
     assert meta.hp == 900, (
         "flecha atrasada não pode reverter o HP mais novo aplicado por outro "

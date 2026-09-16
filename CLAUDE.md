@@ -827,6 +827,23 @@ padrão a quebrar, não só os bugs individuais.
   `_build_save_merge` (fog) chamado direto na coroutine de
   `_handle_save_state`, ~100-150ms de freeze do servidor inteiro por
   save de conta bem explorada. Ver PROBLEMAS_ARQUITETURA.md §142.
+- **Projétil visual do JOGADOR novo** (flecha/bola de fogo/qualquer skill
+  de projétil futura) → `PlayerProjectileSystem.spawn(x, y, attacker_id,
+  target_id, **kwargs)` (`ui/spell_system.py`) — NUNCA `world.
+  create_entity()`/`add_component(PlayerProjectile(...))` (esse
+  componente nem existe mais como ECS, 15/09/2026, item 9, ver
+  PROBLEMAS_ARQUITETURA.md §144). `spawn()` devolve a entrada criada —
+  guarde essa referência pra mutar depois (`entry.deferred_result =
+  ...`, `entry.target_server_id = ...`), nunca busque de volta por eid.
+  Único caso que ainda precisa de busca (resultado do servidor pode
+  chegar num frame DIFERENTE do spawn) → `PlayerProjectileSystem.
+  find_pending_fireball(attacker_id, target_id)`. **NUNCA confundir com
+  `Projectile`** (`engine/components.py`, flecha/bola de fogo de MOB/
+  TORRE/MINION) — esse continua ECS de propósito, é server-autoritativo
+  de verdade (`ProjectileSystem` em `engine/world_systems.py`, código
+  headless que o SERVIDOR roda, aplica `deal_damage()` real com viagem/
+  tempo) — só `PlayerProjectile` (100% client-only, confirmado por grep
+  no repo inteiro) foi movido pra fora do ECS.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

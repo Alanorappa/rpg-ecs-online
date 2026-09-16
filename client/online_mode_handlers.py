@@ -90,22 +90,20 @@ class OnlineModeHandlers:
         Fallback após 200ms: exibe imediatamente via _apply_combat_result.
         """
         import time as _t_pend
-        from engine.components import PlayerProjectile as _PPpend, Position as _PPpendPos
         now = _t_pend.time()
         remaining: list[dict] = []
         for entry in self._bdf_pending:
             t_loc = entry["t_loc"]
-            found = False
-            for _peid, _pp, _ in self.world.get_entities_with(_PPpend, _PPpendPos):
-                if (_pp.attacker_id == self.player_entity
-                        and _pp.target_id == t_loc
-                        and not _pp.deferred_result):
-                    _pp.deferred_result = {
-                        "damage":  entry["dmg"],
-                        "outcome": entry["outcome"],
-                    }
-                    found = True
-                    break
+            # find_pending_fireball (15/09/2026, item 9) substitui a query
+            # ECS — projétil do jogador não é mais entidade, ver
+            # PROBLEMAS_ARQUITETURA.md §144.
+            _pp = self._player_proj_system.find_pending_fireball(self.player_entity, t_loc)
+            found = _pp is not None
+            if found:
+                _pp.deferred_result = {
+                    "damage":  entry["dmg"],
+                    "outcome": entry["outcome"],
+                }
             if not found:
                 if now > entry["deadline"]:
                     # Projétil sumiu ou nunca foi criado — mostra dano agora

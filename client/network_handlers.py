@@ -409,7 +409,6 @@ class NetworkHandlers:
         # is_proj_damage: dano confirmado após PROJECTILE_HIT_CS → mostra números.
         _bdf_deferred: set = set()
         if caster_eid == self._my_eid and sid == "bola_de_fogo":
-            from engine.components import PlayerProjectile as _PPcomp, Position as _PPpos2
             _is_compl = payload.get("is_completion", False)
             _is_pdmg  = payload.get("is_proj_damage", False)
 
@@ -428,13 +427,12 @@ class NetworkHandlers:
                         if _proj_loc == -1:
                             _proj_loc = self._remote_players.get(_proj_srv, -1)
                     if _proj_loc != -1:
-                        self._spell_cast_system._launch_fireball(self.player_entity, _proj_loc)
-                        for _peid, _pp, _ in self.world.get_entities_with(_PPcomp, _PPpos2):
-                            if (_pp.attacker_id == self.player_entity
-                                    and _pp.target_id == _proj_loc
-                                    and _pp.target_server_id == -1):
-                                _pp.target_server_id = _proj_srv
-                                break
+                        # _launch_fireball devolve a entrada criada direto (15/09/2026,
+                        # item 9) — não precisa mais buscar de volta via query ECS.
+                        _bdf_entry = self._spell_cast_system._launch_fireball(
+                            self.player_entity, _proj_loc)
+                        if _bdf_entry is not None:
+                            _bdf_entry.target_server_id = _proj_srv
                     if _proj_srv != -1:
                         _bdf_deferred.add(_proj_srv)
 
@@ -555,7 +553,6 @@ class NetworkHandlers:
                 and payload.get("is_completion")
                 and not payload.get("failed")
                 and _fr_srv_tgt != -1):
-            from engine.components import PlayerProjectile as _PPfr
             from engine.components import Position as _PosFR
             from content.skill_config import SKILL_CATALOG as _SC_fr2
             _fr_params  = _SC_fr2.get("flecha_reiterada", {}).get("params", {})
@@ -588,16 +585,10 @@ class NetworkHandlers:
                         _tly = _tgt_pos_fr.y if _tgt_pos_fr else _pl_pos_fr.y
                     _fr_speeds = [700.0, 640.0, 580.0]
                     for _i in range(_fr_n):
-                        _peid_fr = self.world.create_entity()
-                        self.world.add_component(_peid_fr, _PosFR(
-                            x=_pl_pos_fr.x, y=_pl_pos_fr.y,
-                            prev_x=_pl_pos_fr.x, prev_y=_pl_pos_fr.y,
-                        ))
                         # Cada flecha envia PROJECTILE_HIT_CS → 1 dano separado por flecha
-                        self.world.add_component(_peid_fr, _PPfr(
+                        self._player_proj_system.spawn(
+                            _pl_pos_fr.x, _pl_pos_fr.y, self.player_entity, _fr_loc_tgt,
                             spell_id="flecha_reiterada",
-                            attacker_id=self.player_entity,
-                            target_id=_fr_loc_tgt,
                             speed=_fr_speeds[_i] if _i < len(_fr_speeds) else 600.0,
                             dmg_weapon_pct=1.0,
                             dmg_sp_coeff=0.0,
@@ -609,7 +600,7 @@ class NetworkHandlers:
                             target_last_x=_tlx,
                             target_last_y=_tly,
                             target_server_id=_fr_srv_tgt,
-                        ))
+                        )
 
         # Picada de Escorpião is_completion: cria projétil visual.
         # Primeira (única) flecha envia PROJECTILE_HIT_CS ao colidir.
@@ -620,7 +611,6 @@ class NetworkHandlers:
                 and not payload.get("failed")
                 and sid not in self._cancelled_spell_ids
                 and _pe_srv_tgt != -1):
-            from engine.components import PlayerProjectile as _PPpe
             from engine.components import Position as _PosPS
             from content.skill_config import SKILL_CATALOG as _SC_pe
             _pe_ap = _SC_pe.get("picada_escorpiao", {}).get("params", {}).get("damage_multiplier", 1.5)
@@ -632,15 +622,9 @@ class NetworkHandlers:
                 if _pl_pos_pe:
                     _pe_tlx = _tgt_pos_pe.x if _tgt_pos_pe else _pl_pos_pe.x
                     _pe_tly = _tgt_pos_pe.y if _tgt_pos_pe else _pl_pos_pe.y
-                    _peid_pe = self.world.create_entity()
-                    self.world.add_component(_peid_pe, _PosPS(
-                        x=_pl_pos_pe.x, y=_pl_pos_pe.y,
-                        prev_x=_pl_pos_pe.x, prev_y=_pl_pos_pe.y,
-                    ))
-                    self.world.add_component(_peid_pe, _PPpe(
+                    self._player_proj_system.spawn(
+                        _pl_pos_pe.x, _pl_pos_pe.y, self.player_entity, _pe_loc,
                         spell_id         = "picada_escorpiao",
-                        attacker_id      = self.player_entity,
-                        target_id        = _pe_loc,
                         speed            = 700.0,
                         dmg_weapon_pct   = 1.0,
                         dmg_sp_coeff     = 0.0,
@@ -651,7 +635,7 @@ class NetworkHandlers:
                         target_last_x    = _pe_tlx,
                         target_last_y    = _pe_tly,
                         target_server_id = _pe_srv_tgt,
-                    ))
+                    )
 
         # Tiro Repulsivo is_completion: cria projétil visual.
         # Knockback/stun aplicados pelo servidor após PROJECTILE_HIT_CS.
@@ -662,7 +646,6 @@ class NetworkHandlers:
                 and not payload.get("failed")
                 and sid not in self._cancelled_spell_ids
                 and _tr_srv_tgt != -1):
-            from engine.components import PlayerProjectile as _PPtrep
             from engine.components import Position as _PosTR
             from content.skill_config import SKILL_CATALOG as _SC_tr
             _tr_ap = _SC_tr.get("tiro_repulsivo", {}).get("params", {}).get("damage_multiplier", 1.5)
@@ -674,15 +657,9 @@ class NetworkHandlers:
                 if _pl_pos_tr:
                     _tr_tlx = _tgt_pos_tr.x if _tgt_pos_tr else _pl_pos_tr.x
                     _tr_tly = _tgt_pos_tr.y if _tgt_pos_tr else _pl_pos_tr.y
-                    _peid_tr = self.world.create_entity()
-                    self.world.add_component(_peid_tr, _PosTR(
-                        x=_pl_pos_tr.x, y=_pl_pos_tr.y,
-                        prev_x=_pl_pos_tr.x, prev_y=_pl_pos_tr.y,
-                    ))
-                    self.world.add_component(_peid_tr, _PPtrep(
+                    self._player_proj_system.spawn(
+                        _pl_pos_tr.x, _pl_pos_tr.y, self.player_entity, _tr_loc,
                         spell_id         = "tiro_repulsivo",
-                        attacker_id      = self.player_entity,
-                        target_id        = _tr_loc,
                         speed            = 800.0,
                         dmg_weapon_pct   = 1.0,
                         dmg_sp_coeff     = 0.0,
@@ -693,13 +670,13 @@ class NetworkHandlers:
                         target_last_x    = _tr_tlx,
                         target_last_y    = _tr_tly,
                         target_server_id = _tr_srv_tgt,
-                    ))
+                    )
 
         # Tiro Múltiplo is_completion: 1 flecha por alvo selecionado pelo servidor
         # (cone de visão + range + talento, ver _complete_tiro_multiplo_cast) — não
         # mais dano instantâneo de área. Cada flecha tem seu próprio target_server_id
         # e envia PROJECTILE_HIT_CS independente ao colidir, igual às outras skills
-        # de flecha (mesma mecânica do projeto offline: 1 PlayerProjectile por alvo).
+        # de flecha (mesma mecânica das outras: 1 flecha visual por alvo).
         _tm_srv_tgts = payload.get("projectile_targets", [])
         if (caster_eid == self._my_eid
                 and sid == "tiro_multiplo"
@@ -707,7 +684,6 @@ class NetworkHandlers:
                 and not payload.get("failed")
                 and sid not in self._cancelled_spell_ids
                 and _tm_srv_tgts):
-            from engine.components import PlayerProjectile as _PPtm
             from engine.components import Position as _PosTM
             from content.skill_config import SKILL_CATALOG as _SC_tm
             _tm_ap = _SC_tm.get("tiro_multiplo", {}).get("params", {}).get("damage_multiplier", 3.0)
@@ -720,15 +696,9 @@ class NetworkHandlers:
                 _tgt_pos_tm = self.world.get_component(_tm_loc, _PosTM)
                 _tm_tlx = _tgt_pos_tm.x if _tgt_pos_tm else _pl_pos_tm.x
                 _tm_tly = _tgt_pos_tm.y if _tgt_pos_tm else _pl_pos_tm.y
-                _peid_tm = self.world.create_entity()
-                self.world.add_component(_peid_tm, _PosTM(
-                    x=_pl_pos_tm.x, y=_pl_pos_tm.y,
-                    prev_x=_pl_pos_tm.x, prev_y=_pl_pos_tm.y,
-                ))
-                self.world.add_component(_peid_tm, _PPtm(
+                self._player_proj_system.spawn(
+                    _pl_pos_tm.x, _pl_pos_tm.y, self.player_entity, _tm_loc,
                     spell_id         = "tiro_multiplo",
-                    attacker_id      = self.player_entity,
-                    target_id        = _tm_loc,
                     speed            = 700.0,
                     dmg_weapon_pct   = 1.0,
                     dmg_sp_coeff     = 0.0,
@@ -740,7 +710,7 @@ class NetworkHandlers:
                     target_last_x    = _tm_tlx,
                     target_last_y    = _tm_tly,
                     target_server_id = _tm_srv_tgt,
-                ))
+                )
 
     # Skills de projétil cujo espectador (player remoto) precisa de uma flecha/bola
     # cosmética ao receber SKILL_EFFECT{event:"launch"} — ver _spawn_bystander_projectile.
@@ -816,7 +786,7 @@ class NetworkHandlers:
         lança uma skill de projétil. Nunca envia PROJECTILE_HIT_CS (target_server_id
         = -2) — o dano desse caster já chega normalmente via SKILL_RESULT/COMBAT_RESULT,
         isto é 100% visual."""
-        from engine.components import PlayerProjectile as _PPb, Position as _PosB
+        from engine.components import Position as _PosB
         caster_local = self._remote_players.get(payload.get("caster_eid", -1), -1)
         if caster_local == -1:
             return
@@ -827,12 +797,10 @@ class NetworkHandlers:
         if sid == "bola_de_fogo":
             tgt_local = self._resolve_local_eid(payload.get("target_eid", -1))
             if tgt_local != -1:
-                self._spell_cast_system._launch_fireball(caster_local, tgt_local)
-                for _, _pp, _ in self.world.get_entities_with(_PPb, _PosB):
-                    if (_pp.attacker_id == caster_local and _pp.target_id == tgt_local
-                            and _pp.target_server_id == -1):
-                        _pp.target_server_id = -2  # cosmético: sem PROJECTILE_HIT_CS
-                        break
+                # _launch_fireball devolve a entrada direto (15/09/2026, item 9)
+                _bystander_entry = self._spell_cast_system._launch_fireball(caster_local, tgt_local)
+                if _bystander_entry is not None:
+                    _bystander_entry.target_server_id = -2  # cosmético: sem PROJECTILE_HIT_CS
             return
 
         if sid == "tiro_multiplo":
@@ -859,15 +827,13 @@ class NetworkHandlers:
             _delay = (_fr_delay * _idx) if sid == "flecha_reiterada" else 0.0
             _speed = (_fr_speeds[_idx] if sid == "flecha_reiterada" and _idx < len(_fr_speeds)
                       else 700.0 if sid != "tiro_repulsivo" else 800.0)
-            _eid_b = self.world.create_entity()
-            self.world.add_component(_eid_b, _PosB(
-                x=caster_pos.x, y=caster_pos.y, prev_x=caster_pos.x, prev_y=caster_pos.y))
-            self.world.add_component(_eid_b, _PPb(
-                spell_id="arrow", attacker_id=caster_local, target_id=tgt_local,
+            self._player_proj_system.spawn(
+                caster_pos.x, caster_pos.y, caster_local, tgt_local,
+                spell_id="arrow",
                 speed=_speed, dmg_weapon_pct=1.0, dmg_sp_coeff=0.0, color=color,
                 damage_type="physical", launch_delay=_delay, guaranteed_hit=True,
                 target_last_x=tgt_pos.x, target_last_y=tgt_pos.y, target_server_id=-2,
-            ))
+            )
 
     def _show_knockback_collision(self, payload: dict) -> None:
         """Tiro Repulsivo: feedback dedicado quando o empurrão colide (parede ou

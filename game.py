@@ -850,8 +850,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                                   ChannelingSystem, IceBlockSystem, FireShieldSystem,
                                   PirofagiaSystem, AoeTargetingSystem)
         self._mana_system           = ManaSystem(self.world)
-        self._spell_cast_system     = SpellCastSystem(self.world, self.screen)
+        # PlayerProjectileSystem primeiro: SpellCastSystem._launch_fireball
+        # precisa da referência pra chamar .spawn() nele (15/09/2026, item 9
+        # — flecha/bola de fogo do jogador não é mais entidade ECS, ver
+        # PROBLEMAS_ARQUITETURA.md §144).
         self._player_proj_system    = PlayerProjectileSystem(self.world, self.screen, self.player_entity)
+        self._spell_cast_system     = SpellCastSystem(self.world, self.screen, self._player_proj_system)
         self._channeling_system     = ChannelingSystem(self.world, self.screen)
         self._ice_block_system      = IceBlockSystem(self.world)
         self._fire_shield_system    = FireShieldSystem(self.world)

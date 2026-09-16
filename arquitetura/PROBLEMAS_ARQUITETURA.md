@@ -18748,4 +18748,118 @@ Suíte completa: 1659 passed, 0 failed.
    mitigação em aberto — decisão do usuário se quer tratamento.
 5. **ZONE_CHANGE de 1.28s (`network_recv`)**: achado novo, não
    investigado, fora do escopo original — decisão do usuário se
-   investiga agora ou depois.
+   investiga agora ou depois. Usuário confirmou que não vale investigar
+   (é esperado que trocar de mapa carregue o mapa) DESDE que não afete
+   o SERVIDOR — confirmado que `_handle_msg_zone_change` →
+   `_do_transition` é 100% client-side (nenhum `self._net.send()` no
+   caminho, nunca espera resposta do servidor) — fechado, sem ação.
+   Mesma verificação pro alt-tab (item 4): confirmado que o `_ping_loop`
+   (thread de rede separada, `client/network.py`) continua rodando
+   independente do stall da thread principal — servidor nunca percebe
+   nada, conexão nunca cai por isso.
+
+## 144. Item 9 (object pooling de PlayerProjectile) — escopo real 3x maior que estimado, 2 achados de código morto, `Projectile` (mob/torre) preservado no ECS por ser server-autoritativo
+
+15/09/2026, implementação do item 9 do `CLIENT_PERFORMANCE_REVIEW.md`
+(usuário já tinha aprovado implementar sem confirmação de profiling
+prévia, decisão de sessão anterior). Pesquisa ANTES de codar (regra do
+projeto) revelou dois fatos que mudaram o escopo real da tarefa:
+
+**1) Existem DOIS componentes de projétil, o review misturou os dois.**
+`Projectile` (`engine/components.py`, flecha/bola de fogo de MOB/TORRE/
+MINION) é usado por `ProjectileSystem` em `engine/world_systems.py` —
+código HEADLESS COMPARTILHADO, que o SERVIDOR roda de verdade
+(`ProjectileSystem.update()` chama `deal_damage()`/`apply_effect()`
+reais, dano com viagem/tempo, não instantâneo). Mover esse pra fora do
+ECS quebraria o jogo pro servidor — ele NUNCA foi tocado.
+`PlayerProjectile` (flecha/bola de fogo do JOGADOR) só existe em
+`ui/spell_system.py::PlayerProjectileSystem`, `ui/` é client-only —
+confirmado por grep no repo inteiro que NENHUM código de servidor
+importa/usa esse componente. Só esse foi migrado.
+
+**2) O escopo real era ~3x maior que a estimativa do review.** O
+review citou ~6 pontos de spawn; um agente de pesquisa (Explore)
+mapeou exaustivamente e achou **16 pontos de import** em 4 arquivos
+(`ui/spell_system.py`, `client/remote_entity_handlers.py`,
+`client/network_handlers.py`, `client/online_mode_handlers.py`) — e no
+processo achou 2 blocos de código MORTO:
+
+- **4 métodos inteiros em `ui/spell_system.py`** (`_apply_tiro_multiplo`,
+  `_apply_tiro_repulsivo`, `_apply_arrow_skill`, `_apply_flecha_reiterada`
+  — as versões "antigas" desses handlers) nunca são chamados em
+  produção: `tiro_multiplo` desvia pra `_capture_tiro_multiplo_dir`
+  ANTES de chegar no dispatch de `_CAST_HANDLERS`; os outros 3 estão em
+  `_PROJ_SPELLS_LOCAL` (`_complete_cast`), também excluídos do
+  dispatch. As versões REAIS (que de fato disparam) foram
+  reimplementadas há tempo em `client/network_handlers.py`, recebendo o
+  `is_completion` do servidor — ninguém apagou as antigas. Removidos
+  nesta sessão (regra já registrada no projeto: sempre remover
+  duplicata morta da era offline quando encontrada — decisão do usuário
+  de remover junto, confirmada por pergunta explícita antes de agir).
+- **`client/online_mode_handlers.py::_process_bdf_pending`** — método
+  inteiro nunca chamado por ninguém (`grep` por
+  `_process_bdf_pending()` no repo inteiro: zero ocorrências) e
+  `self._bdf_pending` (a lista que ele consome) nunca é populada em
+  lugar nenhum (`game.py:219` só inicializa `[]`, nenhum `.append()`
+  existe). Achado tarde, DEPOIS de já ter corrigido o import quebrado
+  dele (a importação de `PlayerProjectile`, que eu tinha removido,
+  quebraria esse método SE ele fosse chamado) — decisão: corrigir a
+  query pra usar a API nova em vez de deletar (é código morto mas
+  poderia ser religado no futuro; deletar seria uma decisão maior, fora
+  do que foi pedido — reportado ao usuário, não decidido sozinho).
+
+**Branch de dano local morto em `_on_hit` (achado, NÃO removido de
+propósito)**: `_on_hit` tem um branch que chama `deal_damage()`/
+`_apply_magic_damage()` diretamente quando `attacker_cs` E `target_cs`
+(CombatStats REAIS, não espelho) existem AMBOS localmente — nunca
+acontece no jogo online de hoje (mob/player remoto só tem
+`RemoteEntityMeta.hp`/`RemoteControlled.hp`, nunca `CombatStats`
+completo; `TrainingDummy` só existe no servidor,
+`create_training_dummy` nunca é chamado do lado cliente). Confiança
+alta de que é vestígio da era offline, mesma classe já documentada em
+`ChannelingSystem` (comentário no próprio arquivo, achado numa sessão
+anterior). Decisão: preservar a lógica exatamente como estava (só
+migrando de onde ela lê os dados — não mais ECS), sem tentar "limpar"
+— risco desproporcional pra algo fora do que foi pedido, e sem nenhum
+teste cobrindo esse branch específico pra confirmar que uma limpeza não
+quebraria nada.
+
+**Desenho da migração** (mesmo padrão já usado por
+`ui/floating_text.py::FloatingTextManager`/`FloatingTextEntry`, citado
+pelo próprio review como referência):
+- `PlayerProjectile` (dataclass ECS) → `PlayerProjectileEntry`
+  (`ui/spell_system.py`, `__slots__`, fora do ECS). Campos de posição
+  (`x/y/prev_x/prev_y`, era o componente `Position` irmão) e o rastro/
+  timer de animação (`trail`/`fireball_anim_t`, eram os dicts externos
+  `_arrow_trails`/`_fireball_anim` keyed por eid) viraram atributos
+  diretos da entrada — não precisam mais de estrutura externa.
+- `PlayerProjectileSystem.spawn(x, y, attacker_id, target_id, **kwargs)`
+  — ÚNICO ponto de entrada novo pra criar um projétil visual do
+  jogador, substitui `world.create_entity()`+`add_component(Position(
+  ...))`+`add_component(PlayerProjectile(...))` nos ~9 call sites reais
+  (os 4 do item acima já eram mortos, não precisaram migrar). Retorna a
+  entrada criada.
+- Correlação "achar a flecha de volta pra anexar o resultado do
+  servidor" tinha 2 padrões antes (por eid retornado OU por query ECS
+  filtrada por atacante+alvo+sentinela) — o padrão por eid SUMIU quase
+  todo (agora é só guardar a referência que `spawn()` já devolve
+  direto, sem busca nenhuma); o padrão por query sobrevive só onde o
+  resultado pode chegar em FRAME DIFERENTE do spawn (Bola de Fogo via
+  `_process_bdf_pending`, que compara com o `deadline` de 200ms) — novo
+  método `PlayerProjectileSystem.find_pending_fireball(attacker_id,
+  target_id)` substitui a query ECS ali.
+- `SpellCastSystem` ganhou um parâmetro novo no construtor
+  (`player_proj_system=None`, injetado por `game.py` — precisa dele
+  pra `_launch_fireball` chamar `.spawn()`); `game.py` reordenou a
+  construção dos 2 systems (PlayerProjectileSystem antes de
+  SpellCastSystem) pra poder passar a referência direto, em vez de
+  injeção tardia como `_on_inventory_changed`.
+
+**Testes**: fixtures de teste (`tests/test_client_ui.py`) ganharam
+`_player_proj_system` real (mesma classe de produção, não mock) —
+`_NetHandlerFixture` e o `_Fixture` de
+`_make_archer_projectile_fixture`. Helpers `_find_cosmetic_projectile`/
+`_spawned_arrows` migrados pra ler `._entries` em vez de fazer query
+ECS. Nenhum teste precisou de lógica nova — só troca de mecanismo de
+acesso. Suíte completa: 1657 passed, 2 failed pré-existentes/timing
+flake sem relação.
