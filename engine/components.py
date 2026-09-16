@@ -493,6 +493,17 @@ class FogOfWar:
         # já filtrado por instância/facção no servidor — cliente só desenha).
         self.ally_centers:      list  = []
         self._last_ally_centers: tuple = ()
+        # Cache do FOV (shadowcasting) de cada aliado — chave (ax,ay,ar),
+        # valor o set já calculado (15/09/2026, ver PROBLEMAS_ARQUITETURA.md
+        # §146). `FogSystem.update()` recalculava TODOS os aliados (player/
+        # torre/minion) do zero a cada mudança de tile de QUALQUER um deles
+        # — em BG com vários minions/torres, isso é bem mais aliados do que
+        # em mundo aberto (zero) ou até Arena (time pequeno, sem minion/
+        # torre). Achado real: FogSystem subia de ~0.05ms pra 2-5ms (picos
+        # até 24ms) conforme a partida avançava (mais minions em campo).
+        # Aliado que não mudou de posição desde o último tick reaproveita o
+        # FOV já calculado em vez de rodar o shadowcasting de novo.
+        self._ally_fov_cache:    dict  = {}
 
     def switch_map(self, map_file: str) -> None:
         """Troca o contexto de exploração para o mapa dado. Cria o set se não existir."""
@@ -504,9 +515,11 @@ class FogOfWar:
         self._last_tile   = (-1, -1)
         # Centros de aliado do mapa/instância ANTERIOR não fazem sentido nas
         # coordenadas do mapa novo — descarta (o próximo AOI_UPDATE reenvia
-        # os corretos, se houver).
+        # os corretos, se houver). Cache de FOV por aliado também não serve
+        # mais (mapa mudou, mesma coordenada significa outro tile agora).
         self.ally_centers        = []
         self._last_ally_centers  = ()
+        self._ally_fov_cache     = {}
 
 
 class CombatState:

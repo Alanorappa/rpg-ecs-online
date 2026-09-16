@@ -938,6 +938,23 @@ padrão a quebrar, não só os bugs individuais.
   com operação vetorizada de verdade (ex.: distância de centenas de mobs de uma
   vez); pra componentes ECS pequenos/heterogêneos (a maioria deste projeto) é
   overhead sem ganho. Não é ferramenta padrão, é ferramenta de caso específico.
+- **Recompute disparado por QUALQUER item de uma lista (não só "mudou
+  algo") reprocessando TODOS os itens do zero é O(n) escondido —
+  cachear por item, não só decidir "recomputa ou não" pro conjunto
+  inteiro.** `FogOfWar.ally_centers` (visão compartilhada de time —
+  player/torre/minion) é o caso real: `FogSystem` recalculava o
+  shadowcasting de TODO aliado sempre que QUALQUER um deles mudava de
+  posição, mesmo os que não tinham se movido — custo escondido em
+  mundo aberto (zero aliados) e Arena (time pequeno), mas real em BG
+  (vários minions/torres), crescendo com a partida (mais minions em
+  campo). Fix: cache por item, chave = o que definiria o resultado
+  daquele item específico (`(ax,ay,ar)` pro FOV de um aliado,
+  `FogOfWar._ally_fov_cache`) — só o item cuja chave mudou desde o
+  último tick recalcula de verdade. Mesmo princípio de qualquer lista
+  de "N coisas que podem mudar independente" processada dentro de um
+  gate de "algo mudou": o gate decide SE processa a rodada, o cache
+  por item decide O QUE dentro da rodada precisa mesmo recalcular. Ver
+  PROBLEMAS_ARQUITETURA.md §146.
 
 ### Protocolo
 - Todo pacote tem `type` (MsgType), `p` (payload), `seq` (int), `ts` (ms epoch)

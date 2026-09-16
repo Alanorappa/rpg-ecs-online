@@ -18897,3 +18897,73 @@ se o mesmo padrão aparecer em outro contexto).
 
 **Status**: investigação aberta, baixa prioridade — sem instrumentação
 adicional, sem fix.
+
+## 146. Engasgo específico de BG — FogSystem recalculava shadowcasting de TODOS os aliados (player/torre/minion) a cada movimento de QUALQUER um deles
+
+15/09/2026, usuário relatou travadas especificamente na Battleground e
+pediu análise do log. Log real (62684 linhas, sessão longa) mostrou um
+padrão sistemático e claro nos `[PROF]`: `upd:FogSystem` subindo de
+avg≈0.05ms (peak 1.6ms) no início da sessão pra avg≈2-5ms (peak
+10-24ms) conforme a sessão avançava — crescimento constante, não um
+pico isolado. `PlayerProjectileSystem` (item 9, implementado na sessão
+anterior) foi checado e descartado como causa — médias seguem
+estáveis (~0.002-0.08ms) ao longo do log inteiro, sem crescer.
+
+**Causa raiz** (`ui/systems.py::FogSystem.update()`): o recompute de
+visão (shadowcasting, `compute_fov()`) dispara quando o PLAYER muda de
+tile OU quando `fog.ally_centers` muda (`_ally_key != fog.
+_last_ally_centers`) — `ally_centers` inclui não só teammates, mas
+TAMBÉM torres e minions do próprio time (visão compartilhada de time,
+30/07/2026). Dentro desse bloco, o código refazia
+`compute_fov(ax, ay, ar, ...)` pra CADA entrada de `ally_centers`,
+INCONDICIONALMENTE — mesmo pra um aliado que não tinha se movido desde
+o tick anterior. Em mundo aberto (`ally_centers` vazio) isso nunca
+aparece; numa BG com vários minions em campo + torres + teammates,
+QUALQUER um desses se movendo (o que acontece quase todo tick durante
+combate ativo) recalculava o shadowcasting de TODOS os outros também —
+O(n_aliados) por recompute, e o recompute em si dispara com frequência
+alta. Isso explica tanto o "só acontece na BG" (mundo aberto tem zero
+aliados) quanto o "cresce com o tempo" (mais minions em campo conforme
+a partida avança).
+
+**Fix**: cache por aliado em `FogOfWar._ally_fov_cache` (chave
+`(ax,ay,ar)`, valor o set já calculado) — um aliado que não mudou de
+posição/raio desde o último tick reaproveita o FOV já calculado em vez
+de rodar `compute_fov()` de novo. Só o aliado que de fato mudou de
+posição (chave nova) dispara um recálculo real. Cache limitado a 300
+entradas (`_ALLY_FOV_CACHE_MAX`, mesmo padrão de `_outline_cache`,
+`ui/floating_text.py`) pra não crescer sem limite numa partida longa
+com muitas posições diferentes; limpo também em `switch_map()` (mapa
+novo invalida as coordenadas cacheadas). Aviso explícito no comentário
+do código: a suposição por trás do cache (mesma posição+raio sempre
+produz o mesmo FOV) só vale porque o tile_matrix é estático durante uma
+partida — se algum dia o jogo ganhar mutação de tile em tempo real
+(porta abrindo, etc.), esse cache precisa ser invalidado nesse
+momento também.
+
+**Testes**: 2 casos novos em `tests/test_fog_ally_vision.py`
+(`TestFogSystemAllyFovCache`) — confirma que um aliado que NÃO se moveu
+não gera uma 2ª chamada de `compute_fov` quando o recompute dispara por
+outro motivo (o player se movendo), e que um aliado que SE moveu pra
+posição nova recalcula e atualiza o cache corretamente (revert-to-
+confirm: os 2 testes falham sem o fix — 4 chamadas em vez de 3, cache
+vazio). Os 4 testes já existentes de visão compartilhada de time
+(`test_fog_ally_vision.py`, `test_team_visibility_sweep.py`,
+`test_tile_los_visibility.py`, 35 casos) continuam passando sem
+alteração — comportamento observável idêntico, só o CUSTO mudou.
+Suíte completa: 1659 passed, 2 failed pré-existentes/timing flake sem
+relação.
+
+**Achados secundários no mesmo log, NÃO corrigidos** (fora do escopo
+imediato, mencionados pra não se perder):
+- O label `hud:combat_log` (`game.py`) está com nome enganoso — na
+  verdade mede o bloco de minimapa + quest HUD + buff bar, não o log
+  de combate/chat de verdade. O log de combate real
+  (`self._draw_chat_log()`) fica num trecho de ~25 linhas entre
+  `transform_scale` e `hud:draw_hud` que NUNCA tem nenhum
+  `_prof_record` — mesma classe de "buraco cego" já achada 3 vezes
+  nesta investigação (§143), aqui nunca antes notada porque o nome do
+  label vizinho mascarava a ausência.
+- `[SPIKE] 1106ms` com `events` custando 1094.7ms, achado em algum
+  ponto do log — mesmo padrão de alt-tab/backlog de evento já
+  documentado em §143 (achado 2), não reinvestigado aqui.

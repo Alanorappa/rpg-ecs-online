@@ -2663,8 +2663,26 @@ class FogSystem(System):
                             if 0 <= ex < map_w and 0 <= ey < map_h:
                                 fog.explored.add((ex, ey))
 
+                # Cache por aliado (15/09/2026, ver PROBLEMAS_ARQUITETURA.md
+                # §146) — aliado (player/torre/minion) que não mudou de
+                # posição/raio desde o último tick reaproveita o FOV já
+                # calculado, em vez de rodar o shadowcasting de novo. Sem
+                # isso, QUALQUER aliado mudando de tile recalculava TODOS —
+                # em BG com vários minions/torres, esse "todos" é bem maior
+                # que mundo aberto (zero aliados) ou Arena (time pequeno,
+                # sem minion/torre). `_ALLY_FOV_CACHE_MAX` evita crescimento
+                # sem limite numa partida longa com muitas posições
+                # diferentes (mesmo padrão de `_outline_cache`,
+                # ui/floating_text.py).
+                _ALLY_FOV_CACHE_MAX = 300
                 for ax, ay, ar in fog.ally_centers:
-                    _ally_fov = compute_fov(ax, ay, ar, _is_blocking_from(ax, ay))
+                    _ally_key2 = (ax, ay, ar)
+                    _ally_fov = fog._ally_fov_cache.get(_ally_key2)
+                    if _ally_fov is None:
+                        _ally_fov = compute_fov(ax, ay, ar, _is_blocking_from(ax, ay))
+                        if len(fog._ally_fov_cache) >= _ALLY_FOV_CACHE_MAX:
+                            fog._ally_fov_cache.clear()
+                        fog._ally_fov_cache[_ally_key2] = _ally_fov
                     fog.visible |= _ally_fov
                     fog.explored |= _ally_fov
 

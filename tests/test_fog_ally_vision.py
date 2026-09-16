@@ -14,6 +14,7 @@ Cobre as DUAS pontas:
   área que o próprio jogador não enxergaria em linha reta.
 """
 import os, sys, unittest
+import unittest.mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -144,6 +145,73 @@ class TestFogSystemAllyVisionSharing(unittest.TestCase):
         fog.switch_map("maps/outro_mapa.csv")
         self.assertEqual(fog.ally_centers, [],
                          "centros do mapa anterior não fazem sentido nas coordenadas do novo mapa")
+        self.assertEqual(fog._ally_fov_cache, {},
+                         "cache de FOV por aliado do mapa anterior também não serve mais")
+
+
+class TestFogSystemAllyFovCache(unittest.TestCase):
+    """Cache por-aliado (15/09/2026, §146) — aliado que não mudou de
+    posição/raio entre dois recomputes reaproveita o FOV já calculado,
+    em vez de rodar o shadowcasting de novo. Achado real: BG com vários
+    minions/torres recomputava TODOS a cada mudança de tile de QUALQUER
+    um deles — custo medido subindo de ~0.05ms pra 2-5ms (picos até
+    24ms) conforme a partida avançava."""
+
+    def setUp(self):
+        self.world = _make_fog_world(width=11, height=5, wall_col=5)
+        self.fog_sys = FogSystem(self.world)
+        self.player_eid = self.world.create_entity()
+        self.world.add_component(self.player_eid, FogOfWar(radius=15, explore_radius=2))
+        self.world.add_component(self.player_eid,
+                                 TileMovement(current_tile_x=2, current_tile_y=2))
+
+    def _fog(self) -> FogOfWar:
+        return self.world.get_component(self.player_eid, FogOfWar)
+
+    def test_aliado_que_nao_se_moveu_nao_recalcula_shadowcasting_de_novo(self):
+        import ui.systems as sys_mod
+        real_compute_fov = sys_mod.compute_fov
+        calls = {"n": 0}
+
+        def _counting_compute_fov(*a, **k):
+            calls["n"] += 1
+            return real_compute_fov(*a, **k)
+
+        fog = self._fog()
+        fog.ally_centers = [(8, 2, 3)]
+        with unittest.mock.patch.object(sys_mod, "compute_fov", side_effect=_counting_compute_fov):
+            self.fog_sys.update()   # 1ª vez: cache miss, calcula pro player + pro aliado
+            calls_after_first = calls["n"]
+            self.assertEqual(calls_after_first, 2,
+                             "1ª chamada deveria calcular player (1) + aliado novo no cache (1)")
+
+            # Player se move (força o gate de recompute a disparar de novo),
+            # ally_centers continua o MESMO — aliado não mudou de posição.
+            tm = self.world.get_component(self.player_eid, TileMovement)
+            tm.current_tile_x = 3
+            self.fog_sys.update()
+
+            self.assertEqual(calls["n"], calls_after_first + 1,
+                             "2ª chamada só deveria recalcular o PLAYER (posição nova) — "
+                             "o aliado, na mesma posição de antes, devia vir do cache, "
+                             "não gerar uma 2ª chamada de shadowcasting pra ele")
+
+    def test_aliado_que_se_moveu_recalcula_e_atualiza_o_cache(self):
+        fog = self._fog()
+        fog.ally_centers = [(8, 2, 3)]
+        self.fog_sys.update()
+        self.assertIn((8, 2, 3), fog._ally_fov_cache)
+
+        # Aliado se move pra uma posição NOVA — precisa recalcular (cache
+        # miss pra essa chave nova), não reusar o FOV da posição antiga.
+        fog.ally_centers = [(4, 2, 3)]
+        self.fog_sys.update()
+        self.assertIn((4, 2, 3), fog._ally_fov_cache,
+                      "posição nova do aliado deveria entrar no cache")
+        # (4,2) é do lado ESQUERDO da parede (coluna 5) — mesmo lado do
+        # player — revela área diferente da posição antiga (lado direito).
+        self.assertNotIn((7, 2), fog.visible,
+                         "aliado na posição nova não deveria mais revelar o lado direito da parede")
 
 
 if __name__ == "__main__":
