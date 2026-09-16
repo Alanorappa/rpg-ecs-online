@@ -19114,3 +19114,34 @@ fecha de verdade). Revert-to-confirm: falha sem o fix
 (`_topmost_open_modal()` retorna `None` em vez de `"char_stats"`).
 Suíte completa de `test_client_ui.py` (171 casos, sem dependência de
 banco): sem regressão.
+
+## 150. Auditoria de projeto inteiro, 3 agentes independentes — 4 exploits de economia de severidade Alta achados no servidor
+
+16/09/2026, usuário pediu pra escalar de novo os 3 agentes
+independentes (mesmo modelo de `CLIENT_PERFORMANCE_REVIEW.md`,
+15/09/2026), desta vez cobrindo o PROJETO INTEIRO (incluindo `server/`
+e `shared/`, de fora da rodada anterior por decisão explícita). Escopo
+e achados completos em `arquitetura/PROJECT_WIDE_REVIEW.md` (não
+resumido aqui pra evitar duplicação — este item é só o ponteiro).
+
+**Resumo do que mais importa**: o especialista em práticas de mercado
+achou 4 exploits de duplicação de recurso de severidade Alta no
+servidor (ouro infinito via `SELL_REQUEST`, cura/mana infinitos via
+`CONSUMABLE_USE`, duplicação/forja de item via `INV_SYNC`, perda de
+ouro sem entrega em `BUY_REQUEST`) — todos com a mesma causa raiz:
+handler aplica o que o CLIENTE reportou no payload direto, em vez de
+resolver o efeito a partir do catálogo/estado autoritativo do
+servidor. Servidor de produção real (Hetzner) está rodando, então isso
+é risco ativo, não só teórico.
+
+Achado metodológico relevante: os relatórios de arquitetura e de
+qualidade de código DISCORDARAM sobre 1 item (painéis NPC fechados por
+proximidade duplicados em `game.py`) — verificado manualmente antes de
+aceitar qualquer um dos dois (mesma disciplina que o CLAUDE.md já pede
+pra análise de terceiro, aplicada aqui entre 2 agentes da mesma
+auditoria): o relatório de arquitetura estava certo, o de qualidade
+olhou só 1 dos 2 métodos duplicados e errou o veredito.
+
+**Nenhuma mudança de código foi feita ainda** — é só o levantamento,
+igual a rodada anterior. Decisão de por onde começar pendente do
+usuário.
