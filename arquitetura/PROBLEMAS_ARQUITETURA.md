@@ -19145,3 +19145,108 @@ olhou só 1 dos 2 métodos duplicados e errou o veredito.
 **Nenhuma mudança de código foi feita ainda** — é só o levantamento,
 igual a rodada anterior. Decisão de por onde começar pendente do
 usuário.
+
+## 151. Ouro infinito via `SELL_REQUEST` (item 1 da auditoria §150) — corrigido após revisão cruzada entre os 3 agentes, que achou um 2º exploit mais grave no mesmo método
+
+16/09/2026. Usuário pediu explicitamente, antes de corrigir qualquer
+achado da auditoria §150, uma rodada de **revisão cruzada**: o achado
+de 1 agente (mercado/segurança) é reapresentado aos OUTROS 2 (que não
+o viram) pra opinar pela própria lente antes de qualquer código ser
+escrito. Mesmo princípio já usado em rodadas anteriores deste projeto
+(§114, §116-121 — "2ª rodada valida/aprofunda a 1ª"), aplicado agora
+entre especialidades diferentes em vez de entre rodadas da mesma
+especialidade.
+
+**Achado original** (agente de mercado): `process_shop_sell`
+(`server/world_server.py`) creditava ouro incondicionalmente
+(`wallet.gold += sell_price`) ANTES de tentar remover o item do
+Inventory ao vivo — a remoção era best-effort (não achou, não remove,
+mas também não desfaz o crédito nem recusa a venda). Um cliente podia
+vender um item que nunca possuiu (qualquer item caro do catálogo) com
+`stack_sold` arbitrário (sem teto) e receber ouro ilimitado, repetível.
+
+**Revisão cruzada — arquitetura**: confirmou que o fix proposto (checar
+posse ANTES de aplicar, mesmo padrão que `craft_item`/`recycle_item` já
+seguem no mesmo arquivo) é o caminho certo, sem precisar de um "ponto
+único de verdade" novo — só a ORDEM das operações estava invertida.
+Mas achou uma ressalva importante: o comportamento antigo ("vende
+mesmo sem achar o item") era uma decisão de design DOCUMENTADA de
+propósito no próprio docstring (tolerar desync de save antigo/lag) —
+o fix reverte essa decisão, então não é "só corrigir um bug", é trocar
+um invariante consciente. Pela própria regra do projeto ("nunca decido
+sozinho"), isso precisava de confirmação explícita do usuário antes de
+codar (obtida — ver abaixo).
+
+**Revisão cruzada — qualidade de código**: confirmou que o fix não
+introduz condição de corrida (mensagens da mesma sessão processam
+sequencialmente, `process_shop_sell` não tem `await` interno — mas
+frágil a mudanças futuras que adicionem um `await` no meio, vale
+comentário). Achou 2 problemas que o fix original não cobria: (a) a
+pré-checagem de posse precisa somar através de TODAS as entradas que
+casam no Inventory (não só "existe 1"), senão vender 1 unidade real
+ainda permite reportar `stack_sold=999` e ser pago por 999 — mesma
+classe de bug, só que sobre um item realmente possuído em parte; (b)
+**achado novo, mais grave que o original**: `wallet.gold =
+int(current_gold)` (linha 3405-3406) sincronizava o ouro do servidor
+com o valor que o CLIENTE reporta, sem teto nem validação,
+incondicionalmente, ANTES de qualquer checagem de item — mesmo com o
+fix de posse aplicado perfeitamente, um cliente podia vender um item
+BARATO que realmente possui com `current_gold: 999999999` no payload e
+receber ouro ilimitado mesmo assim. Mesmo padrão idêntico em
+`process_shop_buy` (linha 3290-3291).
+
+Confirmado por pesquisa própria (não parte do achado de nenhum agente):
+`Wallet.gold` do servidor já é autoritativo de verdade — a única fonte
+real de crédito é `server/loot_processor.py:207`
+(`wallet.gold += coins`, aplicado no pickup de loot, server-side) mais
+os próprios `sell`/`craft`/`grant_items_to_player`. Não existe nenhum
+cenário legítimo em que o gold do SERVIDOR estaria "desatualizado" em
+relação ao que o cliente reporta — o comentário original
+("servidor pode ter gold desatualizado, ex: moedas de loot adicionadas
+localmente") não bate com a arquitetura atual (loot já é
+100% server-autoritativo). `current_gold` era um resquício sem
+propósito real, só risco.
+
+**Decisão do usuário**: tratar os 2 problemas juntos no mesmo fix
+("pode tratar os 2").
+
+**Fix**: `process_shop_sell` — reordenado pra checar posse real (soma
+através de todas as entradas que casam, mesmo idioma de `craft_item`)
+e `Inventory` presente ANTES de creditar qualquer ouro; falha
+(`item_not_owned`/`no_inventory`) em vez de suceder às cegas. Parâmetro
+`current_gold` removido inteiramente (assinatura da função, leitura em
+`server/session.py::_handle_sell_request`, e o mesmo em
+`process_shop_buy`/`_handle_buy_request` — mesmo bug, mesma causa raiz,
+mesmo fix). Cliente pode continuar mandando o campo no payload sem
+efeito nenhum (schema de validação em `shared/messages.py` é
+"permissivo de propósito" — campo extra não declarado não quebra nada,
+só passa a ser ignorado) — não precisou mexer no client.
+
+**Nota sobre a sugestão de schema do agente de arquitetura**: ele
+sugeriu adicionar `stack_sold`/`item_value` como campos obrigatórios em
+`C2S_REQUIRED` (`shared/messages.py`). Descartado: o próprio arquivo já
+documenta a regra "PERMISSIVO de propósito — só campos NÚCLEO entram,
+campo opcional não entra, senão todo campo novo vira mensagem
+rejeitada" — `stack_sold`/`item_value` são opcionais com default no
+handler (`stack_sold: int = 1`), então declará-los como obrigatórios
+quebraria qualquer chamador que omite o campo. O agente não tinha essa
+regra no contexto que recebeu. A validação de posse dentro do handler
+(soma real contra o Inventory) já fecha o exploit sem precisar mexer
+no schema.
+
+**Testes**: `tests/test_craft_recycle_protocol.py::TestShopSellRemovesFromLiveInventory`
+— o teste antigo que documentava o comportamento errado como
+"esperado" (`test_vender_item_que_nao_esta_no_inventory_ainda_sucede_sem_remover_nada`)
+foi INVERTIDO pra `test_vender_item_que_nao_esta_no_inventory_falha_sem_creditar_ouro`;
+2 casos novos (`test_vender_mais_unidades_do_que_possui_falha_sem_creditar_ouro`,
+`test_vender_sem_inventory_component_falha`). Revert-to-confirm: os 3
+falham contra o código antigo (`git stash` nos 2 arquivos do fix),
+exatamente como esperado. Suíte relacionada (shop/sell/buy/wallet/
+craft/recycle, 53 casos): 50 passed, 3 failed pré-existentes (Postgres
+via Docker fora do ar neste ambiente, confirmado por traceback
+idêntico em todos os 3 — não relacionado à mudança).
+
+Achados #2/#3/#4 da mesma auditoria (cura/mana infinitos via
+`CONSUMABLE_USE`, duplicação de item via `INV_SYNC`, perda de ouro em
+`BUY_REQUEST`) seguem pendentes — mesmo processo de revisão cruzada
+antes de corrigir, a pedido do usuário.

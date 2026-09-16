@@ -866,10 +866,8 @@ class SessionManager:
         item_id      = str(payload.get("item_id", ""))
         item_value   = int(payload.get("item_value", 0))
         stack_sold   = max(1, int(payload.get("stack_sold", 1)))
-        current_gold = payload.get("current_gold")
         result = self.world_server.process_shop_sell(
             session.session_id, item_name, item_value, stack_sold,
-            current_gold=int(current_gold) if current_gold is not None else None,
             item_id=item_id)
         await session.send(MsgType.SELL_RESULT, result)
 
@@ -886,11 +884,9 @@ class SessionManager:
         item_name = str(payload.get("item_name", ""))
         item_id   = str(payload.get("item_id", ""))
         quantity  = max(1, int(payload.get("quantity", 1)))
-        last_inv     = session.last_client_payload.get("inventory") if session.last_client_payload else None
-        current_gold = payload.get("current_gold")
+        last_inv  = session.last_client_payload.get("inventory") if session.last_client_payload else None
         result = self.world_server.process_shop_buy(
             session.session_id, shop_id, item_name, quantity, last_inv,
-            current_gold=int(current_gold) if current_gold is not None else None,
             item_id=item_id)
         await session.send(MsgType.BUY_RESULT, result)
 

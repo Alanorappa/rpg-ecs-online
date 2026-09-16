@@ -3231,7 +3231,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
     def process_shop_buy(self, session_id: str, shop_id: str,
                          item_name: str, quantity: int,
                          last_inventory: list | None = None,
-                         current_gold: int | None = None,
                          item_id: str = "") -> dict:
         """Processa compra em loja — autoritativo no servidor.
 
@@ -3241,7 +3240,15 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         `item_id` (débito C2, 10/08/2026) — identificação primária, O(1);
         `item_name` cai pro cache legado por nome (`_shop_item_cache_by_name`)
-        só quando `item_id` vem vazio (cliente antigo/não migrado ainda)."""
+        só quando `item_id` vem vazio (cliente antigo/não migrado ainda).
+
+        `current_gold` (removido, 16/09/2026, ver PROBLEMAS_ARQUITETURA.md
+        §150 — mesmo achado de `process_shop_sell`): sincronizava
+        `wallet.gold` com o valor reportado pelo CLIENTE, sem teto nem
+        validação, antes de checar `total_cost` — um cliente podia
+        comprar qualquer coisa reportando um `current_gold` arbitrário.
+        Gold do servidor já é autoritativo de verdade, nunca precisou
+        de sync vindo do cliente."""
         from engine.components import Wallet, Inventory
 
         eid = self._player_eids.get(session_id)
@@ -3282,13 +3289,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         price      = int(entry["price"])
         total_cost = price * max(1, quantity)
 
-        # 2. Valida gold — sincroniza com o valor atual do cliente antes de processar.
-        # O servidor pode ter gold desatualizado (ex: moedas de loot adicionadas localmente).
+        # 2. Valida gold — contra o valor real do servidor (autoritativo).
         wallet = self.world.get_component(eid, Wallet)
         if not wallet:
             return {"success": False, "reason": "no_wallet"}
-        if current_gold is not None and current_gold >= 0:
-            wallet.gold = int(current_gold)
         if wallet.gold < total_cost:
             return {"success": False, "reason": "insufficient_gold",
                     "required": total_cost, "available": wallet.gold}
@@ -3365,7 +3369,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def process_shop_sell(self, session_id: str, item_name: str,
                           client_value: int, stack_sold: int = 1,
-                          current_gold: int | None = None,
                           item_id: str = "") -> dict:
         """Processa venda ao mercador — autoritativo no servidor.
 
@@ -3379,20 +3382,32 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         Remove o item vendido do Inventory AO VIVO do servidor (12/08/2026,
         bug real relatado pelo usuário) — antes só a Wallet era mutada
-        aqui, nunca o Inventory; `process_shop_buy` (logo acima) já fazia
-        o equivalente pro lado da compra ("sem isso o item só aparece
-        nessa cópia após o próximo SAVE_STATE"), venda nunca ganhou o
-        mesmo passo. Sem isso, o Inventory vivo do servidor nunca refletia
-        a venda: `_build_save_merge` persiste `live_inventory` (Fase 0,
-        07/08/2026) por cima do que o cliente reportava, então o item
-        "vendido" voltava no próximo login — e pior, `inv_index` de
-        EQUIP_ITEM (posicional contra esse MESMO Inventory vivo, ver
-        `equip_item_from_inventory`) ficava dessincronizado da posição que
-        o cliente via, equipando/rejeitando o item errado até relogar.
-        Não bloqueia a venda se o item não for encontrado ao vivo (mesmo
-        espírito conservador de `client_value` acima) — só não remove
-        nada nesse caso, preservando o comportamento anterior pra quem já
-        depende de vender sempre suceder."""
+        aqui, nunca o Inventory.
+
+        Confere posse real ANTES de creditar ouro (16/09/2026, achado #1
+        da auditoria de projeto inteiro, ver PROBLEMAS_ARQUITETURA.md
+        §150) — mesma disciplina que `craft_item`/`recycle_item` já
+        seguem (checar tudo primeiro, aplicar depois). ANTES disso a
+        venda nunca bloqueava por item não encontrado ao vivo (decisão
+        documentada de propósito, pra tolerar desync de save antigo) —
+        mas isso permitia vender um item que o jogador NUNCA teve:
+        ouro creditado incondicionalmente, remoção era best-effort e
+        nunca desfazia o crédito quando não achava nada. Revertido: com
+        `stack_sold` somado através de TODAS as entradas que casam no
+        Inventory vivo (mesmo idioma de `craft_item`) menor que o
+        pedido, ou sem `Inventory` nenhum, a venda agora FALHA
+        (`item_not_owned`/`no_inventory`) em vez de suceder às cegas —
+        um cliente legítimo com desync real passa a ver a venda falhar
+        (visível) em vez de "suceder" sem remover nada (silencioso).
+
+        `current_gold` (removido, 16/09/2026, mesma auditoria): o
+        handler sincronizava `wallet.gold` com o valor que o CLIENTE
+        reportava, sem teto nem validação, ANTES de qualquer checagem —
+        um cliente podia vender um item real barato com
+        `current_gold: 999999999` e o servidor aceitava. Gold do
+        servidor já é autoritativo de verdade (creditado só via
+        `loot_processor`/`grant_items_to_player`/este próprio método),
+        nunca precisou de sync vindo do cliente."""
         from engine.components import Wallet, Inventory
         eid = self._player_eids.get(session_id)
         if eid is None:
@@ -3400,10 +3415,20 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         wallet = self.world.get_component(eid, Wallet)
         if not wallet:
             return {"success": False, "reason": "no_wallet"}
+        inv = self.world.get_component(eid, Inventory)
+        if inv is None:
+            return {"success": False, "reason": "no_inventory"}
 
-        # Sincroniza gold com o cliente antes de processar (loot coins podem não ter chegado)
-        if current_gold is not None and current_gold >= 0:
-            wallet.gold = int(current_gold)
+        stack_sold = max(1, stack_sold)
+
+        # Confirma posse real ANTES de aplicar qualquer coisa — soma
+        # através de todas as entradas que casam (mesmo idioma de
+        # craft_item, que soma material em múltiplos slots antes de
+        # decidir).
+        owned = sum(it.stack for it in inv.items if it is not None and
+                   ((it.item_id == item_id) if item_id else (it.name == item_name)))
+        if owned < stack_sold:
+            return {"success": False, "reason": "item_not_owned"}
 
         # Tenta encontrar o item no catálogo para validar value
         canonical_value = (self._lookup_item_value(item_id) if item_id
@@ -3412,29 +3437,31 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             # Desconhecido: usa valor informado pelo cliente com teto conservador
             canonical_value = min(int(client_value), 500)
 
-        sell_price = max(1, int(canonical_value * self._SELL_RATIO)) * max(1, stack_sold)
-        wallet.gold += sell_price
+        sell_price = max(1, int(canonical_value * self._SELL_RATIO)) * stack_sold
 
-        # Remove do Inventory vivo — mesmo padrão de craft_item (decrementa
-        # stack, remove o slot só quando zera). item_id primeiro (C2),
-        # nome como fallback (item sem item_id — save antigo).
-        inv = self.world.get_component(eid, Inventory)
-        if inv is not None:
-            remaining = max(1, stack_sold)
-            to_remove = []
-            for i, it in enumerate(inv.items):
-                if it is None or remaining <= 0:
-                    continue
-                matches = (it.item_id == item_id) if item_id else (it.name == item_name)
-                if not matches:
-                    continue
-                take = min(remaining, it.stack)
-                it.stack -= take
-                remaining -= take
-                if it.stack <= 0:
-                    to_remove.append(i)
-            for i in reversed(to_remove):
-                inv.items.pop(i)
+        # Remove do Inventory vivo — posse já confirmada acima, então
+        # este laço sempre encontra exatamente `stack_sold` unidades
+        # (decrementa stack, remove o slot só quando zera). item_id
+        # primeiro (C2), nome como fallback (item sem item_id — save
+        # antigo).
+        remaining = stack_sold
+        to_remove = []
+        for i, it in enumerate(inv.items):
+            if it is None or remaining <= 0:
+                continue
+            matches = (it.item_id == item_id) if item_id else (it.name == item_name)
+            if not matches:
+                continue
+            take = min(remaining, it.stack)
+            it.stack -= take
+            remaining -= take
+            if it.stack <= 0:
+                to_remove.append(i)
+        for i in reversed(to_remove):
+            inv.items.pop(i)
+
+        # Crédito só depois da remoção confirmada.
+        wallet.gold += sell_price
 
         return {
             "success":    True,

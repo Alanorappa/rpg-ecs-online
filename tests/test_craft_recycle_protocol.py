@@ -359,7 +359,7 @@ class TestShopSellRemovesFromLiveInventory(unittest.TestCase):
 
         result = self.ws.process_shop_sell(
             "s1", item_name="Espada de Ferro", client_value=35,
-            stack_sold=1, current_gold=0, item_id="iron_sword")
+            stack_sold=1, item_id="iron_sword")
 
         self.assertTrue(result["success"])
         self.assertGreater(self.wallet.gold, 0)
@@ -376,22 +376,55 @@ class TestShopSellRemovesFromLiveInventory(unittest.TestCase):
 
         result = self.ws.process_shop_sell(
             "s1", item_name=arrows.name, client_value=arrows.value,
-            stack_sold=1, current_gold=0, item_id="arrow")
+            stack_sold=1, item_id="arrow")
 
         self.assertTrue(result["success"])
         self.assertIn(arrows, self.inv.items, "pilha não deveria sumir, só diminuir")
         self.assertEqual(arrows.stack, 4)
 
-    def test_vender_item_que_nao_esta_no_inventory_ainda_sucede_sem_remover_nada(self):
-        """Mesmo espírito conservador do fallback de client_value — não
-        bloqueia a venda por item_id não encontrado ao vivo (evita
-        regressão pra qualquer chamador existente que já dependia de
-        vender sempre suceder)."""
+    def test_vender_item_que_nao_esta_no_inventory_falha_sem_creditar_ouro(self):
+        """16/09/2026 (achado #1 da auditoria de projeto inteiro, ver
+        PROBLEMAS_ARQUITETURA.md §150) — comportamento INVERTIDO de
+        propósito: antes a venda sucedia mesmo sem achar o item (só não
+        removia nada), permitindo vender item que o jogador nunca teve
+        e ainda assim receber ouro. Agora falha explicitamente."""
         result = self.ws.process_shop_sell(
             "s1", item_name="Espada de Ferro", client_value=35,
-            stack_sold=1, current_gold=0, item_id="iron_sword")
-        self.assertTrue(result["success"])
+            stack_sold=1, item_id="iron_sword")
+        self.assertFalse(result["success"])
+        self.assertEqual(result["reason"], "item_not_owned")
+        self.assertEqual(self.wallet.gold, 0)
         self.assertEqual(self.inv.items, [])
+
+    def test_vender_mais_unidades_do_que_possui_falha_sem_creditar_ouro(self):
+        """16/09/2026, mesmo achado #1 — venda parcial de um stack real:
+        jogador tem 2 unidades, pede pra vender 5. Precisa falhar (soma
+        através de todas as entradas que casam, não só "existe 1")."""
+        arrows = self._iron_sword(stack=1)
+        from content.item_table import resolve_item_by_id
+        arrows = resolve_item_by_id("arrow")
+        arrows.stack = 2
+        self.inv.items.append(arrows)
+
+        result = self.ws.process_shop_sell(
+            "s1", item_name=arrows.name, client_value=arrows.value,
+            stack_sold=5, item_id="arrow")
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["reason"], "item_not_owned")
+        self.assertEqual(self.wallet.gold, 0)
+        self.assertEqual(arrows.stack, 2, "nao deveria ter removido nada")
+
+    def test_vender_sem_inventory_component_falha(self):
+        """16/09/2026, mesmo achado #1 — sem Inventory pra confirmar
+        posse, a venda tem que falhar (mesmo padrao de craft_item), nao
+        suceder as cegas."""
+        self.ws.world.remove_component(self.eid, Inventory)
+        result = self.ws.process_shop_sell(
+            "s1", item_name="Espada de Ferro", client_value=35,
+            stack_sold=1, item_id="iron_sword")
+        self.assertFalse(result["success"])
+        self.assertEqual(result["reason"], "no_inventory")
 
 
 class TestCraftRecycleProtocolDispatch(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):

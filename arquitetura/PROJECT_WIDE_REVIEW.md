@@ -38,6 +38,15 @@ que o CLIENTE reportou no payload direto, em vez de resolver o efeito a
 partir do catálogo/estado autoritativo do servidor.
 
 ### 1. Ouro infinito via `SELL_REQUEST`
+**Status:** ✅ Implementado (16/09/2026) — ver `PROBLEMAS_ARQUITETURA.md`
+§151. Antes de corrigir, o achado + fix propostos passaram por revisão
+cruzada (os outros 2 especialistas, que não tinham visto este achado
+específico, opinaram sobre ele — mesmo espírito de "segunda rodada" já
+usado em auditorias anteriores do projeto). A revisão achou um problema
+NOVO e mais grave no mesmo método (`current_gold` do cliente
+sobrescrevendo `wallet.gold` sem validação, também presente em
+`process_shop_buy`) — corrigido junto, a pedido do usuário.
+
 `server/world_server.py:3366-3441` (`process_shop_sell`) credita ouro
 mesmo quando o item vendido não existe de verdade no Inventory do
 jogador (remoção é best-effort, "não achou, não remove", mas o ouro já
