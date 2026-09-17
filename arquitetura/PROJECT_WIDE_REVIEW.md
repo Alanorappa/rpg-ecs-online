@@ -229,6 +229,10 @@ próprio código admite que o global foi escolhido especificamente pra
 não o remove.
 
 ### Estado ad-hoc via `hasattr` repetido em `WorldServer` [Média]
+**Status:** ✅ Implementado (17/09/2026) — ver `PROBLEMAS_ARQUITETURA.md`
+§172. Declarado uma vez em `WorldServer.__init__`, os 4 sites viraram
+acesso direto ao dict.
+
 `server/combat_processor.py:393-440` — `_last_mob_attacker` nunca é
 declarado em `__init__`; o guard `if not hasattr(self, ...)` aparece 4x
 no mesmo método. Mesma classe de anti-padrão que o CLAUDE.md já proíbe

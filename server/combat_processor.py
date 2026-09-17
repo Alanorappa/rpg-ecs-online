@@ -390,8 +390,6 @@ class CombatProcessorMixin:
             if _ai_r and _ai_r.state in ("ATTACKING", "CHASING") and _ai_r.target_eid != -1:
                 _mob_attacker_of[_ai_r.target_eid] = _mb
                 # Atualiza cache do último atacante para fallback no mesmo tick
-                if not hasattr(self, "_last_mob_attacker"):
-                    self._last_mob_attacker = {}
                 self._last_mob_attacker[_ai_r.target_eid] = _mb
                 continue
             # Torre (29/07/2026): não tem AIControlled (ver engine/
@@ -406,8 +404,6 @@ class CombatProcessorMixin:
             _tw_r = self.world.get_component(_mb, _TowerAtk)
             if _tw_r and _tw_r.current_target_eid != -1:
                 _mob_attacker_of[_tw_r.current_target_eid] = _mb
-                if not hasattr(self, "_last_mob_attacker"):
-                    self._last_mob_attacker = {}
                 self._last_mob_attacker[_tw_r.current_target_eid] = _mb
                 continue
             # Minion (30/07/2026): mesma razão de Torre — sem AIControlled,
@@ -417,8 +413,6 @@ class CombatProcessorMixin:
             _mn_r = self.world.get_component(_mb, _MinionAtk)
             if _mn_r and _mn_r.current_target_eid != -1:
                 _mob_attacker_of[_mn_r.current_target_eid] = _mb
-                if not hasattr(self, "_last_mob_attacker"):
-                    self._last_mob_attacker = {}
                 self._last_mob_attacker[_mn_r.current_target_eid] = _mb
 
         # Consome avoidances (parry/dodge/miss) de mob→player coletadas em CombatSystem.
@@ -435,9 +429,6 @@ class CombatProcessorMixin:
                     "source":   "auto",
                 })
             _combat_sys_cp.mob_avoidance_events.clear()
-
-        if not hasattr(self, "_last_mob_attacker"):
-            self._last_mob_attacker: dict[int, int] = {}
 
         for peid, hp_before in player_hp_snapshot.items():
             pcs = self.world.get_component(peid, CombatStats)

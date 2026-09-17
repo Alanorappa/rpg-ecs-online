@@ -20429,3 +20429,28 @@ usada pelo caminho online real) foi mantida intocada.
 
 Suíte: `test_client_ui.py` (175) + os 8 arquivos de teste de quest
 (78 casos) — sem regressão.
+
+## 172. `PROJECT_WIDE_REVIEW.md` — `_last_mob_attacker` via `hasattr()` ad-hoc — movido pra `WorldServer.__init__`
+
+17/09/2026. Último item de arquitetura da auditoria.
+`server/combat_processor.py` (mixin de `WorldServer`, sem `__init__`
+próprio) tinha `_last_mob_attacker` (cache de fallback pro attacker
+mob→player dentro do mesmo tick) criado via `if not hasattr(self,
+"_last_mob_attacker"): self._last_mob_attacker = {}`, repetido em 4
+pontos do mesmo arquivo — exatamente o anti-padrão que o CLAUDE.md já
+proíbe explicitamente ("nunca anexar cache/estado via
+`hasattr(func, "_x")`/atributo de função").
+
+**Fix**: `self._last_mob_attacker: dict[int, int] = {}` declarado uma
+vez em `WorldServer.__init__` (`server/world_server.py`), ao lado de
+`_mob_damage_log` (mesmo formato/uso — estado de combate por-instância
+do servidor). Os 4 sites em `combat_processor.py` viraram acesso
+direto ao dict, sem guard nenhum.
+
+Suíte: `pytest tests/ -k "combat or tower or minion or mob_attack"` —
+224 casos, sem regressão.
+
+---
+
+**Toda a seção 🟡 Arquitetura de `PROJECT_WIDE_REVIEW.md` está
+concluída** (§170/§171/§172).

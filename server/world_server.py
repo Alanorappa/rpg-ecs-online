@@ -349,6 +349,16 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Rastreamento de dano por mob: mob_eid → {player_eid: total_damage}
         self._mob_damage_log: dict[int, dict[int, int]] = {}
+        # Cache de fallback pra atribuição de attacker mob→player dentro do
+        # MESMO tick (17/09/2026, ver arquitetura/PROJECT_WIDE_REVIEW.md) —
+        # player_eid → mob_eid do último mob rastreado atacando-o
+        # (`combat_processor.py::_process_mob_attacks_on_players`, usado
+        # quando o mob já mudou de estado antes do reverse-map ser lido no
+        # mesmo tick). Antes vivia como atributo de instância criado via
+        # `hasattr()` na primeira chamada — anti-padrão explicitamente
+        # proibido pelo CLAUDE.md ("estado mutável ad-hoc fora do ECS");
+        # aqui, junto do resto do estado de combate por-instância.
+        self._last_mob_attacker: dict[int, int] = {}
         # Kill credit + assist de player (16/08/2026, unificação pedida
         # pelo usuário) — vítima_eid → {atacante_eid: (timestamp, seq)
         # do último hit}, SÓ player→player (diferente de _mob_damage_log
