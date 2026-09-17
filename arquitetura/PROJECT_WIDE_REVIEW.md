@@ -118,6 +118,14 @@ abre brute-force de login/DoS num event loop single-thread (já
 documentado no projeto como sensível a isso).
 
 ### 6. [Baixa] Hash de senha (servidor) usa SHA-256 salteado, não uma KDF lenta
+**Status:** Revisitado com o usuário (17/09/2026) — mantido adiado de
+propósito. `server/auth.py:120-122` já documentava essa decisão desde
+antes desta auditoria: trocar só o KDF sem TLS/wss (a senha ainda
+trafega exposta na rede hoje) não fecha o problema real, e mexer no
+formato de hash de contas JÁ reais em produção é sensível. Fica pra
+quando TLS entrar, como o plano original já previa — não é um achado
+esquecido, é uma decisão confirmada de novo.
+
 Só relevante pós-vazamento de banco; troca isolada em `server/auth.py`.
 
 ---
