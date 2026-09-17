@@ -15,7 +15,7 @@ import pygame
 from ui.systems import System
 from engine.components import (Position, Renderable, TileMovement,
                         NPC, Trainer, Wallet, NPCInteractionRequest)
-from engine.utils import get_camera_offset
+from engine.utils import get_camera_offset, chebyshev
 import engine.quest_logic as quest_logic
 from content.skill_config import (SKILL_CATALOG, SKILL_LEVEL_REQUIREMENTS, SKILL_COSTS,
                           NUM_SLOTS, SKILL_ORDER_BY_CLASS)
@@ -126,7 +126,7 @@ class TrainerSystem(UIScaleMixin, System):
 
     @staticmethod
     def _cheby(a, b) -> int:
-        return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
+        return chebyshev(a[0], a[1], b[0], b[1])
 
     def _panel_origin(self):
         x0, y0 = self._safe_panel_origin(_PANEL_W, _PANEL_H)

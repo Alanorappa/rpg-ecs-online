@@ -20454,3 +20454,41 @@ Suíte: `pytest tests/ -k "combat or tower or minion or mob_attack"` —
 
 **Toda a seção 🟡 Arquitetura de `PROJECT_WIDE_REVIEW.md` está
 concluída** (§170/§171/§172).
+
+## 173. `PROJECT_WIDE_REVIEW.md` — `_cheby()` duplicado (convergência de 2 agentes) — vira wrapper fino, mesmo padrão já aceito em `ui/systems.py`/`ui/quest_system.py`
+
+17/09/2026. Último item pendente da auditoria (achado por 2 agentes
+independentes de forma convergente). `ui/trainer_system.py:127-129` e
+`ui/crafting_system.py:163-165` reimplementavam a fórmula de Chebyshev
+na mão (`max(abs(dx), abs(dy))`) em vez de delegar pra
+`engine.utils.chebyshev` — risco real de divergência silenciosa se a
+métrica um dia mudar (mesma classe de bug já registrada em §134/§135,
+onde `chebyshev()` vs `in_range()` foi escolhido errado em vários
+lugares).
+
+`ui/systems.py`/`ui/quest_system.py` já tinham o MESMO método
+`_cheby(a, b)` (assinatura de 2 tuplas em vez dos 4 escalares de
+`chebyshev`), mas como wrapper FINO que já delega — CLAUDE.md's
+próprio "Convergência entre agentes" já registrava esse padrão como
+aceitável (não conta como duplicação de risco, só de assinatura).
+
+**Fix**: os 2 métodos em `trainer_system.py`/`crafting_system.py`
+viraram o mesmo wrapper fino (`return chebyshev(a[0], a[1], b[0],
+b[1])`), import de `chebyshev` consolidado no `from engine.utils
+import ...` que cada arquivo já tinha (evita import duplicado/local
+dentro do método).
+
+Suíte: `test_client_ui.py` (175) + `pytest tests/ -k "trainer or
+crafting or blacksmith"` (15) — sem regressão.
+
+---
+
+**`PROJECT_WIDE_REVIEW.md` (auditoria de 16/09/2026) está 100%
+concluída** — todos os achados de Segurança/Economia, Qualidade de
+Código, Arquitetura e Convergência foram implementados ou
+explicitamente revisitados com decisão do usuário (§151-§173). Só
+restam os 14 itens da auditoria ANTERIOR (client-side, principalmente
+performance/estrutura de `ui/` — `ui/systems.py` monolítico, cache de
+ícone sem teto, fila de mob com `list.pop(0)`, etc.), listados no
+próprio `PROJECT_WIDE_REVIEW.md`, seção "Veredito consolidado dos 15
+itens pendentes".

@@ -251,6 +251,11 @@ Systems do mesmo lado.
 
 ## Convergência entre agentes (sinal mais forte)
 
+**Status:** ✅ Implementado (17/09/2026) — ver `PROBLEMAS_ARQUITETURA.md`
+§173. Os 2 métodos viraram wrapper fino delegando pra
+`engine.utils.chebyshev`, mesmo padrão já usado (e já aceito) em
+`ui/systems.py`/`ui/quest_system.py`.
+
 **`_cheby()` duplicado** — achado de forma independente pelos
 especialistas de arquitetura E qualidade de código, ambos confirmando o
 MESMO escopo exato após descartar falsos positivos: só

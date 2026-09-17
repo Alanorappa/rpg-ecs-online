@@ -20,7 +20,7 @@ from content.crafting_data import (MATERIALS, RECYCLE_TABLE, RECIPES, RECIPE_ITE
                            get_recycle_materials)
 from ui.combat_log import LOG
 from engine.tileset import TILE_SIZE
-from engine.utils import get_camera_offset
+from engine.utils import get_camera_offset, chebyshev
 import engine.quest_logic as quest_logic
 from ui.ui_helpers import item_tooltip_lines, fill_surf
 from ui.ui_sizes import UI
@@ -162,7 +162,7 @@ class BlacksmithSystem(UIScaleMixin, System):
 
     @staticmethod
     def _cheby(a, b) -> int:
-        return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
+        return chebyshev(a[0], a[1], b[0], b[1])
 
     # ------------------------------------------------------------------
     # Layout
