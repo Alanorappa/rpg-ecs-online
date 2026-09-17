@@ -23,6 +23,20 @@ eventos ARROW/EQUIP passaram a incluir `quiver_item_id`/`quiver_obj_id`
 onde a contagem sozinha não bastava pra saber SE a confirmação/equip
 realmente correspondiam à aljava certa em cada lado.
 
+Extensão 16/09/2026, 2ª rodada (§158) — reprodução isolada de compra+
+equip (sem combate) não achou bug nenhum (servidor troca de aljava já
+equipada certinho). Ponto cego identificado: `equip_item_from_inventory`
+só logava EQUIP no caminho de SUCESSO — as 2 saídas silenciosas
+(`inv_index` fora do alcance / posição vazia) nunca deixavam rastro
+nenhum, exatamente os 2 jeitos de um EQUIP_ITEM "morrer" sem aviso.
+Adicionado: `EQUIP_ATTEMPT` (todo EQUIP_ITEM recebido, ANTES de saber
+se vai suceder — inclui `inv_index` pedido e o conteúdo real do
+Inventory do servidor naquele instante) e `BUY` (toda compra
+bem-sucedida, os 2 lados — item_id, quantidade, tamanho/conteúdo do
+Inventory antes/depois). Objetivo: ver a ORDEM exata de BUY_RESULT vs
+EQUIP_ITEM tal como aconteceu de verdade, não como o fluxo synthetic
+(sem outra atividade concorrente) roda num teste isolado.
+
 ────────────────────────────────────────────────────────────
 Formato de cada linha:
   [HH:MM:SS.mmm][LADO] TIPO   player_eid=N target_eid=M  chave=valor ...
@@ -62,6 +76,18 @@ Tipos de evento:
             objeto, não troca de referência).
   AGGRO     (server) mob mudou de estado por causa deste ataque.
   SOUND     (client) som de disparo/nock/impacto tocado.
+  BUY       (server/client) compra na loja concluída com sucesso —
+            `item_id`, `qty`, tamanho/conteúdo do Inventory antes/depois
+            (`inv_len_before`/`inv_len_after`/`inv_item_ids_after`) — pra
+            comparar lado a lado se as duas listas (cliente/servidor)
+            ficaram na MESMA ordem depois da compra.
+  EQUIP_ATTEMPT (server) todo EQUIP_ITEM recebido, mesmo antes de saber
+            se vai suceder — `inv_index` pedido + `inv_len`/
+            `inv_item_ids` do Inventory REAL do servidor naquele
+            instante. BLOCK "equip_index_out_of_range"/"equip_slot_empty"
+            na linha seguinte cobre as 2 saídas silenciosas que
+            `equip_item_from_inventory` já tinha antes (retornava None
+            sem deixar rastro nenhum quando o índice não batia).
 ────────────────────────────────────────────────────────────
 """
 from __future__ import annotations

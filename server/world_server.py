@@ -3379,7 +3379,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         #    desatualizado, recusando "Não há flechas disponíveis" até relogar.
         #    Garantido entregar TUDO — o dry-run do passo 3 já confirmou que
         #    cabe (síncrono, nada mais muta o Inventory entre os dois passos).
+        inv_len_before = len(inv.items)
         self._plan_stack_delivery(inv, factory, qty, apply=True)
+
+        from debug.archer_debug import ADBG_SERVER as _ADBG_s_buy
+        _ADBG_s_buy.log("BUY", eid, -1, shop_id=shop_id,
+                        item_id=item_data.get("item_id"), qty=qty,
+                        inv_len_before=inv_len_before, inv_len_after=len(inv.items),
+                        inv_item_ids_after=[getattr(i, "item_id", None) for i in inv.items])
 
         return {
             "success":  True,
@@ -4938,11 +4945,19 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         eq_comp = self.world.get_component(eid, _EqUpd)
         if inv is None or eq_comp is None:
             return None
+        from debug.archer_debug import ADBG_SERVER as _ADBG_s_equip_att
+        _ADBG_s_equip_att.log("EQUIP_ATTEMPT", eid, -1,
+                              inv_index=inv_index, inv_len=len(inv.items),
+                              inv_item_ids=[getattr(i, "item_id", None) for i in inv.items])
         if inv_index < 0 or inv_index >= len(inv.items):
+            _ADBG_s_equip_att.log_block(eid, -1, "equip_index_out_of_range",
+                                        inv_index=inv_index, inv_len=len(inv.items))
             return None
         item = inv.items[inv_index]
         if item is None:
+            _ADBG_s_equip_att.log_block(eid, -1, "equip_slot_empty", inv_index=inv_index)
             return None
+        _ADBG_s_equip_att.log_fire_ok(eid)
         if item.item_type == "quiver":
             from debug.archer_debug import ADBG_SERVER as _ADBG_s_equip
             _ADBG_s_equip.log("EQUIP", eid, -1, quiver_item_id=item.item_id,

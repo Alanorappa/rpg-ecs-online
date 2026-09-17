@@ -2587,6 +2587,11 @@ class NetworkHandlers:
                     if not stacked and len(inv_br.items) < inv_br.max_slots:
                         item_br.stack = qty_br
                         inv_br.items.append(item_br)
+                        from debug.archer_debug import ADBG_CLIENT as _ADBG_c_buy
+                        _ADBG_c_buy.log("BUY", self.player_entity, -1,
+                                        item_id=item_br.item_id, qty=qty_br,
+                                        inv_len_after=len(inv_br.items),
+                                        inv_item_ids_after=[getattr(i, "item_id", None) for i in inv_br.items])
                         # Auto-equipar na loja de instância (02/08/2026, pedido
                         # do usuário: "a ideia era os itens já valerem como
                         # equipados no momento que eu compro" — os 6 slots

@@ -19704,3 +19704,83 @@ mostrando cheia) — depois compartilhar os 2 arquivos de log
 Com dado real dos dois lados (não mais suposição sobre qual `item_id`/
 `inv_index` cada lado está vendo), a causa raiz real deve ficar
 evidente sem mais tentativa e erro.
+
+## 158. Logs do §157 vieram — descartada a hipótese do usuário (equip com slot já ocupado), instrumentação estendida pra BUY_REQUEST/EQUIP_ITEM
+
+16/09/2026, com `RPG_DEBUG_ARCHER=1` ligado dos dois lados (servidor
+via `.env` de produção + restart, cliente rodado localmente pelo
+Claude a pedido do usuário, que não achou o arquivo de log por conta
+própria). Cruzando os dois logs: o CLIENTE equipou a aljava de batalha
+localmente com sucesso (`EQUIP quiver_item_id=battleground_quiver
+inv_index=0`), mas o SERVIDOR nunca recebeu/aplicou esse equip —
+só existe 1 evento `EQUIP` no log do servidor (a aljava básica, início
+da sessão); depois disso o servidor seguiu confirmando disparo pra
+`basic_quiver` até zerar, terminando em `BLOCK reason=
+no_quiver_or_empty`. `quiver_obj_id` idêntico do início ao fim do lado
+servidor confirma: nunca trocou de objeto.
+
+Usuário propôs uma hipótese própria: "a BG tem itens instanciados,
+talvez não aceite equipar outro item quando o slot já está ocupado".
+**Testada e descartada** com reprodução direta (não leitura estática):
+script isolado chamando o código REAL dos dois lados —
+`WorldServer.process_shop_buy`/`equip_item_from_inventory` (servidor)
+e `NetworkHandlers._handle_msg_buy_result`/`InventoryHandlers.
+_equip_item` (cliente) — comprando e equipando aljava básica, depois
+comprando e equipando aljava de batalha por cima (slot JÁ ocupado).
+Resultado: funciona perfeito, os dois lados terminam com
+`battleground_quiver` equipada. `test_equip_item_troca_item_ja_
+equipado_volta_pro_fim_da_bag` (`tests/test_equip_item_protocol.py`)
+já cobria exatamente esse caminho (swap com slot ocupado) e sempre
+passou — a lógica de troca não tem bug, dentro ou fora da BG, é o
+MESMO código pros dois casos.
+
+**Ponto cego achado nessa investigação**: `equip_item_from_inventory`
+só logava `EQUIP` no caminho de SUCESSO — as 2 saídas silenciosas
+(`inv_index` fora do alcance da lista, ou posição vazia) nunca
+deixavam rastro nenhum. Exatamente essas 2 saídas são as únicas que
+explicariam "zero EQUIP no log do servidor" — mas não dava pra saber
+QUAL das duas, nem o estado real do Inventory do servidor no
+momento exato do EQUIP_ITEM.
+
+**O que foi feito** (de novo, só instrumentação, nenhuma lógica
+mudou):
+- `server/world_server.py::equip_item_from_inventory` — evento
+  `EQUIP_ATTEMPT` logo que `inv`/`eq_comp` resolvem (ANTES de saber se
+  vai suceder), com `inv_index` pedido + `inv_len`/`inv_item_ids` do
+  Inventory REAL do servidor naquele instante; `BLOCK
+  "equip_index_out_of_range"`/`"equip_slot_empty"` cobrindo as 2
+  saídas silenciosas identificadas acima.
+- `server/world_server.py::process_shop_buy` — evento `BUY` (servidor)
+  toda compra bem-sucedida: `item_id`, `qty`, tamanho/conteúdo do
+  Inventory antes/depois da entrega.
+- `client/network_handlers.py::_handle_msg_buy_result` — evento `BUY`
+  (cliente) espelhando o mesmo formato, logo após o item entrar na bag
+  local (antes do auto-equip).
+- Docstring do módulo atualizada com os 2 eventos novos.
+
+**Por que não foi só mais um fix às cegas**: a reprodução isolada
+provou que compra+equip sozinhos (sem NENHUMA outra atividade
+concorrente) funcionam certo nos dois lados — então o que falta
+capturar é a ORDEM/interleaving real de mensagens que aconteceu
+durante o jogo de verdade (voltar pra lane, atacar, tudo isso rodando
+em paralelo com BUY_RESULT/EQUIP_ITEM), não a lógica de equipar em si.
+Só um log de BUY ao lado do EQUIP_ATTEMPT já existente permite ver essa
+ordem real na próxima reprodução, em vez de mais uma hipótese.
+
+Verificação: `test_client_ui.py` (175 casos) e
+`TestEquipItemFromInventory`/`TestUnequipItemSlot` (não dependem de
+Postgres) sem regressão; reprodução isolada do §157/§158 re-rodada com
+a instrumentação nova, resultado idêntico (sem bug no cenário
+sintético). `TestEquipItemProtocolDispatch` e outros testes async que
+dependem de `server.auth`/Postgres não rodaram nesta sessão (container
+`rpg_postgres` local não estava de pé) — não relacionado a esta
+mudança.
+
+**Próximo passo, pendente do usuário**: reproduzir a sequência de novo
+com a instrumentação nova (servidor já tem `RPG_DEBUG_ARCHER=1` desde
+o §157; cliente precisa rodar com a mesma env var — combinar como
+reproduzir) e compartilhar os 2 logs atualizados. Lembrete pendente:
+depois de fechar esta investigação (com fix aplicado ou descartada por
+falta de mais dado), desligar `RPG_DEBUG_ARCHER=1` do `.env` de
+produção e reiniciar o serviço — compromisso já assumido com o
+usuário, ainda não cumprido.
