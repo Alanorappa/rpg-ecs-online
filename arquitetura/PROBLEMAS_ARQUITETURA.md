@@ -20241,3 +20241,40 @@ found in ''` — nenhum log saía antes do fix.
 Suíte: `test_client_ui.py`, `test_restore_attack_interval.py`,
 `test_restore_save_state_talent_error.py`,
 `test_client_instance_sync.py` — 200 casos, sem regressão.
+
+## 167. `PROJECT_WIDE_REVIEW.md` — `QuestSystem._fire_reach_tile`/`_sync_collect_progress` código morto (caminho offline sem chamador)
+
+17/09/2026. `ui/quest_system.py::QuestSystem.update()` documenta desde
+sempre (linha 65-68 do `__init__`, "Online: servidor é o único
+produtor autoritativo de progresso... None/falsy = caminho offline,
+inalterado") que o progresso de quest LOCAL é resquício do jogo
+offline, superado pelo servidor autoritativo. `_fire_reach_tile`
+(disparava evento `reach_tile` local) e `_sync_collect_progress`
+(sincronizava objetivo `collect_item` local contra o Inventory) nunca
+tinham NENHUM chamador — nem em `update()`, nem em nenhum outro
+método da classe, nem em teste (o único hit de busca pelo nome
+`_sync_collect_progress` era um teste de `engine.quest_logic.
+sync_collect_progress`, função de MÓDULO server-authoritative
+completamente diferente, coincidência de nome).
+
+Diferença importante de `_try_start`/`_complete_quest` (mesmo arquivo,
+também documentados "Caminho OFFLINE"): esses DOIS continuam tendo
+chamador de verdade dentro da própria classe (`update()`, gated por
+`if not self._net`) — só ficam inertes em RUNTIME (online sempre seta
+`_net`), não estaticamente inalcançáveis. Não foram tocados — fora de
+escopo deste achado específico, que é só sobre os 2 métodos SEM
+chamador nenhum.
+
+**Fix**: removidos `_fire_reach_tile`/`_sync_collect_progress`
+(`ui/quest_system.py`) + o campo `_last_reach_tile` que só existia pra
+alimentar o método removido (`__init__` e o reset em
+`set_current_map`, que continua chamado de verdade por `game.py` em
+toda troca de mapa — só a linha do campo morto foi limpa, o método em
+si permanece).
+
+Suíte: `test_client_ui.py` (175) + todos os 8 arquivos de teste de
+quest (`test_npc_interaction_request.py`, `test_quest_logic.py`,
+`test_quest_map_tracking.py`, `test_quest_reward_ui.py`,
+`test_quest_split_npc.py`, `test_quest_talk_completable_priority.py`,
+`test_quest_tracker.py`, `test_quest_turn_in.py`) — 78 casos, sem
+regressão.

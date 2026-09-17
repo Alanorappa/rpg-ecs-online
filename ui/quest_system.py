@@ -61,7 +61,6 @@ class QuestSystem(UIScaleMixin, System):
         self._tracker_minimized: bool          = False
         self._last_hud_rect:     "pygame.Rect | None" = None
         self._current_map: str = ""
-        self._last_reach_tile: tuple = (-1, -1, "")  # (tx, ty, map) — evita disparo por frame
         # Online: servidor é o único produtor autoritativo de progresso (ver
         # quest_logic.py/PROBLEMAS_ARQUITETURA.md) — injetado por game.py
         # após _connect_online(). None/falsy = caminho offline, inalterado.
@@ -79,7 +78,6 @@ class QuestSystem(UIScaleMixin, System):
     def set_current_map(self, map_file: str) -> None:
         """Chamado pelo GameEngine sempre que o mapa muda."""
         self._current_map = map_file
-        self._last_reach_tile = (-1, -1, "")
 
     def update(self, events=None, dt: float = 0) -> None:
         from engine.components import QuestLog
@@ -282,34 +280,6 @@ class QuestSystem(UIScaleMixin, System):
             self._hud_cache_key = None
             LOG.add(f'Quest: "{qdef.title}" iniciada.', self.COL_TITLE)
         return ok
-
-    def _fire_reach_tile(self, ql) -> None:
-        """Dispara reach_tile apenas quando o player muda de tile (não todo frame)."""
-        from engine.components import TileMovement
-        tm = self.world.get_component(self.player_entity, TileMovement)
-        if tm is None or tm.is_moving:
-            return
-        current = (tm.current_tile_x, tm.current_tile_y, self._current_map)
-        if current == self._last_reach_tile:
-            return  # mesmo tile do último disparo — não reenfileira
-        has_reach = any(
-            obj.type == "reach_tile"
-            for prog, qid in ((ql.active[q], q) for q in ql.active)
-            for i, obj in enumerate(QUESTS[qid].objectives)
-            if QUESTS.get(qid) and prog[i] < QUESTS[qid].objectives[i].count
-        )
-        if not has_reach:
-            return
-        self._last_reach_tile = current
-        from engine.quest_events import fire as _qfire_rt
-        _qfire_rt("reach_tile", tx=tm.current_tile_x, ty=tm.current_tile_y, map=self._current_map)
-
-    def _sync_collect_progress(self, ql) -> None:
-        """Sincroniza objetivos collect_item com o inventário real do player."""
-        from engine.components import Inventory
-        inv = self.world.get_component(self.player_entity, Inventory)
-        if quest_logic.sync_collect_progress(ql, inv):
-            self._hud_cache_key = None
 
     def _complete_quest(self, ql, qid: str) -> None:
         """Caminho OFFLINE — online, o QuestDialogSystem manda QUEST_TURN_IN
