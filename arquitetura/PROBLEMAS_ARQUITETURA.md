@@ -20392,3 +20392,40 @@ reformulando uma comunicação que nunca acontecia de verdade.
 Suíte: `test_client_ui.py` (175) + `pytest tests/ -k "respawn or
 spawn_zone or jungle"` (45) — sem regressão (confirma que o respawn
 real, via `SpawnZoneSystem`, continua intocado).
+
+## 171. `PROJECT_WIDE_REVIEW.md` — `DeathHandlerSystem` chamava `QuestSystem` via referência global — mecanismo inteiro era caminho OFFLINE morto, removido
+
+17/09/2026. Achado da auditoria: `engine/world_systems.py:1104-1106`
+(dentro de `DeathHandlerSystem.update()`) consultava
+`quest_events._quest_system_ref.get_conditional_loot(...)` — uma
+referência GLOBAL de módulo pro `QuestSystem` (UI), setada por
+`game.py::set_quest_system()`. Mesma violação do §170 (System
+acoplado a outro System/UI), só que via global de módulo em vez de
+import direto — o comentário no próprio código admitia que o global
+foi escolhido especificamente pra *evitar* o import direto, mas isso
+só esconde o acoplamento de uma busca textual por `import ui`, não o
+remove de verdade.
+
+Confirmado pela MESMA razão do §170 — `DeathHandlerSystem.update()`
+nunca roda de verdade online (nenhuma entidade chega com
+`PendingDeath` no mundo do cliente) — e `get_conditional_loot()`
+(`ui/quest_system.py`) tinha docstring própria confirmando: "Caminho
+OFFLINE — online, o drop condicional é rolado no servidor
+(`server/server_death_handler.py`) contra o QuestLog autoritativo."
+Ou seja: a via online de verdade (`server/loot_processor.py::
+roll_conditional_loot`) sempre existiu em paralelo, nunca passou por
+este mecanismo — ele existia só pro caminho offline, que não existe
+mais.
+
+**Fix**: removida a cadeia inteira, não só o ponto de leitura —
+`_quest_system_ref`/`set_quest_system()` (`engine/quest_events.py`),
+a chamada em `game.py` (+ import), o read site em
+`DeathHandlerSystem.update()` (+ `import engine.quest_events as
+quest_events`, que ficou sem nenhum outro uso no arquivo), e
+`QuestSystem.get_conditional_loot()` (`ui/quest_system.py`) — método
+com 1 único chamador, o que acabou de ser removido.
+`engine.quest_logic.roll_conditional_loot()` (a função de verdade,
+usada pelo caminho online real) foi mantida intocada.
+
+Suíte: `test_client_ui.py` (175) + os 8 arquivos de teste de quest
+(78 casos) — sem regressão.

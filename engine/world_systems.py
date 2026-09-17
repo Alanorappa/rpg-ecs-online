@@ -51,7 +51,6 @@ from content.loot_tables import roll_loot, roll_mob_loot, roll_coins, roll_mob_c
 from engine.entity_factory import create_corpse, create_enemy
 from content.enemy_abilities_data import ABILITY_DEFS
 from content.mob_definitions import RESPAWN_TIMERS as _SHARED_RESPAWN_TIMERS
-import engine.quest_events as quest_events
 from engine.quest_events import fire as quest_fire
 from engine.stat_fns import add_modifier, remove_modifier, add_timed_modifier, enter_combat
 from engine.faction_system import is_hostile, can_engage, get_relationship_between
@@ -1099,11 +1098,6 @@ class DeathHandlerSystem(System):
                     loot = roll_loot(enemy_type, tier_comp.tier)
                 coins = (roll_mob_coins(ident.name, tier_comp.tier) if ident
                         else roll_coins(tier_comp.tier))
-
-                # Drops condicionais de quests (collect_item)
-                if quest_events._quest_system_ref is not None and ident:
-                    loot.extend(quest_events._quest_system_ref.get_conditional_loot(
-                        ident.name, ident.race))
 
                 # Reciclagem (código do killer aparecer no loot do cadáver) foi
                 # REMOVIDO daqui em 16/09/2026 (ver PROBLEMAS_ARQUITETURA.md

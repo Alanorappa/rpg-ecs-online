@@ -25,10 +25,6 @@ from collections import deque
 
 QUEST_EVENTS: deque = deque()
 
-# Referência ao QuestSystem — definida por GameEngine após criar o sistema.
-# Permite que DeathHandlerSystem consulte drops condicionais sem importar quest_system.
-_quest_system_ref = None
-
 
 def fire(event_type: str, player_eid: int = -1, **data) -> None:
     """Enfileira um evento de quest. Chamado por qualquer sistema.
@@ -40,9 +36,3 @@ def fire(event_type: str, player_eid: int = -1, **data) -> None:
     múltiplos players no mesmo loop (ver WorldServer._process_quest_events).
     """
     QUEST_EVENTS.append((event_type, player_eid, data))
-
-
-def set_quest_system(qs) -> None:
-    """Chamado por GameEngine para registrar o QuestSystem."""
-    global _quest_system_ref
-    _quest_system_ref = qs

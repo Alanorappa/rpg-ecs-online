@@ -134,17 +134,6 @@ class QuestSystem(UIScaleMixin, System):
         if ql:
             self._complete_quest(ql, qid)
 
-    # ── Drop condicional ─────────────────────────────────────────────────────
-
-    def get_conditional_loot(self, enemy_name: str, enemy_race: str) -> list:
-        """Caminho OFFLINE — online, o drop condicional é rolado no servidor
-        (server/server_death_handler.py) contra o QuestLog autoritativo."""
-        from engine.components import QuestLog
-        ql = self.world.get_component(self.player_entity, QuestLog)
-        if ql is None:
-            return []
-        return quest_logic.roll_conditional_loot(ql, enemy_name, enemy_race)
-
     # ── HUD ─────────────────────────────────────────────────────────────────
 
     def _sorted_active_items(self, ql) -> list:

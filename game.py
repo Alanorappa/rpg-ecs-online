@@ -22,7 +22,6 @@ from ui.systems import (
 )
 from engine.stats_system import XPSystem
 from ui.quest_system import QuestSystem, QuestDialogSystem, QuestJournalSystem
-from engine.quest_events import set_quest_system
 from engine.entity_factory import create_player, create_camera, create_enemy, create_tilemap, create_merchant, create_spawn_zone, create_quest_giver, create_blacksmith, create_trainer
 from ui.god_mode import GodModeEditor
 from engine.components import Inventory, Equipment, PlayerSkills, Wallet, GhostState
@@ -463,7 +462,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._char_stats_ui.on_open = self._send_char_stats_request
         self._shop_system   = ShopSystem(self.world, self.player_entity, self.screen)
         self._quest_system  = QuestSystem(self.world, self.player_entity)
-        set_quest_system(self._quest_system)
         from ui.buff_bar import BuffBar
         self._buff_bar = BuffBar(self.world, self.player_entity)
         self._quest_dialog  = QuestDialogSystem(

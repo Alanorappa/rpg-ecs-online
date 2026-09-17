@@ -211,6 +211,14 @@ nunca chama System direto" (comunicação deveria ser via
 componente/evento).
 
 ### `DeathHandlerSystem` chama método de `QuestSystem` (UI) via referência global [Média-Alta]
+**Status:** ✅ Implementado (17/09/2026) — ver `PROBLEMAS_ARQUITETURA.md`
+§171. Mesma causa raiz do achado anterior — `DeathHandlerSystem` nunca
+roda online, e `get_conditional_loot()` era caminho OFFLINE (a via
+online real é `server/loot_processor.py::roll_conditional_loot`,
+sempre existiu em paralelo). Removida a cadeia inteira
+(`_quest_system_ref`/`set_quest_system`/read site/método), não só o
+ponto de leitura.
+
 `engine/world_systems.py:1104-1106` + `engine/quest_events.py:30,45-48`.
 Mesma violação do achado acima, só que a referência chega por uma
 global de módulo em vez de import direto — por isso um grep só por
