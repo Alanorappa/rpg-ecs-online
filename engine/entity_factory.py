@@ -28,9 +28,6 @@ PLAYER_COLOR = (255, 0, 0)
 PLAYER_SIZE = 24
 PLAYER_SPEED = 110
 
-TREE_COLOR = (34, 139, 34)
-TREE_SIZE = 40
-
 ENEMY_COLOR = (0, 0, 255)
 ENEMY_SIZE = 24
 ENEMY_SPEED = 85.0
@@ -212,13 +209,6 @@ def create_player(world: World, tile_x: int, tile_y: int,
         level=1, tier="normal",
     ))
     return player_entity
-
-def create_tree(world: World, x: float, y: float) -> int:
-    tree_entity = world.create_entity()
-    world.add_component(tree_entity, Position(x=x, y=y, prev_x=x, prev_y=y))
-    world.add_component(tree_entity, Renderable(color=TREE_COLOR, width=TREE_SIZE, height=TREE_SIZE))
-    world.add_component(tree_entity, Collider(width=TREE_SIZE, height=TREE_SIZE))
-    return tree_entity
 
 def create_camera(world: World, target_entity_id: int, screen_width: int, screen_height: int) -> int:
     camera_entity = world.create_entity()

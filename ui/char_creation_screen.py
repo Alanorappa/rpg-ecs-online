@@ -165,16 +165,6 @@ def run(screen: pygame.Surface) -> tuple[int, "dict | None"]:
         pygame.display.flip()
 
 
-def run_creation(screen: pygame.Surface) -> "dict | None":
-    """Tela de criação de personagem (entrada pública para uso externo).
-
-    Retorna {"name": str, "class_id": str} ou None (cancelado).
-    """
-    clock = pygame.time.Clock()
-    sc    = screen.get_height() / 720.0
-    return _run_creation(screen, clock, sc)
-
-
 def _drain_char_select_batch(msgs: list, pending_action: str, game_buffer: list,
                              chars: list, confirm_del_id: int) -> tuple:
     """Processa UMA leva de mensagens (`net.poll()`) recebida durante a tela

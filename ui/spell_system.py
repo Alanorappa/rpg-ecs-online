@@ -1660,10 +1660,6 @@ class AoeTargetingSystem(System):
     def _camera_offset(self) -> tuple[float, float]:
         return get_camera_offset(self.world, self.world_surf.get_width(), self.world_surf.get_height())
 
-    @property
-    def is_targeting(self) -> bool:
-        return self.world.get_component(self.player_entity, AoeTargeting) is not None
-
     def _player_world_pos(self) -> "tuple[float, float] | None":
         from engine.components import TileMovement as _TM
         tm = self.world.get_component(self.player_entity, _TM)

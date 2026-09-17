@@ -20278,3 +20278,55 @@ quest (`test_npc_interaction_request.py`, `test_quest_logic.py`,
 `test_quest_split_npc.py`, `test_quest_talk_completable_priority.py`,
 `test_quest_tracker.py`, `test_quest_turn_in.py`) — 78 casos, sem
 regressão.
+
+## 168. `PROJECT_WIDE_REVIEW.md` — ~9 funções confirmadas mortas por grep no repo inteiro, removidas
+
+17/09/2026. Lista fechada da auditoria, cada uma confirmada por grep
+no repo inteiro (zero call site fora da própria definição) antes de
+remover:
+
+- **`Equipment.get_modifier_total()`** (`engine/components.py`) — sem
+  chamador, e além de morta violava "Componentes são dados, não
+  lógica" (lógica de soma de modifiers dentro de um Component).
+- **`create_tree()`** (`engine/entity_factory.py`) — placeholder de
+  árvore como retângulo colorido, de antes do sistema de tileset/
+  objetos real existir. `TREE_COLOR`/`TREE_SIZE` (só usados por ela)
+  removidos junto.
+- **`WorldServer._create_spawn_zones()`** (`server/world_server.py`) —
+  wrapper "Compat: cria SpawnZones sem MapLocation (usado antes do
+  multi-map)" — o único chamador real (`spawn_player`) já usa
+  `_create_spawn_zones_for_map` direto, nunca passou pelo wrapper.
+- **5 funções factory em `shared/messages.py`** (`make_entity_spawn`,
+  `make_combat_result`, `make_stats_update`, `make_aoi_update`,
+  `make_projectile_spawn`) — o próprio comentário acima delas já
+  admitia "reservadas para quando o cliente for implementado" — o
+  cliente existe desde muito antes desta sessão, servidor sempre
+  construiu os dicts inline.
+- **`run_creation()`** (`ui/char_creation_screen.py`) — wrapper
+  público de `_run_creation` (a função real, com `net` opcional, que
+  todo chamador real usa direto) sem NENHUM chamador.
+- **3 métodos de `SOUNDS`** (`ui/sound_manager.py`): `play_at`
+  (a família `_at` real — `play_random_at`/`play_skill_at`/
+  `play_mob_sounds_at`/`play_emote_at` — nunca passa por ele),
+  `crossfade_ambient` (a máquina de fade em `update()`/
+  `apply_music_settings()` continua viva e correta, só nunca é
+  ACIONADA por ninguém — estado `_amb_target`/`_fade_dur`/`_fade_t`
+  deixado como está, ainda lido/escrito por outros métodos vivos),
+  `play_mob_event` (já vinha marcado `DEPRECATED` no próprio código,
+  "Mantido apenas para compatibilidade com código legado eventual" —
+  esse código legado nunca existiu de fato).
+- **`SpellCast.is_targeting`** (`ui/spell_system.py`) — property sem
+  leitor em lugar nenhum.
+
+Achado incidental durante a busca (não corrigido, fora de escopo):
+existe um diretório `.claude/worktrees/agent-a66679df9a2c67af2/` com
+uma cópia antiga de `server/world_server.py` de uma sessão de agente
+anterior isolada — não faz parte do código real, não foi tocado.
+
+Suíte completa (`pytest tests/ -q`): 1693 de 1694 passaram. A 1 falha
+(`test_perf_log_improvements.py::TestPerfPushPopAndPercentiles::
+test_perf_push_pop_grava_amostra_sob_caminho_completo`) é a MESMA
+classe de flakiness já registrada no §165 (`time.sleep(0.01)` +
+`assertGreaterEqual(..., 0.01)`, granularidade de timer do SO) — outro
+arquivo de teste do mesmo mecanismo `_perf_push`/`_perf_pop`, nenhuma
+relação com as remoções desta entrada.

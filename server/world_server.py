@@ -1975,10 +1975,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     still_waiting.append([subtype_idx, t])
             self._harvestable_zone_timers[zone_id] = still_waiting
 
-    def _create_spawn_zones(self, zones_data: list) -> None:
-        """Compat: cria SpawnZones sem MapLocation (usado antes do multi-map)."""
-        self._create_spawn_zones_for_map(zones_data, "")
-
     def _create_spawn_zones_for_map(self, zones_data: list, map_file: str) -> None:
         """Cria entidades SpawnZone a partir dos dados já processados pelo map_loader.
         Cada entrada já é uma zona achatada com enemy_type, enemy_tier, count."""

@@ -883,14 +883,6 @@ class Equipment:
         mh = self.slots.get("mainhand")
         return mh is not None and mh.two_handed
 
-    def get_modifier_total(self, attribute: str) -> float:
-        total = 0.0
-        for item in self.slots.values():
-            if item:
-                for mod in item.modifiers:
-                    if mod.attribute == attribute:
-                        total += mod.value
-        return total
 
 
 class EnemyAbilitySlot:

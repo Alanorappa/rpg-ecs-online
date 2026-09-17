@@ -235,16 +235,6 @@ class SoundManager:
         t = 1.0 - dist / self.MAX_WORLD_SOUND_DIST   # 1.0 → 0.0
         return base * (self.MIN_WORLD_SOUND_VOL + (1.0 - self.MIN_WORLD_SOUND_VOL) * t)
 
-    def play_at(self, name: str,
-                sx: float, sy: float, lx: float, ly: float,
-                base: float = 1.0,
-                channel_group: "tuple[int,...] | None" = None) -> None:
-        """Toca som com volume/pan proporcional à posição (nada se fora do AOI)."""
-        vol = self.volume_at(sx, sy, lx, ly, base)
-        if vol <= 0.0:
-            return
-        self.play(name, vol, channel_group, pan=self.pan_at(sx, lx))
-
     def play_random_at(self, names: "list[str]",
                        sx: float, sy: float, lx: float, ly: float,
                        base: float = 1.0,
@@ -429,33 +419,6 @@ class SoundManager:
             return
         self.play(random.choice(available), volume, channel_group, pan=pan)
 
-    # ------------------------------------------------------------------
-    # DEPRECATED — não usar em código novo
-    # Use play_mob_sounds(comp, event) que lê do componente NpcSounds.
-    # Mantido apenas para compatibilidade com código legado eventual.
-    # ------------------------------------------------------------------
-    def play_mob_event(self, mob_name: str, event: str, volume: float = 1.0,
-                       dedup_race: str = "") -> None:
-        """DEPRECATED. Usa convenção de nome para achar o som (quebrável).
-
-        Prefira: SOUNDS.play_mob_sounds(mob_sounds_comp, event, volume)
-        que lê do componente NpcSounds diretamente e é sempre correto.
-        """
-        if dedup_race:
-            key = (event, dedup_race.lower())
-            if key in self._played_this_frame:
-                return
-            self._played_this_frame.add(key)
-        base     = f"mob_{mob_name.lower()}_{event}"
-        variants = [base, f"{base}_2", f"{base}_3", f"{base}_4"]
-        available = [v for v in variants if self._cache.get(v) is not None]
-        if available:
-            self.play_mob(random.choice(available), volume)
-            return
-        generic = f"mob_{event}"
-        if self._cache.get(generic) is not None:
-            self.play_mob(generic, volume)
-
     def _lazy_load(self, key: str) -> "pygame.mixer.Sound | None":
         """Carrega um som pelo nome da chave se ainda não estiver em cache."""
         if key not in self._cache:
@@ -611,25 +574,6 @@ class SoundManager:
         else:
             ch_a.stop()
         self._amb_idx = 0
-
-    def crossfade_ambient(self, name: str, volume: float = 0.4,
-                          duration: float = 5.0) -> None:
-        """Faz crossfade suave para um novo ambient ao longo de `duration` segundos."""
-        if not self._ready or name == self._amb_name:
-            return
-        self._amb_target = name
-        self._amb_base   = volume
-        self._fade_dur   = duration
-        self._fade_t     = duration
-        # Inicia incoming no canal inativo com volume 0
-        ch_in = pygame.mixer.Channel(
-            _CH_AMBIENT_B if self._amb_idx == 0 else _CH_AMBIENT_A)
-        sound = self._cache.get(name)
-        if sound:
-            ch_in.set_volume(0.0)
-            ch_in.play(sound, loops=-1)
-        else:
-            ch_in.stop()
 
     def apply_music_settings(self) -> None:
         """Aplica music_volume/music_enabled nos canais ativos sem reiniciar os sons."""
