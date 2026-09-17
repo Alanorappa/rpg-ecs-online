@@ -20206,3 +20206,38 @@ de timer do SO, falha ~30-50% das vezes mesmo sem nenhuma mudança no
 código que ele testa) — confirmado rodando isolado 4x (2 falhas, 2
 sucessos); esse teste nunca toca `remove_component`/`remove_entity`
 nem nenhum dos 8 arquivos tocados aqui.
+
+## 166. `PROJECT_WIDE_REVIEW.md` — `except Exception: pass` real (não morto) em `_restore_save_state`, mascarava falha de talento no login sem log nenhum
+
+17/09/2026. Diferente do §165 (guard morto — o método já toleravam o
+"erro" internamente): `client/save_sync_handlers.py::
+_restore_save_state` engolia QUALQUER exceção de
+`self._talent_system.apply_talent_effects()` de verdade — se essa
+chamada falhasse (dado de save corrompido, talento não catalogado,
+qualquer bug futuro), o personagem entrava sem NENHUM efeito de
+talento aplicado, e ninguém — nem o usuário, nem um log — ficava
+sabendo. Pior classe de silêncio possível: nem sintoma óbvio (o jogo
+"funciona", só com stats levemente errados) nem rastro pra investigar
+depois.
+
+**Fix**: mantida a captura (dado de save vem de fora, não é controlado
+por nós — remover o guard aqui seria trocar "silencioso" por "trava o
+login inteiro"), mas agora loga via `print(f"[Client]
+apply_talent_effects falhou no load do save: {exc!r}")` — mesma
+convenção já usada em `client/network_handlers.py` (`"[Client] login
+erro: ..."`), cliente não tem módulo de log dedicado como o servidor.
+
+**Teste** (`tests/test_restore_save_state_talent_error.py`, novo
+arquivo): fixture mistura `NetworkHandlers`+`SaveSyncHandlers`+
+`InventoryHandlers` (mesmo padrão de `test_restore_attack_interval.py`)
+com um `_talent_system` stub que sempre levanta `ValueError` —
+`test_excecao_no_apply_talent_effects_nao_propaga_e_e_logada` prova
+que a chamada não propaga (não trava o resto do restore) E que a
+mensagem de erro real aparece no log (`contextlib.redirect_stdout`),
+não só um aviso genérico. Revert-to-confirm: `git stash` só de
+`client/save_sync_handlers.py` reproduziu exatamente `'[Client]' not
+found in ''` — nenhum log saía antes do fix.
+
+Suíte: `test_client_ui.py`, `test_restore_attack_interval.py`,
+`test_restore_save_state_talent_error.py`,
+`test_client_instance_sync.py` — 200 casos, sem regressão.

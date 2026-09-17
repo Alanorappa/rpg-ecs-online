@@ -191,7 +191,7 @@ crítico de morte/expiração.
 - `QuestSystem._fire_reach_tile`/`_sync_collect_progress` (`ui/quest_system.py`) — código morto, o próprio comentário do arquivo documenta a remoção da chamada.
 - ~9 funções confirmadas mortas por grep no repo inteiro: `Equipment.get_modifier_total()`, `create_tree()`, `_create_spawn_zones()`, 5 funções em `shared/messages.py` (comentário "reservadas pro cliente" — hoje falso, cliente existe há muito), `run_creation()`, 3 métodos de `SOUNDS`, `SpellCast.is_targeting`.
 - `content/item_table.py::_make_quiver`/`_make_ammo` — nunca usadas; aljava/munição são construídas inline em vez de via catálogo. **Pode ser lacuna real de conteúdo, não só lixo — vale perguntar antes de apagar.**
-- `except Exception: pass` em `client/save_sync_handlers.py:429-433` ao redor de `apply_talent_effects()` — falha silenciosa deixa personagem sem efeito de talento no login, sem nenhum log.
+- ~~`except Exception: pass` em `client/save_sync_handlers.py:429-433` ao redor de `apply_talent_effects()` — falha silenciosa deixa personagem sem efeito de talento no login, sem nenhum log.~~ **✅ Implementado (17/09/2026)** — ver `PROBLEMAS_ARQUITETURA.md` §166. Mantida a captura, adicionado log.
 
 ---
 

@@ -429,8 +429,16 @@ class SaveSyncHandlers:
         if tt:
             try:
                 self._talent_system.apply_talent_effects()
-            except Exception:
-                pass
+            except Exception as _e_tal:
+                # Nunca deveria falhar (mesmo com talents_json corrompido —
+                # `tal_dict` já cai pro default {} acima), mas se falhar
+                # mesmo assim o personagem entra sem NENHUM efeito de
+                # talento aplicado, sem avisar ninguém — pior classe de
+                # bug possível aqui (17/09/2026, ver
+                # PROJECT_WIDE_REVIEW.md). Mantém a captura (dado de save
+                # é o único ponto de entrada não controlado por nós), mas
+                # loga — nunca mais silencioso.
+                print(f"[Client] apply_talent_effects falhou no load do save: {_e_tal!r}")
 
         # SkillLevels — progressão Tibia-like por uso. Componente local é
         # SÓ EXIBIÇÃO (painel de skills): nunca enviado de volta ao servidor,
