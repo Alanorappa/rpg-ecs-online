@@ -946,11 +946,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         from engine.components import MapLocation as _MLu
         _to_remove = [eid for eid, ml in self.world.get_entities_with(_MLu)
                      if ml.map_file == instance_key]
+        # remove_entity já tolera alvo ausente sozinho — ver PROBLEMAS_ARQUITETURA.md §165.
         for eid in _to_remove:
-            try:
-                self.world.remove_entity(eid)
-            except Exception:
-                pass
+            self.world.remove_entity(eid)
         self._map_bundles.pop(instance_key, None)
         self._pvp_zones_by_map.pop(instance_key, None)
         self._bush_zones_by_map.pop(instance_key, None)
@@ -1376,10 +1374,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 # jungle estão com o código no lugar do nome".
                 identity_name=mdef.get("display_name", mob_key),
             )
-            try:
-                self.world.remove_component(eid, XPReward)
-            except Exception:
-                pass
+            # remove_component já tolera alvo ausente sozinho — ver PROBLEMAS_ARQUITETURA.md §165.
+            self.world.remove_component(eid, XPReward)
             self.world.add_component(eid, JungleMob(
                 is_boss=is_boss,
                 xp_reward=mdef["xp_reward"],
@@ -1956,10 +1952,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 eid = self._harvestable_hid_to_eid.pop(hid, None)
                 if eid is not None:
                     self._harvestable_eids.discard(eid)
-                    try:
-                        self.world.remove_entity(eid)
-                    except Exception:
-                        pass
+                    # remove_entity já tolera alvo ausente sozinho — ver PROBLEMAS_ARQUITETURA.md §165.
+                    self.world.remove_entity(eid)
                     self._despawned_this_tick.append({"eid": eid, "tx": None, "ty": None})
                 self._corpses.pop(hid, None)
                 self._harvestable_zone_timers.setdefault(zone_id, []).append(
@@ -4354,11 +4348,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 })
 
         # 3. HoT de HP (ActiveRegen)
+        # remove_component já tolera alvo ausente sozinho — ver PROBLEMAS_ARQUITETURA.md §165.
         if hot is not None:
-            try:
-                self.world.remove_component(eid, ActiveRegen)
-            except Exception:
-                pass
+            self.world.remove_component(eid, ActiveRegen)
             self.world.add_component(eid, ActiveRegen(
                 heal_per_tick=hot["heal_per_tick"],
                 interval=hot["interval"],
@@ -4367,10 +4359,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # 4. HoT de mana (ActiveManaRegen)
         if mana_hot is not None and char and char.max_mana > 0:
-            try:
-                self.world.remove_component(eid, ActiveManaRegen)
-            except Exception:
-                pass
+            self.world.remove_component(eid, ActiveManaRegen)
             self.world.add_component(eid, ActiveManaRegen(
                 mana_per_tick=mana_hot["mana_per_tick"],
                 interval=mana_hot["interval"],
@@ -5971,11 +5960,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     })
                 if _regen.ticks_remaining <= 0:
                     _regen_remove.append(_regen_eid)
+        # remove_component já tolera alvo ausente sozinho — ver PROBLEMAS_ARQUITETURA.md §165.
         for _regen_eid in _regen_remove:
-            try:
-                self.world.remove_component(_regen_eid, _AR)
-            except Exception:
-                pass
+            self.world.remove_component(_regen_eid, _AR)
 
         # ── ActiveManaRegen (consumíveis HoT — mana) ─────────────────────
         from engine.components import ActiveManaRegen as _AMR, CharacterStats as _CHSmr, PlayerControlled as _PCamr
@@ -6011,11 +5998,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     })
                 if _mregen.ticks_remaining <= 0:
                     _mregen_remove.append(_mregen_eid)
+        # remove_component já tolera alvo ausente sozinho — ver PROBLEMAS_ARQUITETURA.md §165.
         for _mregen_eid in _mregen_remove:
-            try:
-                self.world.remove_component(_mregen_eid, _AMR)
-            except Exception:
-                pass
+            self.world.remove_component(_mregen_eid, _AMR)
 
         # ── Arqueiro: timer de Camuflagem ─────────────────────────────────────
         # Regen de Concentração e concentration_free_timer (buff "Só um Gole")
@@ -6054,10 +6039,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         for _fse_eid, _fse in list(self.world.get_entities_with(_FSE)):
             _fse.elapsed += dt
             if _fse.elapsed >= _fse.duration:
-                try:
-                    self.world.remove_component(_fse_eid, _FSE)
-                except Exception:
-                    pass
+                # remove_component já tolera alvo ausente sozinho — ver PROBLEMAS_ARQUITETURA.md §165.
+                self.world.remove_component(_fse_eid, _FSE)
 
         # ── Channeling de players (Calamidade Flamejante) ────────────────────
         self._process_player_channeling(dt)

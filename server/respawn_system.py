@@ -154,24 +154,16 @@ class RespawnMixin:
             tm_resp = self.world.get_component(player_eid, TileMovement)
             if tm_resp:
                 tm_resp.slow_mult = 1.0
-        try:
-            self.world.remove_component(player_eid, _AR)
-        except Exception:
-            pass
+        # remove_component já tolera alvo ausente sozinho — ver PROBLEMAS_ARQUITETURA.md §165.
+        self.world.remove_component(player_eid, _AR)
         # Fase 6 (06/08/2026) — espelha a remoção de ActiveRegen acima
         # pro HoT de mana (assimetria pequena, mesma limpeza que já
         # existia só pro HP).
-        try:
-            self.world.remove_component(player_eid, _AMR)
-        except Exception:
-            pass
+        self.world.remove_component(player_eid, _AMR)
 
         # Cancela Channeling ativo (evita dano AoE pós-morte)
         from engine.components import Channeling as _Chan
-        try:
-            self.world.remove_component(player_eid, _Chan)
-        except Exception:
-            pass
+        self.world.remove_component(player_eid, _Chan)
 
         # Cancela spells em voo / com cast_time pendente — evita flechas
         # "fantasma" que acertam mobs após o respawn do player. Filtra tanto

@@ -519,10 +519,8 @@ class MatchProcessorMixin(InstancedMatchMixin):
         # volatile pra quem morreu, mas não mexe em concentração/cooldown.
         self._reset_combat_resources(eid)
 
-        try:
-            self.world.remove_component(eid, _FactionL)
-        except Exception:
-            pass
+        # remove_component já tolera alvo ausente sozinho — ver PROBLEMAS_ARQUITETURA.md §165.
+        self.world.remove_component(eid, _FactionL)
         cst = self.world.get_component(eid, _CSL)
         if cst:
             cst.is_immune = False

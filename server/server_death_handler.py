@@ -142,10 +142,8 @@ class ServerDeathHandler:
             # real. Ver PROBLEMAS_ARQUITETURA.md).
             if self.world_server and eid in self.world_server._player_eids.values():
                 self.world_server._handle_player_death(eid, killer_eid=pd.killer_entity_id)
-                try:
-                    self.world.remove_component(eid, PendingDeath)
-                except Exception:
-                    pass
+                # remove_component já tolera alvo ausente sozinho — ver PROBLEMAS_ARQUITETURA.md §165.
+                self.world.remove_component(eid, PendingDeath)
                 continue
 
             # Boneco de treino: reseta HP em vez de morrer
@@ -757,24 +755,16 @@ class ServerDeathHandler:
             to_remove.append(eid)
 
         # Boneco de treino: só remove PendingDeath, mantém entidade
+        # remove_component/remove_entity já toleram alvo ausente sozinhos —
+        # ver PROBLEMAS_ARQUITETURA.md §165.
+        from engine.components import PendingDeath as _PD
         for eid in to_pd_only:
-            try:
-                from engine.components import PendingDeath as _PD
-                self.world.remove_component(eid, _PD)
-            except Exception:
-                pass
+            self.world.remove_component(eid, _PD)
 
         # Remove PendingDeath ANTES de remove_entity (evita iteração inválida)
         for eid in to_remove:
-            try:
-                from engine.components import PendingDeath as _PD
-                self.world.remove_component(eid, _PD)
-            except Exception:
-                pass
-            try:
-                self.world.remove_entity(eid)
-            except Exception:
-                pass
+            self.world.remove_component(eid, _PD)
+            self.world.remove_entity(eid)
 
     def consume_despawns(self) -> list[dict]:
         """Retorna e limpa pending_despawns. Cada entry: {"eid": int, "tx": int, "ty": int}"""

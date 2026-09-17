@@ -175,6 +175,12 @@ documentada e vaza memória lentamente (nunca remove entrada por
 `session_id`).
 
 ### `except Exception: pass` morto em ~20 call sites de `remove_component`/`remove_entity` [Baixa/Média]
+**Status:** ✅ Implementado (17/09/2026) — ver `PROBLEMAS_ARQUITETURA.md`
+§165. 22 sites em 8 arquivos, guard removido em todos — chamada direta
+no lugar. Outros `except Exception: pass` de propósito diferente
+(observabilidade opcional, parsing externo) não foram tocados, fora de
+escopo deste achado específico.
+
 Espalhado em `server/*.py` (lista completa no relatório bruto). Os dois
 métodos já toleram alvo ausente internamente — o guard nunca dispara
 pelo motivo pretendido, só mascara qualquer OUTRO erro real que

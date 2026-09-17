@@ -479,10 +479,8 @@ class CombatProcessorMixin:
                 # verdade em partida real; ver PROBLEMAS_ARQUITETURA.md).
                 _pd_comp = self.world.get_component(peid, _PD)
                 _killer_for_death = _pd_comp.killer_entity_id if _pd_comp else -1
-                try:
-                    self.world.remove_component(peid, _PD)
-                except Exception:
-                    pass
+                # remove_component já tolera alvo ausente sozinho — ver PROBLEMAS_ARQUITETURA.md §165.
+                self.world.remove_component(peid, _PD)
                 self._handle_player_death(peid, killer_eid=_killer_for_death)
 
     # ── PvP: player → player ──────────────────────────────────────────────────
@@ -549,10 +547,8 @@ class CombatProcessorMixin:
         if result["dead"]:
             # Remove PendingDeath de deal_damage/_server_apply_ranged_physical
             # (handler de player é separado, não o ServerDeathHandler genérico)
-            try:
-                self.world.remove_component(victim_eid, PendingDeath)
-            except Exception:
-                pass
+            # — já tolera alvo ausente sozinho, ver PROBLEMAS_ARQUITETURA.md §165.
+            self.world.remove_component(victim_eid, PendingDeath)
             self._handle_player_death(victim_eid, killer_eid=attacker_eid)
             # Ataque concluído — limpa alvo do atacante
             attacker_cst2 = self.world.get_component(attacker_eid, CombatState)

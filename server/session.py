@@ -877,10 +877,8 @@ class SessionManager:
         from engine.components import Channeling as _ChanCancel
         _ch_comp = self.world_server.world.get_component(player_eid, _ChanCancel)
         if _ch_comp and _ch_comp.spell_id == sid:
-            try:
-                self.world_server.world.remove_component(player_eid, _ChanCancel)
-            except Exception:
-                pass
+            # remove_component já tolera alvo ausente sozinho — ver PROBLEMAS_ARQUITETURA.md §165.
+            self.world_server.world.remove_component(player_eid, _ChanCancel)
             from engine.components import CombatState as _CStCancel
             _cst_cancel = self.world_server.world.get_component(player_eid, _CStCancel)
             if _cst_cancel:

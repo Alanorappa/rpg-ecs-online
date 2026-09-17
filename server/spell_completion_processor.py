@@ -686,11 +686,9 @@ class SpellCompletionMixin:
                     if ch.slow_pct > 0:
                         apply_effect(self.world, target_eid, "slow", 2.0, 1.0 - ch.slow_pct)
 
+        # remove_component já tolera alvo ausente sozinho — ver PROBLEMAS_ARQUITETURA.md §165.
         for eid in _to_remove:
-            try:
-                self.world.remove_component(eid, _Chan)
-            except Exception:
-                pass
+            self.world.remove_component(eid, _Chan)
 
     # ── Bloco de Gelo: timer server-side ────────────────────────────────────
 
@@ -723,11 +721,9 @@ class SpellCompletionMixin:
             if ibe.elapsed >= ibe.duration:
                 to_clear.append((player_eid, cst))
 
+        # remove_component já tolera alvo ausente sozinho — ver PROBLEMAS_ARQUITETURA.md §165.
         for player_eid, cst in to_clear:
-            try:
-                self.world.remove_component(player_eid, _IBE)
-            except Exception:
-                pass
+            self.world.remove_component(player_eid, _IBE)
             if cst:
                 cst.is_stunned = False
                 cst.is_immune  = False

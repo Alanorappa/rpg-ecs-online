@@ -20158,3 +20158,51 @@ que chama `on_message` diretamente (`test_bg_leave_message_order.py`,
 `test_trade_quantity_slice.py`) — 255 casos no total, sem regressão
 (confirma que a rajada de 30 nunca interfere com sequências normais de
 teste, que fazem no máximo poucas chamadas por caso).
+
+## 165. `PROJECT_WIDE_REVIEW.md` — `except Exception: pass` morto em 22 call sites de `remove_component`/`remove_entity`
+
+17/09/2026. `engine/world.py::World.remove_component`/`remove_entity`
+já toleram alvo ausente sozinhos internamente — `remove_entity`
+(linha 83-90) usa `dict.pop(eid, None)` + checagem `is not None`;
+`remove_component` (linha 92-99) usa `dict.get()` + `component_type
+in entity_components` antes de deletar. **Nenhum dos dois levanta
+exceção pra entidade/componente ausente** — é o caso normal, já
+tratado.
+
+Apesar disso, 22 call sites em 8 arquivos de `server/` envolviam essas
+chamadas em `try/except Exception: pass` — um guard que NUNCA dispara
+pelo motivo pretendido (a checagem "alvo já não existe" já é interna),
+só mascara qualquer OUTRO erro real que aconteça ali (import errado,
+`TypeError`, componente errado) sem log nenhum, em caminhos críticos
+de morte/respawn/expiração de buff (`server_death_handler.py`,
+`respawn_system.py`, `combat_processor.py`, `spell_completion_processor.py`,
+`world_server.py`, `match_processor.py`, `bg_queue_processor.py`,
+`session.py`).
+
+**Fix**: removidos os 22 `try/except Exception: pass` — chamada direta
+no lugar, com comentário de 1 linha apontando pra este item (evita que
+alguém reintroduza o mesmo guard "defensivo" sem saber que é
+desnecessário). Bônus em `server_death_handler.py`: 2 loops que
+faziam `from engine.components import PendingDeath` DENTRO da
+iteração (1 import por entidade) — import movido pra antes do loop,
+já que a limpeza tirou o motivo de estar ali dentro (o `try` que
+"precisava" do import local pro escopo do bloco).
+
+**Fora de escopo, deliberado**: outros `except Exception: pass`/
+similares no mesmo grep (`server/world_server.py:713`,
+`server/auth.py`, `server/main.py:167`, etc.) NÃO foram tocados — são
+guards de propósito diferente (ex: inicialização opcional de
+profiler, observabilidade que "nunca pode derrubar o tick por causa
+dela", parsing de dado externo) onde a exceção É esperada de verdade.
+O achado da auditoria era especificamente sobre `remove_component`/
+`remove_entity`, que é o único caso onde o guard é comprovadamente
+inútil pelo motivo pretendido.
+
+Suíte completa (`pytest tests/ -q`): 1692 de 1693 passaram. A 1 falha
+(`test_server.py::TestTickPerfProfiler::
+test_perf_push_pop_grava_no_caminho`) é flakiness pré-existente de um
+teste baseado em `time.sleep(0.01)` + comparação `>= 0.01` (granularidade
+de timer do SO, falha ~30-50% das vezes mesmo sem nenhuma mudança no
+código que ele testa) — confirmado rodando isolado 4x (2 falhas, 2
+sucessos); esse teste nunca toca `remove_component`/`remove_entity`
+nem nenhum dos 8 arquivos tocados aqui.

@@ -609,11 +609,9 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
 
         from server.instance_progression import exit_normalized_progression as _exit_np_bg
         _exit_np_bg(self, eid)
-        try:
-            from engine.components import Faction as _FactionBgL
-            self.world.remove_component(eid, _FactionBgL)
-        except Exception:
-            pass
+        # remove_component já tolera alvo ausente sozinho — ver PROBLEMAS_ARQUITETURA.md §165.
+        from engine.components import Faction as _FactionBgL
+        self.world.remove_component(eid, _FactionBgL)
 
         from engine.components import GhostState as _GSBg
         gst = self.world.get_component(eid, _GSBg)
