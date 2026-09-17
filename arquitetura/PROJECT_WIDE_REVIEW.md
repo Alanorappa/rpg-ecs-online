@@ -198,6 +198,12 @@ crítico de morte/expiração.
 ## 🟡 Achados novos de arquitetura
 
 ### `MobRespawnSystem` guarda referência direta a `DeathHandlerSystem` [Média]
+**Status:** ✅ Implementado (17/09/2026) — ver `PROBLEMAS_ARQUITETURA.md`
+§170. `MobRespawnSystem` nunca era instanciada em lugar nenhum (nem
+cliente, nem servidor) — removida por completo em vez de desacoplada.
+Respawn real de mob acontece via `SpawnZoneSystem`, mecanismo
+totalmente separado, nunca tocado.
+
 `engine/world_systems.py:4998` — único caso no projeto de um System
 recebendo *outro System inteiro* como parâmetro de construtor e
 lendo/escrevendo uma lista interna dele direto. Viola a regra "System

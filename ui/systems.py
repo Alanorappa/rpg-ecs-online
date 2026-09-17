@@ -81,7 +81,7 @@ from engine.world_systems import (
     System, PathfindingSystem, TileValidationSystem, CombatSystem,
     DeathHandlerSystem, CombatStateSystem, ProjectileSystem, EnemyAISystem,
     TileMovementSystem, StatusEffectSystem, EnemyAbilitySystem, CorpseSystem,
-    SpawnZoneSystem, MobRespawnSystem,
+    SpawnZoneSystem,
     _svc, register_services, deal_damage, find_path, get_tilemap,
     is_tile_walkable, get_mainhand_weapon,
 )

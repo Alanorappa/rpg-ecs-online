@@ -20358,3 +20358,37 @@ sem ganho funcional nenhum, só estilo).
 
 Suíte: `pytest tests/ -k "item or quiver or ammo"` — 139 casos, sem
 regressão.
+
+## 170. `PROJECT_WIDE_REVIEW.md` — `MobRespawnSystem` (violação "System nunca chama System") era código morto sem nenhum chamador — removido por completo
+
+17/09/2026. A auditoria descreveu isto como violação arquitetural
+("Systema recebendo outro System inteiro como parâmetro de construtor,
+lendo/escrevendo uma lista interna dele direto") — `engine/
+world_systems.py::MobRespawnSystem.__init__(self, world,
+death_handler: DeathHandlerSystem)`, lê/escreve
+`death_handler.pending_respawns` direto.
+
+Investigação achou algo mais fundamental: **`MobRespawnSystem` nunca
+é instanciado em lugar nenhum do repositório** — nem em `game.py`
+(cliente), nem em `server/world_server.py` (servidor). O único outro
+hit de busca era um re-export morto em `ui/systems.py` ("import
+tudo de world_systems pra compatibilidade") e a própria definição da
+classe. Zero teste também.
+
+**Por que o respawn de mob de verdade funciona sem ela**: o mecanismo
+REAL e vivo é `SpawnZoneSystem` (mesmo arquivo, `server/world_server.py:886`
+instancia de verdade) — zona-based (conta mobs vivos na zona, respawna
+quando cai abaixo do alvo E o cooldown expirou), NUNCA passa por
+`pending_respawns`/fila de timer. `DeathHandlerSystem` (que
+`MobRespawnSystem` dependia) já tinha sido confirmado amplamente
+inerte em modo online no §160 desta mesma auditoria — `pending_respawns`
+nunca era populado de verdade nesse caminho.
+
+**Fix**: `MobRespawnSystem` removida por completo (classe inteira,
+`engine/world_systems.py`) + o re-export morto em `ui/systems.py`.
+Resolve a violação arquitetural removendo o violador, não
+reformulando uma comunicação que nunca acontecia de verdade.
+
+Suíte: `test_client_ui.py` (175) + `pytest tests/ -k "respawn or
+spawn_zone or jungle"` (45) — sem regressão (confirma que o respawn
+real, via `SpawnZoneSystem`, continua intocado).
