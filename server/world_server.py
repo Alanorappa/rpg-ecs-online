@@ -4943,6 +4943,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         item = inv.items[inv_index]
         if item is None:
             return None
+        if item.item_type == "quiver":
+            from debug.archer_debug import ADBG_SERVER as _ADBG_s_equip
+            _ADBG_s_equip.log("EQUIP", eid, -1, quiver_item_id=item.item_id,
+                              inv_index=inv_index, arrow_count=getattr(item, "arrow_count", -1),
+                              quiver_obj_id=id(item))
         target_slot = item.slot
         if target_slot not in eq_comp.slots:
             return None

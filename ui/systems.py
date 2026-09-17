@@ -1143,7 +1143,10 @@ class PlayerInputSystem(System):
                     _LOG.add("Aljava vazia! Use Recarregar.", (220, 80, 80))
                     combat_stats.attack_cooldown_timer = 1.0
                     from debug.archer_debug import ADBG_CLIENT as _ADBG_c_empty
-                    _ADBG_c_empty.log_block(entity_id, target_id, "quiver_empty")
+                    _ADBG_c_empty.log_block(entity_id, target_id, "quiver_empty",
+                                            quiver_item_id=getattr(quiver, "item_id", None),
+                                            quiver_obj_id=id(quiver),
+                                            max_arrows=getattr(quiver, "max_arrows", -1))
                     return
 
                 # LOS: bloqueia ANTES de descontar flecha/cooldown otimisticamente

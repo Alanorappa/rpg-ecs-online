@@ -159,6 +159,12 @@ class InventoryHandlers:
             combat_stats.base_attack_interval = item.attack_speed
         for mod in item.modifiers:
             add_modifier(combat_stats, mod)
+        if item.item_type == "quiver":
+            from debug.archer_debug import ADBG_CLIENT as _ADBG_c_equip
+            _ADBG_c_equip.log("EQUIP", self.player_entity, -1,
+                              quiver_item_id=item.item_id, inv_index=_inv_index,
+                              arrow_count=getattr(item, "arrow_count", -1),
+                              quiver_obj_id=id(item))
         self._send_equip_item(_inv_index)
 
     def _unequip_slot(self, slot_name: str):

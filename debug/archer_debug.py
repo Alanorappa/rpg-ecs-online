@@ -4,15 +4,24 @@ archer_debug.py — Debug do pipeline de auto-attack ranged do arqueiro
 são processos diferentes e escrever no mesmo arquivo dos dois lados
 arriscaria intercalar linhas de forma confusa).
 
-Para ativar: setar DBG_ENABLED = True abaixo (client e server compartilham
-o mesmo flag, já que é o mesmo arquivo importado nos dois lados).
-Logs em  logs/archer_debug_server.log  e  logs/archer_debug_client.log
-(criados automaticamente).
+Para ativar: `set RPG_DEBUG_ARCHER=1` (client e servidor compartilham o
+mesmo nome de env var, já que é o mesmo arquivo importado nos dois
+lados — precisa ligar nos DOIS processos pra ver o pipeline completo).
+Logs em  debug/logs/archer_debug_server.log  e
+debug/logs/archer_debug_client.log  (criados automaticamente).
 
-Objetivo: caçar o bug relatado pelo usuário — "do nada o arqueiro para de
-atacar" + "desconta flecha da aljava sem gerar flecha/dano" — cobrindo
-TODOS os pontos de decisão do pipeline (client E server) que determinam
-se um tiro dispara, é bloqueado, consome flecha, toca som ou agra o mob.
+Objetivo original: caçar o bug relatado pelo usuário — "do nada o
+arqueiro para de atacar" + "desconta flecha da aljava sem gerar flecha/
+dano" — cobrindo TODOS os pontos de decisão do pipeline (client E
+server) que determinam se um tiro dispara, é bloqueado, consome
+flecha, toca som ou agra o mob.
+
+Extensão 16/09/2026 (ver PROBLEMAS_ARQUITETURA.md §154/§156/§157) —
+eventos ARROW/EQUIP passaram a incluir `quiver_item_id`/`quiver_obj_id`
+(identidade da aljava, não só a contagem) — objetivo: caçar o bug de
+"aljava nova recém-comprada acusa sem flechas com a aljava cheia",
+onde a contagem sozinha não bastava pra saber SE a confirmação/equip
+realmente correspondiam à aljava certa em cada lado.
 
 ────────────────────────────────────────────────────────────
 Formato de cada linha:
@@ -26,18 +35,31 @@ Tipos de evento:
   BLOCK     (server/client) ataque bloqueado neste tick — só loga na
             TRANSIÇÃO de motivo (evita spam de "esperando cooldown" a
             cada tick; qualquer MUDANÇA de motivo, inclusive
-            "voltou a poder atirar", gera uma linha).
+            "voltou a poder atirar", gera uma linha) — EXCETO o
+            "quiver_item_id_mismatch" do STATS_UPDATE (client) e o
+            "quiver_empty" do auto-attack (client), que usam log_block
+            mas incluem `quiver_item_id`/`quiver_obj_id` extras.
   LOS       (server/client) resultado da checagem de linha de visão
             (sempre logado quando checada, faz parte do BLOCK quando
             bloqueia, mas também logado quando dá OK pra confirmar que
             a checagem rodou).
   FIRE      (server) ataque disparado de verdade — outcome resolvido
             (hit/crit/miss/dodge/parry/evade), inclui dano.
-  ARROW     (server) consumo REAL de flecha (arrows_before→arrows_after).
-            (client) decremento LOCAL/otimista de flecha (previsão de UI,
-            pode divergir do servidor — é exatamente o que causa o bug
-            "desconta sem gerar flecha" se o client decrementa mas o
-            server não confirma o disparo).
+  ARROW     (server) consumo REAL de flecha, com `quiver_item_id`/
+            `quiver_obj_id` da aljava que perdeu a flecha (auto-attack
+            ou Recarregar, `event_src` distingue). (client) toda vez
+            que um STATS_UPDATE com `quiver_arrow_count` chega —
+            mostra o `payload_quiver_item_id` (o que o servidor mandou)
+            vs `local_quiver_item_id`/`local_quiver_obj_id` (o que está
+            equipado agora) ANTES de decidir aplicar ou ignorar — se
+            os dois `item_id` não baterem, um BLOCK
+            "quiver_item_id_mismatch" segue na linha de baixo.
+  EQUIP     (server/client) aljava equipada — `quiver_item_id`,
+            `inv_index` (posição na bag), `arrow_count` no momento do
+            equip, `quiver_obj_id` (identidade do objeto Python — se o
+            MESMO `quiver_obj_id` aparecer depois em ARROW com um
+            `quiver_item_id` diferente, é sinal de MUTAÇÃO indevida do
+            objeto, não troca de referência).
   AGGRO     (server) mob mudou de estado por causa deste ataque.
   SOUND     (client) som de disparo/nock/impacto tocado.
 ────────────────────────────────────────────────────────────

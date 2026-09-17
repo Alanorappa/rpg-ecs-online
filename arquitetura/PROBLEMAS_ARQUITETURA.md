@@ -19641,3 +19641,66 @@ o teste falha reproduzindo o sintoma EXATO relatado (confirmação órfã
 de `arrow_count=6` da aljava antiga aplicada por cima dos 999 da
 aljava nova, virando 6). Com o fix restaurado, passa — suíte completa
 `test_client_ui.py` (175 casos): sem regressão.
+
+## 157. Bug da aljava reaberto DE NOVO após o §156 — em vez de tentar um 4º fix às cegas, conecta a ferramenta de diagnóstico já existente no projeto aos pontos reais
+
+16/09/2026, minutos depois do deploy do §156. Usuário testou de novo
+(BG real) e reportou algo NOVO e pior: "além de continuar o mesmo bug,
+ainda aumentou o bug, agora não desconta da aljava nova que comprei"
+— comprou aljava básica, gastou até sobrar 2, comprou aljava de
+batalha, deu vários ataques sem NENHUM desconto visível, e depois a
+mensagem de "sem flechas" apareceu mesmo com a aljava mostrando 999.
+
+**Decisão explícita, em vez de tentar mais um fix**: 2 rodadas de
+correção (§154, §156) já verificadas com teste + revert-to-confirm
+mas ainda assim insuficientes, e a última piorou o sintoma — sinal
+de que investigar mais fundo por leitura de código estática (sem dado
+real de uma sessão de jogo de verdade) já não é produtivo. O projeto
+já tem uma ferramenta pronta pra exatamente esse tipo de bug —
+`debug/archer_debug.py` — só que ela nunca tinha sido conectada aos
+pontos que mexem em munição/equipamento (`grep` por `.log("ARROW"`
+não achava NENHUM call site real antes desta entrada — a infra existia
+só documentada, nunca ligada).
+
+**O que foi feito** (só instrumentação, NENHUMA lógica mudou):
+- `server/spell_completion_processor.py` — evento `ARROW` em
+  `_server_apply_ranged_physical` (consumo por tiro) e
+  `_server_recarregar`, incluindo `quiver_item_id`/`quiver_obj_id`
+  (identidade Python do objeto, não só o id do catálogo — detecta
+  MUTAÇÃO indevida vs. troca de referência).
+- `server/world_server.py::equip_item_from_inventory` — evento `EQUIP`
+  quando o item equipado é uma aljava, com `inv_index`/`item_id`/
+  `arrow_count` no momento do equip.
+- `client/network_handlers.py::_handle_msg_stats_update` — evento
+  `ARROW` toda vez que um `quiver_arrow_count` chega, ANTES de decidir
+  aplicar (mostra o `item_id` do payload vs. o `item_id` do que está
+  equipado agora), e `BLOCK` explícito quando a checagem de identidade
+  do §154 rejeita.
+- `client/inventory_handlers.py::_equip_item` — evento `EQUIP` (mesmo
+  formato do lado servidor).
+- `ui/systems.py` — a linha que já existia (`log_block("quiver_empty")`,
+  desde antes desta sessão) ganhou `quiver_item_id`/`quiver_obj_id`/
+  `max_arrows` extras, pra saber EXATAMENTE qual aljava (e se é o MESMO
+  objeto Python de antes) no momento em que "Aljava vazia!" dispara.
+- Corrigido de quebra: docstring do módulo estava desatualizada
+  (dizia "setar DBG_ENABLED=True", mas o mecanismo real já é a env var
+  `RPG_DEBUG_ARCHER` desde antes desta sessão) — documentado o evento
+  `EQUIP` (novo) e os campos novos de `ARROW`.
+
+**Verificação de que a instrumentação funciona**: rodada sintética
+(suíte de teste com `RPG_DEBUG_ARCHER=1`) confirma as linhas sendo
+geradas corretamente, formato legível, sem exceção. Suíte completa
+(`test_client_ui.py`, 175 casos): sem regressão — instrumentação é
+só leitura + escrita em arquivo de log, gated por env var, nunca muda
+comportamento de gameplay.
+
+**Próximo passo, pendente do usuário**: ligar `RPG_DEBUG_ARCHER=1`
+nos DOIS lados (cliente E servidor — precisa nos dois, é o mesmo
+pipeline) e reproduzir a sequência exata relatada (comprar aljava
+básica, gastar até sobrar pouco, comprar/equipar aljava de batalha,
+atirar até a mensagem de "sem flechas" aparecer com a aljava
+mostrando cheia) — depois compartilhar os 2 arquivos de log
+(`debug/logs/archer_debug_client.log`/`archer_debug_server.log`).
+Com dado real dos dois lados (não mais suposição sobre qual `item_id`/
+`inv_index` cada lado está vendo), a causa raiz real deve ficar
+evidente sem mais tentativa e erro.

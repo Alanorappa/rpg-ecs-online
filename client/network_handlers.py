@@ -1393,8 +1393,20 @@ class NetworkHandlers:
                 from engine.components import Equipment as _EqRec
                 _eq_rec = self.world.get_component(self.player_entity, _EqRec)
                 _quiver_rec = _eq_rec.slots.get("offhand") if _eq_rec else None
+                from debug.archer_debug import ADBG_CLIENT as _ADBG_c_stats
+                _ADBG_c_stats.log(
+                    "ARROW", self.player_entity, -1,
+                    event_src="stats_update",
+                    payload_quiver_item_id=payload.get("quiver_item_id"),
+                    payload_arrow_count=payload.get("quiver_arrow_count"),
+                    local_quiver_item_id=(_quiver_rec.item_id if _quiver_rec else None),
+                    local_quiver_obj_id=(id(_quiver_rec) if _quiver_rec else None),
+                    local_arrow_count_before=(_quiver_rec.arrow_count if _quiver_rec else None),
+                )
                 if (_quiver_rec is not None
                         and _quiver_rec.item_id != payload.get("quiver_item_id")):
+                    _ADBG_c_stats.log("BLOCK", self.player_entity, -1,
+                                      reason="quiver_item_id_mismatch")
                     _quiver_rec = None
                 if _quiver_rec is not None:
                     _quiver_rec.arrow_count = payload["quiver_arrow_count"]

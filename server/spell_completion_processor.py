@@ -1280,6 +1280,11 @@ class SpellCompletionMixin:
                 "quiver_arrow_count": _qv_ar.arrow_count,
                 "quiver_item_id":     _qv_ar.item_id,
             })
+            from debug.archer_debug import ADBG_SERVER as _ADBG_s_arrow
+            _ADBG_s_arrow.log("ARROW", player_eid, target_id,
+                              quiver_item_id=_qv_ar.item_id,
+                              arrow_count_after=_qv_ar.arrow_count,
+                              quiver_obj_id=id(_qv_ar))
 
         if outcome in ("miss", "dodge", "parry"):
             return False, outcome, 0
@@ -1940,3 +1945,8 @@ class SpellCompletionMixin:
             # mesmo se esta confirmação chegar duplicada por qualquer motivo.
             "ammo_new_stack":     _ammo_new_stack,
         })
+        from debug.archer_debug import ADBG_SERVER as _ADBG_s_reload
+        _ADBG_s_reload.log("ARROW", player_eid, target_id,
+                          event_src="recarregar", quiver_item_id=quiver.item_id,
+                          arrow_count_after=quiver.arrow_count,
+                          quiver_obj_id=id(quiver))
