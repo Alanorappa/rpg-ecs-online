@@ -218,10 +218,24 @@ class TalentSystem(UIScaleMixin):
 
         # Memoriza a posição atual de cada skill de talento antes de removê-las,
         # para restaurar nas mesmas posições após re-aplicar (preserva layout do usuário).
+        # Guarda também o OBJETO em si (17/09/2026, ver PROBLEMAS_ARQUITETURA.md
+        # — bug real relatado pelo usuário, recorrência do §34.74.23): esta
+        # função roda de novo toda vez que `talent_allocated` chega via rede
+        # (client/network_handlers.py) — dentro da BG isso é em TODO ganho de
+        # XP (`_push_stats_update`), não só quando o jogador aloca um ponto de
+        # verdade. Sem preservar o objeto, toda skill desbloqueada por talento
+        # (ex: Tiro Múltiplo) era descartada e recriada do zero a cada chamada,
+        # perdendo `current_cooldown`/`charges` ao vivo — sintoma: barra de
+        # cooldown "sumia" sozinha pouco depois de usar a skill, só reaparecia
+        # quando uma rejeição de reuso (SKILL_RESULT failed) reaplicava o
+        # valor certo por fora. Mais visível em skill de cooldown longo (mais
+        # tempo de janela pra uma dessas chamadas acontecer no meio).
         old_positions: dict[str, int] = {}
+        old_skills_by_id: dict[str, object] = {}
         for i, s in enumerate(skills.skills):
             if s and getattr(s, "talent_id", None):
                 old_positions[s.skill_id] = i
+                old_skills_by_id[s.skill_id] = s
 
         # Remove habilidades de talento antigas (substitui por None para preservar comprimento da lista)
         skills.skills = [None if getattr(s, "talent_id", None) else s for s in skills.skills]
@@ -248,10 +262,19 @@ class TalentSystem(UIScaleMixin):
                     from content.skill_config import SKILL_CATALOG as _SC
                     if _sid not in _SC:
                         continue  # skill não definida no catálogo — ignorar
-                    # Toda skill vem do catálogo — fonte única de dados
-                    new_skill = PlayerSkills._make_skill(_sid, _SC)
-                    new_skill.talent_id = talent_id
-                    new_skill.handler   = ""  # dispatch via skill_id (não _talent_*)
+                    # Reusa o objeto JÁ EXISTENTE (mesmo skill_id, tinha
+                    # talent_id) em vez de recriar do zero — preserva
+                    # current_cooldown/charges ao vivo entre chamadas
+                    # repetidas desta função pra skill que já estava
+                    # desbloqueada (ver comentário acima de old_skills_by_id).
+                    # Toda skill vem do catálogo — fonte única de dados —
+                    # só quando é GENUINAMENTE nova (nunca tinha sido
+                    # concedida antes nesta sessão).
+                    new_skill = old_skills_by_id.get(_sid)
+                    if new_skill is None:
+                        new_skill = PlayerSkills._make_skill(_sid, _SC)
+                        new_skill.talent_id = talent_id
+                        new_skill.handler   = ""  # dispatch via skill_id (não _talent_*)
                     # Restaura na posição anterior se existir; caso contrário, primeiro None.
                     # Também remove cópia sem talent_id carregada do save (previne ícone duplicado).
                     prev_idx = old_positions.get(_sid)

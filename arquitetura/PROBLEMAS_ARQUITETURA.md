@@ -20492,3 +20492,73 @@ performance/estrutura de `ui/` — `ui/systems.py` monolítico, cache de
 ícone sem teto, fila de mob com `list.pop(0)`, etc.), listados no
 próprio `PROJECT_WIDE_REVIEW.md`, seção "Veredito consolidado dos 15
 itens pendentes".
+
+## 174. Recorrência do bug de cooldown de skill "sumindo" dentro da BG (§34.74.23) — causa raiz DIFERENTE desta vez: `apply_talent_effects()` recriava skill de talento do zero em toda chamada
+
+17/09/2026. Usuário relatou: "há um tempo já relatei o mesmo bug, foi
+resolvido mas voltou" — cooldown de Tiro Múltiplo (arqueiro) dentro da
+BG só aparecia na barra depois de apertar o atalho de novo (já em
+cooldown), sumindo de novo pouco depois. Sintoma idêntico ao §34.74.23
+(03/08/2026, histórico) — mas aquele fix (reconciliação por-slot em
+`client/network_handlers.py`, bloco `skills_hotbar`) continua intacto
+e correto; a recorrência vem de um mecanismo DIFERENTE que nasceu
+depois (14/09/2026, §136 — `talent_allocated` passou a chamar
+`apply_talent_effects()`).
+
+**Investigação**: em vez de adivinhar, instrumentado com `print()`
+temporário em 3 pontos (CAST em `ui/systems.py`, e
+CREATE/REMOVE/SKILL_RESULT em `client/network_handlers.py`) — cliente
+rodado localmente pelo Claude enquanto o usuário jogava na BG de
+produção. Log real mostrou: cada `CAST sid=tiro_multiplo` tinha um
+`id(skill)` DIFERENTE do anterior, sem NENHUM `CREATE` correspondente
+no bloco `skills_hotbar` — provando que o objeto estava sendo trocado
+por um caminho que a instrumentação não cobria.
+
+**Causa raiz real**: `ui/talent_system.py::TalentSystem.
+apply_talent_effects()` — a cada chamada, remove INCONDICIONALMENTE
+toda skill com `talent_id` setado (`skills.skills = [None if
+getattr(s, "talent_id", None) else s ...]`) e limpa
+`tt._unlocked_skill_ids`, depois recria do zero via `PlayerSkills.
+_make_skill()` qualquer talento com pontos suficientes — mesmo que a
+alocação não tenha mudado NADA desde a última chamada. Tiro Múltiplo
+é desbloqueada pelo talento `bardo_tiro_multiplo`
+(`content/talent_data.py`). Essa função roda de novo toda vez que
+`talent_allocated` chega via STATS_UPDATE — e dentro da BG isso é em
+**todo ganho de XP** (`server/instance_progression.py::
+_push_stats_update`, "empurra STATS_UPDATE em TODO ganho" desde
+13/08/2026), não só quando o jogador aloca um ponto de verdade. Uma
+skill de cooldown curto (Picada de Escorpião, 5s) quase nunca é pega
+no meio da janela de forma perceptível; uma de cooldown longo (Tiro
+Múltiplo, 90s) tem uma janela enorme — daí o padrão "cooldown alto"
+relatado pelo usuário.
+
+**Fix**: `apply_talent_effects()` agora guarda o OBJETO (não só a
+posição) de cada skill de talento antes de removê-las
+(`old_skills_by_id: dict[str, object]`), e ao re-conceder uma skill já
+desbloqueada, REUSA o objeto existente em vez de chamar `_make_skill`
+de novo — só cria um objeto genuinamente novo quando a skill nunca
+tinha sido concedida antes. Preserva `current_cooldown`/`charges` ao
+vivo entre chamadas repetidas com a mesma alocação — mesmo princípio
+já usado (e correto) no bloco `skills_hotbar`.
+
+**Teste** (`tests/test_talent_skill_cooldown_preserved.py`, novo):
+`test_reaplicar_mesma_alocacao_preserva_objeto_e_cooldown_da_skill` —
+usa `TalentSystem` REAL (não mock, mesma fixture de
+`test_instance_talent_effects_sync.py`), desbloqueia Tiro Múltiplo,
+simula `current_cooldown=90.0` (como um SKILL_RESULT faria), reenvia a
+MESMA `talent_allocated` (simulando outro ganho de XP na BG), confirma
+que o objeto Skill e o cooldown sobrevivem. Revert-to-confirm: `git
+stash` só de `ui/talent_system.py` reproduziu exatamente a troca de
+`id()` do objeto.
+
+Suíte: `test_client_ui.py`, `test_instance_talent_effects_sync.py`,
+`test_talent_skill_cooldown_preserved.py`,
+`test_restore_save_state_talent_error.py`, `test_hotbar_bg_leak.py`,
+`test_client_instance_sync.py` — 226 casos, sem regressão.
+
+**Lição pra próxima vez que um "bug já resolvido" reaparecer**: não
+assumir que é o MESMO mecanismo do fix antigo — o sintoma bateu 100%,
+mas a causa raiz era um código totalmente diferente, escrito 6
+semanas DEPOIS do fix original, que reintroduziu a mesma CLASSE de bug
+(objeto de estado vivo descartado/recriado sem necessidade) por um
+caminho novo.
