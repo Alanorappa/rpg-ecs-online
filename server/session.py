@@ -188,6 +188,16 @@ class SessionManager:
         # padrão de registro-em-set-de-módulo já usado alhures no
         # projeto, aqui como atributo de instância por ser por-conexão.
         self._dispatch_tasks: set = set()
+        # Registro das tasks fire-and-forget de `_autosave_all` (16/09/2026,
+        # ver arquitetura/PROJECT_WIDE_REVIEW.md — achado de qualidade de
+        # código "Alta"). MESMO bug de referência fraca do `_dispatch_tasks`
+        # acima, achado num lugar diferente: `_on_tick` chamava
+        # `asyncio.create_task(self._autosave_all())` sem guardar a Task em
+        # lugar nenhum — o event loop só mantém referência FRACA, então o
+        # GC pode coletar a task NO MEIO da execução (autosave de todos os
+        # players ainda não salvos naquele lote de 5 em 5 min, silencioso,
+        # sem exceção nem log). `_track_autosave_task` seguindo.
+        self._autosave_tasks: set = set()
         # Encode de fog-of-war (union + zlib) fora do event loop principal
         # (15/09/2026, item de performance §141/§142) — profiling real
         # confirmou ~100-150ms numa conta bem explorada; como o asyncio do
@@ -2504,7 +2514,7 @@ class SessionManager:
 
     def _on_tick(self, tick_count: int, deltas: dict) -> None:
         if tick_count % (TICK_RATE * 300) == 0 and tick_count > 0:  # autosave a cada 5 min
-            asyncio.create_task(self._autosave_all())
+            self._track_autosave_task(asyncio.create_task(self._autosave_all()))
         from server import debug_battleground as _dbg_bg_tick
         # Dispatch sempre que há conteúdo — inclui skill_results que não entram em deltas
         has_pending = (any(deltas.values())
@@ -2603,6 +2613,24 @@ class SessionManager:
                 log.error(f"[SessionManager] _run_dispatch falhou: {exc!r}")
         task.add_done_callback(_on_done)
 
+    def _track_autosave_task(self, task: "asyncio.Task") -> None:
+        """Registra uma task de `_autosave_all` em `_autosave_tasks` (referência
+        forte, evita coleta prematura pelo GC — ver comentário em `__init__`
+        e `arquitetura/PROJECT_WIDE_REVIEW.md`) — mesmo padrão de
+        `_track_dispatch_task`, só que dedicado ao autosave periódico
+        (categoria de trabalho diferente, nunca cancelado junto por engano:
+        `shutdown_dispatch_tasks` trata os dois sets, mas separadamente)."""
+        self._autosave_tasks.add(task)
+
+        def _on_done(t: "asyncio.Task") -> None:
+            self._autosave_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                log.error(f"[SessionManager] _autosave_all falhou: {exc!r}")
+        task.add_done_callback(_on_done)
+
     async def shutdown_dispatch_tasks(self) -> None:
         """Cancela e espera qualquer `_run_dispatch` ainda pendente — chamado
         pelo `except KeyboardInterrupt` de `server/main.py` ANTES do
@@ -2617,7 +2645,10 @@ class SessionManager:
         # meio de um Ctrl+C não é crítico, mas o processo filho não pode
         # ficar pendurado).
         self._fog_executor.shutdown(wait=False, cancel_futures=True)
-        tasks = list(self._dispatch_tasks)
+        # `_autosave_tasks` (16/09/2026) junto de `_dispatch_tasks` — mesmo
+        # motivo (task fire-and-forget ainda viva no instante do Ctrl+C),
+        # só que categoria de trabalho diferente (DB write, não broadcast).
+        tasks = list(self._dispatch_tasks) + list(self._autosave_tasks)
         if not tasks:
             return
         for t in tasks:

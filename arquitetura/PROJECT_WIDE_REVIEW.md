@@ -118,6 +118,12 @@ Só relevante pós-vazamento de banco; troca isolada em `server/auth.py`.
 ## 🟠 Achados novos de qualidade de código
 
 ### Task de autosave periódico sem referência — GC pode matá-la no meio [Alta]
+**Status:** ✅ Implementado (17/09/2026) — ver `PROBLEMAS_ARQUITETURA.md`
+§161. Mesmo padrão já usado por `_track_dispatch_task`/`_dispatch_tasks`
+(citado abaixo), agora dedicado ao autosave (`_track_autosave_task`/
+`_autosave_tasks`) — `shutdown_dispatch_tasks` passou a cancelar/esperar
+os dois registros.
+
 `server/session.py:2511` — `asyncio.create_task(self._autosave_all())`
 sem guardar a Task em lugar nenhum. O event loop só guarda referência
 FRACA; o GC pode coletar a task no meio da execução, interrompendo o
@@ -235,8 +241,8 @@ focou nos 10 itens PRINCIPAIS da auditoria anterior, não no apêndice).
 1. ~~Os 4 exploits de economia (Alta)~~ — **✅ concluído 16/09/2026**, todos
    os 4 corrigidos com revisão cruzada + revert-to-confirm (ver §151-§155
    em `PROBLEMAS_ARQUITETURA.md`).
-2. **Task de autosave sem referência (Alta)** — perda de progresso
-   silenciosa em escala (todos os players do lote).
+2. ~~Task de autosave sem referência (Alta)~~ — **✅ concluído
+   17/09/2026** (ver §161 em `PROBLEMAS_ARQUITETURA.md`).
 3. **`PlayerInputSystem` código morto + teste com falso positivo (Alta)**
    — já causou 1 incidente real, risco de causar outro.
 4. Resto — Média/Baixa, sem urgência de produção.

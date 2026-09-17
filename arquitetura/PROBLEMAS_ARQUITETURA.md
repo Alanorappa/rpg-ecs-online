@@ -19981,3 +19981,54 @@ Suíte: `test_instance_progression.py` (44), `test_client_ui.py` (177),
 `test_minions.py`, `test_jungle_camps.py`, `test_char_stats.py`,
 `test_bg_kill_credit.py` — 348 casos no total entre os arquivos
 tocados, sem regressão.
+
+## 161. Retomando `PROJECT_WIDE_REVIEW.md` — item #2: task de autosave sem referência (GC podia matar a task no meio)
+
+17/09/2026. Primeiro item da lista "Por onde começar" da auditoria de
+projeto inteiro (16/09/2026) ainda pendente, depois dos 4 exploits de
+economia (já corrigidos, §151-§155).
+
+`server/session.py::SessionManager._on_tick` disparava o autosave
+periódico (5 em 5 min) via `asyncio.create_task(self._autosave_all())`
+**sem guardar a Task em lugar nenhum**. O event loop asyncio só mantém
+referência FRACA a uma task fire-and-forget — nada impede o GC de
+coletá-la NO MEIO da execução, interrompendo o autosave de TODOS os
+players ainda não salvos naquele lote, silenciosamente (sem exceção,
+sem log, sem sintoma óbvio pro usuário além de progresso perdido num
+save que "deveria" ter rodado). O próprio arquivo já tinha a mitigação
+certa pra exatamente esse padrão — `_track_dispatch_task`/
+`_dispatch_tasks` (16/08/2026, §44/BENCHMARK §E.1), só nunca foi
+aplicada ao autosave.
+
+**Fix**: mesmo padrão, dedicado (`_track_autosave_task`/
+`_autosave_tasks`, `server/session.py`) — task de autosave ganha
+referência forte assim que criada, callback de término limpa o
+registro e loga qualquer exceção (antes: exceção também podia se
+perder silenciosamente, não só a task). `shutdown_dispatch_tasks`
+(chamado pelo `KeyboardInterrupt` de `server/main.py`) passou a
+cancelar/esperar `_autosave_tasks` junto de `_dispatch_tasks` — mesmo
+motivo (task fire-and-forget ainda viva no instante do Ctrl+C),
+dedicado por categoria (rede vs. escrita em banco) mas tratado no
+mesmo chokepoint de desligamento.
+
+**Teste**: reproduzir o bug de verdade (GC coletando a task no meio,
+num timing exato) não é praticável de forma determinística — o valor
+do teste está em provar a FIAÇÃO certa, não o bug em si.
+`tests/test_graceful_shutdown.py::TestAutosaveTaskTracked`:
+- `test_autosave_task_fica_com_referencia_forte_e_some_ao_terminar` —
+  dispara `_on_tick` no tick de autosave, confirma a task registrada
+  imediatamente, aguarda terminar, confirma que o registro se limpa
+  sozinho (nunca cresce sem limite).
+- `test_shutdown_cancela_autosave_ainda_pendente` — autosave "lento"
+  (trava num `asyncio.Event`) ainda em andamento quando
+  `shutdown_dispatch_tasks` roda — confirma que é cancelada e
+  removida do registro, não fica órfã.
+
+Revert-to-confirm: `git stash` só de `server/session.py` reproduziu a
+falha exata dos 2 testes novos (`AttributeError:
+'SessionManager' object has no attribute '_autosave_tasks'`) antes do
+fix.
+
+Suíte: `test_graceful_shutdown.py`, `test_instance_persist_guard.py`,
+`test_session.py` — 112 casos, sem regressão (Postgres local
+confirmado de pé pra esta rodada).

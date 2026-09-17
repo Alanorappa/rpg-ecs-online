@@ -51,5 +51,66 @@ class TestGracefulShutdownSavesConnectedPlayers(unittest.IsolatedAsyncioTestCase
             "último autosave periódico se perde no Ctrl+C")
 
 
+class TestAutosaveTaskTracked(unittest.IsolatedAsyncioTestCase):
+    """16/09/2026 — ver arquitetura/PROJECT_WIDE_REVIEW.md (achado de
+    qualidade "Alta"): `_on_tick` disparava `_autosave_all` via
+    `asyncio.create_task` sem guardar a Task em lugar nenhum. O event loop
+    só mantém referência FRACA — o GC pode coletar a task NO MEIO da
+    execução, interrompendo o autosave de todo mundo ainda não salvo
+    naquele lote (5 em 5 min), silenciosamente, sem exceção nem log. Fix:
+    mesmo padrão já usado por `_track_dispatch_task`/`_dispatch_tasks`,
+    agora dedicado (`_track_autosave_task`/`_autosave_tasks`).
+
+    Reproduzir o bug de verdade (GC coletando no meio) não é praticável
+    num teste determinístico — o teste aqui prova a fiação certa: a task
+    fica com referência forte assim que criada, e some do registro quando
+    termina (nunca cresce sem limite)."""
+
+    async def asyncSetUp(self):
+        from tests.test_session import make_session_manager
+        from shared.constants import TICK_RATE
+        self.ws, self.mgr = make_session_manager()
+        self.TICK_RATE = TICK_RATE
+
+    async def test_autosave_task_fica_com_referencia_forte_e_some_ao_terminar(self):
+        autosave_tick = self.TICK_RATE * 300
+        self.assertEqual(len(self.mgr._autosave_tasks), 0)
+
+        self.mgr._on_tick(autosave_tick, {})
+
+        self.assertEqual(len(self.mgr._autosave_tasks), 1,
+                         "task de autosave deveria estar registrada (referência forte) "
+                         "imediatamente após ser criada")
+        task = next(iter(self.mgr._autosave_tasks))
+        await task  # sem sessões conectadas — _autosave_all termina rápido, sem tocar DB
+        self.assertEqual(len(self.mgr._autosave_tasks), 0,
+                         "registro deveria se limpar sozinho quando a task termina")
+
+    async def test_shutdown_cancela_autosave_ainda_pendente(self):
+        import asyncio
+        started = asyncio.Event()
+        release  = asyncio.Event()
+
+        async def slow_autosave_all(self):
+            started.set()
+            await release.wait()
+
+        orig = self.mgr._autosave_all
+        self.mgr._autosave_all = slow_autosave_all.__get__(self.mgr)
+        try:
+            self.mgr._on_tick(self.TICK_RATE * 300, {})
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+            self.assertEqual(len(self.mgr._autosave_tasks), 1)
+
+            await self.mgr.shutdown_dispatch_tasks()
+
+            self.assertEqual(len(self.mgr._autosave_tasks), 0,
+                             "shutdown deveria cancelar e esperar a task de autosave "
+                             "ainda pendente, não deixá-la órfã")
+        finally:
+            self.mgr._autosave_all = orig
+            release.set()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
