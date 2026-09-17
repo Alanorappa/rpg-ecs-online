@@ -2317,6 +2317,34 @@ class TestUnstuck(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
             "já estava no mapa principal — não deveria mandar ZONE_CHANGE")
         self.assertEqual(len(get_msgs_of_type(fw, MsgType.ENTITY_MOVE)), 1)
 
+    async def test_unstuck_dentro_do_cooldown_recusa_com_erro(self):
+        """16/09/2026, ver PROJECT_WIDE_REVIEW.md — `_unstuck_cooldowns`
+        virou atributo de instância (era dict mutável no corpo da classe);
+        nenhum teste existente cobria o cooldown em si, só a troca de
+        mapa."""
+        session, fw = await fake_login(self.mgr, "unstuck_c", "unstuckuserc")
+        await self.mgr._handle_unstuck(session, {}, 0)
+        fw.sent.clear()
+
+        await self.mgr._handle_unstuck(session, {}, 0)
+
+        errors = get_msgs_of_type(fw, MsgType.ERROR)
+        self.assertEqual(len(errors), 1)
+        self.assertTrue(errors[0]["reason"].startswith("unstuck_cooldown:"))
+        self.assertEqual(len(get_msgs_of_type(fw, MsgType.ENTITY_MOVE)), 0,
+                         "2º unstuck dentro do cooldown não deveria teleportar de novo")
+
+    async def test_disconnect_limpa_cooldown_de_unstuck(self):
+        """Sem isso, `_unstuck_cooldowns` cresce sem limite pra sempre (uma
+        entrada por session_id que já usou /unstuck, nunca removida)."""
+        session, _ = await fake_login(self.mgr, "unstuck_d", "unstuckuserd")
+        await self.mgr._handle_unstuck(session, {}, 0)
+        self.assertIn(session.session_id, self.mgr._unstuck_cooldowns)
+
+        await self.mgr.on_disconnect(session.session_id)
+
+        self.assertNotIn(session.session_id, self.mgr._unstuck_cooldowns)
+
 
 class TestZoneChangeReq(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """ZONE_CHANGE_REQ (C→S) — usado por transições normais de mapa (ex.:

@@ -198,6 +198,16 @@ class SessionManager:
         # players ainda não salvos naquele lote de 5 em 5 min, silencioso,
         # sem exceção nem log). `_track_autosave_task` seguindo.
         self._autosave_tasks: set = set()
+        # Cooldown de `/unstuck` por session_id (16/09/2026, ver
+        # arquitetura/PROJECT_WIDE_REVIEW.md — achado de qualidade). Era
+        # `dict` mutável no CORPO da classe (compartilhado entre TODAS as
+        # instâncias, exatamente o anti-padrão que o CLAUDE.md do projeto
+        # já proíbe) — sem bug de compartilhamento hoje (`SessionManager`
+        # é singleton por processo), mas violava a convenção documentada.
+        # Movido pra atributo de instância, como qualquer outro estado
+        # por-conexão neste `__init__`. Entrada removida em `on_disconnect`
+        # (antes vazava pra sempre — nunca era removida por session_id).
+        self._unstuck_cooldowns: "dict[str, float]" = {}
         # Encode de fog-of-war (union + zlib) fora do event loop principal
         # (15/09/2026, item de performance §141/§142) — profiling real
         # confirmou ~100-150ms numa conta bem explorada; como o asyncio do
@@ -481,6 +491,7 @@ class SessionManager:
 
     async def on_disconnect(self, session_id: str) -> None:
         session = self._sessions.pop(session_id, None)
+        self._unstuck_cooldowns.pop(session_id, None)
         if not session:
             return
         if session.entity_id != -1:
@@ -1661,8 +1672,6 @@ class SessionManager:
                     await s.send(MsgType.ENTITY_DESPAWN, despawn_payload)
                 s.known_eids.discard(-corpse_id)
 
-    # cooldown per session_id: timestamp do último unstuck (módulo-level dict)
-    _unstuck_cooldowns: "dict[str, float]" = {}
     _UNSTUCK_CD = 60.0  # segundos
 
     async def _handle_unstuck(self, session: Session, payload: dict, ts: int) -> None:

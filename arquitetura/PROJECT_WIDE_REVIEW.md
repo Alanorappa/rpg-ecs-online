@@ -149,6 +149,10 @@ caminho morto. Mesma classe "duplicata offline nunca removida" já
 catalogada como padrão a limpar neste projeto.
 
 ### `SessionManager._unstuck_cooldowns` — dict mutável no CORPO da classe [Média]
+**Status:** ✅ Implementado (17/09/2026) — ver `PROBLEMAS_ARQUITETURA.md`
+§163. Movido pra atributo de instância + limpeza no `on_disconnect`
+(fecha também o vazamento de memória citado abaixo).
+
 `server/session.py:1659` — exatamente o anti-padrão que o CLAUDE.md do
 projeto já proíbe explicitamente. Sem bug de compartilhamento hoje
 (`SessionManager` é singleton por processo), mas viola a convenção

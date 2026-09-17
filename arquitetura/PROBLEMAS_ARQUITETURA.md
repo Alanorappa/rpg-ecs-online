@@ -20060,3 +20060,38 @@ DIFERENTES, não devem receber o mesmo tratamento:
 Suíte: `test_client_ui.py` — 175 casos, mesma contagem de antes
 (confirma que nenhum teste dependia do método removido) — sem
 regressão.
+
+## 163. `PROJECT_WIDE_REVIEW.md` — `SessionManager._unstuck_cooldowns` dict mutável no corpo da classe (anti-padrão já proibido pelo CLAUDE.md)
+
+17/09/2026. `server/session.py:1665` tinha `_unstuck_cooldowns: dict =
+{}` declarado no CORPO da classe `SessionManager` — atributo de
+CLASSE, compartilhado entre todas as instâncias (exatamente o
+anti-padrão que o próprio CLAUDE.md do projeto já proíbe
+explicitamente, seção "Proibido estado mutável ad-hoc fora do ECS").
+Sem bug de compartilhamento hoje (`SessionManager` é singleton por
+processo), mas violava a convenção documentada e vazava memória
+lentamente — nunca removia entrada por `session_id`, então todo
+session_id que já usou `/unstuck` uma vez ficava no dict PRA SEMPRE,
+mesmo muito depois de desconectar.
+
+**Fix**: movido pra atributo de instância (`self._unstuck_cooldowns`
+em `__init__`, mesmo bloco de `_dispatch_tasks`/`_autosave_tasks`) —
+padrão já usado em todo o resto do `__init__` pra estado por-conexão.
+Entrada removida em `on_disconnect` (fecha o vazamento de memória
+também, não só a violação de convenção).
+
+**Teste**: nenhum teste existente cobria o cooldown em si (só a troca
+de mapa que `/unstuck` também faz) — 2 novos em
+`tests/test_session.py::TestUnstuck`:
+- `test_unstuck_dentro_do_cooldown_recusa_com_erro` — 2º `/unstuck`
+  dentro de 60s recebe `ERROR{reason:"unstuck_cooldown:N"}`, não
+  teleporta de novo.
+- `test_disconnect_limpa_cooldown_de_unstuck` — prova que
+  `on_disconnect` remove a entrada (fechamento do vazamento).
+
+Revert-to-confirm: `git stash` só de `server/session.py` — o teste de
+cooldown em si continuou passando (bug não era funcional, é
+estrutural), mas o teste de limpeza no disconnect falhou exatamente
+como esperado (`'unstuck_d' unexpectedly found in {...}`).
+
+Suíte: `test_session.py` completo — 102 casos, sem regressão.
