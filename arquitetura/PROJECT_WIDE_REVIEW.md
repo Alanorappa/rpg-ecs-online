@@ -133,6 +133,13 @@ silenciosamente. O próprio arquivo já tem a mitigação certa
 aplicada aqui.
 
 ### `PlayerInputSystem._manual_attack`/`_space_engage` — código morto testado por si mesmo [Alta]
+**Status:** ✅ Investigado e tratado (17/09/2026) — ver
+`PROBLEMAS_ARQUITETURA.md` §162. Os dois casos são diferentes:
+`_space_engage` já tinha decisão explícita do usuário (26/08/2026) de
+manter o método mesmo sem a chamada real — não mexido de novo.
+`_manual_attack` era órfão de verdade (zero uso, zero teste) —
+removido.
+
 `ui/systems.py:1362`/`:1394`. ESPAÇO no jogo online vai pra
 `client/save_sync_handlers.py::_space_engage_online`, não pra cá — o
 próprio comentário em `tests/test_client_ui.py:1618-1622` confirma que
@@ -243,6 +250,8 @@ focou nos 10 itens PRINCIPAIS da auditoria anterior, não no apêndice).
    em `PROBLEMAS_ARQUITETURA.md`).
 2. ~~Task de autosave sem referência (Alta)~~ — **✅ concluído
    17/09/2026** (ver §161 em `PROBLEMAS_ARQUITETURA.md`).
-3. **`PlayerInputSystem` código morto + teste com falso positivo (Alta)**
-   — já causou 1 incidente real, risco de causar outro.
+3. ~~`PlayerInputSystem` código morto + teste com falso positivo (Alta)~~
+   — **✅ concluído 17/09/2026** (ver §162 em `PROBLEMAS_ARQUITETURA.md`
+   — `_manual_attack` removido, `_space_engage` mantido por decisão
+   anterior do usuário).
 4. Resto — Média/Baixa, sem urgência de produção.

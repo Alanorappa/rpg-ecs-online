@@ -20032,3 +20032,31 @@ fix.
 Suíte: `test_graceful_shutdown.py`, `test_instance_persist_guard.py`,
 `test_session.py` — 112 casos, sem regressão (Postgres local
 confirmado de pé pra esta rodada).
+
+## 162. `PROJECT_WIDE_REVIEW.md` item #3 — `PlayerInputSystem._manual_attack` removido (código morto órfão); `_space_engage` NÃO mexido (decisão já tomada antes)
+
+17/09/2026. `ui/systems.py::PlayerInputSystem` tinha DUAS funções de
+ataque manual (ESPAÇO) citadas juntas pela auditoria como "código
+morto testado por si mesmo" — investigação achou que são casos
+DIFERENTES, não devem receber o mesmo tratamento:
+
+- **`_space_engage`** — já tinha decisão explícita do usuário
+  registrada em 26/08/2026 (ver histórico logo acima destas entradas,
+  "Correção 2 — SPACE ainda não alcançava neutro + limpeza do código
+  paralelo"): a chamada real (`KEYDOWN K_SPACE` dentro de `update()`)
+  foi removida, mas o MÉTODO foi mantido de propósito ("só remover a
+  chamada" — os 4 testes que chamam ele direto continuam válidos como
+  teste da lógica isolada). Reabrir essa decisão sem pedido explícito
+  seria reverter algo já resolvido — **não mexido**.
+- **`_manual_attack`** — caso diferente: **zero referências em todo o
+  repositório**, nem em teste nenhum (só a própria definição), nunca
+  mencionado em nenhuma limpeza anterior. Calculava dano local
+  (`deal_damage` direto) — se algum dia fosse chamado, violaria
+  "cliente nunca calcula gameplay". Confirmado com o usuário e
+  **removido** (`ui/systems.py`, ~31 linhas). `PLAYER_ATTACK_RANGE`/
+  `deal_damage` continuam em uso por outros métodos do arquivo — só o
+  método em si foi removido, nenhuma outra dependência tocada.
+
+Suíte: `test_client_ui.py` — 175 casos, mesma contagem de antes
+(confirma que nenhum teste dependia do método removido) — sem
+regressão.

@@ -1362,38 +1362,6 @@ class PlayerInputSystem(System):
     def _start_tile_movement(self, position, tile_movement, tgt_x, tgt_y):
         start_tile_movement(position, tile_movement, tgt_x, tgt_y)
 
-    def _manual_attack(self, entity_id, tile_movement, combat_stats, combat_state):
-        """ESPAÇO: ataca alvo selecionado se no alcance, senão o inimigo mais próximo."""
-        pl_x = tile_movement.current_tile_x
-        pl_y = tile_movement.current_tile_y
-
-        # Tenta alvo selecionado primeiro
-        if combat_state and combat_state.target_entity_id != -1:
-            tid = combat_state.target_entity_id
-            tm = self.world.get_component(tid, TileMovement)
-            if tm:
-                dist = chebyshev(pl_x, pl_y, tm.current_tile_x, tm.current_tile_y)
-                if dist <= self.PLAYER_ATTACK_RANGE:
-                    dead, _ = deal_damage(entity_id, tid, "physical")
-                    combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
-                    self._add_rage(entity_id, 5)
-                    enter_combat(combat_state)
-                    self._increment_pnq_counter(entity_id)
-                    if dead:
-                        combat_state.target_entity_id = -1
-                    return
-
-        # Sem alvo no alcance: ataca o inimigo mais próximo
-        for eid, _, _, etm in self.world.get_entities_with(Enemy, AIControlled, TileMovement):
-            dist = chebyshev(pl_x, pl_y, etm.current_tile_x, etm.current_tile_y)
-            if dist <= self.PLAYER_ATTACK_RANGE:
-                deal_damage(entity_id, eid, "physical")
-                combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
-                self._add_rage(entity_id, 5)
-                if combat_state:
-                    enter_combat(combat_state)
-                break
-
     def _space_engage(self, entity_id, tile_movement, combat_stats, combat_state, auto_move):
         """ESPAÇO: ataca o alvo JÁ selecionado (TAB/clique), se ele ainda
         estiver vivo — só busca o inimigo mais próximo visível na tela
