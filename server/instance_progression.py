@@ -50,7 +50,7 @@ from engine.stats_system import (
 )
 from engine.utils import chebyshev
 from content.skill_config import INSTANCE_SKILL_UNLOCK_ORDER, SKILL_CATALOG
-from content.talent_data import TALENTS, CLASS_BUILD_MAP
+from content.talent_data import TALENTS, CLASS_BUILD_MAP, INSTANCE_DISABLED_TALENTS
 
 INSTANCE_LEVEL_CAP = 15
 INSTANCE_INVENTORY_SLOTS = 6
@@ -203,7 +203,15 @@ def enter_normalized_progression(ws, eid: int) -> None:
 
     new_tt = TalentTree()
     new_tt.chosen_build = CLASS_BUILD_MAP.get(char.class_id, tt.chosen_build)
-    new_tt.allocated = {tid: t["max_points"] for tid, t in TALENTS.items()
+    # Talentos em INSTANCE_DISABLED_TALENTS entram com 0 pontos em vez do
+    # máximo (16/09/2026, ver PROBLEMAS_ARQUITETURA.md §159/§160) — mesmo
+    # padrão "tudo maxado" pra todo o resto do build, exceto os que o
+    # próprio efeito não faz sentido (ou já causou bug real) dentro da BG.
+    # `_apply_talent_modifiers` abaixo lê esse dict pra calcular os
+    # cs_flags — zerar aqui é o único lugar que precisa saber disso, nunca
+    # um `if` avulso no efeito em si.
+    new_tt.allocated = {tid: (0 if tid in INSTANCE_DISABLED_TALENTS else t["max_points"])
+                        for tid, t in TALENTS.items()
                         if t.get("build") == new_tt.chosen_build}
     ws.world.add_component(eid, new_tt)
 

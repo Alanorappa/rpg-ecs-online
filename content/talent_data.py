@@ -839,3 +839,19 @@ BUILD_TALENTS: dict[str, list[str]] = {
     build_id: [tid for tid, t in TALENTS.items() if t["build"] == build_id]
     for build_id in BUILDS
 }
+
+# Talentos SEM efeito dentro da BG/instância de progressão normalizada
+# (16/09/2026, ver PROBLEMAS_ARQUITETURA.md §159/§160) — fonte única lida
+# tanto por `server/instance_progression.py::enter_normalized_progression`
+# (zera o ponto alocado desse talento no overlay "tudo maxado" da
+# instância, em vez de deixar o efeito ligar e não fazer nada) quanto por
+# `ui/talent_system.py` (mostra "0/0" em vermelho em vez do valor normal).
+# NUNCA duplicar essa lista em outro lugar — adicionar um talento futuro
+# aqui é o único passo necessário pra ele ser ignorado dentro da BG nos
+# dois lados ao mesmo tempo.
+#
+# "bardo_reciclagem" (Reciclagem, arqueiro): devolvia flechas recuperadas
+# DIRETO pro Inventory ao vivo do servidor sem notificar o cliente —
+# causava desync silencioso entre a bag do cliente e a do servidor,
+# raiz real do bug da aljava trocada em BG nunca equipando de verdade.
+INSTANCE_DISABLED_TALENTS: frozenset[str] = frozenset({"bardo_reciclagem"})

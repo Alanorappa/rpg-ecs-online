@@ -7,7 +7,7 @@ Gerencia UI e lógica de alocação da árvore de talentos do Cavaleiro.
 from __future__ import annotations
 import pygame
 from ui.fonts import make as _font
-from content.talent_data import BUILDS, TALENTS, BUILD_TALENTS
+from content.talent_data import BUILDS, TALENTS, BUILD_TALENTS, INSTANCE_DISABLED_TALENTS
 from ui.combat_log import LOG
 from engine.save_system import request_autosave
 from engine.stat_fns import add_modifier, remove_modifier
@@ -77,6 +77,19 @@ class TalentSystem(UIScaleMixin):
     def _talent_tree(self):
         from engine.components import TalentTree
         return self.world.get_component(self.player_id, TalentTree)
+
+    def _is_disabled_in_instance(self, talent_id: str) -> bool:
+        """True se `talent_id` está em INSTANCE_DISABLED_TALENTS E o player
+        está dentro da BG agora (16/09/2026, ver PROBLEMAS_ARQUITETURA.md
+        §160) — mesmo critério de InstanceInventoryUIState.active já usado
+        em outros pontos de UI pra saber "estou na BG" (ver ui/minimap.py).
+        Fora da instância, o talento funciona normal (mesmo com 0 pontos
+        alocados — não é "desabilitado", é só "não comprado ainda")."""
+        if talent_id not in INSTANCE_DISABLED_TALENTS:
+            return False
+        from ui.ui_components import InstanceInventoryUIState
+        iius = self.world.get_component(self.player_id, InstanceInventoryUIState)
+        return iius is not None and iius.active
 
     def _panel_rect(self) -> pygame.Rect:
         x0, y0 = self._safe_panel_origin(PANEL_W, PANEL_H)
@@ -387,9 +400,12 @@ class TalentSystem(UIScaleMixin):
         maxed   = current >= t["max_points"]
         hovered = (self._hovered_id == talent_id)
         locked  = not self.can_allocate(talent_id, tt) and current == 0
+        disabled_here = self._is_disabled_in_instance(talent_id)
 
         # ── Fundo ──
-        if maxed:
+        if disabled_here:
+            bg = (46, 16, 14)
+        elif maxed:
             bg = (55, 46, 8)
         elif hovered and not locked:
             bg = (50, 40, 20)
@@ -410,14 +426,19 @@ class TalentSystem(UIScaleMixin):
 
         # ── Inicial do nome centralizado ──
         initials = t["name"][:2].upper()
-        txt_col  = C_LOCKED_TXT if (locked and current == 0) else \
+        txt_col  = C_RED if disabled_here else \
+                   C_LOCKED_TXT if (locked and current == 0) else \
                    C_MAXED if maxed else C_WHITE
         init_surf = self.font_lg.render(initials, False, txt_col)
         self.screen.blit(init_surf, init_surf.get_rect(center=r.center))
 
         # ── Contador x/max no canto superior direito ──
-        counter_txt = f"{current}/{t['max_points']}"
-        counter_col = C_MAXED if maxed else (C_GRAY if locked else C_WHITE)
+        # "0/0" (não "0/max") quando desabilitado na instância — sinaliza
+        # que o talento não tem NENHUM efeito aqui, não só "sem pontos
+        # gastos ainda" (ver §160).
+        counter_txt = "0/0" if disabled_here else f"{current}/{t['max_points']}"
+        counter_col = C_RED if disabled_here else \
+                      C_MAXED if maxed else (C_GRAY if locked else C_WHITE)
         ctr_surf    = self.font_sm.render(counter_txt, False, counter_col)
         self.screen.blit(ctr_surf, (r.right - ctr_surf.get_width() - self._u(3), r.y + self._u(3)))
 
@@ -429,7 +450,10 @@ class TalentSystem(UIScaleMixin):
                                          r.bottom - star_surf.get_height() - self._u(2)))
 
         # ── Borda ──
-        if maxed:
+        if disabled_here:
+            border_col  = C_RED
+            border_w    = 2
+        elif maxed:
             border_col  = C_MAXED
             border_w    = 2
         elif hovered:
@@ -461,6 +485,12 @@ class TalentSystem(UIScaleMixin):
         desc = self._live_description(talent_id, current, tt)
         for line in self._wrap_text(desc, tooltip_w - self._u(16), self.font_tip_body):
             lines.append((line, C_WHITE))
+
+        # Aviso de talento sem efeito dentro da BG (16/09/2026, §160) —
+        # mesmo critério visual do nó (borda/contador vermelhos).
+        if self._is_disabled_in_instance(talent_id):
+            lines.append(("", C_GRAY))
+            lines.append(("Sem efeito dentro da Battleground.", C_RED))
 
         lines.append(("", C_GRAY))  # espaço
 

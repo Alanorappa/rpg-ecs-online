@@ -19886,3 +19886,98 @@ continua frágil a qualquer FUTURA fonte de desync entre
 usuário pediu o fix pontual (desligar Reciclagem dentro da BG), não
 uma revisão do protocolo `EQUIP_ITEM` — registrado aqui caso um caso
 novo da mesma família apareça, pra não reinvestigar do zero.
+
+## 160. Revisão cruzada do fix §159 (3 agentes) + trava explícita do talento no overlay de instância + limpeza de código morto achado na investigação
+
+16-17/09/2026. Usuário pediu revisão do commit do §159 por 3 agentes
+independentes antes de seguir — achados relevantes (nenhum bloqueante):
+(1) `TestInstanceReciclagemGoesToBag` continuava com esse nome mesmo
+depois do teste ter sido invertido pra provar o oposto — corrigido pra
+`TestInstanceReciclagemNoEffect`; (2) o talento fica mudo dentro da BG
+(nenhum feedback de "não funciona aqui") — não é uma piora do §159 (o
+comportamento antigo também nunca notificava nada), mas motivou a
+melhoria de UX implementada aqui; (3) ordem de checagem no gate
+`_in_bg_recycle` é ligeiramente diferente do padrão do resto do
+arquivo — cosmético, sem custo real, não mexido.
+
+**Pedido do usuário nesta entrada**: em vez de só bloquear o EFEITO no
+momento da morte do mob (§159, ainda válido como defesa em
+profundidade), travar o talento na ORIGEM — dentro da árvore de
+talentos da instância — com feedback visual (nó vermelho, "0/0") na
+aba de talentos. Pergunta explícita: esse desenho serve pra qualquer
+talento futuro que precise ser ignorado na BG, não só Reciclagem?
+**Sim, por desenho** — é exatamente pra isso que existe uma lista
+central em vez de um `if talent_id == "bardo_reciclagem"` hardcoded.
+
+**Mecanismo novo — `INSTANCE_DISABLED_TALENTS`** (`content/
+talent_data.py`, `frozenset[str]`, hoje só `{"bardo_reciclagem"}`) —
+fonte única lida nos dois lados:
+- `server/instance_progression.py::enter_normalized_progression` —
+  talentos dessa lista entram com **0 pontos** alocados no overlay
+  "tudo maxado" da instância (em vez do `max_points` normal). Como
+  `arrow_recovery_enabled` (e qualquer `cs_flags` futuro) é calculado
+  a partir de `TalentTree.allocated` via `_apply_talent_modifiers`
+  (mesmo pipeline de sempre, nenhum código novo), o efeito nasce
+  desligado pela via NORMAL do sistema de talentos — não por um `if`
+  avulso no momento de uso. Resto do build continua 100% maxado
+  (provado por teste, ver abaixo).
+- `ui/talent_system.py` — `TalentSystem._is_disabled_in_instance()`
+  (novo helper: talento na lista E `InstanceInventoryUIState.active`,
+  mesmo critério de "estou na BG" já usado em `ui/minimap.py`).
+  `_render_node()` mostra "0/0" em vermelho (não "0/1" — sinaliza
+  "sem potencial aqui", não só "sem pontos gastos ainda") com
+  borda/fundo/texto vermelhos; tooltip ganha a linha "Sem efeito
+  dentro da Battleground." em vermelho.
+- A checagem `_in_bg_recycle` do §159 (`server/
+  server_death_handler.py`) **continua no código** — tecnicamente
+  redundante agora (o talento nunca liga dentro da BG pela via nova),
+  mas mantida como defesa em profundidade (mesmo padrão já usado em
+  `equip_item_from_inventory`, que recusa de novo no servidor mesmo o
+  cliente já bloqueando) — decisão explícita de manter, não remover,
+  discutida com o usuário.
+
+**Código morto achado e removido** (`engine/world_systems.py`,
+`DeathHandlerSystem.update()`): existia uma SEGUNDA cópia completa da
+lógica de Reciclagem (mesma fórmula, dano/aljava/fallback de item),
+"espelho" do que `server/server_death_handler.py` faz. Confirmado
+código MORTO por investigação (não suposição): `DeathHandlerSystem`
+só processa entidades com `PendingDeath`; a ÚNICA coisa que adicionaria
+`PendingDeath` num mob no mundo LOCAL do cliente seria
+`CombatSystem._handle_death` — mas `CombatSystem` é instanciado em
+`game.py` só pra registrar em `register_services` (outros sistemas
+consultam `_svc.combat`), NUNCA entra em `self.systems` (comentário no
+próprio arquivo: "IA e spawn de mobs: gerenciados pelo servidor") — ou
+seja, `CombatSystem.update()` nunca roda no cliente online, então
+nunca adiciona `PendingDeath` a nada. O outro caminho possível,
+`StatusEffectSystem` (tick de DoT, que ESSE sim roda no cliente) tem
+uma checagem `if not is_player` antes de adicionar `PendingDeath` — e
+só o PRÓPRIO player tem `CombatStats` real no cliente (mob remoto só
+tem `RemoteEntityMeta.hp`, sem `CombatStats`), então esse branch nunca
+alcança um mob local também. Removido só o bloco de Reciclagem (30
+linhas) — resquício claro da era antes de "não existe mais versão
+offline separada" (topo do CLAUDE.md).
+
+**NÃO removido agora**: `DeathHandlerSystem` inteiro (XP/loot/corpse/
+respawn/som/Vitória Iminente) parece ser TODO código morto pela mesma
+razão (nunca recebe `PendingDeath` de verdade), mas confirmar isso pra
+CADA responsabilidade da classe (ex.: `XPSystem` lê `pending_xp` desta
+classe — precisa checar se XP do cliente vem só de rede ou também
+daqui) é um escopo maior que o desta sessão. Registrado aqui como
+candidato a limpeza futura — não repetir a investigação do zero.
+
+**Testes** (`tests/test_instance_progression.py`):
+- `test_enter_zera_reciclagem_mas_mantem_resto_do_build_maxado` (nova)
+  — prova que `enter_normalized_progression` zera só
+  `bardo_reciclagem` (0 pontos, `arrow_recovery_enabled=False`) e
+  mantém TODO o resto do build "bardo" maxado normalmente. Revert-to-
+  confirm: `git stash` só de `content/talent_data.py` +
+  `server/instance_progression.py` reproduziu a falha exata
+  (`1 != 0`) antes do fix.
+- Classe renomeada pra `TestInstanceReciclagemNoEffect` (era
+  `...GoesToBag`, achado da revisão cruzada).
+
+Suíte: `test_instance_progression.py` (44), `test_client_ui.py` (177),
+`test_instance_talent_effects_sync.py`, `test_towers.py`,
+`test_minions.py`, `test_jungle_camps.py`, `test_char_stats.py`,
+`test_bg_kill_credit.py` — 348 casos no total entre os arquivos
+tocados, sem regressão.

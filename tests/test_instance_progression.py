@@ -650,7 +650,7 @@ class TestInstanceProgressionInventorySync(unittest.TestCase):
         self.assertNotIn("Espada de treinamento", nomes)
 
 
-class TestInstanceReciclagemGoesToBag(unittest.TestCase):
+class TestInstanceReciclagemNoEffect(unittest.TestCase):
     """Reciclagem (talento que devolve flechas do alvo morto) é IGNORADA
     dentro da instância (16/09/2026, decisão explícita do usuário — ver
     PROBLEMAS_ARQUITETURA.md §159, reverte a decisão de 03/08/2026 abaixo).
@@ -661,7 +661,11 @@ class TestInstanceReciclagemGoesToBag(unittest.TestCase):
     servidor). Reciclagem é mecânica de progressão real (farm/roleplay no
     mundo aberto), sem propósito dentro de PvP instanciado — mais simples
     não ter efeito nenhum aqui do que consertar a notificação. Fora da
-    instância, comportamento inalterado (cai no corpse, como sempre foi)."""
+    instância, comportamento inalterado (cai no corpse, como sempre foi).
+
+    Nome da classe corrigido em §160 — chamava "...GoesToBag" mesmo depois
+    do teste ter sido invertido pra provar o oposto (achado da revisão
+    cruzada de 3 agentes sobre o commit do §159)."""
 
     def setUp(self):
         self.ws = make_world_server()
@@ -694,6 +698,30 @@ class TestInstanceReciclagemGoesToBag(unittest.TestCase):
                 if self.ws._corpses[cid].get("owner_eid") == killer_eid]
         self.assertEqual(len(novas), 1, "deveria ter registrado exatamente 1 corpse novo do killer")
         return self.ws._corpses[novas[0]]
+
+    def test_enter_zera_reciclagem_mas_mantem_resto_do_build_maxado(self):
+        """§160: `enter_normalized_progression` não deve mais depender de
+        `arrow_recovery_enabled` já estar True antes de entrar (setUp desta
+        classe seta manualmente) — o próprio ato de entrar na instância já
+        precisa zerar bardo_reciclagem sozinho, via INSTANCE_DISABLED_TALENTS,
+        SEM deixar de maxar o resto do build (prova que a exclusão é
+        pontual, não um efeito colateral que zera o build inteiro)."""
+        self.cs.arrow_recovery_enabled = False  # estado real antes de qualquer talento
+        enter_normalized_progression(self.ws, self.eid)
+
+        tt = self.ws.world.get_component(self.eid, TalentTree)
+        self.assertEqual(tt.allocated.get("bardo_reciclagem"), 0,
+                         "bardo_reciclagem deveria entrar com 0 pontos dentro da BG")
+        self.assertFalse(self.cs.arrow_recovery_enabled,
+                         "efeito do talento não deveria ligar com 0 pontos alocados")
+
+        build = CLASS_BUILD_MAP["arqueiro"]
+        outros_talentos_do_build = [tid for tid, t in TALENTS.items()
+                                    if t.get("build") == build and tid != "bardo_reciclagem"]
+        self.assertTrue(outros_talentos_do_build, "sanity check — build deveria ter outros talentos")
+        for tid in outros_talentos_do_build:
+            self.assertEqual(tt.allocated.get(tid), TALENTS[tid]["max_points"],
+                             f"{tid} deveria continuar maxado normalmente dentro da BG")
 
     def test_dentro_da_instancia_reciclagem_nao_tem_efeito(self):
         enter_normalized_progression(self.ws, self.eid)

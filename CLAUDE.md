@@ -844,6 +844,17 @@ padrão a quebrar, não só os bugs individuais.
   headless que o SERVIDOR roda, aplica `deal_damage()` real com viagem/
   tempo) — só `PlayerProjectile` (100% client-only, confirmado por grep
   no repo inteiro) foi movido pra fora do ECS.
+- **Talento que não deve ter efeito dentro da BG/instância** →
+  `content/talent_data.py::INSTANCE_DISABLED_TALENTS` (frozenset de
+  `talent_id`) — lido nos dois lados: `server/instance_progression.py::
+  enter_normalized_progression` zera o ponto alocado desse talento no
+  overlay "tudo maxado" da instância (o efeito nasce desligado pela via
+  NORMAL de `cs_flags`/`_apply_talent_modifiers`, nunca um `if
+  talent_id=="x"` avulso no momento de uso); `ui/talent_system.py`
+  mostra "0/0" em vermelho no nó + aviso no tooltip. Adicionar um
+  talento futuro a essa lista é o ÚNICO passo necessário pros dois
+  lados ignorarem ele dentro da BG — nunca duplicar a lista em outro
+  lugar. Ver PROBLEMAS_ARQUITETURA.md §159/§160.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

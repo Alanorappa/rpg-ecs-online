@@ -1105,37 +1105,25 @@ class DeathHandlerSystem(System):
                     loot.extend(quest_events._quest_system_ref.get_conditional_loot(
                         ident.name, ident.race))
 
-                # Reciclagem: flechas recuperadas aparecem no loot do cadáver
-                _dead_cs = self.world.get_component(entity_id, CombatStats)
-                if _dead_cs and _dead_cs.arrows_received > 0:
-                    _killer_cs = self.world.get_component(pd.killer_entity_id, CombatStats)
-                    if _killer_cs and _killer_cs.arrow_recovery_enabled:
-                        _pct       = random.randint(50, 100) / 100.0
-                        _recovered = max(1, int(_dead_cs.arrows_received * _pct))
-                        _equip_r   = self.world.get_component(pd.killer_entity_id, Equipment)
-                        _quiver_r  = _equip_r.slots.get("offhand") if _equip_r else None
-                        _atype     = _quiver_r.subtype if _quiver_r and _quiver_r.subtype else "arrow"
-                        if _atype and _recovered > 0:
-                            import content.item_table as _ItemTableRecov
-                            _atype_factory = _ItemTableRecov.ITEMS.get(_atype)
-                            if _atype_factory:
-                                _ret = _atype_factory()
-                            else:
-                                # _atype não bate com nenhum item_id conhecido
-                                # (aljava de save antigo, pré-migração C2) —
-                                # fallback inerte, mesmo padrão de
-                                # server/world_server.py::_reconstruct_item.
-                                from engine.components import Item as _Item
-                                _ret = _Item(
-                                    name=_atype, item_type="ammo", slot="",
-                                    rarity="common", value=1,
-                                    damage_min=getattr(_quiver_r, "damage_min", 0),
-                                    damage_max=getattr(_quiver_r, "damage_max", 0),
-                                    max_stack=1000,
-                                )
-                            _ret.stack = _recovered
-                            loot.append(_ret)
-                            LOG.add(f"Reciclagem! {_recovered} flechas no loot.", (180, 220, 120))
+                # Reciclagem (código do killer aparecer no loot do cadáver) foi
+                # REMOVIDO daqui em 16/09/2026 (ver PROBLEMAS_ARQUITETURA.md
+                # §160) — era uma cópia paralela da mesma lógica de
+                # `server/server_death_handler.py`, mas confirmado código
+                # MORTO: `DeathHandlerSystem.update()` (este método) só
+                # processa entidades com `PendingDeath`, e a ÚNICA coisa que
+                # adiciona `PendingDeath` no mundo LOCAL do cliente seria
+                # `CombatSystem._handle_death` — que nunca roda no cliente
+                # online (a instância `combat` é criada em `game.py` só pra
+                # registrar em `register_services`, nunca entra em
+                # `self.systems`; IA/dano de mob é 100% servidor). O outro
+                # jeito de chegar aqui, via `StatusEffectSystem` (tick de
+                # DoT), também não alcança: só o PRÓPRIO player tem
+                # `CombatStats` real no cliente (mob remoto só tem
+                # `RemoteEntityMeta.hp`), e esse branch exige `not is_player`.
+                # `DeathHandlerSystem` inteiro (XP/loot/corpse/respawn) segue
+                # sendo um candidato a código morto MAIOR — não removido
+                # agora, é um escopo maior que merece investigação própria
+                # (ver §160 pro registro completo).
 
                 sz_owner = self.world.get_component(entity_id, SpawnZoneOwner)
                 if sz_owner is not None:
