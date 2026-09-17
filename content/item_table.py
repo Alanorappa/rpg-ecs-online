@@ -86,37 +86,6 @@ def _make_consumable(name, rarity, value, consumable: dict, max_stack: int = 20,
     return factory
 
 
-def _make_quiver(name, rarity, value, max_arrows: int = 100, mods=None,
-                 default_arrow: str = "Flecha", level_requirement: int = 1):
-    """Retorna factory de aljava (off-hand, carrega flechas)."""
-    mods = mods or []
-    def factory():
-        return Item(
-            name=name, item_type="quiver", slot="offhand",
-            modifiers=[Modifier(attr, val, typ) for attr, val, typ in mods],
-            rarity=rarity, value=value,
-            arrow_count=max_arrows, max_arrows=max_arrows,
-            subtype=default_arrow,   # tipo de flecha pré-carregada
-            level_requirement=level_requirement,
-        )
-    return factory
-
-
-def _make_ammo(name, rarity, value, max_stack: int = 1000,
-               damage_min: int = 0, damage_max: int = 0,
-               level_requirement: int = 1):
-    """Retorna factory de munição (empilhável na bag)."""
-    def factory():
-        return Item(
-            name=name, item_type="ammo", slot="",
-            rarity=rarity, value=value,
-            damage_min=damage_min, damage_max=damage_max,
-            max_stack=max_stack,
-            level_requirement=level_requirement,
-        )
-    return factory
-
-
 # ---------------------------------------------------------------------------
 # Itens (antigo loot_tables._T — 106 entradas, intocadas)
 # ---------------------------------------------------------------------------

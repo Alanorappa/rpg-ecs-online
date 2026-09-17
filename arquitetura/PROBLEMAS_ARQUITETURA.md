@@ -20330,3 +20330,31 @@ classe de flakiness já registrada no §165 (`time.sleep(0.01)` +
 `assertGreaterEqual(..., 0.01)`, granularidade de timer do SO) — outro
 arquivo de teste do mesmo mecanismo `_perf_push`/`_perf_pop`, nenhuma
 relação com as remoções desta entrada.
+
+## 169. `PROJECT_WIDE_REVIEW.md` — `content/item_table.py::_make_quiver`/`_make_ammo` removidos (perguntado ao usuário antes, per achado da auditoria)
+
+17/09/2026. A auditoria já sinalizou explicitamente que este achado
+precisava de decisão do usuário antes de qualquer ação ("pode ser
+lacuna real de conteúdo, não só lixo — vale perguntar antes de
+apagar") — diferente dos outros itens de código morto desta sessão,
+que eram remoções óbvias.
+
+Investigação: `_make_quiver`/`_make_ammo` são factories genéricas de
+aljava/munição, mas TODAS as entradas reais do catálogo
+(`basic_quiver`, `sturdy_quiver`, `battleground_quiver`, `arrow`,
+`arrow_broadhead`) constroem `Item(...)` inline, ignorando os
+helpers. O comentário logo abaixo delas ("Itens — antigo
+`loot_tables._T`, 106 entradas, intocadas") sugere que os helpers
+foram criados numa tentativa de padronizar a criação de aljava/
+munição, mas a migração das entradas reais pra usá-los nunca
+aconteceu.
+
+Perguntado ao usuário: remover, refatorar os itens existentes pra usar
+os helpers, ou deixar como está. Escolhido remover — as aljavas/
+munições reais já funcionam corretamente com `Item(...)` inline (e
+essa MESMA sessão acabou de investigar e corrigir bugs reais nelas,
+§154-§160 — refatorar agora seria tocar em código recém-estabilizado
+sem ganho funcional nenhum, só estilo).
+
+Suíte: `pytest tests/ -k "item or quiver or ammo"` — 139 casos, sem
+regressão.
