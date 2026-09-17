@@ -20095,3 +20095,66 @@ estrutural), mas o teste de limpeza no disconnect falhou exatamente
 como esperado (`'unstuck_d' unexpectedly found in {...}`).
 
 Suíte: `test_session.py` completo — 102 casos, sem regressão.
+
+## 164. `PROJECT_WIDE_REVIEW.md` — rate-limit em mensagens C→S (nenhuma mensagem tinha limite antes)
+
+17/09/2026. `SessionManager.on_message` (`server/session.py`) é o
+único chokepoint de TODA mensagem que o cliente manda — não tinha
+limite de taxa nenhum. Isso amplificava qualquer exploit de gameplay
+em loop apertado (os 4 já corrigidos, §151-§155, mais qualquer futuro)
+e deixava `LOGIN`/`REGISTER` abertos a brute-force sem custo nenhum
+numa única conexão.
+
+**Decisão de desenho, perguntada ao usuário antes de implementar**
+(3 opções: limite geral + limite extra em login, só limite geral, ou
+rastrear IP primeiro) — escolhida a primeira: limite geral por sessão
+cobre qualquer flood/DoS de gameplay, e `LOGIN`/`REGISTER` ganham um
+segundo limite bem mais apertado. Rastreio de IP ficou fora de escopo
+(servidor não tem essa infra hoje; não impede 100% brute-force
+multi-conexão, mas encarece muito um ataque numa conexão só).
+
+**Mecanismo**: `_TokenBucket` (`server/session.py`, classe pequena com
+`__slots__`, O(1) por chamada, 4 floats por sessão — nada perto de
+justificar estrutura mais pesada, mesmo critério de "caminho quente"
+do CLAUDE.md). Cada `Session` ganha 2 baldes:
+- `_msg_bucket` — geral, rajada de 30, sustenta ~20/s (folgado pra
+  qualquer sequência real de jogo — movimento/auto-attack/skill a 30
+  ticks/s do servidor nunca chega perto disso por conexão). Estouro =
+  **dropa em silêncio** (não desconecta, não avisa — um cliente
+  legítimo nunca deveria bater esse teto; avisar só ajudaria um
+  atacante a calibrar o ataque).
+- `_auth_bucket` — só `LOGIN`/`REGISTER`, rajada de 5, sustenta 1 a
+  cada 12s. Estouro = manda `LOGIN_ERROR`/`REGISTER_ERROR`
+  `{reason:"rate_limited"}` (o MESMO tipo de resposta que cada handler
+  já usa pros outros motivos de falha — nunca o `MsgType.ERROR`
+  genérico, que nenhum handler client-side escuta hoje).
+
+Checado em `on_message`, ANTES de decodificar/validar payload ou
+chamar o handler — barato, cobre qualquer flood sem gastar trabalho
+extra.
+
+**Testes**:
+- `TestTokenBucket` (`tests/test_session.py`) — 3 casos isolados da
+  classe `_TokenBucket` (consome até a capacidade e bloqueia, reabastece
+  com o tempo, nunca reabastece além da capacidade) — manipula
+  `last_ts` direto em vez de mockar `time.monotonic`, determinístico.
+- `TestRateLimit` — 3 casos de integração via `on_message` real: flood
+  geral dropado em silêncio, mensagem normal (balde cheio) não afetada,
+  `LOGIN` com balde de auth esgotado recebe `LOGIN_ERROR{reason:
+  rate_limited}` e **nem chega a validar a senha** (prova que o corte
+  acontece ANTES do handler, não só que a resposta é diferente).
+
+Revert-to-confirm: `git stash` só de `server/session.py` — 5 dos 6
+testes novos falharam (`AttributeError: 'Session' object has no
+attribute '_msg_bucket'`/`'_auth_bucket'`), o 6º (mensagem normal,
+balde cheio) continuou passando como esperado (não depende do
+mecanismo novo pra passar).
+
+Suíte: `test_session.py` completo (108 casos) + todo arquivo de teste
+que chama `on_message` diretamente (`test_bg_leave_message_order.py`,
+`test_character_names.py`, `test_craft_recycle_protocol.py`,
+`test_equip_item_protocol.py`, `test_hotbar_bg_leak.py`,
+`test_loot_authoritative.py`, `test_protocol_validation.py`,
+`test_trade_quantity_slice.py`) — 255 casos no total, sem regressão
+(confirma que a rajada de 30 nunca interfere com sequências normais de
+teste, que fazem no máximo poucas chamadas por caso).

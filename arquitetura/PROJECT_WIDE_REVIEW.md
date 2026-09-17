@@ -106,6 +106,13 @@ silenciosamente, mas o servidor responde `success:true, quantity:<pedido>`
 mesmo assim. Perda de progresso real, sem aviso.
 
 ### 5. [Média] Nenhum rate-limit em nenhuma mensagem C→S
+**Status:** ✅ Implementado (17/09/2026) — ver `PROBLEMAS_ARQUITETURA.md`
+§164. `_TokenBucket` por sessão em `server/session.py::on_message`:
+balde geral (rajada 30, ~20/s, dropa em silêncio) + balde extra bem
+mais apertado só pra `LOGIN`/`REGISTER` (rajada 5, 1 a cada 12s, manda
+`LOGIN_ERROR`/`REGISTER_ERROR{reason:"rate_limited"}`). Rastreio de IP
+avaliado e descartado por ora (fora de escopo, ver §164).
+
 Amplifica os 4 achados acima (loop apertado = exploração em escala) e
 abre brute-force de login/DoS num event loop single-thread (já
 documentado no projeto como sensível a isso).

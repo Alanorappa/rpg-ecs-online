@@ -20,6 +20,38 @@ from shared.constants import (AOI_RADIUS, AOI_EXIT_BUFFER, PROTOCOL_VERSION, TIC
 from engine.utils import in_aoi as _in_aoi, SpatialHash as _SpatialHash
 
 
+class _TokenBucket:
+    """Rate-limit leve por sessão (16/09/2026, ver
+    arquitetura/PROJECT_WIDE_REVIEW.md — achado "nenhum rate-limit em
+    nenhuma mensagem C→S"). `on_message` é o único chokepoint de TODA
+    mensagem do cliente (`SessionManager.on_message`) — sem limite
+    nenhum, os 4 exploits de economia já corrigidos (§151-§155) ficavam
+    amplificáveis em loop apertado, e LOGIN/REGISTER ficavam abertos a
+    brute-force sem nenhum custo.
+
+    `try_consume()` é O(1), sem alocação por chamada — 4 floats por
+    sessão (`__slots__`), nada perto de justificar uma estrutura mais
+    pesada (mesmo critério de "caminho quente" do CLAUDE.md). Estouro =
+    dropa a mensagem (não desconecta, não penaliza lag real — um
+    cliente legítimo nunca deveria bater o teto normal de jogo)."""
+    __slots__ = ("capacity", "refill_per_sec", "tokens", "last_ts")
+
+    def __init__(self, capacity: float, refill_per_sec: float):
+        self.capacity        = capacity
+        self.refill_per_sec  = refill_per_sec
+        self.tokens          = capacity
+        self.last_ts         = time.monotonic()
+
+    def try_consume(self, cost: float = 1.0) -> bool:
+        now = time.monotonic()
+        self.tokens = min(self.capacity, self.tokens + (now - self.last_ts) * self.refill_per_sec)
+        self.last_ts = now
+        if self.tokens >= cost:
+            self.tokens -= cost
+            return True
+        return False
+
+
 def _can_see(world_server, viewer_eid: int, target_eid: int,
              ally_centers: "list[tuple[int, int, int]] | None" = None) -> bool:
     """Regra centralizada de visibilidade servidor.
@@ -111,6 +143,16 @@ class Session:
         # já foi marcado como entregue, então todo MOVE seguinte pra aquele
         # eid é descartado no cliente (entidade local nunca existiu).
         self._send_lock = asyncio.Lock()
+        # Rate-limit (16/09/2026, ver arquitetura/PROJECT_WIDE_REVIEW.md) —
+        # geral: rajada de 30, sustenta ~20/s (folgado o bastante pra
+        # qualquer sequência real de jogo — movimento/auto-attack/skill a
+        # 30 ticks/s do servidor nunca chega perto disso por conexão).
+        # auth: bem mais apertado (LOGIN/REGISTER, pré-autenticação) —
+        # rajada de 5, sustenta 1 a cada 12s — não impede brute-force
+        # multi-conexão (servidor não rastreia IP hoje), mas encarece
+        # muito um ataque de força bruta numa conexão só. Ver `on_message`.
+        self._msg_bucket  = _TokenBucket(capacity=30.0, refill_per_sec=20.0)
+        self._auth_bucket = _TokenBucket(capacity=5.0,  refill_per_sec=5.0 / 60.0)
 
     @property
     def display_name(self) -> str:
@@ -571,6 +613,23 @@ class SessionManager:
             msg_type, payload, seq, ts = decode(raw)
         except ValueError as e:
             await session.send(MsgType.ERROR, {"reason": str(e)})
+            return
+        # Rate-limit (16/09/2026, ver arquitetura/PROJECT_WIDE_REVIEW.md) —
+        # geral primeiro (barato, cobre qualquer flood), ANTES de gastar
+        # tempo validando payload/rodando handler. Estoura o geral → dropa
+        # em silêncio (nunca deveria disparar em jogo real, não vale gastar
+        # rede avisando um possível atacante). LOGIN/REGISTER passam por um
+        # SEGUNDO balde bem mais apertado — aqui sim avisamos o cliente
+        # (usuário real errando a senha repetidas vezes merece feedback,
+        # não silêncio).
+        if not session._msg_bucket.try_consume():
+            return
+        if msg_type in (MsgType.LOGIN, MsgType.REGISTER) and not session._auth_bucket.try_consume():
+            # Mesmo tipo de resposta que cada handler já usa pros OUTROS
+            # motivos de falha (LOGIN_ERROR/REGISTER_ERROR) — nunca o ERROR
+            # genérico aqui, que nenhum handler client-side escuta hoje.
+            _err_type = MsgType.LOGIN_ERROR if msg_type == MsgType.LOGIN else MsgType.REGISTER_ERROR
+            await session.send(_err_type, {"reason": "rate_limited"})
             return
         # Validação de payload na borda (item B4, PROBLEMAS_ARQUITETURA §11):
         # campos núcleo ausentes/de tipo errado nunca chegam ao handler —

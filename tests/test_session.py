@@ -2346,6 +2346,93 @@ class TestUnstuck(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(session.session_id, self.mgr._unstuck_cooldowns)
 
 
+class TestTokenBucket(unittest.TestCase):
+    """`server.session._TokenBucket` isolado (16/09/2026, ver
+    arquitetura/PROJECT_WIDE_REVIEW.md) — sem I/O, manipula `last_ts`
+    direto em vez de mockar `time.monotonic`, totalmente determinístico."""
+
+    def test_consome_ate_a_capacidade_e_bloqueia(self):
+        from server.session import _TokenBucket
+        b = _TokenBucket(capacity=3.0, refill_per_sec=0.0)
+        self.assertTrue(b.try_consume())
+        self.assertTrue(b.try_consume())
+        self.assertTrue(b.try_consume())
+        self.assertFalse(b.try_consume(),
+                         "4ª mensagem deveria ser bloqueada, rajada de 3 esgotada")
+
+    def test_reabastece_com_o_tempo(self):
+        from server.session import _TokenBucket
+        b = _TokenBucket(capacity=1.0, refill_per_sec=10.0)
+        self.assertTrue(b.try_consume())
+        self.assertFalse(b.try_consume())
+        b.last_ts -= 0.2  # simula 200ms — 10 tokens/s * 0.2s = 2, capped em capacity=1
+        self.assertTrue(b.try_consume(), "deveria ter reabastecido depois de 200ms")
+
+    def test_nunca_reabastece_alem_da_capacidade(self):
+        from server.session import _TokenBucket
+        b = _TokenBucket(capacity=2.0, refill_per_sec=10.0)
+        b.try_consume()
+        b.try_consume()
+        b.last_ts -= 100.0  # tempo "infinito" se passando
+        self.assertEqual(b.tokens, 0.0)
+        b.try_consume()
+        self.assertEqual(b.tokens, 1.0, "não deveria acumular além de `capacity`")
+
+
+class TestRateLimit(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
+    """16/09/2026, ver arquitetura/PROJECT_WIDE_REVIEW.md — achado
+    "nenhum rate-limit em nenhuma mensagem C→S", amplificava os exploits
+    de economia já corrigidos e deixava LOGIN/REGISTER abertos a
+    brute-force sem custo nenhum."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    async def test_flood_geral_e_dropado_pelo_bucket(self):
+        from shared.messages import encode
+        session, fw = await fake_login(self.mgr, "flood_a", "flooduseraa")
+        session._msg_bucket.tokens = 0.0  # simula balde geral já esgotado
+        fw.sent.clear()
+
+        await self.mgr.on_message(session, encode(MsgType.CHAR_STATS_REQUEST, {}))
+
+        self.assertEqual(len(fw.sent), 0,
+                         "mensagem deveria ter sido dropada em silêncio pelo rate-limit geral")
+
+    async def test_mensagem_normal_nao_e_afetada_pelo_bucket(self):
+        from shared.messages import encode
+        session, fw = await fake_login(self.mgr, "flood_b", "flooduserbb")
+        fw.sent.clear()
+
+        await self.mgr.on_message(session, encode(MsgType.CHAR_STATS_REQUEST, {}))
+
+        self.assertEqual(len(get_msgs_of_type(fw, MsgType.CHAR_STATS_DATA)), 1,
+                         "mensagem normal (balde cheio) não deveria ser afetada")
+
+    async def test_login_flood_recebe_rate_limited_apos_estourar_balde_de_auth(self):
+        from server.auth import _register_account, _hash
+        from shared.messages import encode
+        from shared.constants import PROTOCOL_VERSION
+        ph = _hash("test123")
+        await _register_account("flood_login_user", ph)
+
+        fake_ws = FakeWS()
+        session = await self.mgr.on_connect(fake_ws, "s_flood_login")
+        session._auth_bucket.tokens = 0.0  # simula balde de auth já esgotado
+        fake_ws.sent.clear()
+
+        await self.mgr.on_message(session, encode(MsgType.LOGIN, {
+            "username": "flood_login_user", "password": ph, "version": PROTOCOL_VERSION,
+        }))
+
+        errs = get_msgs_of_type(fake_ws, MsgType.LOGIN_ERROR)
+        self.assertEqual(len(errs), 1,
+                         "LOGIN dentro do balde de auth esgotado deveria receber LOGIN_ERROR")
+        self.assertEqual(errs[0]["reason"], "rate_limited")
+        self.assertEqual(len(get_msgs_of_type(fake_ws, MsgType.AUTH_OK)), 0,
+                         "não deveria ter autenticado — nem chegou a validar a senha")
+
+
 class TestZoneChangeReq(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """ZONE_CHANGE_REQ (C→S) — usado por transições normais de mapa (ex.:
     entrar numa caverna) E, desde 23/07/2026, pelo teleporte de mapa do
