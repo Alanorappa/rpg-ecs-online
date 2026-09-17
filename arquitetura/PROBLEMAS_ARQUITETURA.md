@@ -19784,3 +19784,105 @@ depois de fechar esta investigação (com fix aplicado ou descartada por
 falta de mais dado), desligar `RPG_DEBUG_ARCHER=1` do `.env` de
 produção e reiniciar o serviço — compromisso já assumido com o
 usuário, ainda não cumprido.
+
+## 159. CAUSA RAIZ REAL do bug da aljava (§154/§156/§157/§158): talento Reciclagem inseria item na bag do servidor sem avisar o cliente — corrigido ignorando o talento dentro da BG
+
+16/09/2026, com o log do §158 (`BUY`/`EQUIP_ATTEMPT`) finalmente
+capturando a ordem real de mensagens. Reprodução em produção (usuário
+jogando, cliente rodado localmente pelo Claude com
+`RPG_DEBUG_ARCHER=1`) achou a pista decisiva no log do SERVIDOR, bem
+antes da 2ª compra de aljava:
+
+```
+BUY      item_id=battleground_quiver  inv_len_before=1  inv_len_after=2  inv_item_ids_after=['arrow', 'battleground_quiver']
+EQUIP_ATTEMPT  inv_index=0  inv_len=2  inv_item_ids=['arrow', 'battleground_quiver']
+```
+
+O Inventory do SERVIDOR já tinha uma "Flecha" (`item_id="arrow"`) antes
+mesmo dessa compra — o log do CLIENTE nunca mostrou isso, a bag dele
+aparecia vazia. Isso empurrou a aljava de batalha pro índice 1 no
+servidor, mas o cliente (sem saber da Flecha) calculou índice 0 e
+mandou `EQUIP_ITEM {inv_index: 0}` — o servidor tentou equipar a
+Flecha (índice 0 dele), que não tem slot de equipamento
+(`item.slot == ""`), e `equip_item_from_inventory` retorna `None`
+silenciosamente (`target_slot not in eq_comp.slots`). Explica 100% dos
+sintomas de §154 a §158: zero evento `EQUIP` pra aljava de batalha no
+servidor, cliente mostrando 999 flechas (equipou local, nunca soube
+que o servidor recusou), e a mensagem de "sem flechas" (servidor
+seguia com a aljava básica ZERADA, nunca trocou de verdade).
+
+**De onde vinha a "Flecha" fantasma**: usuário negou compra de
+munição avulsa, uso de GM (`GM_ADD_ITEM`) e loot normal na BG — os 3
+hipóteses anteriores descartadas por ele diretamente. Busca exaustiva
+por todo ponto que faz `inv.items.append` no servidor (`grep`) achou o
+culpado real: `server/server_death_handler.py`, bloco "5b. Reciclagem"
+— talento que devolve % das flechas que acertaram um mob morto pro
+matador. Decisão de 03/08/2026 fazia essa devolução ir DIRETO pra bag
+do killer quando dentro da instância (`is_in_normalized_progression`),
+"sem precisar lootear o corpse" — mas esse caminho NUNCA mandava
+nenhuma notificação pro cliente (nem `INVENTORY_UPDATE`, nem nada).
+Toda vez que o usuário matava um mob com Reciclagem ativa dentro da
+BG, o servidor ganhava uma "Flecha" na bag EM SILÊNCIO — o cliente
+nunca ficava sabendo, e a bag das duas cópias divergia sem nenhum
+sintoma visível até uma ação POSICIONAL (equipar) expor a diferença.
+
+**Por que a investigação anterior (loot) não achou isso**: o usuário
+respondeu "não tem loot na BG" com razão — Reciclagem tecnicamente não
+é "loot" (não passa por corpse/`LOOT_AVAILABLE`), é uma mecânica de
+talento à parte que o próprio usuário não associou ao sintoma até eu
+mostrar o log com o item_id exato.
+
+**Decisão do usuário sobre a correção**: em vez de consertar a
+notificação (mandar `INVENTORY_UPDATE` quando Reciclagem entrega na
+bag), o usuário decidiu que Reciclagem **não deveria ter efeito
+nenhum dentro da BG** — é mecânica de progressão real
+(farm/roleplay no mundo aberto), sem propósito dentro de PvP
+instanciado. Reverte a decisão de 03/08/2026 (ir direto pra bag) em
+vez de estendê-la.
+
+**Fix aplicado** (`server/server_death_handler.py`): o bloco inteiro
+de Reciclagem agora checa `is_in_normalized_progression` ANTES de
+fazer qualquer coisa — se o matador está dentro da instância, o
+talento simplesmente não recupera flecha nenhuma (nem bag, nem
+corpse). Fora da instância, comportamento 100% inalterado (continua
+indo pro corpse, como sempre foi desde antes de 03/08/2026). Removido
+o sub-bloco "vai direto pra bag" inteiro (ficou morto — nunca mais
+alcançável).
+
+**Testes** (`tests/test_instance_progression.py`):
+- `TestInstanceReciclagemGoesToBag` — classe e teste renomeados
+  (`test_dentro_da_instancia_reciclagem_nao_tem_efeito`, era
+  `..._flecha_recuperada_vai_pra_bag`): agora prova que a bag NÃO
+  muda e o corpse NÃO ganha a flecha reciclada dentro da instância.
+  Revert-to-confirm: `git stash` só do arquivo do fix reproduziu
+  exatamente `Item('Flecha', common)` aparecendo sozinho na bag —
+  falha idêntica ao sintoma relatado.
+- `TestInstanceShoppingClientServerAgreement` (nova) — reprodução
+  ponta a ponta usando código REAL dos dois lados
+  (`WorldServer.process_shop_buy`/`equip_item_from_inventory` +
+  `NetworkHandlers._handle_msg_buy_result`/`InventoryHandlers.
+  _equip_item`), cada lado com seu próprio Inventory/Equipment
+  independente: compra arco → aljava básica → aljava de batalha por
+  cima, confirma que as duas cópias (cliente/servidor) concordam em
+  cada equip E que a aljava básica substituída volta pro fim das DUAS
+  bags. Prova que, sem a Flecha fantasma, a troca de aljava nunca teve
+  bug nenhum na lógica de compra/equipar em si (consistente com a
+  reprodução isolada do §158, que já mostrava isso sem explicar de
+  onde vinha a divergência).
+
+Suíte completa (`test_instance_progression.py` + `test_client_ui.py`):
+218 casos, sem regressão.
+
+**Pendências que continuam abertas**: (1) desligar
+`RPG_DEBUG_ARCHER=1` do `.env` de produção e reiniciar o serviço,
+compromisso assumido no §157, ainda não cumprido; (2) o achado do
+§157 sobre `equip_item_from_inventory`/protocolo `EQUIP_ITEM` ser
+posicional (nunca confirma por identidade, falha silenciosa sem
+`EQUIP_REJECTED` em caso de índice inválido/item sem slot) continua
+válido como classe de risco arquitetural — resolvido o GATILHO deste
+incidente específico (Reciclagem), mas o mecanismo de protocolo em si
+continua frágil a qualquer FUTURA fonte de desync entre
+`Inventory.items` do cliente e do servidor. Não mexido agora — o
+usuário pediu o fix pontual (desligar Reciclagem dentro da BG), não
+uma revisão do protocolo `EQUIP_ITEM` — registrado aqui caso um caso
+novo da mesma família apareça, pra não reinvestigar do zero.

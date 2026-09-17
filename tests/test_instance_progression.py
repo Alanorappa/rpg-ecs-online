@@ -651,11 +651,17 @@ class TestInstanceProgressionInventorySync(unittest.TestCase):
 
 
 class TestInstanceReciclagemGoesToBag(unittest.TestCase):
-    """Reciclagem (talento que devolve flechas do alvo morto) dentro da
-    instância vai DIRETO pra bag do killer, sem precisar lootear o corpse
-    (pedido do usuário, 03/08/2026 — battleground de teste é rápido demais
-    pra gerenciar loot manual de cada minion morto). Fora da instância,
-    comportamento inalterado (cai no corpse, como antes)."""
+    """Reciclagem (talento que devolve flechas do alvo morto) é IGNORADA
+    dentro da instância (16/09/2026, decisão explícita do usuário — ver
+    PROBLEMAS_ARQUITETURA.md §159, reverte a decisão de 03/08/2026 abaixo).
+    A versão anterior mandava a flecha recuperada DIRETO pra bag do killer
+    sem lootear corpse — mas nunca notificava o cliente disso, causando
+    desync silencioso entre o Inventory do cliente e o do servidor (achado
+    investigando o bug real da aljava trocada em BG não equipando no
+    servidor). Reciclagem é mecânica de progressão real (farm/roleplay no
+    mundo aberto), sem propósito dentro de PvP instanciado — mais simples
+    não ter efeito nenhum aqui do que consertar a notificação. Fora da
+    instância, comportamento inalterado (cai no corpse, como sempre foi)."""
 
     def setUp(self):
         self.ws = make_world_server()
@@ -689,18 +695,21 @@ class TestInstanceReciclagemGoesToBag(unittest.TestCase):
         self.assertEqual(len(novas), 1, "deveria ter registrado exatamente 1 corpse novo do killer")
         return self.ws._corpses[novas[0]]
 
-    def test_dentro_da_instancia_flecha_recuperada_vai_pra_bag(self):
+    def test_dentro_da_instancia_reciclagem_nao_tem_efeito(self):
         enter_normalized_progression(self.ws, self.eid)
         inv = self.ws.world.get_component(self.eid, Inventory)
         self.assertEqual(inv.items, [])
 
         loot = self._kill_mob_with_arrows_received(self.eid)
 
-        self.assertEqual(len(inv.items), 1, "flecha recuperada deveria estar na bag")
-        self.assertGreaterEqual(inv.items[0].stack, 5)
+        self.assertEqual(inv.items, [],
+                         "Reciclagem não deveria ter efeito nenhum dentro da instância "
+                         "— nem bag, nem corpse (bag do servidor não pode crescer sem o "
+                         "cliente saber, causa raiz do bug da aljava trocada em BG)")
         self.assertFalse(any(it.get("item_type") == "ammo" for it in loot["items"]),
-                         "corpse não deveria ter a flecha recuperada — já foi pra bag "
-                         "(pode ter OUTRO loot normal do mob, isso é esperado)")
+                         "corpse também não deveria ter a flecha recuperada dentro da "
+                         "instância — o talento é ignorado por completo aqui, não "
+                         "redirecionado pra outro destino")
 
     def test_fora_da_instancia_continua_indo_pro_corpse(self):
         inv = self.ws.world.get_component(self.eid, Inventory)
@@ -749,6 +758,92 @@ class TestInstanceReciclagemGoesToBag(unittest.TestCase):
         self.assertTrue(result["items"], "deveria ter concedido a flecha de verdade, "
                                          "não devolver vazio (\"Já foi saqueado\")")
         self.assertEqual(result["items"][0]["item_id"], arrow["item_id"])
+
+
+class TestInstanceShoppingClientServerAgreement(unittest.TestCase):
+    """Reprodução ponta a ponta do bug relatado pelo usuário (16/09/2026,
+    ver PROBLEMAS_ARQUITETURA.md §154/§156/§157/§158/§159): comprar arco,
+    comprar aljava básica, comprar aljava de batalha por cima — cada compra
+    auto-equipando e o item substituído voltando pro FIM da bag — usando o
+    código REAL dos dois lados (WorldServer.process_shop_buy/
+    equip_item_from_inventory no servidor; NetworkHandlers.
+    _handle_msg_buy_result/InventoryHandlers._equip_item no cliente), cada
+    lado com seu PRÓPRIO Inventory/Equipment independente, exatamente como
+    a rede faz. Causa raiz real (§159) era o talento Reciclagem inserindo
+    uma "Flecha" só na bag do servidor sem avisar o cliente — com o talento
+    desligado dentro da instância, este teste prova que compra+equip
+    encadeados continuam de acordo nos dois lados sem mais nenhuma fonte de
+    desync conhecida."""
+
+    def _make_client_fixture(self, player_entity_marker: int = 1):
+        from engine.world import World
+        from client.inventory_handlers import InventoryHandlers
+        from client.network_handlers import NetworkHandlers
+        from client.save_sync_handlers import SaveSyncHandlers
+
+        class _Fixture(InventoryHandlers, NetworkHandlers, SaveSyncHandlers):
+            def __init__(self, world, player_entity):
+                self.world = world
+                self.player_entity = player_entity
+                self._my_eid = player_entity_marker
+                self._remote_players = {}
+                self._remote_mobs = {}
+                self._net = None
+                self.sent_equip_indices: list[int] = []
+
+            def _send_equip_item(self, inv_index):
+                self.sent_equip_indices.append(inv_index)
+
+        cworld  = World()
+        cplayer = cworld.create_entity()
+        cworld.add_component(cplayer, CharacterStats(class_id="arqueiro"))
+        cworld.add_component(cplayer, CombatStats())
+        cworld.add_component(cplayer, Inventory(items=[]))
+        cworld.add_component(cplayer, Equipment())
+        from ui.ui_components import InstanceInventoryUIState
+        iius = InstanceInventoryUIState()
+        iius.active = True
+        cworld.add_component(cplayer, iius)
+        return _Fixture(cworld, cplayer), cworld, cplayer
+
+    def setUp(self):
+        self.ws  = make_world_server()
+        self.eid = spawn_player(self.ws, "s1", 130, 374, class_id="arqueiro")
+        self.ws.world.get_component(self.eid, Wallet).gold = 9999
+        self.equip_ws = self.ws.world.get_component(self.eid, Equipment)
+        self.inv_ws   = self.ws.world.get_component(self.eid, Inventory)
+        self.fx, self.cworld, self.cplayer = self._make_client_fixture()
+        self.equip_c = self.cworld.get_component(self.cplayer, Equipment)
+        self.inv_c   = self.cworld.get_component(self.cplayer, Inventory)
+
+    def _buy_and_equip(self, item_id: str):
+        result = self.ws.process_shop_buy("s1", "instance_shop", "", 1, item_id=item_id)
+        self.assertTrue(result["success"], result)
+        self.fx._handle_msg_buy_result(result)
+        self.assertTrue(self.fx.sent_equip_indices,
+                        f"cliente não mandou EQUIP_ITEM pra {item_id}")
+        inv_index = self.fx.sent_equip_indices.pop()
+        return self.ws.equip_item_from_inventory("s1", inv_index)
+
+    def test_arco_aljava_e_troca_de_aljava_ficam_de_acordo_nos_dois_lados(self):
+        r_bow = self._buy_and_equip("elven_bow")
+        self.assertIsNone(r_bow)
+        self.assertEqual(self.equip_ws.slots["mainhand"].item_id, "elven_bow")
+        self.assertEqual(self.equip_c.slots["mainhand"].item_id, "elven_bow")
+
+        r_basic = self._buy_and_equip("basic_quiver")
+        self.assertIsNone(r_basic)
+        self.assertEqual(self.equip_ws.slots["offhand"].item_id, "basic_quiver")
+        self.assertEqual(self.equip_c.slots["offhand"].item_id, "basic_quiver")
+
+        r_battle = self._buy_and_equip("battleground_quiver")
+        self.assertIsNone(r_battle)
+        self.assertEqual(self.equip_ws.slots["offhand"].item_id, "battleground_quiver")
+        self.assertEqual(self.equip_c.slots["offhand"].item_id, "battleground_quiver")
+
+        # A aljava básica substituída volta pro FIM da bag dos DOIS lados.
+        self.assertEqual([i.item_id for i in self.inv_ws.items], ["basic_quiver"])
+        self.assertEqual([i.item_id for i in self.inv_c.items], ["basic_quiver"])
 
 
 if __name__ == "__main__":

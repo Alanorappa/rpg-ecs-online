@@ -638,11 +638,31 @@ class ServerDeathHandler:
             # _server_apply_ranged_physical) voltam como loot pro matador, se ele
             # tiver o talento. Mesma fórmula do offline (systems.py): 50-100% das
             # flechas recebidas, mínimo 1.
+            #
+            # Ignorado dentro da BG/instância (16/09/2026, decisão explícita
+            # do usuário — ver PROBLEMAS_ARQUITETURA.md §159): Reciclagem é
+            # mecânica de progressão real (farm/roleplay no mundo aberto),
+            # sem propósito dentro de PvP instanciado. A via "direto pra bag"
+            # (03/08/2026, revertida aqui) nunca mandava NENHUMA notificação
+            # pro cliente — o item entrava só no Inventory AO VIVO do
+            # servidor, o cliente nunca ficava sabendo. Isso causava desync
+            # silencioso e invisível entre as duas cópias de Inventory, que só
+            # explodia bem depois (ex: comprar/equipar item novo calculava a
+            # posição errada contra a bag REAL do servidor, que tinha 1 item
+            # a mais do que o cliente sabia — ver §159 pro caso completo).
+            # Em vez de consertar a notificação, o talento simplesmente não
+            # tem efeito dentro da instância — mais simples e sem risco de
+            # reabrir o mesmo tipo de bug de sincronização depois.
             from engine.components import CombatStats as _CSdh, Equipment as _EqDh
             _dead_cs = self.world.get_component(eid, _CSdh)
             if _dead_cs and _dead_cs.arrows_received > 0 and first_attacker_eid != -1:
                 _killer_cs = self.world.get_component(first_attacker_eid, _CSdh)
-                if _killer_cs and getattr(_killer_cs, "arrow_recovery_enabled", False):
+                _in_bg_recycle = False
+                if self.world_server is not None:
+                    from server.instance_progression import is_in_normalized_progression as _is_norm_recycle
+                    _in_bg_recycle = _is_norm_recycle(self.world_server, first_attacker_eid)
+                if (_killer_cs and getattr(_killer_cs, "arrow_recovery_enabled", False)
+                        and not _in_bg_recycle):
                     import random as _rand_dh
                     _pct       = _rand_dh.randint(50, 100) / 100.0
                     _recovered = max(1, int(_dead_cs.arrows_received * _pct))
@@ -664,31 +684,7 @@ class ServerDeathHandler:
                     from content.item_table import resolve_item_by_name as _resolve_arrow_dh
                     _ret = _resolve_arrow_dh(_atype) or _resolve_arrow_dh("Flecha")
                     _ret.stack = _recovered
-                    # Dentro da instância (03/08/2026, pedido do usuário):
-                    # Reciclagem vai DIRETO pra bag do killer, sem precisar
-                    # lootear o corpse — battleground de teste é rápido
-                    # demais pra gerenciar loot manual de cada minion morto.
-                    # Fora da instância, comportamento inalterado (cai no
-                    # corpse como qualquer outro item).
-                    _went_to_bag = False
-                    if self.world_server:
-                        from server.instance_progression import (
-                            is_in_normalized_progression as _is_norm_recycle)
-                        if _is_norm_recycle(self.world_server, first_attacker_eid):
-                            from engine.components import Inventory as _InvDh
-                            _inv_r = self.world.get_component(first_attacker_eid, _InvDh)
-                            if _inv_r is not None:
-                                _existing_ammo = next(
-                                    (it for it in _inv_r.items
-                                     if it is not None and it.name == _ret.name), None)
-                                if _existing_ammo is not None:
-                                    _existing_ammo.stack += _recovered
-                                    _went_to_bag = True
-                                elif len(_inv_r.items) < _inv_r.max_slots:
-                                    _inv_r.items.append(_ret)
-                                    _went_to_bag = True
-                    if not _went_to_bag:
-                        loot_items.append(_ret)
+                    loot_items.append(_ret)
 
             # Sempre registra o corpse (visual) — só inclui itens se houve drop.
             # Sem essa entrada, o world_server nunca cria o body e o cliente
