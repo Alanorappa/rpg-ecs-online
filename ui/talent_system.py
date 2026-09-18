@@ -14,6 +14,7 @@ from engine.stat_fns import add_modifier, remove_modifier
 from ui.ui_scale_mixin import UIScaleMixin
 from ui.ui_sizes import UI
 from ui.ui_helpers import fill_surf
+from ui.icon_manager import ICONS
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +30,11 @@ GRID_ORIGIN_X = UI.TALENTS_GRID_ORIGIN_X   # margem esquerda dentro do painel
 GRID_ORIGIN_Y = UI.TALENTS_GRID_ORIGIN_Y   # margem superior dentro do painel
 
 TOOLTIP_W     = UI.TALENTS_TOOLTIP_W   # largura do tooltip flutuante
+
+# Ícone de talento (17/09/2026, ver PROBLEMAS_ARQUITETURA.md §182) —
+# menor que o nó (64px) pra deixar margem pro contador (canto sup.
+# direito) e a estrela de "desbloqueia skill" (canto inf. direito).
+NODE_ICON_SIZE = 40
 
 # Cores
 C_BG         = (14, 10, 6, 230)
@@ -447,13 +453,24 @@ class TalentSystem(UIScaleMixin):
             ico_col = C_MAXED if maxed else (60, 120, 200)
             self.screen.blit(fill_surf((ico_w, ico_h), (*ico_col, 80)), ico_r.topleft)
 
-        # ── Inicial do nome centralizado ──
-        initials = t["name"][:2].upper()
-        txt_col  = C_RED if disabled_here else \
-                   C_LOCKED_TXT if (locked and current == 0) else \
-                   C_MAXED if maxed else C_WHITE
-        init_surf = self.font_lg.render(initials, False, txt_col)
-        self.screen.blit(init_surf, init_surf.get_rect(center=r.center))
+        # ── Ícone (ou fallback: inicial do nome centralizada) ──
+        icon_key  = t.get("icon")
+        icon_surf = ICONS.get(icon_key, self._u(NODE_ICON_SIZE)) if icon_key else None
+        if icon_surf is not None:
+            icon_r = icon_surf.get_rect(center=r.center)
+            self.screen.blit(icon_surf, icon_r)
+            # Bloqueado (sem pontos alocados ainda) — escurece o ícone,
+            # mesmo tratamento que a hotbar já usa pra skill indisponível
+            # (client/hotbar_handlers.py) — nunca dessatura a Surface.
+            if locked and current == 0:
+                self.screen.blit(fill_surf(icon_r.size, (0, 0, 0, 160)), icon_r.topleft)
+        else:
+            initials = t["name"][:2].upper()
+            txt_col  = C_RED if disabled_here else \
+                       C_LOCKED_TXT if (locked and current == 0) else \
+                       C_MAXED if maxed else C_WHITE
+            init_surf = self.font_lg.render(initials, False, txt_col)
+            self.screen.blit(init_surf, init_surf.get_rect(center=r.center))
 
         # ── Contador x/max no canto superior direito ──
         # "0/0" (não "0/max") quando desabilitado na instância — sinaliza

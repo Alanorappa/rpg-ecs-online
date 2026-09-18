@@ -20913,3 +20913,55 @@ atual em `ui/talent_system.py::_render_node`) — precisa de decisão
 por-talento de qual ícone usar (alguns talentos têm candidato óbvio
 via `unlocks_skill`, outros são só bônus de atributo sem ícone óbvio
 pra reaproveitar). Não implementado ainda.
+
+## 182. Backlog dos 14 itens antigos, item #10 (Fase 2) — ícone de verdade nos nós de talento
+
+18/09/2026. Fase 2 do item #10, feita na sequência da Fase 1 (§181).
+Nó de talento (`ui/talent_system.py::_render_node`) desenhava só um
+retângulo colorido + as 2 letras iniciais do nome, mesmo pra talentos
+que desbloqueiam uma skill (que já tem ícone de verdade catalogado no
+atlas desde a Fase 1) — nenhuma arte de ícone existia pra talento
+antes disso.
+
+**Dado novo**: `content/talent_data.py` — cada talento ganha
+`"icon": str | None` (mesma chave que `ICON_ATLAS` já usa, ex:
+`"skill_golpe_debilitante"`). Preenchido AUTOMATICAMENTE só pros 13
+talentos (de 44 no total) que já têm `unlocks_skill` apontando pra uma
+skill real — reaproveita o ícone da PRÓPRIA skill, zero arte nova,
+zero ambiguidade (`icon = f"skill_{unlocks_skill}"`). Os outros 31
+(bônus de atributo puro, sem skill óbvia pra reaproveitar) ficam
+`icon: None` — nó continua com o fallback de letra de sempre até
+alguém escolher um ícone (reaproveitado ou pintado numa célula livre
+do atlas + catalogado via `tools/build_icon_atlas.py`).
+
+**Fix de renderização** (`_render_node`): bloco "Inicial do nome
+centralizado" virou "Ícone (ou fallback: inicial do nome)" —
+`ICONS.get(t["icon"], NODE_ICON_SIZE)` (novo, 40px — cabe dentro do nó
+de 64px deixando margem pro contador/estrela nos cantos) se `icon` for
+truthy E resolver de verdade; senão cai pro `initials`/`font_lg` de
+sempre, comportamento idêntico ao que já existia. Nó BLOQUEADO (sem
+pontos alocados, requisito não cumprido) escurece o ícone com
+`fill_surf(size, (0,0,0,160))` por cima — MESMO tratamento visual que
+a hotbar já usa pra skill indisponível (`client/hotbar_handlers.py`),
+não inventa mecanismo novo. Barra de progresso translúcida (já
+existia) e estrela dourada de "desbloqueia skill" (já existia)
+continuam exatamente iguais, só o miolo do nó mudou.
+
+**Teste** (`tests/test_talent_node_icon.py`, novo, 4 casos): (1)
+talento com `icon` chama `ICONS.get()` com a chave certa; (2) talento
+sem `icon` NUNCA chama `ICONS.get()` (spy registra zero chamadas —
+prova que o fallback de letra continua intocado pros 31 sem ícone);
+(3) escurecimento isolado via `ICONS.get()` mockado devolvendo
+vermelho puro opaco — desbloqueado sai vermelho puro, bloqueado sai
+mais escuro (comparação direta de pixel, não indireta via cor de
+fundo, que já mudava antes desta correção por outro motivo); (4) os 13
+talentos com `unlocks_skill` têm `icon` batendo com a skill certa E
+esse ícone genuinamente catalogado no atlas (guarda de regressão pra
+skill renomeada quebrar a referência silenciosamente). Revert-to-
+confirm: `git stash` de `ui/talent_system.py` + `content/talent_data.py`
+→ os 4 testes falham (`AttributeError: module 'ui.talent_system' has
+no attribute 'ICONS'` / `AssertionError: None != 'skill_...'`).
+
+Suíte: `test_talent_node_icon.py` (4) + `test_icon_atlas.py` (9) +
+`test_client_ui.py` (175) + `pytest tests/ -k "talent"` (23) — sem
+regressão.

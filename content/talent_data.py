@@ -16,6 +16,19 @@ Estrutura de cada talento:
       "effects"       list de {"attribute", "value", "type"} | None
       "unlocks_skill" str | None  — nome do handler
       "skill_def"     dict | None — {"name", "description", "cooldown"}
+      "icon"          str | None  — chave de ícone (17/09/2026, ver
+                       PROBLEMAS_ARQUITETURA.md §182) no MESMO formato
+                       que ui/icon_atlas_catalog.py::ICON_ATLAS já usa
+                       (ex: "skill_golpe_debilitante") — `None` = nó da
+                       árvore continua mostrando o fallback de sempre
+                       (retângulo + 2 letras iniciais,
+                       ui/talent_system.py::_render_node). Talento que
+                       desbloqueia skill (`unlocks_skill` setado) foi
+                       auto-preenchido reaproveitando o ícone da
+                       própria skill — talento sem skill pra
+                       reaproveitar fica `None` até alguém escolher um
+                       ícone (reaproveitado ou pintado numa célula
+                       livre do atlas).
   }
 """
 
@@ -101,6 +114,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {},
         "effects":       [{"attribute": "parry_rating", "value": 20.0, "type": "flat"}],
         "unlocks_skill": None,
+        "icon":          None,
         "skill_def":     None,
     },
     "cav_veterano": {
@@ -112,6 +126,7 @@ TALENTS: dict[str, dict] = {
         "requires":       {},
         "effects":        None,
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "preview_formula": lambda d: d,
         "cs_flags": [
@@ -128,6 +143,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {},
         "effects":       None,
         "unlocks_skill": None,
+        "icon":          None,
         "skill_def":     None,
         "cs_flags": [
             {"field": "interceptar_rage_bonus", "reset": 0,
@@ -145,6 +161,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"cav_reflexos": 1},
         "effects":       None,
         "unlocks_skill": None,
+        "icon":          None,
         "skill_def":     None,
         "cs_flags": [
             {"field": "impacto_maquina_matar", "reset": False,
@@ -160,6 +177,7 @@ TALENTS: dict[str, dict] = {
         "requires":       {"cav_veterano": 1},
         "effects":        None,
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "preview_formula": lambda d: d * 10,
         "cs_flags": [
@@ -176,6 +194,7 @@ TALENTS: dict[str, dict] = {
         "requires":       {"cav_vontade": 1},
         "effects":        None,
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "preview_formula": lambda d: d * 2,
         "cs_flags": [
@@ -194,6 +213,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"cav_maquina_matar": 1},
         "effects":       None,
         "unlocks_skill": None,
+        "icon":          None,
         "skill_def":     None,
         "cs_flags": [
             {"field": "impacto_assassino", "reset": False, "formula": lambda pts: pts >= 1},
@@ -208,6 +228,7 @@ TALENTS: dict[str, dict] = {
         "requires":       {"cav_embalo": 1},
         "effects":        None,
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "preview_formula": lambda d: round(d * 0.3, 1),
         "cs_flags": [
@@ -224,6 +245,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"cav_alvo_confirmado": 1},
         "effects":       None,
         "unlocks_skill": None,
+        "icon":          None,
         "skill_def":     None,
         "cs_flags": [
             {"field": "executar_horrorizante", "reset": False, "formula": lambda pts: pts >= 1},
@@ -240,6 +262,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"cav_assassino": 1},
         "effects":       None,
         "unlocks_skill": "golpe_debilitante",
+        "icon":          "skill_golpe_debilitante",
         "skill_def":     None,
     },
     "cav_explorador": {
@@ -251,6 +274,7 @@ TALENTS: dict[str, dict] = {
         "requires":       {"cav_golpe_debilitante": 1},
         "effects":        None,
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "preview_formula": lambda d: d * 15,
         "cs_flags": [
@@ -268,6 +292,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"cav_horrorizante": 1},
         "effects":       None,
         "unlocks_skill": "brado_provocativo",
+        "icon":          "skill_brado_provocativo",
         "skill_def":     None,
     },
 
@@ -281,6 +306,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"cav_explorador": 1},
         "effects":       None,
         "unlocks_skill": None,
+        "icon":          None,
         "skill_def":     None,
         "cs_flags": [
             {"field": "foco_mortal_enabled", "reset": False, "formula": lambda pts: pts >= 1},
@@ -297,6 +323,7 @@ TALENTS: dict[str, dict] = {
         "requires":       {"cav_provocacao": 1},
         "effects":        None,
         "unlocks_skill":  "punho_no_queixo",
+        "icon":          "skill_punho_no_queixo",
         "preview_formula": lambda d: d,
         "skill_def":     None,
         "cs_flags": [
@@ -315,6 +342,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"cav_foco_mortal": 1},
         "effects":       None,
         "unlocks_skill": "fatiador_de_corpos",
+        "icon":          "skill_fatiador_de_corpos",
         "skill_def":     None,
     },
 
@@ -340,6 +368,7 @@ TALENTS: dict[str, dict] = {
         "requires":    {},
         "effects":     None,
         "unlocks_skill": None,
+        "icon":          None,
         "skill_def":     None,
         "cs_flags": [
             {"field": "fire_mana_discount", "reset": 0, "formula": lambda pts: pts},
@@ -356,6 +385,7 @@ TALENTS: dict[str, dict] = {
         "requires":    {"pir_frieza": 1},
         "effects":     None,
         "unlocks_skill": None,
+        "icon":          None,
         "skill_def":     None,
         "preview_formula": lambda pts: round(pts * 0.1, 1),
         "cs_flags": [
@@ -375,6 +405,7 @@ TALENTS: dict[str, dict] = {
         "requires":       {"pir_bdf_aperfeicoada": 1},
         "effects":        None,
         "unlocks_skill":  "escudo_fogo",
+        "icon":          "skill_escudo_fogo",
         "skill_def": None,
     },
 
@@ -388,6 +419,7 @@ TALENTS: dict[str, dict] = {
         "effects":        None,
         "preview_formula": lambda pts: round(pts * 0.2, 1),
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "cs_flags": [
             {"field": "ice_cast_time_reduction", "reset": 0.0,
@@ -405,6 +437,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"pir_precisao_elemental": 1},
         "effects":       None,
         "unlocks_skill": None,
+        "icon":          None,
         "skill_def":     None,
         "cs_flags": [
             {"field": "thermal_shock_enabled", "reset": False, "formula": lambda pts: pts >= 1},
@@ -423,6 +456,7 @@ TALENTS: dict[str, dict] = {
         "effects":        None,
         "preview_formula": lambda pts: pts * 5,
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "cs_flags": [
             {"field": "elemental_lapse_crit_bonus", "reset": 0.0,
@@ -441,6 +475,7 @@ TALENTS: dict[str, dict] = {
         "requires":    {"pir_piromaníaco": 1},
         "effects":     None,
         "unlocks_skill": "calamidade_flamejante",   # já existe em SKILL_CATALOG
+        "icon":          "skill_calamidade_flamejante",
         "skill_def":   None,
     },
 
@@ -453,6 +488,7 @@ TALENTS: dict[str, dict] = {
         "requires":    {"pir_exaustao": 1},
         "effects":     None,
         "unlocks_skill": "calcinar",
+        "icon":          "skill_calcinar",
         "skill_def":   None,
     },
 
@@ -467,6 +503,7 @@ TALENTS: dict[str, dict] = {
         "requires":    {"pir_crematoria": 1},
         "effects":     None,
         "unlocks_skill": "pirofagia",
+        "icon":          "skill_pirofagia",
         "skill_def":   None,
     },
 
@@ -479,6 +516,7 @@ TALENTS: dict[str, dict] = {
         "requires":    {"pir_lapso_elemental": 1},
         "effects":     None,
         "unlocks_skill": None,
+        "icon":          None,
         "skill_def":   None,
         "cs_flags": [
             {"field": "crematoria_enabled", "reset": False, "formula": lambda pts: pts >= 1},
@@ -495,6 +533,7 @@ TALENTS: dict[str, dict] = {
         "requires":    {"pir_lapso_elemental": 1},
         "effects":     None,
         "unlocks_skill": None,
+        "icon":          None,
         "skill_def":   None,
         "cs_flags": [
             {"field": "fire_exhaustion_enabled", "reset": False, "formula": lambda pts: pts >= 1},
@@ -511,6 +550,7 @@ TALENTS: dict[str, dict] = {
         "effects":        None,
         "preview_formula": lambda pts: pts * 5,
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "cs_flags": [
             {"field": "pyromania_bonus", "reset": 0.0, "formula": lambda pts: pts * 0.05},
@@ -528,6 +568,7 @@ TALENTS: dict[str, dict] = {
         "effects":        None,
         "preview_formula": lambda pts: pts * 2,
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "cs_flags": [
             {"field": "fire_instant_proc_chance", "reset": 0.0,
@@ -545,6 +586,7 @@ TALENTS: dict[str, dict] = {
         "effects":        None,
         "preview_formula": lambda pts: pts * 3,
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "cs_flags": [
             {"field": "fire_burns_on_crit", "reset": False, "formula": lambda pts: pts >= 1},
@@ -574,6 +616,7 @@ TALENTS: dict[str, dict] = {
         "requires":       {},
         "effects":        [{"attribute": "acerto", "value": 2.0, "type": "flat"}],
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "preview_formula": lambda d: d * 2,
     },
@@ -590,6 +633,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"bardo_consistencia": 1},
         "effects":       None,
         "unlocks_skill": "so_um_gole",
+        "icon":          "skill_so_um_gole",
         "skill_def":     None,
     },
 
@@ -603,6 +647,7 @@ TALENTS: dict[str, dict] = {
         "requires":       {"bardo_parado_concentrado": 1},
         "effects":        None,
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "cs_flags": [
             {"field": "recarregar_in_motion",
@@ -625,6 +670,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"bardo_na_mosca": 1},
         "effects":       None,
         "unlocks_skill": "tiro_multiplo",
+        "icon":          "skill_tiro_multiplo",
         "skill_def":     None,
         "preview_formula": lambda d: {1: "2 alvos", 2: "3 alvos", 3: "múltiplos"}.get(d, ""),
         "cs_flags": [
@@ -645,6 +691,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"bardo_flechas_despadronizadas": 1},
         "effects":       None,
         "unlocks_skill": None,
+        "icon":          None,
         "skill_def":     None,
         "cs_flags": [
             {"field": "na_mosca_enabled",
@@ -664,6 +711,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"bardo_tiro_repulsivo": 1},
         "effects":       None,
         "unlocks_skill": "camuflagem",
+        "icon":          "skill_camuflagem",
         "skill_def":     None,
     },
 
@@ -678,6 +726,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"bardo_reciclagem": 1},
         "effects":       None,
         "unlocks_skill": "tiro_repulsivo",
+        "icon":          "skill_tiro_repulsivo",
         "skill_def":     None,
     },
 
@@ -691,6 +740,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"bardo_sequencia_final": 1},
         "effects":       None,
         "unlocks_skill": None,
+        "icon":          None,
         "skill_def":     None,
         "cs_flags": [
             {"field": "flechas_despadronizadas_chance",
@@ -710,6 +760,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"bardo_alvo_facil": 1},
         "effects":       None,
         "unlocks_skill": "cancao_inspiracao",
+        "icon":          "skill_cancao_inspiracao",
         "skill_def":     None,
     },
 
@@ -724,6 +775,7 @@ TALENTS: dict[str, dict] = {
         "requires":       {"bardo_pratico": 1},
         "effects":        None,
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "cs_flags": [
             {"field": "flecha_reiterada_hp_threshold",
@@ -742,6 +794,7 @@ TALENTS: dict[str, dict] = {
         "requires":      {"bardo_sequencia_final": 1},
         "effects":       None,
         "unlocks_skill": None,
+        "icon":          None,
         "skill_def":     None,
         "cs_flags": [
             {"field": "arrow_recovery_enabled",
@@ -761,6 +814,7 @@ TALENTS: dict[str, dict] = {
         "requires":       {"bardo_sequencia_final": 1},
         "effects":        None,
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "preview_formula": lambda d: d * 2,   # mostra bônus total de acerto (1pt=2%, 5pt=10%)
         "cs_flags": [
@@ -784,6 +838,7 @@ TALENTS: dict[str, dict] = {
         "requires":       {"bardo_briguento": 1},
         "effects":        None,
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "preview_formula": lambda d: d,   # mostra bônus %/s no {v}
         "cs_flags": [
@@ -803,6 +858,7 @@ TALENTS: dict[str, dict] = {
         "requires":       {},
         "effects":        [{"attribute": "dodge_rating", "value": 20.0, "type": "flat"}],
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "preview_formula": lambda d: d,   # 20 rating/ponto = 1%/ponto
     },
@@ -817,6 +873,7 @@ TALENTS: dict[str, dict] = {
         "requires":       {},
         "effects":        None,
         "unlocks_skill":  None,
+        "icon":          None,
         "skill_def":      None,
         "preview_formula": lambda d: d,   # mostra +X regen/s no {v}
         "cs_flags": [
