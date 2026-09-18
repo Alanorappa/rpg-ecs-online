@@ -3,6 +3,7 @@ import pygame
 import math
 import time as _time
 import gc as _gc
+from collections import deque
 from ui.fonts import make as _font
 from ui.ui_sizes import UI
 
@@ -192,12 +193,15 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._pending_loot_redirect: dict[tuple[int, int], tuple[int, int]] = {}
         # Timers de passo para players remotos (server_eid → tempo restante)
         self._remote_step_timers:  dict[int, float]         = {}
-        self._mob_move_queues:         dict[int, list] = {}  # server_eid → [(tx,ty,is_dash)...]
-        self._remote_player_move_queues: dict[int, list] = {}  # server_eid → [(tx,ty,is_dash)]
+        # deque (não list) — 17/09/2026, ver PROJECT_WIDE_REVIEW.md item #6:
+        # drenado via popleft() em _process_mob_move_queues, O(1) por passo
+        # em vez do O(n) de list.pop(0) (desloca todo o resto da fila).
+        self._mob_move_queues:         dict[int, deque] = {}  # server_eid → deque[(tx,ty,is_dash)...]
+        self._remote_player_move_queues: dict[int, deque] = {}  # server_eid → deque[(tx,ty,is_dash)]
         # Correções de posição "is_dash" do próprio player (ex: vítima de knockback)
         # encadeadas — animam em sequência igual a um mob/player remoto, em vez de
         # aplicar snap instantâneo (usado para correções normais de anti-cheat).
-        self._self_move_queue: list[tuple[int, int]] = []
+        self._self_move_queue: deque = deque()
         # Projéteis de mobs remotos: server_proj_eid → local_eid (entidade visual)
         self._remote_mob_projectiles: dict[int, int] = {}
         # Cache para flechas atrasadas: server_eid → (local_eid, pos_x, pos_y)

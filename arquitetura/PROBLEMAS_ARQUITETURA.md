@@ -20650,3 +20650,48 @@ uso do nome já disponível no escopo do módulo.
 Suíte: `test_client_ui.py` (175) + `pytest tests/ -k "render or target
 or tile_sprite or corpse or click or space_engage"` (158) — sem
 regressão.
+
+## 177. Backlog dos 14 itens antigos, item #6 — fila de movimento de mob/player remoto com `list.pop(0)` em vez de `deque`
+
+17/09/2026. `game.py` declarava `self._mob_move_queues`/
+`self._remote_player_move_queues` (dict de listas) e
+`self._self_move_queue` (lista) — consumidas em
+`client/remote_entity_handlers.py::_process_mob_move_queues` via
+`queue.pop(0)`. `pop(0)` numa `list` é O(n) (desloca todo o resto pra
+esquerda) — sem bug de comportamento (ordem FIFO sempre foi respeitada
+certo), só custo desnecessário que cresce com o tamanho da fila (lag
+spike enfileirando vários passos de uma vez pro mesmo mob/player).
+
+**Fix**: as 3 estruturas viraram `collections.deque`
+(`self._mob_move_queues: dict[int, deque] = {}`, idem
+`_remote_player_move_queues`, `self._self_move_queue: deque = deque()`,
+em `game.py`); os 2 pontos de enfileiramento
+(`_move_remote_mob`/análogo de player remoto, em
+`client/remote_entity_handlers.py`) trocaram
+`.setdefault(eid, [])` por `.setdefault(eid, deque())`; os 3 pontos de
+drenagem em `_process_mob_move_queues` trocaram `.pop(0)` por
+`.popleft()` (O(1)). Confirmado por grep que toda outra operação feita
+nessas filas em `client/network_handlers.py` (`.clear()`, `queue[-1]`,
+`.append()`, `.get()`/`.pop(key, None)` no dict) já é compatível com
+`deque` sem mudança nenhuma.
+
+**Teste** (`tests/test_remote_move_queue_deque.py`, novo): usa
+`RemoteEntityHandlers._move_remote_mob`/`_process_mob_move_queues`
+REAIS "emprestados" pra uma fixture leve (mesmo padrão de
+`_GE_pvp`/`_GE_rsr`/`_GE_mm` em `test_client_ui.py`), com `World` real
+e componentes `Position`/`TileMovement` reais — nunca mock do próprio
+mecanismo de fila. 3 casos: fila de mob criada via `setdefault` é
+`deque` (não `list`); `_self_move_queue` é `deque`; drenar 4 passos
+enfileirados numa lag spike sai na MESMA ordem FIFO que entrou, ponta a
+ponta via `_process_mob_move_queues` real (1º passo inicia o tween na
+hora — mob estava parado — os 3 seguintes vão pra fila porque o mob já
+estava em movimento). Revert-to-confirm: `git stash` de `game.py` +
+`client/remote_entity_handlers.py` reproduziu exatamente
+`AssertionError: [...] is not an instance of <class
+'collections.deque'>` no teste que checa o tipo — o teste de ordem FIFO
+continua passando mesmo sem o fix (esperado: nunca houve bug de
+comportamento, só de custo).
+
+Suíte: `test_remote_move_queue_deque.py` (3) + `test_client_ui.py` +
+`test_interceptar_no_early_auto_attack.py` (184 no total) — sem
+regressão.

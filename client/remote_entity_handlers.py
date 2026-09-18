@@ -7,6 +7,7 @@ instanciada diretamente — ela é herdada por GameEngine, que fornece
 self.world, self._my_eid, self._net e os demais atributos referenciados aqui.
 """
 import pygame
+from collections import deque
 
 from engine.components import Position
 from engine.tileset import TILE_SIZE
@@ -1196,7 +1197,7 @@ class RemoteEntityHandlers:
             if tm.target_tile_x == new_tx and tm.target_tile_y == new_ty and _same_origin:
                 return
             # Indo para outro tile — enfileira o próximo passo
-            queue = self._mob_move_queues.setdefault(server_eid, [])
+            queue = self._mob_move_queues.setdefault(server_eid, deque())
             # Descarta entrada duplicada no topo da fila
             if not queue or queue[-1][:2] != (new_tx, new_ty):
                 queue.append((new_tx, new_ty, is_dash))
@@ -1283,7 +1284,7 @@ class RemoteEntityHandlers:
                 del self._mob_move_queues[server_eid]
                 continue
             if not tm.is_moving:
-                tx, ty, is_dash = queue.pop(0)
+                tx, ty, is_dash = queue.popleft()
                 start_tile_movement(pos, tm, tx, ty)
                 if is_dash:
                     tm.is_dash       = True
@@ -1306,7 +1307,7 @@ class RemoteEntityHandlers:
                 del self._remote_player_move_queues[server_eid]
                 continue
             if not tm.is_moving:
-                tx, ty, is_dash = queue.pop(0)
+                tx, ty, is_dash = queue.popleft()
                 start_tile_movement(pos, tm, tx, ty)
                 if is_dash:
                     tm.is_dash       = True
@@ -1320,7 +1321,7 @@ class RemoteEntityHandlers:
             tm  = self.world.get_component(self.player_entity, TileMovement)
             pos = self.world.get_component(self.player_entity, Position)
             if tm and pos and not tm.is_moving:
-                tx, ty = self._self_move_queue.pop(0)
+                tx, ty = self._self_move_queue.popleft()
                 start_tile_movement(pos, tm, tx, ty)
                 tm.is_dash       = True
                 tm.move_duration = 0.18
@@ -1471,7 +1472,7 @@ class RemoteEntityHandlers:
             if (tm.target_tile_x == new_tx and tm.target_tile_y == new_ty
                     and _same_origin_rm):
                 return  # já está indo para este tile, a partir da mesma origem
-            queue = self._remote_player_move_queues.setdefault(eid, [])
+            queue = self._remote_player_move_queues.setdefault(eid, deque())
             entry = (new_tx, new_ty, is_dash)
             if not queue or queue[-1][:2] != (new_tx, new_ty):
                 queue.append(entry)
