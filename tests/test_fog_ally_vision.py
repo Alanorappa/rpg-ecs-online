@@ -169,8 +169,16 @@ class TestFogSystemAllyFovCache(unittest.TestCase):
         return self.world.get_component(self.player_eid, FogOfWar)
 
     def test_aliado_que_nao_se_moveu_nao_recalcula_shadowcasting_de_novo(self):
-        import ui.systems as sys_mod
-        real_compute_fov = sys_mod.compute_fov
+        # 18/09/2026: FogSystem mora em ui/tile_render_system.py (ver
+        # PROBLEMAS_ARQUITETURA.md item #2 do backlog de 14, divisão de
+        # ui/systems.py monolítico) — precisa mockar compute_fov NO
+        # MÓDULO ONDE FogSystem.update() de fato resolve o nome
+        # (`from engine.fov import compute_fov` no topo de
+        # tile_render_system.py), não em ui.systems (que só REEXPORTA o
+        # nome pra compatibilidade de import — mockar lá não afeta a
+        # ligação que o código de FogSystem já resolveu no import dele).
+        import ui.tile_render_system as fog_mod
+        real_compute_fov = fog_mod.compute_fov
         calls = {"n": 0}
 
         def _counting_compute_fov(*a, **k):
@@ -179,7 +187,7 @@ class TestFogSystemAllyFovCache(unittest.TestCase):
 
         fog = self._fog()
         fog.ally_centers = [(8, 2, 3)]
-        with unittest.mock.patch.object(sys_mod, "compute_fov", side_effect=_counting_compute_fov):
+        with unittest.mock.patch.object(fog_mod, "compute_fov", side_effect=_counting_compute_fov):
             self.fog_sys.update()   # 1ª vez: cache miss, calcula pro player + pro aliado
             calls_after_first = calls["n"]
             self.assertEqual(calls_after_first, 2,
