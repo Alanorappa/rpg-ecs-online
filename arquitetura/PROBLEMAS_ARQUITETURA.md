@@ -20732,6 +20732,20 @@ Suíte: `test_tiro_multiplo_reticle_cache.py` (3) + `test_client_ui.py`
 (175) + `pytest tests/ -k "tiro_multiplo or spell"` (5) — sem
 regressão.
 
+**Follow-up (mesma sessão, achado ao rodar `pytest tests/` completo)**:
+`test_angulo_bem_diferente_cria_nova_entrada` passava isolado mas
+falhava (`1 != 2`) dentro da suíte inteira — não era regressão do fix,
+era o TESTE usando `pygame.mouse.set_pos()`, que depende do tamanho
+REAL da janela SDL corrente. Outro módulo de teste, importado antes
+deste na mesma sessão de pytest, deixa a janela menor que as
+coordenadas usadas aqui — `set_pos` clampa o "mouse" pra dentro dos
+limites, igualando silenciosamente 2 posições que deveriam gerar
+ângulos diferentes. Corrigido trocando por monkeypatch direto de
+`pygame.mouse.get_pos` (padrão já usado em
+`tests/test_quest_reward_ui.py`), que não depende de geometria real de
+janela nenhuma. Suíte completa re-rodada depois do fix — sem falha
+(ver contagem exata no commit).
+
 ## 179. Backlog dos 14 itens antigos, item #3 — `BuffBar.render()` reconstruía Surface + fonte todo frame
 
 17/09/2026. `BuffBar.render()` (`ui/buff_bar.py`) chamava

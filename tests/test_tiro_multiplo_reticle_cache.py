@@ -13,6 +13,15 @@ o cache; (2) mover o mouse pra um ângulo bem diferente cria uma 2ª
 entrada no cache; (3) o cache nunca ultrapassa 360/5=72 entradas mesmo
 girando o mouse em volta do player inteiro (espaço de chaves
 naturalmente limitado).
+
+Mouse simulado via monkeypatch de `pygame.mouse.get_pos` (mesmo padrão
+de `tests/test_quest_reward_ui.py`) — NUNCA `pygame.mouse.set_pos()`:
+esse depende do tamanho REAL da janela SDL corrente, que outro módulo
+de teste (importado antes deste na mesma sessão de pytest) pode ter
+deixado menor que as coordenadas usadas aqui, clampando o "mouse" pra
+dentro dos limites e silenciosamente igualando posições que deveriam
+ser diferentes — achado real rodando a suíte inteira (passava isolado,
+falhava dentro de `pytest tests/`, sem depender do fix em si).
 """
 import os, sys, unittest
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -42,9 +51,17 @@ def _make_system_and_caster():
 
 class TestTiroMultiploReticleCache(unittest.TestCase):
 
+    def setUp(self):
+        self._orig_get_pos = pygame.mouse.get_pos
+        self._mouse_pos = (0, 0)
+        pygame.mouse.get_pos = lambda: self._mouse_pos
+
+    def tearDown(self):
+        pygame.mouse.get_pos = self._orig_get_pos
+
     def test_mesma_posicao_de_mouse_reusa_surface_do_cache(self):
         sys_, _caster = _make_system_and_caster()
-        pygame.mouse.set_pos((200, 120))
+        self._mouse_pos = (200, 120)
         sys_.render()
         self.assertEqual(len(sys_._tiro_aim_rot_cache), 1)
         cached_surface = next(iter(sys_._tiro_aim_rot_cache.values()))
@@ -57,9 +74,9 @@ class TestTiroMultiploReticleCache(unittest.TestCase):
 
     def test_angulo_bem_diferente_cria_nova_entrada(self):
         sys_, _caster = _make_system_and_caster()
-        pygame.mouse.set_pos((200, 120))   # aponta pra direita
+        self._mouse_pos = (200, 120)   # aponta pra direita
         sys_.render()
-        pygame.mouse.set_pos((160, 40))    # aponta pra cima — ângulo bem diferente
+        self._mouse_pos = (160, 40)    # aponta pra cima — ângulo bem diferente
         sys_.render()
         self.assertEqual(len(sys_._tiro_aim_rot_cache), 2)
 
@@ -68,9 +85,8 @@ class TestTiroMultiploReticleCache(unittest.TestCase):
         import math
         for deg in range(0, 360, 3):  # mais granular que o bucket de 5°
             rad = math.radians(deg)
-            mx = 160 + int(50 * math.cos(rad))
-            my = 120 + int(50 * math.sin(rad))
-            pygame.mouse.set_pos((mx, my))
+            self._mouse_pos = (160 + int(50 * math.cos(rad)),
+                               120 + int(50 * math.sin(rad)))
             sys_.render()
         max_buckets = 360 // sys_._TIRO_AIM_ANGLE_BUCKET_DEG
         self.assertLessEqual(len(sys_._tiro_aim_rot_cache), max_buckets)
