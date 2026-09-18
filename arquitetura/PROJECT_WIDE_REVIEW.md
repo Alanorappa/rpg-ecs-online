@@ -273,7 +273,7 @@ como duplicação de risco, só de assinatura).
 |---|--------|----------------------|
 | 1 | Painéis NPC fechados por proximidade duplicado em `game.py` | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §175. `GameEngine._npc_proximity_panels()` novo, fonte única usada pelos 2 métodos. Verificado manualmente: `_close_modals_if_too_far` (1274) e `_close_all_modals` (1377) são métodos DIFERENTES, cada um com sua própria lista de `if` por painel (Loot/Shop/Crafting/Trainer/QuestDialog) — duplicação real, entre 2 métodos com gatilhos diferentes (auto-close por distância vs. fechar tudo explícito). O relatório de qualidade olhou só o 1º método isoladamente e errou o veredito. |
 | 2 | `ui/systems.py` monolítico (4954 linhas, 10 Systems) | PROCEDE, confirmado por 2 agentes |
-| 3 | `BuffBar.render()` sem cache de Surface/fonte | PROCEDE |
+| 3 | `BuffBar.render()` sem cache de Surface/fonte | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §179. Cache de instância por `(icon_size, effect_type, segundo_exibido)` — reusa a `Surface` entre frames enquanto nada muda visualmente. Escopo restrito à `BuffBar` (nameplate, que compartilha `_build_effects_row`, não foi tocado). |
 | 4 | `_cheby()` duplicado (2 arquivos reais) | **✅ concluído 17/09/2026** — mesmo achado do item de Convergência já corrigido em §173 (`PROBLEMAS_ARQUITETURA.md`). |
 | 5 | `get_entities_with()` sem variante singleton (43 ocorrências) | PROCEDE, cresceu desde a última auditoria |
 | 6 | Fila de mob remoto com `list.pop(0)` em vez de `deque` | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §177. As 3 filas (`_mob_move_queues`/`_remote_player_move_queues`/`_self_move_queue`) viraram `collections.deque`, drenagem trocou `.pop(0)` (O(n)) por `.popleft()` (O(1)). Sem bug de comportamento, só custo. |
@@ -286,11 +286,11 @@ como duplicação de risco, só de assinatura).
 | 13 | Imports mortos de loot/spawn offline em `ui/systems.py` | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §176. Linha mudou (58-59), confirmado. |
 | 14 | `TILE_SPRITES`/`is_target_alive` reimportados localmente | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §176. |
 
-Itens #1, #4, #6, #7, #11, #12, #13, #14 concluídos em 17/09/2026 (fila
-priorizada, atacando um a um/em lotes por decisão do usuário). Restam
-#2 (`ui/systems.py` monolítico), #3 (`BuffBar` sem cache), #5
-(`get_entities_with()` singleton), #8 (`IconManager` sem teto), #9
-(managers sem remoção in-place), #10 (sem atlas de ícones).
+Itens #1, #3, #4, #6, #7, #11, #12, #13, #14 concluídos em 17/09/2026
+(fila priorizada, atacando um a um/em lotes por decisão do usuário).
+Restam #2 (`ui/systems.py` monolítico), #5 (`get_entities_with()`
+singleton), #8 (`IconManager` sem teto), #9 (managers sem remoção
+in-place), #10 (sem atlas de ícones).
 
 ---
 

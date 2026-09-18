@@ -101,6 +101,28 @@ class BuffBar(UIScaleMixin):
         # o mouse sem recalcular a geometria de novo (mesmo princípio já
         # usado pela hotbar: geometria calculada 1x, reusada pro hit-test).
         self._last_icon_rects: list = []
+        # Cache da Surface montada por _build_effects_row() (17/09/2026,
+        # ver PROJECT_WIDE_REVIEW.md item #3) — _build_effects_row aloca
+        # uma Surface nova E re-renderiza glifo de fonte pra CADA buff a
+        # cada chamada, mas o resultado só muda quando a composição visual
+        # muda de verdade (buff entrou/saiu, ou o número de segundos
+        # exibido mudou — 1x/s, não todo frame). Chave = (icon_size, lista
+        # de (effect_type, segundo_exibido)); mudou → reconstrói, senão
+        # reusa o mesmo Surface/rects do frame anterior.
+        self._row_cache_key: "tuple | None" = None
+        self._row_cache_surf: "pygame.Surface | None" = None
+        self._row_cache_rects: list = []
+
+    @staticmethod
+    def _dur_bucket(duration: float) -> "int | None":
+        """Espelha a condição de texto em `_build_effects_row()`
+        (`0 < dur <= 99` → mostra `max(1, ceil(dur))`) — precisa bater
+        exatamente, senão o cache invalida num segundo errado ou nunca
+        invalida quando devia."""
+        from math import ceil as _ceil
+        if 0 < duration <= 99:
+            return max(1, _ceil(duration))
+        return None
 
     def render(self, screen: pygame.Surface) -> None:
         from engine.components import StatusEffects
@@ -127,7 +149,16 @@ class BuffBar(UIScaleMixin):
         from engine.effect_order import get_seq
         buffs.sort(key=lambda e: get_seq(self.world, self.player_entity, e.effect_type))
 
-        row, local_rects = _build_effects_row(buffs, self._font_dur, icon_size=self._u(UI.BUFF_BAR_ICON))
+        icon_size = self._u(UI.BUFF_BAR_ICON)
+        cache_key = (icon_size,
+                     tuple((e.effect_type, self._dur_bucket(e.duration)) for e in buffs))
+        if cache_key == self._row_cache_key:
+            row, local_rects = self._row_cache_surf, self._row_cache_rects
+        else:
+            row, local_rects = _build_effects_row(buffs, self._font_dur, icon_size=icon_size)
+            self._row_cache_key   = cache_key
+            self._row_cache_surf  = row
+            self._row_cache_rects = local_rects
         if row is None:
             return
 

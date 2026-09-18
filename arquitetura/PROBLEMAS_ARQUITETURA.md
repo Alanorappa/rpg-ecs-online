@@ -20731,3 +20731,41 @@ uma 2ª entrada; girar o mouse em volta do player em passos de 3°
 Suíte: `test_tiro_multiplo_reticle_cache.py` (3) + `test_client_ui.py`
 (175) + `pytest tests/ -k "tiro_multiplo or spell"` (5) — sem
 regressão.
+
+## 179. Backlog dos 14 itens antigos, item #3 — `BuffBar.render()` reconstruía Surface + fonte todo frame
+
+17/09/2026. `BuffBar.render()` (`ui/buff_bar.py`) chamava
+`_build_effects_row()` (`ui/systems.py`) TODO frame pra montar a fila
+de ícones de buff — essa função aloca uma `Surface` nova e chama
+`font.render()` (glifo de texto) pra CADA buff, mesmo quando nada
+mudou visualmente. A contagem regressiva só muda 1x por segundo
+(`max(1, ceil(duration))`), não 60x — cada buff ativo custava uma
+Surface + N `font.render()` desperdiçados por frame. Sem bug de
+comportamento (a fila sempre desenhou certo), só custo.
+
+**Fix**: `BuffBar` ganhou cache de instância
+(`_row_cache_key`/`_row_cache_surf`/`_row_cache_rects`) — chave =
+`(icon_size, tuple((effect_type, segundo_exibido) para cada buff em
+ordem))`. `_dur_bucket(duration)` (novo método estático) espelha
+EXATAMENTE a condição de texto de `_build_effects_row()` (`0 < dur <=
+99` → `max(1, ceil(dur))`, senão `None`) — precisa bater
+exatamente, senão o cache invalida cedo/tarde demais. Mudou a chave
+(buff entrou/saiu, ordem mudou, ou o segundo exibido mudou) →
+reconstrói via `_build_effects_row()`; senão reusa a MESMA `Surface`/
+`rects` do frame anterior. Escopo deliberadamente restrito à `BuffBar`
+(só o jogador local, 1 instância) — `_build_effects_row()` é
+compartilhada com o nameplate (`ui/systems.py:1924`, N entidades
+remotas por frame), que NÃO foi tocado: um cache cross-entidade ali
+teria trade-off de memória/invalidação diferente, fora do escopo deste
+item específico da auditoria.
+
+**Teste** (`tests/test_buff_bar_row_cache.py`, novo): `World`/
+`StatusEffects`/`ActiveEffect` reais (não mock) — 3 casos: mesma
+contagem em 2 frames reusa a MESMA `Surface` (`assertIs`); duração
+cruzando de 17s pra 16s exibidos invalida o cache; buff novo entrando
+na barra invalida o cache mesmo com o 1º buff idêntico. Revert-to-
+confirm: `git stash` de `ui/buff_bar.py` → `AttributeError: 'BuffBar'
+object has no attribute '_row_cache_surf'` nos 3 testes.
+
+Suíte: `test_buff_bar_row_cache.py` (3) + `test_buff_bar_tooltip.py`
+(6) + `test_client_ui.py` (175) — sem regressão.
