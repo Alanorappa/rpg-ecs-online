@@ -274,7 +274,7 @@ como duplicação de risco, só de assinatura).
 | 1 | Painéis NPC fechados por proximidade duplicado em `game.py` | **PROCEDE** — os 2 relatórios discordaram; verificado manualmente: `_close_modals_if_too_far` (1274) e `_close_all_modals` (1377) são métodos DIFERENTES, cada um com sua própria lista de `if` por painel (Loot/Shop/Crafting/Trainer/QuestDialog) — duplicação real, entre 2 métodos com gatilhos diferentes (auto-close por distância vs. fechar tudo explícito). O relatório de qualidade olhou só o 1º método isoladamente e errou o veredito. |
 | 2 | `ui/systems.py` monolítico (4954 linhas, 10 Systems) | PROCEDE, confirmado por 2 agentes |
 | 3 | `BuffBar.render()` sem cache de Surface/fonte | PROCEDE |
-| 4 | `_cheby()` duplicado (2 arquivos reais) | PROCEDE, convergência de 2 agentes |
+| 4 | `_cheby()` duplicado (2 arquivos reais) | **✅ concluído 17/09/2026** — mesmo achado do item de Convergência já corrigido em §173 (`PROBLEMAS_ARQUITETURA.md`). |
 | 5 | `get_entities_with()` sem variante singleton (43 ocorrências) | PROCEDE, cresceu desde a última auditoria |
 | 6 | Fila de mob remoto com `list.pop(0)` em vez de `deque` | PROCEDE |
 | 7 | Reticle/mira do Tiro Múltiplo sem cache de rotação | PROCEDE |
@@ -282,7 +282,7 @@ como duplicação de risco, só de assinatura).
 | 9 | `FloatingTextManager`/`DashTrailManager`/`ProcTextManager` sem remoção in-place | PROCEDE |
 | 10 | Sem atlas de ícones | PROCEDE, cresceu (54→67 PNGs) |
 | 11 | 6 imports locais redundantes de `RemoteControlled` | PROCEDE |
-| 12 | `except Exception: pass` em `save_sync_handlers.py` | PROCEDE (ver achado novo A8 acima — o mais sério dos vários no arquivo) |
+| 12 | `except Exception: pass` em `save_sync_handlers.py` | **✅ concluído 17/09/2026** — mesmo achado do "Mais achados" já corrigido em §166 (`PROBLEMAS_ARQUITETURA.md`), mantida a captura mas agora loga. |
 | 13 | Imports mortos de loot/spawn offline em `ui/systems.py` | PROCEDE, linha mudou (58-59) |
 | 14 | `TILE_SPRITES`/`is_target_alive` reimportados localmente | PROCEDE |
 
