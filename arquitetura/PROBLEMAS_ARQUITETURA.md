@@ -20562,3 +20562,47 @@ mas a causa raiz era um código totalmente diferente, escrito 6
 semanas DEPOIS do fix original, que reintroduziu a mesma CLASSE de bug
 (objeto de estado vivo descartado/recriado sem necessidade) por um
 caminho novo.
+
+## 175. Backlog dos 14 itens antigos, item #1 — painéis de NPC fechados por proximidade duplicado em `game.py`
+
+17/09/2026. Primeiro item da fila priorizada dos 14 itens da auditoria
+ANTERIOR (client-side) ainda pendentes. `game.py::
+_close_modals_if_too_far` (fecha painel de NPC individualmente quando
+o player se afasta) e `_close_all_modals` (fecha TUDO
+incondicionalmente) tinham cada um sua PRÓPRIA lista de `if` por
+painel — Loot/Shop/Crafting/Trainer/QuestDialog — mesmo painel, mesmo
+`_close()`, escrito 2 vezes. Risco real (não só estilo): um painel de
+NPC novo adicionado só num dos dois métodos nunca fecharia pelo outro
+gatilho — bug silencioso, só perceptível em jogo.
+
+**Fix**: `GameEngine._npc_proximity_panels()` (novo método) — fonte
+única, retorna 5 tuplas `(is_open_fn, npc_id_fn, close_fn)`, uma por
+painel. Loot é o único caso especial (sem atributo `is_open` — "está
+aberto" é `open_corpse_id != -1`), resolvido com o mesmo formato de
+tupla (lambda em vez de atributo direto) — nenhuma lógica condicional
+extra no `for` de quem consome. `_close_modals_if_too_far` e
+`_close_all_modals` passaram a iterar essa MESMA lista — um painel
+novo só precisa entrar ali pra funcionar nos dois gatilhos.
+`self._quest_dialog._pending_npc_id = -1` (estado específico do
+QuestDialog, não relacionado ao "está aberto") ficou fora do loop
+compartilhado, preservado como estava.
+
+**Teste** (`tests/test_npc_proximity_panels_close.py`, novo — não
+existia teste NENHUM pros 2 métodos reais antes disso, só um stub
+leve num arquivo de teste não relacionado): usa os métodos REAIS de
+`game.GameEngine` "emprestados" pra uma fixture leve (mesmo padrão já
+usado no projeto pra testar `GameEngine` sem instanciar a classe
+inteira — `test_client_ui.py`, `_GE_pvp`/`_GE_rsr`/`_GE_mm`). 6 casos:
+fecha por distância, não fecha se perto, caso especial do Loot
+(`open_corpse_id`), painel já fechado não quebra nada, `_close_all_modals`
+fecha tudo incondicionalmente mesmo adjacente, e um teste que prova a
+motivação real do fix (mesmo painel fecha pelos DOIS gatilhos, sem
+precisar tocar em 2 lugares). Revert-to-confirm: `git stash` só de
+`game.py` — `AttributeError: type object 'GameEngine' has no
+attribute '_npc_proximity_panels'` na coleta dos testes, exatamente
+como esperado.
+
+Suíte: `test_client_ui.py` (175) + `test_npc_proximity_panels_close.py`
+(6) + `test_npc_interaction_request.py` (3) + `pytest tests/ -k
+"trainer or crafting or shop or loot or quest_dialog or blacksmith"`
+(96) — sem regressão.

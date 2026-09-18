@@ -271,7 +271,7 @@ como duplicação de risco, só de assinatura).
 
 | # | Achado | Veredito consolidado |
 |---|--------|----------------------|
-| 1 | Painéis NPC fechados por proximidade duplicado em `game.py` | **PROCEDE** — os 2 relatórios discordaram; verificado manualmente: `_close_modals_if_too_far` (1274) e `_close_all_modals` (1377) são métodos DIFERENTES, cada um com sua própria lista de `if` por painel (Loot/Shop/Crafting/Trainer/QuestDialog) — duplicação real, entre 2 métodos com gatilhos diferentes (auto-close por distância vs. fechar tudo explícito). O relatório de qualidade olhou só o 1º método isoladamente e errou o veredito. |
+| 1 | Painéis NPC fechados por proximidade duplicado em `game.py` | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §175. `GameEngine._npc_proximity_panels()` novo, fonte única usada pelos 2 métodos. Verificado manualmente: `_close_modals_if_too_far` (1274) e `_close_all_modals` (1377) são métodos DIFERENTES, cada um com sua própria lista de `if` por painel (Loot/Shop/Crafting/Trainer/QuestDialog) — duplicação real, entre 2 métodos com gatilhos diferentes (auto-close por distância vs. fechar tudo explícito). O relatório de qualidade olhou só o 1º método isoladamente e errou o veredito. |
 | 2 | `ui/systems.py` monolítico (4954 linhas, 10 Systems) | PROCEDE, confirmado por 2 agentes |
 | 3 | `BuffBar.render()` sem cache de Surface/fonte | PROCEDE |
 | 4 | `_cheby()` duplicado (2 arquivos reais) | **✅ concluído 17/09/2026** — mesmo achado do item de Convergência já corrigido em §173 (`PROBLEMAS_ARQUITETURA.md`). |

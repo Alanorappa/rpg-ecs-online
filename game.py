@@ -1269,6 +1269,36 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
     # client/modal_stack_handlers.py (ModalStackHandlers) — único ponto de
     # verdade reaproveitado também pelo filtro de systems_events.
 
+    def _npc_proximity_panels(self):
+        """Fonte única dos painéis de interação com NPC/corpo (Loot/Shop/
+        Crafting/Trainer/QuestDialog) — usada por `_close_modals_if_too_far`
+        (fecha individualmente ao o player se afastar) E por
+        `_close_all_modals` (fecha tudo incondicionalmente). Antes cada
+        método tinha sua PRÓPRIA lista de `if` por painel — um painel novo
+        adicionado só num dos dois nunca fechava pelo outro gatilho
+        (17/09/2026, ver arquitetura/PROJECT_WIDE_REVIEW.md item #1). Um
+        painel novo só precisa entrar AQUI pra funcionar nos dois.
+
+        Cada entrada: `(is_open_fn, npc_id_fn, close_fn)`. Loot é o único
+        sem atributo `is_open` — "aberto" é `open_corpse_id != -1`."""
+        return (
+            (lambda: self._loot_system.open_corpse_id != -1,
+             lambda: self._loot_system.open_corpse_id,
+             self._loot_system._close_modal),
+            (lambda: self._shop_system.is_open,
+             lambda: self._shop_system.open_merchant_id,
+             self._shop_system._close),
+            (lambda: self._crafting_system.is_open,
+             lambda: self._crafting_system._bs_eid,
+             self._crafting_system._close),
+            (lambda: self._trainer_system.is_open,
+             lambda: self._trainer_system._tr_eid,
+             self._trainer_system._close),
+            (lambda: self._quest_dialog.is_open,
+             lambda: self._quest_dialog._dialog_npc_id,
+             self._quest_dialog._close),
+        )
+
     def _close_modals_if_too_far(self) -> None:
         """Fecha modais de interação quando o player se afasta do elemento (NPC/corpo)."""
         from engine.components import TileMovement as _TM_prox, Position as _Pos_prox
@@ -1291,36 +1321,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 return tm2.current_tile_x, tm2.current_tile_y
             return None
 
-        # Loot
-        _cid = self._loot_system.open_corpse_id
-        if _cid != -1:
-            t = _tile(_cid)
+        for _is_open_fn, _npc_id_fn, _close_fn in self._npc_proximity_panels():
+            if not _is_open_fn():
+                continue
+            t = _tile(_npc_id_fn())
             if t and _cheb_prox(px, py, t[0], t[1]) > CLOSE_DIST:
-                self._loot_system._close_modal()
-
-        # Shop
-        if self._shop_system.is_open:
-            t = _tile(self._shop_system.open_merchant_id)
-            if t and _cheb_prox(px, py, t[0], t[1]) > CLOSE_DIST:
-                self._shop_system._close()
-
-        # Crafting
-        if self._crafting_system.is_open:
-            t = _tile(self._crafting_system._bs_eid)
-            if t and _cheb_prox(px, py, t[0], t[1]) > CLOSE_DIST:
-                self._crafting_system._close()
-
-        # Trainer
-        if self._trainer_system.is_open:
-            t = _tile(self._trainer_system._tr_eid)
-            if t and _cheb_prox(px, py, t[0], t[1]) > CLOSE_DIST:
-                self._trainer_system._close()
-
-        # Quest dialog
-        if self._quest_dialog.is_open:
-            t = _tile(self._quest_dialog._dialog_npc_id)
-            if t and _cheb_prox(px, py, t[0], t[1]) > CLOSE_DIST:
-                self._quest_dialog._close()
+                _close_fn()
 
     # ------------------------------------------------------------------
     # ── Zoom ──────────────────────────────────────────────────────────────────
@@ -1395,17 +1401,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # limpo aqui; os outros 3 ficavam pendurados até o próprio painel
         # processar o próximo MOUSEUP.
         self._get_drag().reset()
-        if self._loot_system.open_corpse_id != -1:
-            self._loot_system._close_modal()
-        if self._shop_system.is_open:
-            self._shop_system._close()
-        if self._crafting_system.is_open:
-            self._crafting_system._close()
-        if self._trainer_system.is_open:
-            self._trainer_system._close()
         self._quest_dialog._pending_npc_id = -1
-        if self._quest_dialog.is_open:
-            self._quest_dialog._close()
+        for _is_open_fn, _npc_id_fn, _close_fn in self._npc_proximity_panels():
+            if _is_open_fn():
+                _close_fn()
         if self._quest_journal.is_open:
             self._quest_journal.close()
         self._map_overlay.is_open = False
