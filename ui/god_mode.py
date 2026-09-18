@@ -1284,6 +1284,5 @@ class GodModeEditor:
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _get_tilemap(self) -> "Tilemap | None":
-        for _, tm in self._world.get_entities_with(Tilemap):
-            return tm
-        return None
+        _tm_first = self._world.get_first(Tilemap)
+        return _tm_first[1] if _tm_first is not None else None

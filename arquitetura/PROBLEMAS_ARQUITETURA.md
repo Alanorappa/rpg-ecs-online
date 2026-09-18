@@ -21013,8 +21013,110 @@ Suíte: `test_icon_manager_cache_eviction.py` (4) + `test_icon_atlas.py`
 (9) + `test_icon_key_migration.py` + `test_client_ui.py` (194 no
 total) — sem regressão.
 
-**Backlog dos 14 itens antigos: 12 de 14 concluídos.** Restam #2
-(`ui/systems.py` monolítico, 4954 linhas/10 Systems) e #5
-(`get_entities_with()` sem variante singleton, 43 ocorrências) —
-ambos mudança estrutural maior, tratados como iniciativa separada por
-recomendação já feita ao usuário, não espremidos na fila sequencial.
+## 184. Backlog dos 14 itens antigos, item #5 — `World.get_first()` (variante singleton de `get_entities_with()`)
+
+18/09/2026. `World.get_entities_with()` sempre aloca a lista INTEIRA de
+resultados, mesmo quando o chamador só quer 1 — padrão real e
+recorrente no cliente: `for ..., comp in world.get_entities_with(X):
+...; break` (ou o mesmo sem `break`, rodando só 1 vez porque só existe
+1 entidade candidata na prática). 37 ocorrências confirmadas,
+concentradas em `ui/systems.py` (20), `ui/spell_system.py` (9),
+`game.py` (5), `ui/quest_system.py` (2), `ui/god_mode.py` (1) — todas
+consultando um destes tipos: `Camera`, `Tilemap`, `FogOfWar`,
+`PlayerControlled`, `PlayerAutoMove`, `PirofagiaAiming`.
+
+**Achado de segurança crítico ANTES de tocar em qualquer call site**:
+esses tipos só são singleton no mundo LOCAL do CLIENTE (1 câmera, 1
+mapa carregado, 1 jogador controlado por vez — confirmado checando
+TODO `add_component(..., Tipo(...))` do repo pra cada um). No
+SERVIDOR os MESMOS tipos NÃO são singleton — `Tilemap` existe 1 POR
+MAPA (`server/world_server.py` carrega todos os mapas ao mesmo tempo)
+e `PlayerControlled` é adicionado a TODO player conectado
+(`server/world_server.py:2040`). Por isso o escopo desta migração
+ficou travado em `ui/`, `client/` e `game.py` — nunca em `server/`,
+`engine/world_systems.py` ou qualquer código compartilhado/headless.
+Confirmado por varredura final que os 37 candidatos estão TODOS
+dentro desse escopo seguro.
+
+**Fix**: `World.get_first(*component_types)` (novo, `engine/world.py`)
+— espelha a MESMA lógica de seleção de `get_entities_with()` (conjunto
+de índice mais seletivo), devolve na 1ª entidade encontrada sem montar
+a lista; `None` (não `[]`) se nada bater. Docstring documenta
+explicitamente a armadilha servidor-vs-cliente acima, pra qualquer uso
+futuro não reintroduzir o erro.
+
+**Migração dos 37 call sites**: mecânica na maioria (`for` vira `if` +
+unpack da tupla, mesma indentação de corpo, sem mudança de
+comportamento) — MAS 3 call sites tinham `continue`/`break` dentro do
+próprio corpo do loop, que não existe fora de um loop de verdade
+(`continue`/`break` num `if` é `SyntaxError`). Precisaram de
+reestruturação real:
+- `ManaSystem.update()` — 1 `continue` (guarda de `max_mana<=0`) virou
+  `if max_mana > 0: <resto do corpo>` (inversão simples).
+- `SpellCastSystem.render()` (mira do Tiro Múltiplo) e
+  `PirofagiaSystem.render()` — `continue`s viraram `return` (nada
+  existe depois do loop no corpo do método, mesmo efeito líquido).
+- `CameraSystem.update()` — 1 `continue` (guarda de `not
+  SMOOTHING_ENABLED`) virou `if/else` (branch que fazia snap direto vs.
+  branch que fazia lerp).
+- `ChannelingSystem.update()` — o MAIS arriscado: 2 `continue`
+  aninhados (intenção de movimento interrompe; mana insuficiente no
+  tick interrompe), com código DEPOIS do loop original
+  (`for entity_id in interrupted: ...`/`for entity_id in to_finish:
+  ...`) que precisa rodar mesmo quando a entidade única cai num desses
+  2 casos — reestruturado com `if/else` aninhado + flag `_mana_ok`
+  (guarda o 2º `continue`, que só deveria pular o check de conclusão,
+  não repetir a dedução de mana já pulada pelo próprio branch).
+
+Confirmação de segurança ponto-a-ponto: pra CADA call site convertido,
+antes de tocar, o corpo inteiro do loop foi lido em busca de
+`continue`/`break` em QUALQUER nível de indentação direto do loop
+(não dentro de um `for`/`while` aninhado, onde pertenceria a esse loop
+interno, não ao externo sendo convertido) — só depois de confirmar
+"sem `continue`/`break` direto" ou "com eles, mapeados" a conversão
+foi feita.
+
+**Erro cometido e corrigido durante a migração**: `ast.parse()` não
+detecta `break`/`continue` fora de loop — isso só é validado na
+COMPILAÇÃO pra bytecode, não no parse puro. Um `break` sobrando (não
+removido numa conversão em `game.py::_on_god_mode_save`) passou pelo
+meu próprio `ast.parse()` de verificação sem erro, e só foi pego
+depois, na coleta real do pytest (`SyntaxError: 'break' outside loop`
+ao importar `game.py`). Corrigido (`break` removido) e a verificação
+de sintaxe desta sessão em diante passou a usar `compile(..., 'exec')`
+em vez de `ast.parse()` — a lição fica registrada aqui pra não repetir.
+
+**Teste** (`tests/test_world_get_first.py`, novo, 6 casos): sem
+entidade compatível → `None`; sem argumentos → `None`; 1 entidade
+compatível → tupla idêntica à de `get_entities_with()[0]`; várias
+entidades compatíveis → devolve uma delas de verdade (não quebra);
+múltiplos tipos exigidos → só entidade com TODOS conta; entidade
+removida some do resultado. Revert-to-confirm: `git stash` de
+`engine/world.py` → `AttributeError: 'World' object has no attribute
+'get_first'` nos 6 testes.
+
+**Teste dedicado pro call site de maior risco**
+(`tests/test_channeling_system_get_first.py`, novo, 3 casos, já que
+`ChannelingSystem.update()` teve controle de fluxo genuinamente
+reescrito, não só um `for` trocado por `if`): intenção de movimento
+interrompe SEM incrementar `elapsed`; mana insuficiente interrompe e
+NÃO deduz mana; conclusão normal (mana suficiente, atinge a duração)
+remove `Channeling` via `to_finish`, não via `interrupted`. Estes 3
+testes passam tanto ANTES quanto DEPOIS da migração — esperado e
+correto: é um refactor de equivalência comportamental, não uma
+correção de bug, então não existe uma versão "quebrada" pra revert-to-
+confirm detectar aqui. A garantia real desta migração vem de (a) o
+`get_first()` em si já ter revert-to-confirm válido, e (b) esses 3
+testes provarem que a saída observável é idêntica nos 2 lados do
+refactor.
+
+Suíte: `test_world_get_first.py` (6) + `test_channeling_system_get_first.py`
+(3) + `test_calamidade_channel_config.py` (3) +
+`test_tiro_multiplo_reticle_cache.py` (3) + `test_client_ui.py` (175)
++ `pytest tests/ -k "quest or god_mode or spell or channel or icon or
+talent or minimap or camera"` (221) — sem regressão.
+
+**Backlog dos 14 itens antigos: 13 de 14 concluídos.** Resta só #2
+(`ui/systems.py` monolítico, 4954 linhas/10 Systems) — mudança
+estrutural maior, tratada como iniciativa separada por recomendação já
+feita ao usuário, não espremida na fila sequencial.

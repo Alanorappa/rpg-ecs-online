@@ -921,7 +921,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
     def _on_god_mode_save(self) -> None:
         """Chamado pelo GodModeEditor após salvar — atualiza minimap/overlay."""
-        for _, tilemap_comp in self.world.get_entities_with(Tilemap):
+        _tm_save_first = self.world.get_first(Tilemap)
+        if _tm_save_first is not None:
+            tilemap_comp = _tm_save_first[1]
             from engine.tileset import OBJECT_MAPPING
             self._map_overlay.load_map(
                 _merge_display_matrix(tilemap_comp.terrain_matrix,
@@ -930,7 +932,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 self._current_map_file,
             )
             self._minimap.on_map_load()
-            break
 
     def _autosave(self) -> None:
         """Persiste o estado atual: config local (hotbar) + SAVE_STATE ao servidor.
@@ -2034,11 +2035,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                                 )
                             if _mm_tile is not None:
                                 from engine.components import PlayerAutoMove
-                                for _, _auto in self.world.get_entities_with(PlayerAutoMove):
+                                _auto_first = self.world.get_first(PlayerAutoMove)
+                                if _auto_first is not None:
+                                    _auto = _auto_first[1]
                                     _auto.ground_target = _mm_tile
                                     _auto.path          = []
                                     _auto.active        = True
-                                    break
                                 _minimap_click_consumed = True
                                 break
 
@@ -2208,11 +2210,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         })
                 else:
                     from engine.components import PlayerAutoMove
-                    for _, auto in self.world.get_entities_with(PlayerAutoMove):
+                    _auto_tp_first = self.world.get_first(PlayerAutoMove)
+                    if _auto_tp_first is not None:
+                        auto = _auto_tp_first[1]
                         auto.ground_target = (tx, ty)
                         auto.path          = []
                         auto.active        = True
-                        break
 
             # Se overlay de debug foi cancelado (fechou sem clicar), restaura mapa ativo atual
             if not self._map_overlay.is_open and self._debug_teleport_map:
@@ -3147,7 +3150,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         if hasattr(self, "world"):
             self._rebuild_screen_refs(self.screen)
             # Atualiza Camera component para que offset_x/offset_y reflitam a nova resolução
-            for _, cam, _ in self.world.get_entities_with(Camera, Position):
+            _cam_scr_first = self.world.get_first(Camera, Position)
+            if _cam_scr_first is not None:
+                cam = _cam_scr_first[1]
                 cam.offset_x = win_w / 2
                 cam.offset_y = win_h / 2
 
@@ -3182,7 +3187,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._display = self._recreate_display(w, h, flags)
             if hasattr(self, "world"):
                 self._rebuild_screen_refs(self.screen)
-                for _, cam, _ in self.world.get_entities_with(Camera, Position):
+                _cam_fs_first = self.world.get_first(Camera, Position)
+                if _cam_fs_first is not None:
+                    cam = _cam_fs_first[1]
                     cam.offset_x = w / 2
                     cam.offset_y = h / 2
         else:  # "windowed_fullsize" ou "windowed"

@@ -80,6 +80,34 @@ class World:
                 entities_found.append((entity_id, *[entity_components[ct] for ct in component_types]))
         return entities_found
 
+    def get_first(self, *component_types) -> "tuple | None":
+        """Como `get_entities_with()`, mas devolve só a 1ª entidade
+        encontrada — `(entity_id, comp1, comp2, ...)` ou `None` — sem
+        alocar a lista inteira (18/09/2026, ver PROBLEMAS_ARQUITETURA.md
+        §184). Usar SÓ quando o tipo pedido é singleton NO MUNDO EM
+        QUESTÃO — ex: `Camera`/`Tilemap`/`FogOfWar`/`PlayerControlled`
+        no mundo LOCAL do CLIENTE (1 câmera, 1 mapa carregado, 1
+        jogador controlado por vez). **NUNCA usar no servidor** pros
+        mesmos tipos — `Tilemap` existe 1 POR MAPA (servidor carrega
+        todos ao mesmo tempo) e `PlayerControlled` é adicionado a TODO
+        player conectado (`server/world_server.py`) — `get_first()`
+        aí devolveria uma entidade arbitrária, não "a certa". Fora de
+        dúvida sobre se um tipo é singleton no mundo que está sendo
+        consultado, usar `get_entities_with()` normal."""
+        if not component_types:
+            return None
+        sets = [self._index.get(ct, set()) for ct in component_types]
+        smallest = min(sets, key=len)
+        if not smallest:
+            return None
+        for entity_id in smallest:
+            entity_components = self._components.get(entity_id)
+            if entity_components is None:
+                continue
+            if all(ct in entity_components for ct in component_types):
+                return (entity_id, *[entity_components[ct] for ct in component_types])
+        return None
+
     def remove_entity(self, entity_id: int) -> None:
         """Remove uma entidade e todos os seus componentes."""
         entity_components = self._components.pop(entity_id, None)

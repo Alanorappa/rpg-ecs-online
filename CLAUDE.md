@@ -855,6 +855,17 @@ padrão a quebrar, não só os bugs individuais.
   talento futuro a essa lista é o ÚNICO passo necessário pros dois
   lados ignorarem ele dentro da BG — nunca duplicar a lista em outro
   lugar. Ver PROBLEMAS_ARQUITETURA.md §159/§160.
+- **Buscar a ÚNICA entidade de um tipo (Camera/Tilemap/FogOfWar/
+  PlayerControlled/etc.) no mundo LOCAL do cliente** →
+  `World.get_first(*component_types)` (`engine/world.py`, 18/09/2026)
+  — devolve `(entity_id, comp1, ...)` ou `None`, sem alocar a lista
+  inteira que `get_entities_with()` sempre monta. **NUNCA usar no
+  SERVIDOR pros mesmos tipos** — lá `Tilemap` existe 1 POR MAPA
+  (`WorldServer` carrega todos ao mesmo tempo) e `PlayerControlled` é
+  adicionado a TODO player conectado — `get_first()` devolveria uma
+  entidade arbitrária, não "a certa". Fora de dúvida sobre se um tipo
+  é singleton no mundo em questão, usar `get_entities_with()` normal.
+  Ver PROBLEMAS_ARQUITETURA.md §184.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

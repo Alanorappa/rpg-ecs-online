@@ -67,28 +67,28 @@ class ManaSystem(System):
         self._net = None  # injetado por game.py após _connect_online()
 
     def update(self, events=None, dt: float = 0) -> None:
-        for entity_id, char_stats, cs, _, combat_stats in self.world.get_entities_with(
-                CharacterStats, CombatState, PlayerControlled, CombatStats):
-            if char_stats.max_mana <= 0:
-                continue
-            # Decrementa janela de crits de fogo para Lapso Elemental
-            if combat_stats.fire_crit_timer > 0:
-                combat_stats.fire_crit_timer -= dt
-                if combat_stats.fire_crit_timer <= 0:
-                    combat_stats.fire_crit_timer   = 0.0
-                    combat_stats.fire_crit_counter = 0
+        _mana_first = self.world.get_first(CharacterStats, CombatState, PlayerControlled, CombatStats)
+        if _mana_first is not None:
+            entity_id, char_stats, cs, _, combat_stats = _mana_first
+            if char_stats.max_mana > 0:
+                # Decrementa janela de crits de fogo para Lapso Elemental
+                if combat_stats.fire_crit_timer > 0:
+                    combat_stats.fire_crit_timer -= dt
+                    if combat_stats.fire_crit_timer <= 0:
+                        combat_stats.fire_crit_timer   = 0.0
+                        combat_stats.fire_crit_counter = 0
 
-            # Choque Térmico: atualiza indicador de proc a cada frame
-            if getattr(combat_stats, "thermal_shock_enabled", False) and cs:
-                target_id = cs.target_entity_id
-                if target_id != -1:
-                    _t_sfx = self.world.get_component(target_id, StatusEffects)
-                    char_stats.thermal_shock_active = (
-                        _t_sfx is not None and _t_sfx.has("root"))
+                # Choque Térmico: atualiza indicador de proc a cada frame
+                if getattr(combat_stats, "thermal_shock_enabled", False) and cs:
+                    target_id = cs.target_entity_id
+                    if target_id != -1:
+                        _t_sfx = self.world.get_component(target_id, StatusEffects)
+                        char_stats.thermal_shock_active = (
+                            _t_sfx is not None and _t_sfx.has("root"))
+                    else:
+                        char_stats.thermal_shock_active = False
                 else:
                     char_stats.thermal_shock_active = False
-            else:
-                char_stats.thermal_shock_active = False
 
 
 # ---------------------------------------------------------------------------
@@ -153,8 +153,9 @@ class SpellCastSystem(System):
         }
 
     def update(self, events=None, dt: float = 0) -> None:
-        for entity_id, spell_cast, combat_state, _ in self.world.get_entities_with(
-                SpellCast, CombatState, PlayerControlled):
+        _sc_first = self.world.get_first(SpellCast, CombatState, PlayerControlled)
+        if _sc_first is not None:
+            entity_id, spell_cast, combat_state, _ = _sc_first
 
             # Movimento cancela cast — exceto se spell_cast.interruptible == False
             tm = self.world.get_component(entity_id, TileMovement)
@@ -571,64 +572,66 @@ class SpellCastSystem(System):
     # ── Render: mira de Tiro Múltiplo ────────────────────────────────────────
 
     def render(self, cam_x: float = 0, cam_y: float = 0) -> None:
-        for entity_id, spell_cast, _ in self.world.get_entities_with(
-                SpellCast, PlayerControlled):
-            if spell_cast.spell_id != "tiro_multiplo":
-                continue
-            pos = self.world.get_component(entity_id, Position)
-            if pos is None or self.world_surf is None:
-                continue
+        _sc_pc_first = self.world.get_first(SpellCast, PlayerControlled)
+        if _sc_pc_first is None:
+            return
+        entity_id, spell_cast, _ = _sc_pc_first
+        if spell_cast.spell_id != "tiro_multiplo":
+            return
+        pos = self.world.get_component(entity_id, Position)
+        if pos is None or self.world_surf is None:
+            return
 
-            # Lazy-load sem escala — tamanho real do arquivo
-            if self._tiro_aim_img is None:
-                try:
-                    self._tiro_aim_img = pygame.image.load(
-                        "assets/effects/skill_tiro_multiplo.png").convert_alpha()
-                except Exception:
-                    return
+        # Lazy-load sem escala — tamanho real do arquivo
+        if self._tiro_aim_img is None:
+            try:
+                self._tiro_aim_img = pygame.image.load(
+                    "assets/effects/skill_tiro_multiplo.png").convert_alpha()
+            except Exception:
+                return
 
-            img = self._tiro_aim_img
-            iW, iH = img.get_size()
+        img = self._tiro_aim_img
+        iW, iH = img.get_size()
 
-            # Mouse em coords de zoom_surf
-            _surf_sc = self.world_surf.get_width() / max(1, self.hud_surf.get_width())
-            _sx, _sy = pygame.mouse.get_pos()
-            _mx = _sx * _surf_sc
-            _my = _sy * _surf_sc
+        # Mouse em coords de zoom_surf
+        _surf_sc = self.world_surf.get_width() / max(1, self.hud_surf.get_width())
+        _sx, _sy = pygame.mouse.get_pos()
+        _mx = _sx * _surf_sc
+        _my = _sy * _surf_sc
 
-            # Player em coords de tela
-            px = pos.x - cam_x
-            py = pos.y - cam_y
+        # Player em coords de tela
+        px = pos.x - cam_x
+        py = pos.y - cam_y
 
-            # Ângulo player → mouse. Direção natural da imagem = 45° (TL → BR)
-            angle_deg  = math.degrees(math.atan2(_my - py, _mx - px))
-            pygame_rot = 45.0 - angle_deg   # rotação CCW que alinha BR com o mouse
+        # Ângulo player → mouse. Direção natural da imagem = 45° (TL → BR)
+        angle_deg  = math.degrees(math.atan2(_my - py, _mx - px))
+        pygame_rot = 45.0 - angle_deg   # rotação CCW que alinha BR com o mouse
 
-            # Quantiza o ângulo em buckets de 5° — sem isso, pygame.transform.
-            # rotate() cria uma Surface nova TODO frame (mouse se move a cada
-            # frame), mesmo padrão de quantização já usado pra alpha em
-            # ui/floating_text.py (DashTrailManager.render). Diferença visual
-            # imperceptível; o ângulo quantizado (não o bruto) é reusado
-            # também no cálculo de blit abaixo, pra rotação e offset baterem.
-            angle_key = int(round(pygame_rot / self._TIRO_AIM_ANGLE_BUCKET_DEG)
-                            ) * self._TIRO_AIM_ANGLE_BUCKET_DEG % 360
-            rotated = self._tiro_aim_rot_cache.get(angle_key)
-            if rotated is None:
-                rotated = pygame.transform.rotate(img, angle_key)
-                self._tiro_aim_rot_cache[angle_key] = rotated
-            rW, rH  = rotated.get_size()
+        # Quantiza o ângulo em buckets de 5° — sem isso, pygame.transform.
+        # rotate() cria uma Surface nova TODO frame (mouse se move a cada
+        # frame), mesmo padrão de quantização já usado pra alpha em
+        # ui/floating_text.py (DashTrailManager.render). Diferença visual
+        # imperceptível; o ângulo quantizado (não o bruto) é reusado
+        # também no cálculo de blit abaixo, pra rotação e offset baterem.
+        angle_key = int(round(pygame_rot / self._TIRO_AIM_ANGLE_BUCKET_DEG)
+                        ) * self._TIRO_AIM_ANGLE_BUCKET_DEG % 360
+        rotated = self._tiro_aim_rot_cache.get(angle_key)
+        if rotated is None:
+            rotated = pygame.transform.rotate(img, angle_key)
+            self._tiro_aim_rot_cache[angle_key] = rotated
+        rW, rH  = rotated.get_size()
 
-            # Calcula blit para manter o TL original em (px, py).
-            # Matriz CCW em Y-down: x'= x·cos + y·sin, y'= -x·sin + y·cos
-            # TL offset do centro original: (-iW/2, -iH/2)
-            alpha   = math.radians(angle_key)
-            ca, sa  = math.cos(alpha), math.sin(alpha)
-            tl_rx   = (-iW / 2) * ca + (-iH / 2) * sa
-            tl_ry   = -(-iW / 2) * sa + (-iH / 2) * ca
-            blit_x  = int(px - (rW / 2 + tl_rx))
-            blit_y  = int(py - (rH / 2 + tl_ry))
+        # Calcula blit para manter o TL original em (px, py).
+        # Matriz CCW em Y-down: x'= x·cos + y·sin, y'= -x·sin + y·cos
+        # TL offset do centro original: (-iW/2, -iH/2)
+        alpha   = math.radians(angle_key)
+        ca, sa  = math.cos(alpha), math.sin(alpha)
+        tl_rx   = (-iW / 2) * ca + (-iH / 2) * sa
+        tl_ry   = -(-iW / 2) * sa + (-iH / 2) * ca
+        blit_x  = int(px - (rW / 2 + tl_rx))
+        blit_y  = int(py - (rH / 2 + tl_ry))
 
-            self.world_surf.blit(rotated, (blit_x, blit_y))
+        self.world_surf.blit(rotated, (blit_x, blit_y))
 
 
 # ---------------------------------------------------------------------------
@@ -1533,8 +1536,9 @@ class ChannelingSystem(System):
     def update(self, events=None, dt: float = 0) -> None:
         to_finish  = []
         interrupted = []
-        for entity_id, channeling, combat_state, char_stats, _ in self.world.get_entities_with(
-                Channeling, CombatState, CharacterStats, PlayerControlled):
+        _ch_first = self.world.get_first(Channeling, CombatState, CharacterStats, PlayerControlled)
+        if _ch_first is not None:
+            entity_id, channeling, combat_state, char_stats, _ = _ch_first
 
             # Movimento cancela canalização — verifica intenção de mover (teclas ou clique direito)
             _keys = pygame.key.get_pressed()
@@ -1548,26 +1552,27 @@ class ChannelingSystem(System):
             )
             if _move_intent:
                 interrupted.append(entity_id)
-                continue
+            else:
+                channeling.elapsed   += dt
+                channeling.last_tick += dt
 
-            channeling.elapsed   += dt
-            channeling.last_tick += dt
+                _mana_ok = True
+                if channeling.last_tick >= channeling.tick_interval:
+                    channeling.last_tick -= channeling.tick_interval
+                    # Piromaníaco: desconto no custo de mana por tick (escola fogo)
+                    _pyr_cs  = self.world.get_component(entity_id, CombatStats)
+                    _pyr_b   = getattr(_pyr_cs, "pyromania_bonus", 0.0) if _pyr_cs else 0.0
+                    tick_mana = max(0, int(channeling.mana_per_tick * (1.0 - _pyr_b)))
+                    # Verifica mana
+                    if char_stats.mana < tick_mana:
+                        LOG.add("Mana insuficiente — canalização interrompida.", (180, 100, 255))
+                        interrupted.append(entity_id)
+                        _mana_ok = False
+                    else:
+                        char_stats.mana -= tick_mana
 
-            if channeling.last_tick >= channeling.tick_interval:
-                channeling.last_tick -= channeling.tick_interval
-                # Piromaníaco: desconto no custo de mana por tick (escola fogo)
-                _pyr_cs  = self.world.get_component(entity_id, CombatStats)
-                _pyr_b   = getattr(_pyr_cs, "pyromania_bonus", 0.0) if _pyr_cs else 0.0
-                tick_mana = max(0, int(channeling.mana_per_tick * (1.0 - _pyr_b)))
-                # Verifica mana
-                if char_stats.mana < tick_mana:
-                    LOG.add("Mana insuficiente — canalização interrompida.", (180, 100, 255))
-                    interrupted.append(entity_id)
-                    continue
-                char_stats.mana -= tick_mana
-
-            if channeling.elapsed >= channeling.duration:
-                to_finish.append(entity_id)
+                if _mana_ok and channeling.elapsed >= channeling.duration:
+                    to_finish.append(entity_id)
 
         for entity_id in interrupted:
             ch_int = self.world.get_component(entity_id, Channeling)
@@ -1591,7 +1596,9 @@ class ChannelingSystem(System):
             LOG.add("Calamidade Flamejante terminou.", (255, 160, 60))
 
     def render(self, cam_x: float = 0, cam_y: float = 0) -> None:
-        for entity_id, ch, _ in self.world.get_entities_with(Channeling, PlayerControlled):
+        _ch_pc_first = self.world.get_first(Channeling, PlayerControlled)
+        if _ch_pc_first is not None:
+            ch = _ch_pc_first[1]
             cx = int(ch.target_x - cam_x)
             cy = int(ch.target_y - cam_y)
             r  = int(ch.radius_tiles * TILE_SIZE)
@@ -1611,8 +1618,9 @@ class IceBlockSystem(System):
 
     def update(self, events=None, dt: float = 0) -> None:
         to_finish = []
-        for entity_id, ice, combat_state, cs, _ in self.world.get_entities_with(
-                IceBlockEffect, CombatState, CombatStats, PlayerControlled):
+        _ib_first = self.world.get_first(IceBlockEffect, CombatState, CombatStats, PlayerControlled)
+        if _ib_first is not None:
+            entity_id, ice, combat_state, cs, _ = _ib_first
 
             ice.elapsed    += dt
             ice.last_heal  += dt
@@ -1651,8 +1659,9 @@ class FireShieldSystem(System):
 
     def update(self, events=None, dt: float = 0) -> None:
         to_finish = []
-        for entity_id, shield, _ in self.world.get_entities_with(
-                FireShieldEffect, PlayerControlled):
+        _fs_first = self.world.get_first(FireShieldEffect, PlayerControlled)
+        if _fs_first is not None:
+            entity_id, shield, _ = _fs_first
             shield.elapsed += dt
             if shield.elapsed >= shield.duration:
                 to_finish.append(entity_id)
@@ -1895,7 +1904,9 @@ class PirofagiaSystem(System):
     def update(self, events=None, dt: float = 0) -> None:
         to_fire  = []
         to_cancel = []
-        for entity_id, aiming in self.world.get_entities_with(PirofagiaAiming):
+        _pa_first = self.world.get_first(PirofagiaAiming)
+        if _pa_first is not None:
+            entity_id, aiming = _pa_first
             aiming.elapsed += dt
             for event in (events or []):
                 if event.type == pygame.MOUSEBUTTONDOWN:
@@ -1969,50 +1980,53 @@ class PirofagiaSystem(System):
     # ── Render ───────────────────────────────────────────────────────────────
 
     def render(self, cam_x: float = 0, cam_y: float = 0) -> None:
-        for entity_id, _ in self.world.get_entities_with(PirofagiaAiming):
-            pos = self.world.get_component(entity_id, Position)
-            if pos is None or self.world_surf is None:
-                continue
+        _pa_render_first = self.world.get_first(PirofagiaAiming)
+        if _pa_render_first is None:
+            return
+        entity_id = _pa_render_first[0]
+        pos = self.world.get_component(entity_id, Position)
+        if pos is None or self.world_surf is None:
+            return
 
-            # Mouse em coordenadas de world_surf (mesmo padrão do AoeTargetingSystem)
-            sx, sy = pygame.mouse.get_pos()
-            scale  = self.world_surf.get_width() / max(1, self.hud_surf.get_width())
-            mx = int(sx * scale)
-            my = int(sy * scale)
+        # Mouse em coordenadas de world_surf (mesmo padrão do AoeTargetingSystem)
+        sx, sy = pygame.mouse.get_pos()
+        scale  = self.world_surf.get_width() / max(1, self.hud_surf.get_width())
+        mx = int(sx * scale)
+        my = int(sy * scale)
 
-            # Player em coordenadas de world_surf (eixo do cone)
-            px = int(pos.x - cam_x)
-            py = int(pos.y - cam_y)
+        # Player em coordenadas de world_surf (eixo do cone)
+        px = int(pos.x - cam_x)
+        py = int(pos.y - cam_y)
 
-            # Ângulo player → mouse
-            angle = math.atan2(my - py, mx - px)
-            ca    = math.cos(angle)
-            sa    = math.sin(angle)
+        # Ângulo player → mouse
+        angle = math.atan2(my - py, mx - px)
+        ca    = math.cos(angle)
+        sa    = math.sin(angle)
 
-            L = 4.5 * TILE_SIZE   # comprimento do cone
-            W = 2.5 * TILE_SIZE   # meia-largura na boca
+        L = 4.5 * TILE_SIZE   # comprimento do cone
+        W = 2.5 * TILE_SIZE   # meia-largura na boca
 
-            # Vértices: rotação de (L, ±W) em torno do player
-            v_top = (int(px + L * ca - W * (-sa)), int(py + L * sa + W * (-ca)))
-            v_bot = (int(px + L * ca - W *   sa ), int(py + L * sa + W *   ca ))
-            pts   = [(px, py), v_top, v_bot]
+        # Vértices: rotação de (L, ±W) em torno do player
+        v_top = (int(px + L * ca - W * (-sa)), int(py + L * sa + W * (-ca)))
+        v_bot = (int(px + L * ca - W *   sa ), int(py + L * sa + W *   ca ))
+        pts   = [(px, py), v_top, v_bot]
 
-            # Preenchimento semi-transparente
-            all_x = [px, v_top[0], v_bot[0]]
-            all_y = [py, v_top[1], v_bot[1]]
-            bx = min(all_x) - 2;  by = min(all_y) - 2
-            bw = max(all_x) - bx + 4;  bh = max(all_y) - by + 4
-            if bw > 0 and bh > 0:
-                # Reutiliza surface pré-alocada — evita alloc por frame
-                cx = self._cone_surf.get_width()  // 2
-                cy = self._cone_surf.get_height() // 2
-                self._cone_surf.fill((0, 0, 0, 0))
-                local  = [(px - bx, py - by),
-                          (v_top[0] - bx, v_top[1] - by),
-                          (v_bot[0] - bx, v_bot[1] - by)]
-                pygame.draw.polygon(self._cone_surf, (220, 50, 0, 100), local)
-                self.world_surf.blit(self._cone_surf, (bx, by))
+        # Preenchimento semi-transparente
+        all_x = [px, v_top[0], v_bot[0]]
+        all_y = [py, v_top[1], v_bot[1]]
+        bx = min(all_x) - 2;  by = min(all_y) - 2
+        bw = max(all_x) - bx + 4;  bh = max(all_y) - by + 4
+        if bw > 0 and bh > 0:
+            # Reutiliza surface pré-alocada — evita alloc por frame
+            cx = self._cone_surf.get_width()  // 2
+            cy = self._cone_surf.get_height() // 2
+            self._cone_surf.fill((0, 0, 0, 0))
+            local  = [(px - bx, py - by),
+                      (v_top[0] - bx, v_top[1] - by),
+                      (v_bot[0] - bx, v_bot[1] - by)]
+            pygame.draw.polygon(self._cone_surf, (220, 50, 0, 100), local)
+            self.world_surf.blit(self._cone_surf, (bx, by))
 
-            # Contorno opaco e ponto no vértice
-            pygame.draw.polygon(self.world_surf, (255, 200, 60), pts, 2)
-            pygame.draw.circle(self.world_surf,  (255, 240, 80), (px, py), 5)
+        # Contorno opaco e ponto no vértice
+        pygame.draw.polygon(self.world_surf, (255, 200, 60), pts, 2)
+        pygame.draw.circle(self.world_surf,  (255, 240, 80), (px, py), 5)

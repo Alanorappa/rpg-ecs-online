@@ -329,9 +329,9 @@ def _live_target_at_world_pos(world: World, player_entity_id: int,
     RemoteControlled nunca é fog-gated, mesma regra de
     RenderSystem.render(), player real nunca some por fog)."""
     _fog_vis = None
-    for _, _fw in world.get_entities_with(FogOfWar):
-        _fog_vis = _fw.visible
-        break
+    _fow_first = world.get_first(FogOfWar)
+    if _fow_first is not None:
+        _fog_vis = _fow_first[1].visible
     for entity_id, pos, renderable, _, _, etm in world.get_entities_with(
             Position, Renderable, Enemy, Visible, TileMovement):
         if _fog_vis is not None and \
@@ -373,9 +373,9 @@ class MouseTargetingSystem(System):
         Área clicável via `_entity_click_rect()` (ponto único de verdade,
         sprite real do catálogo quando existe — ver docstring lá)."""
         _fog_vis = None
-        for _, _fw in self.world.get_entities_with(FogOfWar):
-            _fog_vis = _fw.visible
-            break
+        _fow_first = self.world.get_first(FogOfWar)
+        if _fow_first is not None:
+            _fog_vis = _fow_first[1].visible
         for entity_id, pos, renderable, _, _, etm in self.world.get_entities_with(
                 Position, Renderable, Enemy, Visible, TileMovement):
             if _fog_vis is not None and \
@@ -616,7 +616,9 @@ class PlayerInputSystem(System):
             return True
         sw = self.world_surf.get_width()
         sh = self.world_surf.get_height()
-        for _, _, cam_pos in self.world.get_entities_with(Camera, Position):
+        _cam_first = self.world.get_first(Camera, Position)
+        if _cam_first is not None:
+            _, _, cam_pos = _cam_first
             cam_x = cam_pos.x - sw / 2
             cam_y = cam_pos.y - sh / 2
             sx = pos.x - cam_x
@@ -693,8 +695,9 @@ class PlayerInputSystem(System):
             events = []
         keys = pygame.key.get_pressed()
 
-        for entity_id, position, tile_movement, _, combat_stats in \
-                self.world.get_entities_with(Position, TileMovement, PlayerControlled, CombatStats):
+        _player_first = self.world.get_first(Position, TileMovement, PlayerControlled, CombatStats)
+        if _player_first is not None:
+            entity_id, position, tile_movement, _, combat_stats = _player_first
 
             # Cooldown de ataque
             if combat_stats.attack_cooldown_timer > 0:
@@ -1389,9 +1392,9 @@ class PlayerInputSystem(System):
 
         if best_eid == -1:
             _fog_vis_se = None
-            for _, _fw_se in self.world.get_entities_with(FogOfWar):
-                _fog_vis_se = _fw_se.visible
-                break
+            _fow_se_first = self.world.get_first(FogOfWar)
+            if _fow_se_first is not None:
+                _fog_vis_se = _fow_se_first[1].visible
 
             from engine.faction_system import can_engage as _can_engage_space
             best_dist = float("inf")
@@ -1523,17 +1526,17 @@ class RenderSystem(System):
         """
         # Descobre qual entidade o jogador tem como alvo
         target_id = -1
-        for _, cs, _ in self.world.get_entities_with(CombatState, PlayerControlled):
-            target_id = cs.target_entity_id
-            break
+        _cs_first = self.world.get_first(CombatState, PlayerControlled)
+        if _cs_first is not None:
+            target_id = _cs_first[1].target_entity_id
 
         # ── Fog of War: conjunto de tiles visíveis neste frame ────────────────
         _fog_visible:   set | None = None
         _fog_explored:  set | None = None
-        for _, _fog in self.world.get_entities_with(FogOfWar):
-            _fog_visible  = _fog.visible
-            _fog_explored = _fog.explored
-            break
+        _fow_render_first = self.world.get_first(FogOfWar)
+        if _fow_render_first is not None:
+            _fog_visible  = _fow_render_first[1].visible
+            _fog_explored = _fow_render_first[1].explored
 
         # ── Coleta drawables: (sort_y_world, tipo, dados) ─────────────────────
         drawables = []
@@ -2000,7 +2003,9 @@ class CameraSystem(System):
     SMOOTHING_ENABLED = False
 
     def update(self, events: list = None, dt: float = 0) -> None:
-        for entity_id, camera_component, camera_position in self.world.get_entities_with(Camera, Position):
+        _cam_upd_first = self.world.get_first(Camera, Position)
+        if _cam_upd_first is not None:
+            entity_id, camera_component, camera_position = _cam_upd_first
             target_entity_id = camera_component.target_entity_id
 
             if target_entity_id != -1:
@@ -2009,16 +2014,16 @@ class CameraSystem(System):
                     if not self.SMOOTHING_ENABLED:
                         camera_position.x = target_position.x
                         camera_position.y = target_position.y
-                        continue
-                    dx = target_position.x - camera_position.x
-                    dy = target_position.y - camera_position.y
-                    if abs(dx) < self.SNAP_EPSILON and abs(dy) < self.SNAP_EPSILON:
-                        camera_position.x = target_position.x
-                        camera_position.y = target_position.y
                     else:
-                        t = min(1.0, self.LERP_SPEED * dt)
-                        camera_position.x += dx * t
-                        camera_position.y += dy * t
+                        dx = target_position.x - camera_position.x
+                        dy = target_position.y - camera_position.y
+                        if abs(dx) < self.SNAP_EPSILON and abs(dy) < self.SNAP_EPSILON:
+                            camera_position.x = target_position.x
+                            camera_position.y = target_position.y
+                        else:
+                            t = min(1.0, self.LERP_SPEED * dt)
+                            camera_position.x += dx * t
+                            camera_position.y += dy * t
 
 # ── Margem de corte pra objetos do object_matrix maiores que 1 tile ─────────
 #
@@ -2149,7 +2154,9 @@ class TileRenderSystem(System):
         return tile_ox, tile_oy, tiles_w, tiles_h
 
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0) -> None:
-        for _, tilemap_comp in self.world.get_entities_with(Tilemap):
+        _tm_render_first = self.world.get_first(Tilemap)
+        if _tm_render_first is not None:
+            tilemap_comp = _tm_render_first[1]
             tile_size = tilemap_comp.tile_size
 
             # tile_ox/tile_oy PRECISAM ser inteiros (índice de qual bloco de
@@ -2301,19 +2308,15 @@ class TileRenderSystem(System):
         tile_ox, tile_oy, tiles_w, tiles_h, sub_x, sub_y, tile_size = self._pending_fog_blit
         self._pending_fog_blit = None
 
-        fog_comp = None
-        for _, fog in self.world.get_entities_with(FogOfWar):
-            fog_comp = fog
-            break
+        _fow_fog_first = self.world.get_first(FogOfWar)
+        fog_comp = _fow_fog_first[1] if _fow_fog_first is not None else None
 
         if fog_comp is None:
             return
 
         # Pega tilemap para checar extensões superiores de objetos altos
-        tilemap_fog = None
-        for _, tm in self.world.get_entities_with(Tilemap):
-            tilemap_fog = tm
-            break
+        _tm_fog_first = self.world.get_first(Tilemap)
+        tilemap_fog = _tm_fog_first[1] if _tm_fog_first is not None else None
 
         if (tile_ox != self._fog_cache_tile_ox
                 or tile_oy != self._fog_cache_tile_oy
@@ -2415,7 +2418,9 @@ class TileRenderSystem(System):
         # câmera num instante diferente de onde as entidades truncam, senão
         # "tremem" relativo ao personagem ao mover.
 
-        for _, tilemap_comp in self.world.get_entities_with(Tilemap):
+        _tm_objs_first = self.world.get_first(Tilemap)
+        if _tm_objs_first is not None:
+            tilemap_comp = _tm_objs_first[1]
             tile_size = tilemap_comp.tile_size
             obj_rows  = tilemap_comp.object_matrix
             map_h     = tilemap_comp.map_height_tiles
@@ -2485,12 +2490,14 @@ class TileRenderSystem(System):
         # Fog: só objetos em tiles visíveis ou explorados
         _fog_visible  = None
         _fog_explored = None
-        for _, fog in self.world.get_entities_with(FogOfWar):
-            _fog_visible  = fog.visible
-            _fog_explored = fog.explored
-            break
+        _fow_static_first = self.world.get_first(FogOfWar)
+        if _fow_static_first is not None:
+            _fog_visible  = _fow_static_first[1].visible
+            _fog_explored = _fow_static_first[1].explored
 
-        for _, tilemap_comp in self.world.get_entities_with(Tilemap):
+        _tm_static_first = self.world.get_first(Tilemap)
+        if _tm_static_first is not None:
+            tilemap_comp = _tm_static_first[1]
             tile_size = tilemap_comp.tile_size
             obj_rows  = tilemap_comp.object_matrix
             map_h     = tilemap_comp.map_height_tiles
@@ -2551,10 +2558,8 @@ class FogSystem(System):
         self.world = world
 
     def update(self, events: list = None, dt: float = 0) -> None:
-        tilemap = None
-        for _, tm in self.world.get_entities_with(Tilemap):
-            tilemap = tm
-            break
+        _tm_upd_first = self.world.get_first(Tilemap)
+        tilemap = _tm_upd_first[1] if _tm_upd_first is not None else None
         if tilemap is None:
             return
 
@@ -2591,7 +2596,9 @@ class FogSystem(System):
             return _blocking
 
         fog = None
-        for _, f, tile_move in self.world.get_entities_with(FogOfWar, TileMovement):
+        _fow_tm_first = self.world.get_first(FogOfWar, TileMovement)
+        if _fow_tm_first is not None:
+            _, f, tile_move = _fow_tm_first
             fog = f
             px, py = tile_move.current_tile_x, tile_move.current_tile_y
 
@@ -2644,7 +2651,6 @@ class FogSystem(System):
                     fog.explored |= _ally_fov
 
                 fog.version += 1
-            break  # apenas um FogOfWar no jogo (jogador)
 
         if fog is None:
             return
@@ -2770,7 +2776,9 @@ class ShopSystem(UIScaleMixin, System):
     def _get_cam(self):
         SW = self.world_surf.get_width()
         SH = self.world_surf.get_height()
-        for eid, pos, _ in self.world.get_entities_with(Position, Camera):
+        _cam_pos_first = self.world.get_first(Position, Camera)
+        if _cam_pos_first is not None:
+            pos = _cam_pos_first[1]
             return pos.x - SW / 2, pos.y - SH / 2
         return 0.0, 0.0
 
@@ -3795,10 +3803,8 @@ class LootSystem(UIScaleMixin, System):
             if not p_corpse:
                 self.pending_loot_corpse_id = -1
             else:
-                player_tm = None
-                for _, tm, _ in self.world.get_entities_with(TileMovement, PlayerControlled):
-                    player_tm = tm
-                    break
+                _tm_pc_first = self.world.get_first(TileMovement, PlayerControlled)
+                player_tm = _tm_pc_first[1] if _tm_pc_first is not None else None
                 corpse_pos = None
                 for eid, pos, _ in self.world.get_entities_with(Position, Corpse):
                     if eid == self.pending_loot_corpse_id:
@@ -3886,13 +3892,9 @@ class LootSystem(UIScaleMixin, System):
         candidates.sort(key=lambda c: 0 if c[3] else 1)
         entity_id, pos, corpse, _ = candidates[0]
 
-        player_tm = None
-        player_auto = None
-        for _, tm, _, auto in self.world.get_entities_with(
-                TileMovement, PlayerControlled, PlayerAutoMove):
-            player_tm = tm
-            player_auto = auto
-            break
+        _tm_auto_first = self.world.get_first(TileMovement, PlayerControlled, PlayerAutoMove)
+        player_tm   = _tm_auto_first[1] if _tm_auto_first is not None else None
+        player_auto = _tm_auto_first[3] if _tm_auto_first is not None else None
 
         c_tile_x = int(pos.x / TILE_SIZE)
         c_tile_y = int(pos.y / TILE_SIZE)
@@ -3902,10 +3904,11 @@ class LootSystem(UIScaleMixin, System):
             if dist > 1:
                 self.pending_loot_corpse_id = entity_id
                 # Cancela combate para o movimento ao corpo não ser interrompido
-                for _, _, p_cs in self.world.get_entities_with(PlayerControlled, CombatState):
+                _pc_cs_first = self.world.get_first(PlayerControlled, CombatState)
+                if _pc_cs_first is not None:
+                    p_cs = _pc_cs_first[2]
                     p_cs.target_entity_id = -1
                     p_cs.is_pursuing = False
-                    break
                 if player_auto:
                     # Anda pro tile ADJACENTE mais próximo, não pro tile do
                     # corpse em si (Fase M1, revisão 3, 25/07/2026 — bug

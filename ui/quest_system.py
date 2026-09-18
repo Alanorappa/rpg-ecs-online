@@ -291,18 +291,19 @@ class QuestSystem(UIScaleMixin, System):
         if reward.xp > 0:
             from engine.components import CharacterStats, CombatStats, PermanentStats, PlayerControlled
             from engine.stats_system import process_levelups
-            for eid, char, cs, _ in self.world.get_entities_with(
-                    CharacterStats, CombatStats, PlayerControlled):
+            _xp_first = self.world.get_first(CharacterStats, CombatStats, PlayerControlled)
+            if _xp_first is not None:
+                eid, char, cs, _ = _xp_first
                 perm = self.world.get_component(eid, PermanentStats)
                 char.current_xp += reward.xp
                 process_levelups(self.world, eid, char, cs, perm)
-                break
 
         if reward.gold > 0:
             from engine.components import Wallet, PlayerControlled as _PCgold
-            for _, wlt, _ in self.world.get_entities_with(Wallet, _PCgold):
+            _gold_first = self.world.get_first(Wallet, _PCgold)
+            if _gold_first is not None:
+                wlt = _gold_first[1]
                 wlt.gold += reward.gold
-                break
 
         parts = []
         if reward.xp:   parts.append(f"+{reward.xp} XP")
@@ -1298,7 +1299,9 @@ class QuestDialogSystem(UIScaleMixin, System):
         # frame, antes de game.py::_assign_world_surf rodar — zoom=1.0).
         from engine.components import Camera, Position as _Pos
         SW, SH = (self.world_surf or self.hud_surf).get_size()
-        for _, pos, _ in self.world.get_entities_with(_Pos, Camera):
+        _cam_qs_first = self.world.get_first(_Pos, Camera)
+        if _cam_qs_first is not None:
+            pos = _cam_qs_first[1]
             return pos.x - SW / 2, pos.y - SH / 2
         return 0.0, 0.0
 
