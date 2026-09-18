@@ -281,10 +281,10 @@ como duplicação de risco, só de assinatura).
 | 8 | `IconManager._cache` sem teto/eviction | PROCEDE |
 | 9 | `FloatingTextManager`/`DashTrailManager`/`ProcTextManager` sem remoção in-place | PROCEDE |
 | 10 | Sem atlas de ícones | PROCEDE, cresceu (54→67 PNGs) |
-| 11 | 6 imports locais redundantes de `RemoteControlled` | PROCEDE |
+| 11 | 6 imports locais redundantes de `RemoteControlled` | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §176. |
 | 12 | `except Exception: pass` em `save_sync_handlers.py` | **✅ concluído 17/09/2026** — mesmo achado do "Mais achados" já corrigido em §166 (`PROBLEMAS_ARQUITETURA.md`), mantida a captura mas agora loga. |
-| 13 | Imports mortos de loot/spawn offline em `ui/systems.py` | PROCEDE, linha mudou (58-59) |
-| 14 | `TILE_SPRITES`/`is_target_alive` reimportados localmente | PROCEDE |
+| 13 | Imports mortos de loot/spawn offline em `ui/systems.py` | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §176. Linha mudou (58-59), confirmado. |
+| 14 | `TILE_SPRITES`/`is_target_alive` reimportados localmente | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §176. |
 
 Nenhum dos 14 originais foi corrigido nesta sessão (o trabalho recente
 focou nos 10 itens PRINCIPAIS da auditoria anterior, não no apêndice).

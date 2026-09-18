@@ -36,7 +36,7 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        NPCInteractionRequest
 from engine.world import World
 from engine.tileset import TILE_SIZE, OBJECT_MAPPING
-from engine.utils import chebyshev, in_range, start_tile_movement, get_camera_offset
+from engine.utils import chebyshev, in_range, start_tile_movement, get_camera_offset, is_target_alive
 from engine.damage_calculator import resolve_attack_outcome, calculate_base_damage
 # Hoisted pro topo (14/09/2026, revisão de performance — ver
 # arquitetura/CLIENT_PERFORMANCE_REVIEW.md item 2): estavam sendo
@@ -52,11 +52,10 @@ from ui.sound_manager import SOUNDS
 from ui.floating_text import FLT, PROC, WARN
 from ui.icon_manager import ICONS
 from ui.ui_helpers import item_tooltip_lines, fill_surf
+from ui.tile_sprite_manager import TILE_SPRITES
 from ui.npc_interaction import walk_to_npc, suppress_chase
 from content.status_effects_data import EFFECT_DEFS
 from engine.fov import compute_fov, local_vision_blob
-from content.loot_tables import roll_loot, roll_mob_loot, roll_coins
-from engine.entity_factory import create_corpse, create_enemy
 from content.enemy_abilities_data import ABILITY_DEFS
 from content.merchant_data import SHOPS, INSTANCE_SHOP_STOCK_BY_CLASS
 from content.item_table import RARITY_COLORS as _SHARED_RARITY_COLORS
@@ -261,7 +260,6 @@ def _corpse_click_rect(world, entity_id: int, pos) -> tuple[float, float, float,
     mantém a tolerância antiga (corpse de mob morto, sem Renderable)."""
     ren = world.get_component(entity_id, Renderable)
     if ren is not None and ren.sprite_id:
-        from ui.tile_sprite_manager import TILE_SPRITES
         sprite = TILE_SPRITES.get_raw_sprite(ren.sprite_id)
         if sprite is not None:
             sw, sh = sprite.get_size()
@@ -294,7 +292,6 @@ def _entity_click_rect(world: World, entity_id: int, pos,
     mob/torre grande podia ficar clicável num caminho e não no outro.
     NUNCA usada pra corpse — `_corpse_click_rect` (acima) é caso à parte,
     com tolerância pequena deliberada pra quando não há sprite."""
-    from ui.tile_sprite_manager import TILE_SPRITES
     spr = TILE_SPRITES.get_raw_sprite(renderable.sprite_id) if renderable.sprite_id else None
     if spr:
         sw, sh = spr.get_size()
@@ -397,9 +394,8 @@ class MouseTargetingSystem(System):
         Usado para PvP: permite selecionar outros players como alvo.
         A verificação de zona PvP fica no servidor — o cliente só faz targeting.
         """
-        from engine.components import RemoteControlled as _RC
         for entity_id, pos, renderable, _, _rc in self.world.get_entities_with(
-                Position, Renderable, Visible, _RC):
+                Position, Renderable, Visible, RemoteControlled):
             if entity_id == self.player_entity_id:
                 continue  # não seleciona a si mesmo
             if _rc.hp <= 0:
@@ -463,9 +459,8 @@ class MouseTargetingSystem(System):
                 dist = (pos.x - player_pos.x) ** 2 + (pos.y - player_pos.y) ** 2 if player_pos else 0
                 result.append((dist, eid))
 
-        from engine.components import RemoteControlled as _RCtab
         from engine.faction_system import can_engage as _can_engage_tab
-        for eid, pos, _viz, _rc in self.world.get_entities_with(Position, Visible, _RCtab):
+        for eid, pos, _viz, _rc in self.world.get_entities_with(Position, Visible, RemoteControlled):
             if eid == self.player_entity_id or _rc.hp <= 0:
                 continue
             if not _can_engage_tab(self.world, self.player_entity_id, eid):
@@ -563,9 +558,8 @@ class MouseTargetingSystem(System):
                             player_cs.target_entity_id = target_id
                             player_cs.is_pursuing = False
                         if remote_player_id != -1:
-                            from engine.components import RemoteControlled as _RCtp
                             from ui.ui_components import TradeUIState as _TUStp
-                            rc  = self.world.get_component(remote_player_id, _RCtp)
+                            rc  = self.world.get_component(remote_player_id, RemoteControlled)
                             tui = self.world.get_component(self.player_entity_id, _TUStp)
                             if tui is not None:
                                 tui.popup_target_eid  = remote_player_id
@@ -872,7 +866,6 @@ class PlayerInputSystem(System):
         # local (CombatStats) E player remoto em PvP (RemoteControlled, sem
         # CombatStats — sem isso, o ciclo de ataque/som de nock fica girando
         # contra um corpo, já que current_hp não existe nesse alvo).
-        from engine.utils import is_target_alive
         if not target_pos or not is_target_alive(self.world, target_id):
             combat_state.target_entity_id = -1
             combat_state.is_pursuing = False
@@ -1330,12 +1323,11 @@ class PlayerInputSystem(System):
         vivo do alvo a cada recalc), sem nenhum combate envolvido."""
         if not can_move:
             return
-        from engine.components import RemoteControlled as _RCfl
         target_tm  = self.world.get_component(auto_move.follow_eid, TileMovement)
         target_vis = self.world.get_component(auto_move.follow_eid, Visible)
         # Alvo sumiu (deslogou/despawnou/fora da visão): para de seguir.
         if (target_tm is None or target_vis is None
-                or self.world.get_component(auto_move.follow_eid, _RCfl) is None):
+                or self.world.get_component(auto_move.follow_eid, RemoteControlled) is None):
             auto_move.follow_eid = -1
             auto_move.path.clear()
             return
@@ -1383,10 +1375,9 @@ class PlayerInputSystem(System):
         pl_x = tile_movement.current_tile_x
         pl_y = tile_movement.current_tile_y
 
-        from engine.utils import is_target_alive as _is_target_alive_space
         best_eid  = combat_state.target_entity_id if combat_state else -1
         best_dist = None
-        if best_eid != -1 and _is_target_alive_space(self.world, best_eid):
+        if best_eid != -1 and is_target_alive(self.world, best_eid):
             _cur_tm_space = self.world.get_component(best_eid, TileMovement)
             if _cur_tm_space is not None:
                 best_dist = chebyshev(pl_x, pl_y, _cur_tm_space.current_tile_x,
@@ -1424,9 +1415,8 @@ class PlayerInputSystem(System):
                     best_dist = dist
                     best_eid  = eid
 
-            from engine.components import RemoteControlled as _RCspace
             for eid, epos, etm, _viz, _rc in self.world.get_entities_with(
-                    Position, TileMovement, Visible, _RCspace):
+                    Position, TileMovement, Visible, RemoteControlled):
                 if eid == entity_id or _rc.hp <= 0:
                     continue
                 if not _can_engage_space(self.world, entity_id, eid):
@@ -1531,7 +1521,6 @@ class RenderSystem(System):
         remotos leem o mesmo campo direto em
         client/remote_entity_handlers.py.
         """
-        from ui.tile_sprite_manager import TILE_SPRITES
         # Descobre qual entidade o jogador tem como alvo
         target_id = -1
         for _, cs, _ in self.world.get_entities_with(CombatState, PlayerControlled):
@@ -2095,9 +2084,8 @@ class TileRenderSystem(System):
         self.world = world
         self.world_surf = screen
         self.hud_surf   = screen
-        from ui.tile_sprite_manager import TILE_SPRITES as _TS
         from engine.tileset import TILE_MAPPING as _TM, FLOOR_TILE as _FT
-        self._tile_sprites = _TS
+        self._tile_sprites = TILE_SPRITES
         self._tile_mapping = _TM
         self._floor_tile   = _FT
         _tw = screen.get_width()  // TILE_SIZE + 2
@@ -2419,7 +2407,6 @@ class TileRenderSystem(System):
         Retorna lista de objetos visíveis (object_matrix) para o pass 2 (Y-sort).
         Cada item: dict com sort_y, screen_x, screen_y, sprite, color, width, height.
         """
-        from ui.tile_sprite_manager import TILE_SPRITES
         objects = []
         # tile_ox/tile_oy: índice inteiro (limite do loop de tiles). scr_x/
         # scr_y usam camera_offset_x/y em ponto flutuante direto (não um
@@ -2491,7 +2478,6 @@ class TileRenderSystem(System):
 
     def render_static_objects(self, camera_offset_x: float, camera_offset_y: float) -> None:
         """Renderiza objetos com no_ysort=True diretamente no world_surf, abaixo de entidades."""
-        from ui.tile_sprite_manager import TILE_SPRITES
         # Mesmo racional de get_world_objects()/render() acima — tile_ox/oy
         # inteiro só pra limite do loop, scr_x/scr_y ficam em ponto
         # flutuante direto.
@@ -4805,8 +4791,7 @@ class SkillSystem(System, SkillHandlers):
                     _tid_server = _meta_cast.server_eid
             # PvP: alvo pode ser player remoto (não está em RemoteEntityMeta)
             if _tid_server == -1 and _tid_local != -1:
-                from engine.components import RemoteControlled as _RCcast
-                _rc_cast = self.world.get_component(_tid_local, _RCcast)
+                _rc_cast = self.world.get_component(_tid_local, RemoteControlled)
                 if _rc_cast is not None:
                     _tid_server = _rc_cast.server_eid
 

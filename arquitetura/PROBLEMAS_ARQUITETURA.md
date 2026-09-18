@@ -20606,3 +20606,47 @@ Suíte: `test_client_ui.py` (175) + `test_npc_proximity_panels_close.py`
 (6) + `test_npc_interaction_request.py` (3) + `pytest tests/ -k
 "trainer or crafting or shop or loot or quest_dialog or blacksmith"`
 (96) — sem regressão.
+
+## 176. Backlog dos 14 itens antigos, itens #11/#13/#14 — imports locais redundantes em `ui/systems.py`
+
+17/09/2026. Três itens triviais/risco zero da fila priorizada,
+atacados juntos (mesma classe de achado — import que já existe no
+topo do arquivo, reimportado dentro de função/método sem necessidade):
+
+- **Item #11 — `RemoteControlled` reimportado localmente 6x**
+  (linhas 400/466/566/1333/1427/4808 antes desta correção), cada uma
+  com um alias descartável (`_RC`/`_RCtab`/`_RCtp`/`_RCfl`/`_RCspace`/
+  `_RCcast`) — o nome já está disponível desde o import de módulo
+  (linha 35). Substituído por uso direto do nome já importado nos 6
+  pontos. Confirmado que os OUTROS 5 arquivos que também reimportam
+  `RemoteControlled` localmente (`client/hotbar_handlers.py`,
+  `network_handlers.py`, `party_handlers.py`,
+  `remote_entity_handlers.py` ×2) **não têm** import de módulo — lá o
+  import local é necessário, não tocado.
+- **Item #13 — imports mortos de loot/spawn offline** —
+  `from content.loot_tables import roll_loot, roll_mob_loot,
+  roll_coins` e `from engine.entity_factory import create_corpse,
+  create_enemy` (linhas 58-59) nunca eram usados em `ui/systems.py`
+  (confirmado por grep — zero call site no arquivo inteiro). Resquício
+  do código offline que um dia viveu aqui, nunca limpo quando migrou/
+  foi removido. Ambas as linhas removidas.
+- **Item #14 — `TILE_SPRITES`/`is_target_alive` reimportados
+  localmente** — `TILE_SPRITES` (`ui/tile_sprite_manager.py`) tinha
+  6 imports locais espalhados pelo arquivo (2 em funções de módulo,
+  1 em `TileRenderSystem.__init__` — que cacheia como
+  `self._tile_sprites`, mantido — e 3 dentro do método gigante
+  `RenderSystem.render()`); `is_target_alive`
+  (`engine/utils.py`) tinha 2. Nenhum import de módulo pra nenhum dos
+  dois. Confirmado sem risco de import circular
+  (`ui/tile_sprite_manager.py` não importa nada de `ui/systems.py`).
+  Ambos hoisted pro topo do arquivo (mesmo padrão já usado nele mesmo
+  pra outros imports, 14/09/2026, `CLIENT_PERFORMANCE_REVIEW.md` item
+  2 — "estavam sendo reimportados... no loop de desenho mais quente
+  do cliente"), 8 imports locais removidos no total.
+
+Nenhuma mudança de comportamento — só remoção de import redundante e
+uso do nome já disponível no escopo do módulo.
+
+Suíte: `test_client_ui.py` (175) + `pytest tests/ -k "render or target
+or tile_sprite or corpse or click or space_engage"` (158) — sem
+regressão.
