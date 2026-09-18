@@ -1,77 +1,45 @@
 # tile_render_system.py
 """
-Extraido de ui/systems.py (18/09/2026, ver PROBLEMAS_ARQUITETURA.md item #2
-do backlog de 14, "ui/systems.py monolitico") - candidato em revisao
-multiagente antes de aplicar de verdade.
+TileRenderSystem — desenho de terreno/objetos do mapa (cache de Surface
+por câmera). FogSystem — shadowcasting/névoa de guerra; ficam no mesmo
+arquivo porque são caches irmãos (`FogOfWar.version`, incrementado por
+FogSystem, é lido por TileRenderSystem a cada frame pra saber quando
+invalidar o overlay — ver CLAUDE.md "Atualização coesa" e
+PROBLEMAS_ARQUITETURA.md §53). Extraído de ui/systems.py (18/09/2026,
+ver PROBLEMAS_ARQUITETURA.md §185, item #2 do backlog de 14).
 """
 from __future__ import annotations
 import pygame
-import math
-import heapq
-import random
 # TODO(B4): _font é usado apenas em sistemas visuais (HUD, FloatingText). O servidor
 # importa `from systems import EnemyAISystem` e acaba carregando Pygame fonts pelo
 # caminho. Funciona com SDL_VIDEODRIVER=dummy, mas é dependência desnecessária.
 # Fix futuro: mover sistemas visuais para ClientSystems ou usar lazy import em render().
 from ui.fonts import make as _font
-from ui.ui_scale_mixin import UIScaleMixin
 from ui.ui_sizes import UI
-from ui.world_labels import WORLD_LABELS
-from ui.hud_bars import (build_player_hud, build_mob_hud, build_npc_badge, build_simple_hp_bar,
-                       RESOURCE_COLORS, HUD_GAP_PX, effects_row_offset)
 
 # Re-exporta apply_effect de core_systems para compatibilidade com todo o código
 # que já faz `from systems import apply_effect`.
-from engine.core_systems import (apply_effect, StatusEffectSystem as _CoreStatusEffectSystem,
-                          BaseCombatStateSystem as _BaseCombatStateSystem)
+from engine.core_systems import apply_effect
 try:
     from debug.mob_combat_debug import MCL as _MCL
 except ImportError:
     _MCL = None  # não disponível no ambiente do cliente
 
-from engine.components import Position, Renderable, PlayerControlled, Camera, Collider, \
-                       Enemy, AIControlled, InitialPosition, DetectionRadius, Tilemap, \
-                       TileMovement, CombatStats, Modifier, CombatState, PlayerAutoMove, \
-                       Projectile, Corpse, Inventory, EnemyTier, Equipment, Wallet, Merchant, \
-                       CharacterStats, FogOfWar, Visible, ActiveEffect, StatusEffects, \
-                       EnemyAbilities, EnemyAbilitySlot, EntityIdentity, \
-                       NpcSounds, PendingDeath, XPReward, SpawnZoneOwner, SpawnZone, \
-                       PlayerSkills, NPC, ActiveRegen, ConsumableBar, \
-                       AoeTargeting, RemoteControlled, GhostState, MapLocation, Minion, \
-                       NPCInteractionRequest
+from engine.components import Position, Enemy, Tilemap, TileMovement, FogOfWar, Visible, NPC
 from engine.world import World
 from engine.tileset import TILE_SIZE, OBJECT_MAPPING
-from engine.utils import chebyshev, in_range, start_tile_movement, get_camera_offset, is_target_alive
-from engine.damage_calculator import resolve_attack_outcome, calculate_base_damage
 # Hoisted pro topo (14/09/2026, revisão de performance — ver
 # arquitetura/CLIENT_PERFORMANCE_REVIEW.md item 2): estavam sendo
 # reimportados dentro de RenderSystem.render(), no loop de desenho mais
 # quente do cliente (uma vez por ENTIDADE visível, todo frame). Módulos
 # puros (`from __future__ import annotations` só), sem ciclo de import
 # com ui/systems.py — seguro no topo.
-from engine.entity_disguise import get_active_appearance_override, get_animated_disguise_frame
-from engine.character_animation import (get_character_frame, resolve_display_state,
-                                        character_anchor_offset)
-from ui.combat_log import LOG
-from ui.sound_manager import SOUNDS
-from ui.floating_text import FLT, PROC, WARN
-from ui.icon_manager import ICONS
-from ui.ui_helpers import item_tooltip_lines, fill_surf
 from ui.tile_sprite_manager import TILE_SPRITES
-from ui.npc_interaction import walk_to_npc, suppress_chase
-from content.status_effects_data import EFFECT_DEFS
 from engine.fov import compute_fov, local_vision_blob
-from content.enemy_abilities_data import ABILITY_DEFS
-from content.merchant_data import SHOPS, INSTANCE_SHOP_STOCK_BY_CLASS
-from content.item_table import RARITY_COLORS as _SHARED_RARITY_COLORS
-import engine.quest_events as quest_events
-from engine.quest_events import fire as quest_fire
-from engine.stat_fns import add_modifier, remove_modifier, add_timed_modifier, enter_combat
 
 # Lookup reverso skill_id → (talent_id, min_points) — fonte única em
 # world_systems (_TALENT_SKILL_REQS, usado também por is_skill_authorized
 # no gate autoritativo do servidor). Alias mantido pro gate de UI local.
-from engine.world_systems import _TALENT_SKILL_REQS as _TALENT_SKILL_REQ_SYS
 
 
 
@@ -81,14 +49,7 @@ from engine.world_systems import _TALENT_SKILL_REQS as _TALENT_SKILL_REQ_SYS
 # `from systems import EnemyAISystem` etc. Codigo de SERVIDOR deve importar
 # de world_systems diretamente (nao arrasta pygame).
 # ---------------------------------------------------------------------------
-from engine.world_systems import (
-    System, PathfindingSystem, TileValidationSystem, CombatSystem,
-    DeathHandlerSystem, CombatStateSystem, ProjectileSystem, EnemyAISystem,
-    TileMovementSystem, StatusEffectSystem, EnemyAbilitySystem, CorpseSystem,
-    SpawnZoneSystem,
-    _svc, register_services, deal_damage, find_path, get_tilemap,
-    is_tile_walkable, get_mainhand_weapon,
-)
+from engine.world_systems import System, EnemyAISystem
 
 
 # ── Margem de corte pra objetos do object_matrix maiores que 1 tile ─────────

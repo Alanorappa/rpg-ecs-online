@@ -12,7 +12,9 @@ em arquivos próprios:
     ui/consumable_system.py    → ConsumableSystem
     ui/loot_system.py          → LootSystem
     ui/skill_system.py         → SkillSystem
-    ui/click_rect_helpers.py   → _corpse_click_rect (compartilhado por
+    ui/click_rect_helpers.py   → _corpse_click_rect, _entity_click_rect,
+                                  _live_target_at_world_pos (hit-test de
+                                  clique compartilhado por
                                   MouseTargetingSystem e LootSystem)
 
 Este arquivo continua existindo SÓ pra compatibilidade — todo código que
@@ -48,10 +50,7 @@ from engine.world_systems import (
 # ---------------------------------------------------------------------------
 # Re-export dos Systems de UI/render, agora vivendo em arquivos próprios
 # ---------------------------------------------------------------------------
-from ui.player_input_system import (
-    MouseTargetingSystem, PlayerInputSystem,
-    _entity_click_rect, _live_target_at_world_pos,
-)
+from ui.player_input_system import MouseTargetingSystem, PlayerInputSystem
 from ui.render_system import (
     RenderSystem, CameraSystem,
     _build_effects_row, _filter_nameplate_effects, _get_ground_effect_sprite,
@@ -63,4 +62,6 @@ from ui.shop_system import ShopSystem
 from ui.consumable_system import ConsumableSystem
 from ui.loot_system import LootSystem
 from ui.skill_system import SkillSystem
-from ui.click_rect_helpers import _corpse_click_rect
+from ui.click_rect_helpers import (
+    _corpse_click_rect, _entity_click_rect, _live_target_at_world_pos,
+)

@@ -1,77 +1,50 @@
 # player_input_system.py
 """
-Extraido de ui/systems.py (18/09/2026, ver PROBLEMAS_ARQUITETURA.md item #2
-do backlog de 14, "ui/systems.py monolitico") - candidato em revisao
-multiagente antes de aplicar de verdade.
+MouseTargetingSystem — clique direito, seleciona alvo
+(CombatState.target_entity_id) e ativa PlayerAutoMove. PlayerInputSystem
+— teclado, movimento e combate do jogador local; ficam no mesmo arquivo
+por consumirem o mesmo evento de clique/input a cada frame. Extraído de
+ui/systems.py (18/09/2026, ver PROBLEMAS_ARQUITETURA.md §185, item #2
+do backlog de 14).
 """
 from __future__ import annotations
 import pygame
 import math
-import heapq
 import random
 # TODO(B4): _font é usado apenas em sistemas visuais (HUD, FloatingText). O servidor
 # importa `from systems import EnemyAISystem` e acaba carregando Pygame fonts pelo
 # caminho. Funciona com SDL_VIDEODRIVER=dummy, mas é dependência desnecessária.
 # Fix futuro: mover sistemas visuais para ClientSystems ou usar lazy import em render().
 from ui.fonts import make as _font
-from ui.ui_scale_mixin import UIScaleMixin
 from ui.ui_sizes import UI
-from ui.world_labels import WORLD_LABELS
-from ui.hud_bars import (build_player_hud, build_mob_hud, build_npc_badge, build_simple_hp_bar,
-                       RESOURCE_COLORS, HUD_GAP_PX, effects_row_offset)
 
 # Re-exporta apply_effect de core_systems para compatibilidade com todo o código
 # que já faz `from systems import apply_effect`.
-from engine.core_systems import (apply_effect, StatusEffectSystem as _CoreStatusEffectSystem,
-                          BaseCombatStateSystem as _BaseCombatStateSystem)
+from engine.core_systems import apply_effect
 try:
     from debug.mob_combat_debug import MCL as _MCL
 except ImportError:
     _MCL = None  # não disponível no ambiente do cliente
 
-from engine.components import Position, Renderable, PlayerControlled, Camera, Collider, \
-                       Enemy, AIControlled, InitialPosition, DetectionRadius, Tilemap, \
-                       TileMovement, CombatStats, Modifier, CombatState, PlayerAutoMove, \
-                       Projectile, Corpse, Inventory, EnemyTier, Equipment, Wallet, Merchant, \
-                       CharacterStats, FogOfWar, Visible, ActiveEffect, StatusEffects, \
-                       EnemyAbilities, EnemyAbilitySlot, EntityIdentity, \
-                       NpcSounds, PendingDeath, XPReward, SpawnZoneOwner, SpawnZone, \
-                       PlayerSkills, NPC, ActiveRegen, ConsumableBar, \
-                       AoeTargeting, RemoteControlled, GhostState, MapLocation, Minion, \
-                       NPCInteractionRequest
+from engine.components import Position, Renderable, PlayerControlled, Camera, Enemy, AIControlled, TileMovement, CombatStats, CombatState, PlayerAutoMove, Corpse, Equipment, CharacterStats, FogOfWar, Visible, StatusEffects, PlayerSkills, NPC, AoeTargeting, RemoteControlled, GhostState
 from engine.world import World
-from engine.tileset import TILE_SIZE, OBJECT_MAPPING
+from engine.tileset import TILE_SIZE
 from engine.utils import chebyshev, in_range, start_tile_movement, get_camera_offset, is_target_alive
-from engine.damage_calculator import resolve_attack_outcome, calculate_base_damage
 # Hoisted pro topo (14/09/2026, revisão de performance — ver
 # arquitetura/CLIENT_PERFORMANCE_REVIEW.md item 2): estavam sendo
 # reimportados dentro de RenderSystem.render(), no loop de desenho mais
 # quente do cliente (uma vez por ENTIDADE visível, todo frame). Módulos
 # puros (`from __future__ import annotations` só), sem ciclo de import
 # com ui/systems.py — seguro no topo.
-from engine.entity_disguise import get_active_appearance_override, get_animated_disguise_frame
-from engine.character_animation import (get_character_frame, resolve_display_state,
-                                        character_anchor_offset)
 from ui.combat_log import LOG
 from ui.sound_manager import SOUNDS
-from ui.floating_text import FLT, PROC, WARN
-from ui.icon_manager import ICONS
-from ui.ui_helpers import item_tooltip_lines, fill_surf
-from ui.tile_sprite_manager import TILE_SPRITES
-from ui.npc_interaction import walk_to_npc, suppress_chase
+from ui.floating_text import WARN
 from content.status_effects_data import EFFECT_DEFS
-from engine.fov import compute_fov, local_vision_blob
-from content.enemy_abilities_data import ABILITY_DEFS
-from content.merchant_data import SHOPS, INSTANCE_SHOP_STOCK_BY_CLASS
-from content.item_table import RARITY_COLORS as _SHARED_RARITY_COLORS
-import engine.quest_events as quest_events
-from engine.quest_events import fire as quest_fire
-from engine.stat_fns import add_modifier, remove_modifier, add_timed_modifier, enter_combat
+from engine.stat_fns import enter_combat
 
 # Lookup reverso skill_id → (talent_id, min_points) — fonte única em
 # world_systems (_TALENT_SKILL_REQS, usado também por is_skill_authorized
 # no gate autoritativo do servidor). Alias mantido pro gate de UI local.
-from engine.world_systems import _TALENT_SKILL_REQS as _TALENT_SKILL_REQ_SYS
 
 
 
@@ -81,97 +54,17 @@ from engine.world_systems import _TALENT_SKILL_REQS as _TALENT_SKILL_REQ_SYS
 # `from systems import EnemyAISystem` etc. Codigo de SERVIDOR deve importar
 # de world_systems diretamente (nao arrasta pygame).
 # ---------------------------------------------------------------------------
-from engine.world_systems import (
-    System, PathfindingSystem, TileValidationSystem, CombatSystem,
-    DeathHandlerSystem, CombatStateSystem, ProjectileSystem, EnemyAISystem,
-    TileMovementSystem, StatusEffectSystem, EnemyAbilitySystem, CorpseSystem,
-    SpawnZoneSystem,
-    _svc, register_services, deal_damage, find_path, get_tilemap,
-    is_tile_walkable, get_mainhand_weapon,
+from engine.world_systems import System, CombatSystem, CombatStateSystem, EnemyAISystem, deal_damage, find_path, get_tilemap, is_tile_walkable
+# _entity_click_rect/_live_target_at_world_pos moram em
+# ui/click_rect_helpers.py junto com _corpse_click_rect (18/09/2026,
+# achado da revisão multiagente do item #2 do backlog de 14) — os 3 são
+# hit-test de clique com consumidor em MAIS de um Systems/arquivo
+# (MouseTargetingSystem aqui, LootSystem em ui/loot_system.py); manter
+# qualquer um deles só no arquivo de UM dos dois Systems criaria
+# dependência de um domínio sobre o outro sem necessidade.
+from ui.click_rect_helpers import (
+    _corpse_click_rect, _entity_click_rect, _live_target_at_world_pos,
 )
-from ui.click_rect_helpers import _corpse_click_rect
-
-
-def _entity_click_rect(world: World, entity_id: int, pos,
-                       renderable) -> tuple[float, float, float, float]:
-    """(left, top, right, bottom) da área clicável de uma entidade VIVA
-    (mob/player) — ponto único de verdade, 15/09/2026 (item 5 da revisão
-    de performance, arquitetura/CLIENT_PERFORMANCE_REVIEW.md). Usa o
-    sprite REAL do catálogo (`TILE_SPRITES`) quando `renderable.sprite_id`
-    existe (torre, mob com sprite fixo) — mesma âncora de base que
-    `RenderSystem.render()` usa pra desenhar (12/08/2026, bug real:
-    clique não acertava sprite grande de torre, só um retângulo pequeno
-    de sempre). Cai pro retângulo simples (`renderable.width/height`)
-    quando não há sprite no catálogo (players, que desenham via
-    animação de personagem — `engine/character_animation.py` — nunca
-    via `Renderable.sprite_id`).
-
-    Antes desta função, `MouseTargetingSystem._enemy_at_world_pos` já
-    fazia essa conta certa (sprite real), mas `_live_target_at_world_pos`
-    (abaixo) e `_remote_player_at_world_pos`
-    (`MouseTargetingSystem`) reimplementavam só o retângulo simples —
-    mob/torre grande podia ficar clicável num caminho e não no outro.
-    NUNCA usada pra corpse — `_corpse_click_rect` (acima) é caso à parte,
-    com tolerância pequena deliberada pra quando não há sprite."""
-    spr = TILE_SPRITES.get_raw_sprite(renderable.sprite_id) if renderable.sprite_id else None
-    if spr:
-        sw, sh = spr.get_size()
-        left   = pos.x - TILE_SIZE / 2
-        right  = left + sw
-        bottom = pos.y + TILE_SIZE / 2
-        top    = bottom - sh
-        return left, top, right, bottom
-    hw = renderable.width / 2
-    hh = renderable.height / 2
-    return pos.x - hw, pos.y - hh, pos.x + hw, pos.y + hh
-
-
-def _live_target_at_world_pos(world: World, player_entity_id: int,
-                              world_x: float, world_y: float) -> bool:
-    """True se há um inimigo vivo OU player remoto vivo na posição mundo
-    (mesma bounding box de `_entity_click_rect`/`MouseTargetingSystem.
-    _enemy_at_world_pos`/`_remote_player_at_world_pos` — LootSystem e
-    MouseTargetingSystem são Systems independentes no mesmo frame, sem
-    referência uma à outra, então cada um chama a função compartilhada
-    em vez de acoplar).
-
-    Usado por LootSystem pra NUNCA competir pelo clique quando um alvo
-    (NPC/Player/Mob) ocupa o mesmo tile de um cadáver — bug real relatado
-    pelo usuário (03/08/2026): clique direito num inimigo em cima de um
-    corpo com loot fazia o personagem CAMINHAR PRO LOOT em vez de atacar
-    (LootSystem._try_open_corpse rodava sem checar se havia um alvo vivo
-    ali, e até cancelava o CombatState.target_entity_id que
-    MouseTargetingSystem já tinha setado no MESMO evento). Prioridade de
-    clique pedida pelo usuário: alvo (NPC/Player/Mob) sempre antes de
-    loot.
-
-    Checa FogOfWar.visible pro Enemy (15/09/2026 — antes não checava,
-    então um inimigo escondido no fog ainda "roubava" o clique do loot;
-    RemoteControlled nunca é fog-gated, mesma regra de
-    RenderSystem.render(), player real nunca some por fog)."""
-    _fog_vis = None
-    _fow_first = world.get_first(FogOfWar)
-    if _fow_first is not None:
-        _fog_vis = _fow_first[1].visible
-    for entity_id, pos, renderable, _, _, etm in world.get_entities_with(
-            Position, Renderable, Enemy, Visible, TileMovement):
-        if _fog_vis is not None and \
-                (etm.current_tile_x, etm.current_tile_y) not in _fog_vis:
-            continue
-        left, top, right, bottom = _entity_click_rect(world, entity_id, pos, renderable)
-        if left <= world_x <= right and top <= world_y <= bottom:
-            cs = world.get_component(entity_id, CombatStats)
-            if not cs or cs.current_hp > 0:
-                return True
-    for entity_id, pos, renderable, _, rc in world.get_entities_with(
-            Position, Renderable, Visible, RemoteControlled):
-        if entity_id == player_entity_id or rc.hp <= 0:
-            continue
-        left, top, right, bottom = _entity_click_rect(world, entity_id, pos, renderable)
-        if left <= world_x <= right and top <= world_y <= bottom:
-            return True
-    return False
-
 
 
 class MouseTargetingSystem(System):

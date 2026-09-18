@@ -247,8 +247,15 @@ padrão a quebrar, não só os bugs individuais.
 
 ### Pontos únicos de verdade (03/07/2026 — usar SEMPRE, nunca reimplementar)
 - **Sistema de gameplay novo** → `world_systems.py` (headless, ZERO pygame no
-  topo; efeitos via `from fx import FLT, SOUNDS, ...`). Sistema de UI/render →
-  `systems.py` (que re-exporta world_systems pra compatibilidade).
+  topo; efeitos via `from fx import FLT, SOUNDS, ...`). Sistema de UI/render
+  novo → arquivo de domínio próprio em `ui/` (18/09/2026, `ui/systems.py`
+  monolítico de 4913 linhas foi dividido — `ui/player_input_system.py`,
+  `ui/render_system.py`, `ui/tile_render_system.py`, `ui/shop_system.py`,
+  `ui/consumable_system.py`, `ui/loot_system.py`, `ui/skill_system.py`; ver
+  `arquitetura/MAPA_PROJETO.md` pra tabela completa) — NUNCA `ui/systems.py`,
+  que agora é só um shim de re-exportação de compatibilidade (mesmo padrão
+  que ele mesmo já usa pra re-exportar `world_systems.py`). Ver
+  PROBLEMAS_ARQUITETURA.md §185.
 - **Efeito visual/som em código compartilhado** → façade `fx.py` (no-op no
   servidor; cliente vincula via `fx.bind_client_fx()` no GameEngine).
 - **Teleporte/knockback/respawn** → `utils.snap_to_tile()` — NUNCA escrever
@@ -342,7 +349,7 @@ padrão a quebrar, não só os bugs individuais.
   o campo/componente real (nunca escreve, nunca interfere no tick/
   sincronização/expiração de cada mecanismo) e devolve um `_FakeEffect`
   sintético (mesmo padrão do shim de stun no nameplate,
-  `ui/systems.py`). Decisão do usuário (31/08/2026): migrar mecanismos
+  `ui/render_system.py`). Decisão do usuário (31/08/2026): migrar mecanismos
   já funcionando e testados (Camuflagem tem 10+ consumidores — AOI de
   visibilidade, alvo de mob, respawn/ghost; Escudo de Fogo/Bloco de Gelo
   têm tick duplicado cliente+servidor) só pra ganhar 1 ícone é risco
@@ -369,7 +376,7 @@ padrão a quebrar, não só os bugs individuais.
   tooltip de skill tem, `client/tooltip_handlers.py::
   _skill_tooltip_lines`'s cadeia de `if sid == "golpe_poderoso": ...` —
   pedido explícito do usuário pra não repetir isso aqui). Geometria de
-  hit-test (qual ícone está sob o mouse) vem de `ui/systems.py::
+  hit-test (qual ícone está sob o mouse) vem de `ui/render_system.py::
   _build_effects_row()`, que devolve `(surface, rects)` — o MESMO
   `ix`/`ICON` já usados pra desenhar, nunca duplicar esse cálculo num
   hit-test à parte (mesmo princípio já usado pela hotbar,
@@ -628,7 +635,7 @@ padrão a quebrar, não só os bugs individuais.
   única que sirva pra qualquer formato de mapa. Ver
   PROBLEMAS_ARQUITETURA.md §97.
 - **Janela de tiles visível pra varrer `object_matrix` (objeto/prop
-  maior que 1 tile)** → `ui/systems.py::TileRenderSystem.
+  maior que 1 tile)** → `ui/tile_render_system.py::TileRenderSystem.
   _object_visible_tile_range()` — NUNCA recalcular "tela em tiles + N"
   na mão num call site novo. Objeto é ancorado na BASE e o sprite
   cresce PRA CIMA/DIREITA a partir dali; a margem de corte precisa do
@@ -697,7 +704,7 @@ padrão a quebrar, não só os bugs individuais.
   método de mixin — chamável dos dois pontos sem depender de herança) —
   NUNCA reimplementar a concessão de carga num 3º lugar. Ver
   PROBLEMAS_ARQUITETURA.md §132.
-- **Perseguição genérica do mago pra usar uma skill (`ui/systems.py`)
+- **Perseguição genérica do mago pra usar uma skill (`ui/player_input_system.py`)
   para na distância da skill ESPECÍFICA que o jogador apertou
   (`CombatState.pursuit_skill_range`, client-only), nunca no mínimo
   genérico entre todas as skills da hotbar** (`_mage_attack_range()`) —
@@ -888,7 +895,7 @@ padrão a quebrar, não só os bugs individuais.
     ver `historico/ARQUITETURA ONLINE HISTORICO.md`). Todo buffer novo
     consumido em `_dispatch_tick_deltas` tem que entrar em `has_pending`
     no MESMO commit.
-  - **Cliente**: `TileRenderSystem` (`ui/systems.py`) desenha em cima de uma
+  - **Cliente**: `TileRenderSystem` (`ui/tile_render_system.py`) desenha em cima de uma
     Surface em cache indexada pela posição da CÂMERA, não pelo conteúdo do
     tile — qualquer mutação direta de `Tilemap.tile_matrix` fora do fluxo
     normal de troca de mapa precisa chamar

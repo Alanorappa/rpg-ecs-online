@@ -95,7 +95,7 @@
 | Sons posicionais online | `ui/sound_manager.py` | `play_mob_sounds_at()`, `volume_at()` |
 | Componente ECS | `engine/components.py` | categoria relevante |
 | Sistema ECS de GAMEPLAY (headless, cliente+servidor) | `engine/world_systems.py` | herdar de `System`; NUNCA importar pygame no topo |
-| Sistema ECS de UI/render/input (cliente-only) | `ui/systems.py` | herdar de `System` (re-exportado de `world_systems`) |
+| Sistema ECS de UI/render/input NOVO (cliente-only) | arquivo de domínio próprio em `ui/` (18/09/2026, ver tabela detalhada abaixo) | herdar de `System` (re-exportado de `world_systems`) — NUNCA `ui/systems.py`, que é só shim de compatibilidade |
 | Efeito visual/som em sistema compartilhado | `engine/fx.py` | `from fx import FLT, SOUNDS, ...` (no-op no servidor; cliente vincula via `bind_client_fx()`) |
 | Teleporte/knockback/respawn (escrever current_tile) | `engine/utils.py` | `snap_to_tile()` — NUNCA escrever current_tile_x/y direto |
 | Escrita final de dano em HP | `engine/core_systems.py` | `apply_damage_core()` — único lugar; mitigação/imunidade nova entra aqui |
@@ -107,14 +107,14 @@
 | Nova forma de liberar PvP entre players (duelo/arena/zona/campo de batalha) | `server/world_server.py::_pvp_allowed_between` | resolver COMPOSTO registrado via `register_pvp_context` — cada contexto novo entra como mais uma consulta ali; `pvp_enabled` é só kill-switch |
 | Duelo (convite/aceite/fim, golpe letal → 1 HP) | `server/duel_processor.py` + `client/duel_handlers.py` | `DuelProcessorMixin` (server) espelha o trade; interceptor de golpe letal via `engine/core_systems.register_lethal_interceptor` |
 | Interceptar morte (nunca deixar morrer, ex: duelo) | `engine/core_systems.py` | `register_lethal_interceptor(fn)` — hook no ponto único de dano; server registra |
-| Modal de interação com player (Negociar/Duelar/Seguir/Convidar p/ Grupo) | `client/trade_handlers.py` | `_player_popup_button_rects`/`_draw_trade_popup`/`_click_trade_popup` — aberto pelo clique direito em player amigável (`ui/systems.py`) |
+| Modal de interação com player (Negociar/Duelar/Seguir/Convidar p/ Grupo) | `client/trade_handlers.py` | `_player_popup_button_rects`/`_draw_trade_popup`/`_click_trade_popup` — aberto pelo clique direito em player amigável (`ui/player_input_system.py::MouseTargetingSystem`) |
 | Party/Grupo (convite/aceite/sair/expulsar/XP compartilhado) | `server/party_processor.py` + `client/party_handlers.py` | `PartyProcessorMixin` (server, N-ário) + comando de chat `/convidar` (`_try_handle_party_chat_command`) |
 | Zona PvP (retângulo por mapa, "solo=hostil, grupo=exceção") | `server/pvp_zone_processor.py` + `maps/<mapa>_entities.json::pvp_zones` | consultado por `_pvp_allowed_between`; geometria vem do mesmo `_entities.json` que `ambient_zones` já usa (`engine/map_loader.py::_merge_entities_json`) |
 | Bush estilo MOBA (retângulo por mapa, oculta quem não tem presença própria/de time dentro) | `server/bush_zone_processor.py` + `maps/<mapa>_entities.json::bush_zones` | consultado por `server/session.py::_can_see`; alvo travado é limpo por `WorldServer._tick_bush_target_clear` |
 | Instância privada por partida (arena/BG/dungeon futuro) | `server/world_server.py::_load_instance`/`_unload_instance`/`_template_file_of` | UM `WorldServer` só — chave sintética (`f"{template}::{id}"`) generaliza o `_map_bundles` que já isola multi-mapa; NUNCA outro processo/WorldServer (colide com globais module-level, ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.27) |
 | Time PvP temporário (arena) | `server/match_processor.py` | `Faction("arena_time_a"/"arena_time_b")` no player, sobrescreve `PLAYER_FACTION` — `can_engage` libera sem passar pelo contexto PvP (relação já sai hostil de verdade) |
 | Comando de chat novo (`/algo`) | `client/party_handlers.py::_try_handle_party_chat_command` | chamado por `client/chat_handlers.py::_send_chat_message` ANTES de mandar como texto normal — primeiro precedente de parsing de comando no chat |
-| Loot online — quem pode sacar, crédito de ouro/item | `server/loot_processor.py::request_loot` + `client/network_handlers.py::_handle_msg_loot_result` | servidor decide (dono OU mesmo grupo); cliente NUNCA credita no clique — manda `LOOT_REQUEST` (`ui/systems.py::LootSystem._online_loot_requester`) e só credita ao receber `LOOT_RESULT` — nunca reintroduzir crédito local direto do clique (duplicava ouro em grupo, §34.24) |
+| Loot online — quem pode sacar, crédito de ouro/item | `server/loot_processor.py::request_loot` + `client/network_handlers.py::_handle_msg_loot_result` | servidor decide (dono OU mesmo grupo); cliente NUNCA credita no clique — manda `LOOT_REQUEST` (`ui/loot_system.py::LootSystem._online_loot_requester`) e só credita ao receber `LOOT_RESULT` — nunca reintroduzir crédito local direto do clique (duplicava ouro em grupo, §34.24) |
 | Dar time/facção a um player (MOBA) | `engine/components.py` | anexar `Faction(faction_id="time_x")` no player — sobrescreve o default `"jogadores"` (resolução componente-primeiro em `get_entity_faction`). Em conteúdo INSTANCIADO (arena/battlefield/dungeon) isso também concede visão compartilhada com o time (players/torres/minions com a mesma Faction+instância) — ver `server/session.py::SessionManager._compute_ally_vision_centers`, §34.72 |
 | Criar mob de combate hostil ("clássico") | `engine/entity_factory.py` | `create_enemy()` (tag `Enemy`) |
 | Criar NPC de combate (guarda, etc — facção tipicamente amigável) | `engine/entity_factory.py` | `create_combat_npc()` (tag `NPC`) — ambos compartilham `_build_combat_entity()` |
@@ -142,8 +142,8 @@
 > pelo grafo de imports real, não só "impora pygame?"): **quem carrega esse
 > módulo em produção** — `content/`/`engine/` = usado pelo servidor headless
 > (direto ou transitivo); `ui/` = client-only mesmo quando o arquivo em si
-> não importa pygame (ex.: `combat_log.py`, `fov.py` — só `ui/systems.py`/
-> `game.py` os carregam, servidor nunca). Ver `historico/ARQUITETURA ONLINE
+> não importa pygame (ex.: `combat_log.py`, `fov.py` — só os arquivos de
+> `ui/`/`game.py` os carregam, servidor nunca). Ver `historico/ARQUITETURA ONLINE
 > HISTORICO.md` (Decisão 19) pro registro completo da migração
 > (mapeamento arquivo-a-arquivo, casos especiais de `__import__` dinâmico, e
 > o motivo do nome `release_tools/` em vez de `packaging/`).
@@ -217,7 +217,7 @@ rpg_ecs_online/
 │   │                                  está ativo via tabela `_APPEARANCE_SOURCES` (1 função
 │   │                                  checadora por fonte — Camuflagem/Polimorfia hoje, nova
 │   │                                  fonte = 1 função + 1 linha, nunca um novo branch em
-│   │                                  ui/systems.py). Sem componente novo nem sincronização de
+│   │                                  ui/render_system.py). Sem componente novo nem sincronização de
 │   │                                  rede nova — lê o estado que cada efeito já mantém
 │   │                                  (CombatStats.camouflage_*/StatusEffects), já sincronizado
 │   │                                  por outro caminho. Passou por 4 tentativas até acertar —
@@ -235,8 +235,27 @@ rpg_ecs_online/
 │
 ├── ui/                              ← ONLINE-ONLY na prática: client-only mesmo
 │   │                                  quando headless-clean (servidor nunca importa)
-│   ├── systems.py                   ← sistemas ECS de UI/render (re-exporta world_systems);
-│   │                                  SkillSystem herda a mixin de engine/skill_handlers.py
+│   ├── systems.py                   ← SHIM DE COMPATIBILIDADE (18/09/2026, ver
+│   │   PROBLEMAS_ARQUITETURA.md §185) — era 4913 linhas/10 Systems, dividido
+│   │   nos 7 arquivos abaixo; código NOVO importa direto do domínio certo,
+│   │   NUNCA daqui (`ui/systems.py` só re-exporta pra quem já importava de lá)
+│   ├── player_input_system.py       ← MouseTargetingSystem (clique direito/
+│   │   seleção de alvo), PlayerInputSystem (teclado/movimento/combate do
+│   │   jogador) — ambos "leem input e decidem ação do jogador"
+│   ├── render_system.py             ← RenderSystem (sprites/HP/nameplate),
+│   │   CameraSystem (câmera segue o jogador) — câmera define o offset que
+│   │   o render usa, mesmo arquivo por acoplamento direto
+│   ├── tile_render_system.py        ← TileRenderSystem (terreno/objetos),
+│   │   FogSystem (shadowcasting/névoa de guerra) — caches irmãos
+│   │   (`FogOfWar.version` lido por `TileRenderSystem`, ver §53)
+│   ├── shop_system.py               ← ShopSystem (painel de loja NPC)
+│   ├── consumable_system.py         ← ConsumableSystem (barra de consumíveis)
+│   ├── loot_system.py               ← LootSystem (painel de saque de cadáver)
+│   ├── skill_system.py              ← SkillSystem (hotbar de habilidades,
+│   │                                  herda a mixin de engine/skill_handlers.py)
+│   ├── click_rect_helpers.py        ← hit-test de clique compartilhado entre
+│   │   MouseTargetingSystem e LootSystem (_corpse_click_rect,
+│   │   _entity_click_rect, _live_target_at_world_pos)
 │   ├── spell_system.py             ← SpellCastSystem client-side (cast bar)
 │   ├── combat_log.py               ← CombatLog/LOG — histórico da aba "Combate" do chat
 │   ├── chat_bubble.py               ← balão de fala acima da cabeça
@@ -254,7 +273,7 @@ rpg_ecs_online/
 │   │   ícone+timer do jogador local, ao lado do minimapa — lê StatusEffects
 │   │   filtrado por is_buff + _gather_extra_buffs() (Escudo de Fogo/Bloco de
 │   │   Gelo/Camuflagem/procs binários, cada um com mecanismo próprio),
-│   │   reaproveita ui/systems.py::_build_effects_row
+│   │   reaproveita ui/render_system.py::_build_effects_row
 │   ├── map_markers.py               ← MapMarker/collect_markers — pontos de
 │   │   interesse do mapa/minimapa (morte, quest givers, treinadores,
 │   │   mercadores), consumido por map_overlay.py/minimap.py

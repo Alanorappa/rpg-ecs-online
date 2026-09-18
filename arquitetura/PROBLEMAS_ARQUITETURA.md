@@ -21120,3 +21120,92 @@ talent or minimap or camera"` (221) — sem regressão.
 (`ui/systems.py` monolítico, 4954 linhas/10 Systems) — mudança
 estrutural maior, tratada como iniciativa separada por recomendação já
 feita ao usuário, não espremida na fila sequencial.
+
+## 185. Backlog dos 14 itens antigos, item #2 — divisão de `ui/systems.py` (4913 linhas/10 Systems) em 7 arquivos por domínio
+
+18/09/2026. Último item do backlog antigo de 14. Usuário pediu revisão
+multiagente (5 agentes: guardrails de arquitetura, qualidade de código,
+comparação com mercado/referências, performance, integração/regressão)
+ANTES de aplicar — implementado num git worktree isolado
+(`candidate-split-ui-systems`) como candidato, nunca direto nos
+arquivos reais.
+
+**Divisão** (nenhuma classe chamava outra diretamente ANTES da
+divisão — confirmado por grep; corpo de cada System/helper movido
+byte-idêntico, confirmado por diff AST):
+- `ui/player_input_system.py` — MouseTargetingSystem, PlayerInputSystem
+- `ui/render_system.py` — RenderSystem, CameraSystem
+- `ui/tile_render_system.py` — TileRenderSystem, FogSystem
+- `ui/shop_system.py`, `ui/consumable_system.py`, `ui/loot_system.py`,
+  `ui/skill_system.py`
+- `ui/click_rect_helpers.py` — `_corpse_click_rect`, `_entity_click_rect`,
+  `_live_target_at_world_pos` (hit-test de clique compartilhado entre
+  MouseTargetingSystem e LootSystem)
+- `ui/systems.py` — shim de re-exportação (mesmo padrão que o arquivo
+  já usava pra re-exportar `engine/world_systems.py`) — os 32 nomes
+  reais consumidos por 16+ arquivos externos (`game.py`,
+  `client/hotbar_handlers.py`, `ui/buff_bar.py`,
+  `client/remote_entity_handlers.py`, `ui/spell_system.py`, testes)
+  continuam resolvendo sem mudança nenhuma nos consumidores —
+  confirmado por análise AST do repo inteiro (imports E acesso via
+  `import ui.systems as X; X.nome`).
+
+**Revisão multiagente — rodada 1 (candidato inicial)**:
+- **Performance**: APROVADO, com medição real (não suposição) — bloco
+  de import duplicado nos 7 arquivos custa 0,03% do tempo de startup
+  (cache `sys.modules` evita reimportar de verdade); hot path
+  bytecode-idêntico ao original (`LOAD_GLOBAL` continua `LOAD_GLOBAL`,
+  nunca virou `LOAD_ATTR` cross-módulo); caches de módulo
+  (`_GROUND_EFFECT_SPRITES`, `_OBJECT_SCAN_MARGIN_CACHE`) não foram
+  duplicados.
+- **Guardrails de arquitetura**: REPROVADO — (1) zero atualização de
+  `CLAUDE.md`/`MAPA_PROJETO.md`/`SISTEMAS_ECS.md` no mesmo commit,
+  violando a regra "Isso vale NO MESMO commit/sessão da mudança,
+  nunca depois que sobrar tempo"; (2) `_live_target_at_world_pos`
+  ficou em `ui/player_input_system.py` mas só é chamado de
+  `ui/loot_system.py` — acoplamento novo entre domínios, tratamento
+  inconsistente com `_corpse_click_rect` (que virou módulo
+  compartilhado); (3) header de import completo copiado nos 7
+  arquivos sem poda, com comentários que descrevem código que não
+  está mais ali (ex: comentário sobre `RenderSystem.render()` em
+  arquivos sem `RenderSystem`).
+- **Comparação com mercado/referências**: REPROVADO, mesmos achados
+  (2) e (3) acima, confirmados independentemente — com quantificação
+  (723 imports não usados no total pela contagem desse agente,
+  288 pela recontagem própria via AST antes da correção) e comparação
+  com Veloren/Bevy/AzerothCore (agrupamento por domínio, não 1 classe
+  por arquivo, É o padrão de mercado — approved nesse ponto; shim de
+  re-exportação também é padrão reconhecido, "Strangler Fig"/Fowler).
+- **Qualidade de código e integração/regressão**: verificadas
+  diretamente (não via agente, pra não sobrecarregar a máquina rodando
+  5 agentes pesados em paralelo — o processo foi interrompido 2x por
+  reinício de PC durante a rodada original) — suíte completa (1740
+  testes) sem regressão real, só as 2 falhas de timer já conhecidas.
+
+**Correções aplicadas** (rodada 2, mesmo commit candidato):
+1. `_entity_click_rect`/`_live_target_at_world_pos` movidos pra
+   `ui/click_rect_helpers.py`, junto com `_corpse_click_rect` — os 3
+   formam 1 grupo (hit-test de clique) com consumidor em Systems de
+   arquivos diferentes, tratamento agora simétrico.
+2. Imports podados em todos os 7 arquivos (288 nomes removidos,
+   script próprio baseado em AST — nunca remove linha inteira de um
+   `from X import (a, b, c)` se pelo menos 1 nome da linha ainda for
+   usado). Comentários órfãos (re-export de `world_systems`,
+   "hoisted pro topo de `RenderSystem.render()`") removidos/corrigidos
+   nos arquivos onde não descreviam mais nada real.
+3. `CLAUDE.md` (regra de roteamento "Sistema de UI/render novo" +
+   5 pontos que citavam `ui/systems.py`), `MAPA_PROJETO.md` (linha da
+   tabela + árvore de arquivos com os 7 novos + 3 pointers), e
+   `SISTEMAS_ECS.md` (1 pointer) atualizados no mesmo commit — cada
+   um redirecionado pro arquivo de domínio real.
+4. Esta seção — as docstrings dos 7 arquivos já citavam "ver
+   PROBLEMAS_ARQUITETURA.md item #2 do backlog de 14" antes dela
+   existir; agora existe.
+
+**Teste**: suíte completa re-rodada depois de cada correção — sem
+regressão. Revert-to-confirm não se aplica da forma usual aqui (não é
+correção de bug, é refactor de organização — corpo de código
+byte-idêntico ao original, confirmado por diff AST na própria revisão
+multiagente).
+
+**Backlog dos 14 itens antigos: 14 de 14 concluídos.**

@@ -219,7 +219,7 @@ list[(tx,ty,radius)]]`. `_build_update_for_session` (via parâmetro
 (posição própria + centros de aliados) em vez de um único centro.
 
 O MESMO dado é reenviado ao dono via `AOI_UPDATE.ally_vision_centers`
-pra alimentar `FogSystem` (`ui/systems.py`, client-side) — aliado também
+pra alimentar `FogSystem` (`ui/tile_render_system.py`, client-side) — aliado também
 "explora" a névoa do minimapa e o LOS de renderização com shadowcasting
 PRÓPRIO (`ui/fov.py::compute_fov`), a partir da posição dele, não da do
 player. Ver `historico/ARQUITETURA ONLINE HISTORICO.md` §34.72/§34.72.1 pro design completo.
