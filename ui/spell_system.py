@@ -102,6 +102,8 @@ class SpellCastSystem(System):
     O método recebe (entity_id, target_id). Para AOE sem alvo, target_id = -1.
     """
 
+    _TIRO_AIM_ANGLE_BUCKET_DEG = 5
+
     def __init__(self, world: World, screen: pygame.Surface, player_proj_system=None):
         self.world  = world
         self.world_surf = screen
@@ -114,6 +116,12 @@ class SpellCastSystem(System):
         self._player_proj_system = player_proj_system
         # Sprite da mira de Tiro Múltiplo — lazy-loaded e escalado na primeira renderização
         self._tiro_aim_img: "pygame.Surface | None" = None
+        # Cache de Surface rotacionada por ângulo quantizado (17/09/2026, ver
+        # PROJECT_WIDE_REVIEW.md item #7) — chave = ângulo em graus, múltiplo
+        # de _TIRO_AIM_ANGLE_BUCKET_DEG. Espaço de chaves NATURALMENTE
+        # limitado (360/bucket, hoje 72 no máximo) — não precisa de teto/
+        # eviction explícito como _outline_cache (chave sem limite natural).
+        self._tiro_aim_rot_cache: dict[int, pygame.Surface] = {}
         # Dispatch de conclusão de cast — sem if/elif por spell_id.
         # Chave = spell_id do SKILL_CATALOG. Valor = nome do método nesta classe.
         # Adicionar nova spell com cast: inserir entrada aqui.
@@ -596,13 +604,24 @@ class SpellCastSystem(System):
             angle_deg  = math.degrees(math.atan2(_my - py, _mx - px))
             pygame_rot = 45.0 - angle_deg   # rotação CCW que alinha BR com o mouse
 
-            rotated = pygame.transform.rotate(img, pygame_rot)
+            # Quantiza o ângulo em buckets de 5° — sem isso, pygame.transform.
+            # rotate() cria uma Surface nova TODO frame (mouse se move a cada
+            # frame), mesmo padrão de quantização já usado pra alpha em
+            # ui/floating_text.py (DashTrailManager.render). Diferença visual
+            # imperceptível; o ângulo quantizado (não o bruto) é reusado
+            # também no cálculo de blit abaixo, pra rotação e offset baterem.
+            angle_key = int(round(pygame_rot / self._TIRO_AIM_ANGLE_BUCKET_DEG)
+                            ) * self._TIRO_AIM_ANGLE_BUCKET_DEG % 360
+            rotated = self._tiro_aim_rot_cache.get(angle_key)
+            if rotated is None:
+                rotated = pygame.transform.rotate(img, angle_key)
+                self._tiro_aim_rot_cache[angle_key] = rotated
             rW, rH  = rotated.get_size()
 
             # Calcula blit para manter o TL original em (px, py).
             # Matriz CCW em Y-down: x'= x·cos + y·sin, y'= -x·sin + y·cos
             # TL offset do centro original: (-iW/2, -iH/2)
-            alpha   = math.radians(pygame_rot)
+            alpha   = math.radians(angle_key)
             ca, sa  = math.cos(alpha), math.sin(alpha)
             tl_rx   = (-iW / 2) * ca + (-iH / 2) * sa
             tl_ry   = -(-iW / 2) * sa + (-iH / 2) * ca

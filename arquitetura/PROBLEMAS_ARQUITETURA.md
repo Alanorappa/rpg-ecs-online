@@ -20695,3 +20695,39 @@ comportamento, só de custo).
 Suíte: `test_remote_move_queue_deque.py` (3) + `test_client_ui.py` +
 `test_interceptar_no_early_auto_attack.py` (184 no total) — sem
 regressão.
+
+## 178. Backlog dos 14 itens antigos, item #7 — reticle/mira do Tiro Múltiplo recriava Surface rotacionada todo frame
+
+17/09/2026. `SpellCastSystem.render()` (`ui/spell_system.py`, mira
+direcional do Tiro Múltiplo) chamava `pygame.transform.rotate(img,
+pygame_rot)` com o ângulo BRUTO (player→mouse) todo frame — mouse se
+move a cada frame na prática, então uma Surface rotacionada nova era
+alocada 60x/segundo enquanto o jogador mirava a skill. Sem bug de
+comportamento (mira sempre apontou certo), só custo de CPU/alocação
+desnecessário.
+
+**Fix**: ângulo quantizado em buckets de 5°
+(`SpellCastSystem._TIRO_AIM_ANGLE_BUCKET_DEG`), mesmo padrão já usado
+pra alpha em `ui/floating_text.py::DashTrailManager.render()`
+(quantização pra reduzir cardinalidade de cache, não pra mudar
+resultado visual — diferença de até 2.5° é imperceptível). Cache
+`self._tiro_aim_rot_cache: dict[int, Surface]`, chave = ângulo
+quantizado (0-355, múltiplo de 5) — espaço de chaves NATURALMENTE
+limitado a 72 entradas (360/5), diferente de `_outline_cache` (que
+precisa de teto explícito porque a chave não tem limite natural). O
+ângulo QUANTIZADO (não o bruto) é reusado também no cálculo de offset
+de blit (matriz de rotação) — garante que a Surface cacheada e o
+posicionamento calculado sempre correspondem ao mesmo ângulo exato.
+
+**Teste** (`tests/test_tiro_multiplo_reticle_cache.py`, novo): 3 casos
+— mouse na mesma posição em 2 frames reusa a MESMA Surface (`assertIs`,
+não só `assertEqual`); mover o mouse pra um ângulo bem diferente cria
+uma 2ª entrada; girar o mouse em volta do player em passos de 3°
+(mais fino que o bucket de 5°) confirma que o cache nunca ultrapassa
+72 entradas. Revert-to-confirm: `git stash` de `ui/spell_system.py` →
+`AttributeError: 'SpellCastSystem' object has no attribute
+'_tiro_aim_rot_cache'` nos 3 testes, exatamente como esperado.
+
+Suíte: `test_tiro_multiplo_reticle_cache.py` (3) + `test_client_ui.py`
+(175) + `pytest tests/ -k "tiro_multiplo or spell"` (5) — sem
+regressão.

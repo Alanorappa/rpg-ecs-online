@@ -277,7 +277,7 @@ como duplicação de risco, só de assinatura).
 | 4 | `_cheby()` duplicado (2 arquivos reais) | **✅ concluído 17/09/2026** — mesmo achado do item de Convergência já corrigido em §173 (`PROBLEMAS_ARQUITETURA.md`). |
 | 5 | `get_entities_with()` sem variante singleton (43 ocorrências) | PROCEDE, cresceu desde a última auditoria |
 | 6 | Fila de mob remoto com `list.pop(0)` em vez de `deque` | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §177. As 3 filas (`_mob_move_queues`/`_remote_player_move_queues`/`_self_move_queue`) viraram `collections.deque`, drenagem trocou `.pop(0)` (O(n)) por `.popleft()` (O(1)). Sem bug de comportamento, só custo. |
-| 7 | Reticle/mira do Tiro Múltiplo sem cache de rotação | PROCEDE |
+| 7 | Reticle/mira do Tiro Múltiplo sem cache de rotação | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §178. Ângulo quantizado em buckets de 5°, `Surface` rotacionada cacheada por bucket (espaço de chaves naturalmente limitado a 72). Sem bug de comportamento, só custo. |
 | 8 | `IconManager._cache` sem teto/eviction | PROCEDE |
 | 9 | `FloatingTextManager`/`DashTrailManager`/`ProcTextManager` sem remoção in-place | PROCEDE |
 | 10 | Sem atlas de ícones | PROCEDE, cresceu (54→67 PNGs) |
@@ -286,12 +286,11 @@ como duplicação de risco, só de assinatura).
 | 13 | Imports mortos de loot/spawn offline em `ui/systems.py` | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §176. Linha mudou (58-59), confirmado. |
 | 14 | `TILE_SPRITES`/`is_target_alive` reimportados localmente | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §176. |
 
-Itens #1, #4, #6, #11, #12, #13, #14 concluídos em 17/09/2026 (fila
+Itens #1, #4, #6, #7, #11, #12, #13, #14 concluídos em 17/09/2026 (fila
 priorizada, atacando um a um/em lotes por decisão do usuário). Restam
 #2 (`ui/systems.py` monolítico), #3 (`BuffBar` sem cache), #5
-(`get_entities_with()` singleton), #7 (reticle sem cache de rotação),
-#8 (`IconManager` sem teto), #9 (managers sem remoção in-place), #10
-(sem atlas de ícones).
+(`get_entities_with()` singleton), #8 (`IconManager` sem teto), #9
+(managers sem remoção in-place), #10 (sem atlas de ícones).
 
 ---
 
