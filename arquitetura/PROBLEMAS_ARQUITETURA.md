@@ -20743,8 +20743,8 @@ limites, igualando silenciosamente 2 posições que deveriam gerar
 ângulos diferentes. Corrigido trocando por monkeypatch direto de
 `pygame.mouse.get_pos` (padrão já usado em
 `tests/test_quest_reward_ui.py`), que não depende de geometria real de
-janela nenhuma. Suíte completa re-rodada depois do fix — sem falha
-(ver contagem exata no commit).
+janela nenhuma. Suíte completa re-rodada depois do fix — 1710 casos,
+sem falha.
 
 ## 179. Backlog dos 14 itens antigos, item #3 — `BuffBar.render()` reconstruía Surface + fonte todo frame
 
