@@ -20965,3 +20965,17 @@ no attribute 'ICONS'` / `AssertionError: None != 'skill_...'`).
 Suíte: `test_talent_node_icon.py` (4) + `test_icon_atlas.py` (9) +
 `test_client_ui.py` (175) + `pytest tests/ -k "talent"` (23) — sem
 regressão.
+
+**Follow-up (mesma sessão, pedido do usuário)**: ícone de talento
+esticava só até `NODE_ICON_SIZE=40` (deixava margem pro contador/
+estrela ao redor) — usuário pediu pra preencher o slot INTEIRO (64px),
+contador/estrela desenham por cima do ícone esticado em vez de ao
+lado. `NODE_ICON_SIZE` removido (agora sem uso); `ICONS.get(icon_key,
+r.width)` usa a largura real do nó (já escalada pela UI,
+`self._node_rect()`) em vez da constante fixa. Teste reforçado —
+`test_talento_com_icon_chama_icons_get_com_a_chave_certa` agora também
+verifica que o tamanho pedido ao `ICONS.get()` bate exatamente com
+`node_r.width` (antes só checava a CHAVE do ícone, não o tamanho).
+Revert-to-confirm: `git stash` de `ui/talent_system.py` → tamanho
+pedido `33` (escalado de 40) em vez do `53` esperado (escalado de 64),
+exatamente a diferença proporcional certa.

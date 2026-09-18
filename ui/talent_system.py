@@ -31,11 +31,6 @@ GRID_ORIGIN_Y = UI.TALENTS_GRID_ORIGIN_Y   # margem superior dentro do painel
 
 TOOLTIP_W     = UI.TALENTS_TOOLTIP_W   # largura do tooltip flutuante
 
-# Ícone de talento (17/09/2026, ver PROBLEMAS_ARQUITETURA.md §182) —
-# menor que o nó (64px) pra deixar margem pro contador (canto sup.
-# direito) e a estrela de "desbloqueia skill" (canto inf. direito).
-NODE_ICON_SIZE = 40
-
 # Cores
 C_BG         = (14, 10, 6, 230)
 C_BORDER     = (100, 80, 50)
@@ -454,8 +449,11 @@ class TalentSystem(UIScaleMixin):
             self.screen.blit(fill_surf((ico_w, ico_h), (*ico_col, 80)), ico_r.topleft)
 
         # ── Ícone (ou fallback: inicial do nome centralizada) ──
+        # Preenche o slot INTEIRO (18/09/2026, pedido do usuário —
+        # antes era menor, com margem pro contador/estrela; agora
+        # esses 2 desenham por CIMA do ícone esticado, não ao lado).
         icon_key  = t.get("icon")
-        icon_surf = ICONS.get(icon_key, self._u(NODE_ICON_SIZE)) if icon_key else None
+        icon_surf = ICONS.get(icon_key, r.width) if icon_key else None
         if icon_surf is not None:
             icon_r = icon_surf.get_rect(center=r.center)
             self.screen.blit(icon_surf, icon_r)

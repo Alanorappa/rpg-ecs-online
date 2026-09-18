@@ -50,7 +50,7 @@ class TestTalentNodeIconLookup(unittest.TestCase):
         self._orig_get = talent_system_mod.ICONS.get
         self.calls = []
         def _spy(name, size):
-            self.calls.append(name)
+            self.calls.append((name, size))
             return self._orig_get(name, size)
         talent_system_mod.ICONS.get = _spy
 
@@ -60,9 +60,12 @@ class TestTalentNodeIconLookup(unittest.TestCase):
     def test_talento_com_icon_chama_icons_get_com_a_chave_certa(self):
         talent_id = "cav_golpe_debilitante"
         self.assertEqual(TALENTS[talent_id]["icon"], "skill_golpe_debilitante")
-        panel = self.sys_._panel_rect()
+        panel  = self.sys_._panel_rect()
+        node_r = self.sys_._node_rect(panel, talent_id)
         self.sys_._render_node(panel, talent_id, self.tt, (80, 200, 100))
-        self.assertIn("skill_golpe_debilitante", self.calls)
+        self.assertIn(("skill_golpe_debilitante", node_r.width), self.calls,
+                      "tamanho pedido ao ICONS.get() deveria ser exatamente o do slot do "
+                      "talento (18/09/2026, pedido do usuário: ícone preenche o slot inteiro)")
 
     def test_talento_sem_icon_nunca_chama_icons_get(self):
         # cav_reflexos não desbloqueia skill nenhuma -> icon=None
@@ -84,7 +87,7 @@ class TestTalentNodeIconLockedDimming(unittest.TestCase):
     def setUp(self):
         self.sys_, self.tt = _make_system_and_tree()
         self._orig_get = talent_system_mod.ICONS.get
-        red = pygame.Surface((talent_system_mod.NODE_ICON_SIZE,) * 2, pygame.SRCALPHA)
+        red = pygame.Surface((talent_system_mod.NODE_W,) * 2, pygame.SRCALPHA)
         red.fill((255, 0, 0, 255))
         talent_system_mod.ICONS.get = lambda name, size: red
 
