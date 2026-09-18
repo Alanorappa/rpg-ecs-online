@@ -20783,3 +20783,47 @@ object has no attribute '_row_cache_surf'` nos 3 testes.
 
 Suíte: `test_buff_bar_row_cache.py` (3) + `test_buff_bar_tooltip.py`
 (6) + `test_client_ui.py` (175) — sem regressão.
+
+## 180. Backlog dos 14 itens antigos, item #9 — `FloatingTextManager`/`DashTrailManager`/`ProcTextManager` reconstruíam a lista inteira todo frame
+
+17/09/2026. Último item do lote de 4 (#6/#7/#3/#9) atacados juntos por
+decisão do usuário. Os 3 managers de texto/rastro flutuante
+(`ui/floating_text.py`) tinham `update(dt)` idêntico: `alive = []; for
+e in self._entries: ...; if vivo: alive.append(e); self._entries =
+alive` — reconstrói a lista inteira (aloca uma nova) TODO frame, mesmo
+quando nada expirou. Sem bug de comportamento (a remoção sempre
+funcionou certo), só custo que cresce com o nº de entradas ativas (AoE
+com muitos hits simultâneos).
+
+**Fix**: `_prune_expired_inplace(entries, dt, tick_fn)` (novo, função
+de módulo) — compactação de 1 passada só, IN PLACE (mesmo objeto
+lista, nunca aloca um novo): entradas vivas são copiadas pra trás no
+início da própria lista, o resto é truncado no final (`del
+entries[write:]`) — preserva ordem relativa dos vivos (importa pro
+empilhamento visual de `FloatingTextManager`/`ProcTextManager`, que
+itera a lista pra decidir `offset_y` de textos novos). `tick_fn(e, dt)
+-> bool` aplica o decremento de tempo de vida específico de cada
+manager (só `timer -= dt` pra `DashTrailManager`/`ProcTextManager`;
+`timer -= dt` + `offset_y += speed_y * dt` pra `FloatingTextManager`)
+e devolve se a entrada continua viva — os 3 `update()` viraram uma
+chamada de 4 linhas pro helper compartilhado, em vez de repetir o
+mesmo padrão 3x (`_entries`/`_segments`, nomes diferentes por classe,
+lógica idêntica).
+
+**Teste** (`tests/test_floating_text_prune_inplace.py`, novo): o
+helper em isolamento (remove expirados preservando ordem, mesma
+`id()` de lista antes/depois, lista vazia não quebra, todos expirados
+esvazia certo) + os 3 managers reais (instâncias próprias, não os
+singletons globais `FLT`/`DASH_TRAIL`/`PROC` — evita vazar estado
+entre testes) confirmando que continuam expirando/removendo entrada
+certo depois da troca pro helper. Revert-to-confirm: `git stash` de
+`ui/floating_text.py` → `ImportError: cannot import name
+'_prune_expired_inplace'` na coleta do teste.
+
+Suíte: `test_floating_text_prune_inplace.py` (6) + `test_client_ui.py`
+(175) + `pytest tests/ -k "floating or dash_trail or proc_text or
+interceptar"` (22) — sem regressão.
+
+**Lote de 4 itens (#6/#7/#3/#9) concluído** — todos os 4 items da fila
+Tier 3 que o usuário pediu pra atacar juntos ("Pode atacar os 4") estão
+implementados, testados e documentados (§177-§180).

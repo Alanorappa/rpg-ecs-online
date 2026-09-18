@@ -3,6 +3,32 @@
 import pygame
 from ui.fonts import make as _font
 
+
+def _prune_expired_inplace(entries: list, dt: float, tick_fn) -> None:
+    """Remove entradas expiradas de `entries` IN PLACE — mesma lista,
+    sem alocar uma nova (17/09/2026, ver PROJECT_WIDE_REVIEW.md item
+    #9). `FloatingTextManager`/`DashTrailManager`/`ProcTextManager`
+    reconstruíam a lista "viva" inteira via `alive = [...]; self.
+    _entries = alive` TODO frame — irrelevante em volume normal (poucos
+    textos ativos), mas custo que cresce com AoE de muitos hits
+    simultâneos. Compactação de 1 passada só (padrão clássico de
+    "remove-in-place preservando ordem"): entradas vivas são copiadas
+    pra trás no início da própria lista, o resto é truncado no final —
+    nunca reordena (ordem importa pro empilhamento visual de
+    FloatingTextManager/ProcTextManager).
+
+    `tick_fn(entry, dt) -> bool` aplica o decremento de tempo de vida
+    (e qualquer outra mutação por-frame) específico de cada gerenciador
+    e devolve `True` se a entrada continua viva."""
+    write = 0
+    for read in range(len(entries)):
+        e = entries[read]
+        if tick_fn(e, dt):
+            if write != read:
+                entries[write] = e
+            write += 1
+    del entries[write:]
+
 # Cache de texto com CONTORNO (pedido do usuário 15/07/2026: "está muito
 # ruim sem contorno") — chave (id(font), text, color, outline_color,
 # thickness). font.render() em si já é cacheado por CachedFont
@@ -114,13 +140,11 @@ class FloatingTextManager:
         ))
 
     def update(self, dt: float) -> None:
-        alive = []
-        for e in self._entries:
+        def _tick(e: FloatingTextEntry, dt: float) -> bool:
             e.timer    -= dt
             e.offset_y += e.speed_y * dt   # deriva lentamente para cima
-            if e.timer > 0:
-                alive.append(e)
-        self._entries = alive
+            return e.timer > 0
+        _prune_expired_inplace(self._entries, dt, _tick)
 
     def render(self, screen: pygame.Surface,
                camera_offset_x: float, camera_offset_y: float,
@@ -217,12 +241,10 @@ class DashTrailManager:
         self._segments.append(_TrailSegment(wx, wy, self.DURATION, w, h))
 
     def update(self, dt: float) -> None:
-        alive = []
-        for s in self._segments:
+        def _tick(s: _TrailSegment, dt: float) -> bool:
             s.timer -= dt
-            if s.timer > 0:
-                alive.append(s)
-        self._segments = alive
+            return s.timer > 0
+        _prune_expired_inplace(self._segments, dt, _tick)
 
     def render(self, screen: "pygame.Surface",
                camera_offset_x: float, camera_offset_y: float) -> None:
@@ -345,12 +367,10 @@ class ProcTextManager:
         self._entries.append(_ProcEntry(text, color, duration if duration is not None else self.DURATION))
 
     def update(self, dt: float) -> None:
-        alive = []
-        for e in self._entries:
+        def _tick(e: _ProcEntry, dt: float) -> bool:
             e.timer -= dt
-            if e.timer > 0:
-                alive.append(e)
-        self._entries = alive
+            return e.timer > 0
+        _prune_expired_inplace(self._entries, dt, _tick)
 
     def render(self, screen: "pygame.Surface") -> None:
         if not self._entries:
