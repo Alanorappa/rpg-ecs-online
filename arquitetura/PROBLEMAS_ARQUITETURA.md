@@ -20979,3 +20979,42 @@ verifica que o tamanho pedido ao `ICONS.get()` bate exatamente com
 Revert-to-confirm: `git stash` de `ui/talent_system.py` → tamanho
 pedido `33` (escalado de 40) em vez do `53` esperado (escalado de 64),
 exatamente a diferença proporcional certa.
+
+## 183. Backlog dos 14 itens antigos, item #8 — `IconManager._cache` sem teto/eviction
+
+18/09/2026. `IconManager._cache` (`ui/icon_manager.py`) crescia sem
+limite — chave é `f"{name}@{size}"`, e o MESMO ícone é pedido em
+vários tamanhos diferentes ao longo do jogo (hotbar, tooltip,
+inventário, loja, etc.), então a cardinalidade real não é só "1 por
+ícone catalogado", cresce com o produto ícone×tamanho. Inconsistente
+com o padrão já usado em `ui/floating_text.py::_outline_cache` e
+`ui/ui_helpers.py::_FILL_CACHE` (ambos com teto explícito).
+
+**Fix**: `IconManager._CACHE_MAX = 512` (mesmo valor de
+`_OUTLINE_CACHE_MAX`, mesma ordem de grandeza de uso) — `get()` limpa
+o cache INTEIRO (`self._cache.clear()`) quando estoura, antes de
+guardar a entrada nova. Mesma disciplina simples de sempre neste
+projeto: `clear()` total, nunca eviction parcial/LRU — cache
+reconstrói sozinho sob demanda no próximo frame, sem custo de manter
+uma estrutura de LRU real por um ganho marginal.
+
+**Teste** (`tests/test_icon_manager_cache_eviction.py`, novo, 4
+casos): cache nunca ultrapassa o teto mesmo pedindo 50 tamanhos
+diferentes do mesmo ícone; estourar o teto limpa TUDO (não evicta
+parcial — só a entrada recém-inserida sobra); continua devolvendo o
+ícone certo (tamanho correto) depois de limpar; ícone inexistente
+(`None` cacheado) também conta pro teto sem quebrar. Revert-to-
+confirm: `git stash` de `ui/icon_manager.py` → 3 dos 4 testes falham
+(`6 not less than or equal to 5`, etc.) — o 4º passa mesmo sem o fix
+porque não depende do teto (só confirma que o ícone certo continua
+resolvendo).
+
+Suíte: `test_icon_manager_cache_eviction.py` (4) + `test_icon_atlas.py`
+(9) + `test_icon_key_migration.py` + `test_client_ui.py` (194 no
+total) — sem regressão.
+
+**Backlog dos 14 itens antigos: 12 de 14 concluídos.** Restam #2
+(`ui/systems.py` monolítico, 4954 linhas/10 Systems) e #5
+(`get_entities_with()` sem variante singleton, 43 ocorrências) —
+ambos mudança estrutural maior, tratados como iniciativa separada por
+recomendação já feita ao usuário, não espremidos na fila sequencial.

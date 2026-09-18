@@ -21,6 +21,13 @@ from paths import resource_path
 class IconManager:
     ICON_DIR = "assets/icons"
 
+    # Teto/eviction (18/09/2026, ver PROBLEMAS_ARQUITETURA.md §183) —
+    # mesmo padrão já usado em `ui/floating_text.py::_outline_cache` e
+    # `ui/ui_helpers.py::_FILL_CACHE`: dict com teto explícito, `clear()`
+    # total quando estoura (nunca eviction parcial/LRU — simplicidade
+    # sobre otimalidade, cache reconstrói sozinho no próximo frame).
+    _CACHE_MAX = 512
+
     def __init__(self):
         self._cache: dict[str, pygame.Surface | None] = {}
 
@@ -34,6 +41,8 @@ class IconManager:
             return self._cache[key]
         raw  = self._load_raw(name)
         surf = pygame.transform.scale(raw, (size, size)) if raw is not None else None
+        if len(self._cache) >= self._CACHE_MAX:
+            self._cache.clear()
         self._cache[key] = surf
         return surf
 

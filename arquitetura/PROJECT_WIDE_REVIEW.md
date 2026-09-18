@@ -278,7 +278,7 @@ como duplicação de risco, só de assinatura).
 | 5 | `get_entities_with()` sem variante singleton (43 ocorrências) | PROCEDE, cresceu desde a última auditoria |
 | 6 | Fila de mob remoto com `list.pop(0)` em vez de `deque` | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §177. As 3 filas (`_mob_move_queues`/`_remote_player_move_queues`/`_self_move_queue`) viraram `collections.deque`, drenagem trocou `.pop(0)` (O(n)) por `.popleft()` (O(1)). Sem bug de comportamento, só custo. |
 | 7 | Reticle/mira do Tiro Múltiplo sem cache de rotação | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §178. Ângulo quantizado em buckets de 5°, `Surface` rotacionada cacheada por bucket (espaço de chaves naturalmente limitado a 72). Sem bug de comportamento, só custo. |
-| 8 | `IconManager._cache` sem teto/eviction | PROCEDE |
+| 8 | `IconManager._cache` sem teto/eviction | **✅ concluído 18/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §183. `_CACHE_MAX = 512` (mesmo padrão de `_outline_cache`/`_FILL_CACHE`), `clear()` total ao estourar. |
 | 9 | `FloatingTextManager`/`DashTrailManager`/`ProcTextManager` sem remoção in-place | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §180. Helper compartilhado `_prune_expired_inplace()` (compactação de 1 passada, sem alocar lista nova) substituiu o padrão repetido 3x. Sem bug de comportamento, só custo. |
 | 10 | Sem atlas de ícones | **✅ concluído 18/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §181/§182. Fase 1: `atlas_skills.png`/`atlas_items.png` (256 slots cada, 49 catalogados, resto em branco pra crescer) + `tools/build_icon_atlas.py` (script aditivo). Fase 2: nós de talento que desbloqueiam skill (13 de 44) mostram o ícone de verdade, reaproveitado da própria skill; os outros 31 (bônus de atributo, sem skill pra reaproveitar) continuam com o fallback de letra até o usuário escolher um ícone pra cada, aos poucos. |
 | 11 | 6 imports locais redundantes de `RemoteControlled` | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §176. |
@@ -286,10 +286,10 @@ como duplicação de risco, só de assinatura).
 | 13 | Imports mortos de loot/spawn offline em `ui/systems.py` | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §176. Linha mudou (58-59), confirmado. |
 | 14 | `TILE_SPRITES`/`is_target_alive` reimportados localmente | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §176. |
 
-Itens #1, #3, #4, #6, #7, #9, #10, #11, #12, #13, #14 concluídos
+Itens #1, #3, #4, #6, #7, #8, #9, #10, #11, #12, #13, #14 concluídos
 (17-18/09/2026, fila priorizada, atacando um a um/em lotes por decisão
-do usuário). Restam #2 (`ui/systems.py` monolítico), #5
-(`get_entities_with()` singleton), #8 (`IconManager` sem teto).
+do usuário). Restam #2 (`ui/systems.py` monolítico) e #5
+(`get_entities_with()` singleton) — ambos mudança estrutural maior.
 
 ---
 
