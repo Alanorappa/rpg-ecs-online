@@ -32,16 +32,27 @@ class IconManager:
         key = f"{name}@{size}"
         if key in self._cache:
             return self._cache[key]
-        path = resource_path(os.path.join(self.ICON_DIR, f"{name}.png"))
-        surf = None
-        if os.path.isfile(path):
-            try:
-                raw  = pygame.image.load(path).convert_alpha()
-                surf = pygame.transform.scale(raw, (size, size))
-            except Exception:
-                surf = None
+        raw  = self._load_raw(name)
+        surf = pygame.transform.scale(raw, (size, size)) if raw is not None else None
         self._cache[key] = surf
         return surf
+
+    def _load_raw(self, name: str) -> "pygame.Surface | None":
+        """Surface no tamanho NATURAL do ícone — atlas primeiro
+        (`ui/icon_atlas.py`, 17/09/2026), arquivo individual como
+        fallback pro que ainda não foi catalogado (ver
+        PROBLEMAS_ARQUITETURA.md §181)."""
+        from ui.icon_atlas import ICON_ATLAS_SHEETS
+        raw = ICON_ATLAS_SHEETS.get_region(name)
+        if raw is not None:
+            return raw
+        path = resource_path(os.path.join(self.ICON_DIR, f"{name}.png"))
+        if os.path.isfile(path):
+            try:
+                return pygame.image.load(path).convert_alpha()
+            except Exception:
+                return None
+        return None
 
     # ------------------------------------------------------------------
     # Helpers de nomenclatura

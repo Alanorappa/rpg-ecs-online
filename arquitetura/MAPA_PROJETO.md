@@ -242,6 +242,13 @@ rpg_ecs_online/
 │   ├── chat_bubble.py               ← balão de fala acima da cabeça
 │   ├── ui_components.py/ui_helpers.py/ui_sizes.py/ui_scale_mixin.py/ui_compare.py
 │   ├── fonts.py, sound_manager.py, icon_manager.py, tile_sprite_manager.py, fov.py
+│   ├── icon_atlas.py                ← leitura do atlas de ícones (17/09/2026,
+│   │   ver PROBLEMAS_ARQUITETURA.md §181) — extrai/cacheia sub-Surface de
+│   │   assets/icons/atlas_skills.png|atlas_items.png; ícone ainda não
+│   │   catalogado cai pro arquivo individual via icon_manager.py de sempre
+│   ├── icon_atlas_catalog.py        ← dict nome→(atlas, col, row), gerado/
+│   │   mesclado por tools/build_icon_atlas.py — nunca editar o dict à mão
+│   │   sem seguir o mesmo formato de tupla (script preserva entrada manual)
 │   ├── floating_text.py, effect_animator.py, minimap.py, map_overlay.py
 │   ├── buff_bar.py                  ← barra de buff unificada (31/08/2026),
 │   │   ícone+timer do jogador local, ao lado do minimapa — lê StatusEffects
@@ -266,6 +273,10 @@ rpg_ecs_online/
 │   │                                  em runtime — rodados manualmente)
 │   ├── check_surfaces.py            ← audita antialiasing/smoothscale no repo
 │   ├── png_to_map.py                ← converte PNG de referência em CSV de mapa
+│   ├── build_icon_atlas.py          ← empacota assets/icons/*.png em
+│   │   atlas_skills.png/atlas_items.png + atualiza icon_atlas_catalog.py
+│   │   (ver PROBLEMAS_ARQUITETURA.md §181) — ADITIVO, roda de novo com
+│   │   segurança quando um ícone novo entrar em assets/icons/
 │   └── reverb.py                    ← pré-processa reverb em assets de áudio (offline)
 │
 ├── release_tools/                   ← build/empacotamento (NUNCA "packaging/" —

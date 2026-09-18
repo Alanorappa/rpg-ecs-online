@@ -20827,3 +20827,89 @@ interceptar"` (22) — sem regressão.
 **Lote de 4 itens (#6/#7/#3/#9) concluído** — todos os 4 items da fila
 Tier 3 que o usuário pediu pra atacar juntos ("Pode atacar os 4") estão
 implementados, testados e documentados (§177-§180).
+
+## 181. Backlog dos 14 itens antigos, item #10 (Fase 1) — atlas de ícones (skills + itens)
+
+18/09/2026. Item #10 do backlog antigo ("sem atlas/spritesheet pra
+ícones") — a auditoria marcava como "só relevante se o catálogo
+crescer significativamente". Discutido com o usuário: ele decidiu
+seguir mesmo assim, com um objetivo maior que só performance — criar
+espaço de crescimento pro catálogo de ícones, incluindo ícones de
+TALENTO (que hoje não existem — nó de talento é só retângulo colorido
++ 2 letras iniciais, `ui/talent_system.py::_render_node`), que vão
+reaproveitar ícone de skill quando fizer sentido.
+
+**Achado antes de desenhar**: `assets/icons/` tem 161 PNGs, mas só 54
+são usados de verdade pelo código (22 `item_*` + 27 `skill_*` + 5
+`map_*`) — os outros 107, em subpastas (`Equipment/`, `Food/`,
+`Material/`, `Ore & Gem/`, etc.), são um pacote de assets morto, zero
+referência em código algum. Não removido (fora do escopo pedido, só
+registrado aqui).
+
+**Desenho (aprovado pelo usuário)**: 1 atlas PNG por CATEGORIA (não um
+atlas único pra tudo — grade uniforme de células 32×32 é muito mais
+simples que empacotar retângulos de tamanho variado), 512×512 = 256
+slots cada, bem mais que os 27 skills/22 items de hoje — o resto fica
+transparente, espaço pro usuário ir preenchendo aos poucos (skills
+novas, itens novos, e futuros ícones dedicados de talento que não
+reaproveitem nenhuma skill):
+- `assets/icons/atlas_skills.png` (256 slots, hoje 27 ocupados)
+- `assets/icons/atlas_items.png` (256 slots, hoje 22 ocupados)
+
+Ícones `map_*` (8×8, categoria/tamanho diferente) ficam de fora,
+continuam por arquivo individual — usuário confirmou.
+
+**Mecanismo**: mesmo padrão já usado pra tiles
+(`ui/tile_sprite_manager.py::_get_sheet_region`/`SHEET_TILE_MAP`) —
+`ui/icon_atlas.py::_IconAtlasSheets.get_region(icon_name)` extrai e
+cacheia a sub-Surface (32×32) do slot catalogado; `IconManager._load_raw()`
+(`ui/icon_manager.py`, extraído de dentro de `get()`) consulta o atlas
+PRIMEIRO, cai pro carregamento por arquivo individual de sempre pra
+qualquer ícone ainda não catalogado — fallback incremental, zero risco
+pro que ainda não migrou.
+
+Catálogo (`ui/icon_atlas_catalog.py::ICON_ATLAS`, dict nome→(arquivo,
+col, row)) é gerado/mesclado por `tools/build_icon_atlas.py` (novo,
+CLI manual, roda com Pillow — mesma dependência que
+`tools/png_to_map.py` já usa, sem precisar entrar em
+`requirements_server.txt`, que é só pro servidor headless). O script é
+ADITIVO por design — nunca reconstrói os PNGs de atlas do zero:
+- Slot já ocupado no CATÁLOGO nunca é sobrescrito.
+- Slot com pixel NÃO-transparente na imagem atual do atlas (mesmo sem
+  entrada no catálogo — ex: célula pintada à mão pelo usuário num
+  editor de imagem, sem passar pelo script) também é tratado como
+  ocupado — proteção contra o script picar por cima de uma arte
+  colocada manualmente. Detecção via `Image.crop(...).getbbox() is
+  None` (Pillow) — bbox `None` = célula 100% transparente.
+- Catálogo é escrito por merge, nunca por substituição — entrada
+  adicionada à mão (pro caso de ícone pintado direto no atlas)
+  sobrevive a uma execução futura do script.
+
+Rodado 1x nesta sessão: catalogou os 27 skills + 22 items existentes
+(49 no total), confirmado idempotente (2ª execução: 0 adicionados).
+Confirmado por comparação pixel a pixel (Pillow `ImageChops.difference`)
+que cada slot do atlas bate exatamente com o PNG individual de origem.
+
+**Teste** (`tests/test_icon_atlas.py`, novo, 9 casos): `_IconAtlasSheets.
+get_region()` isolado (ícone catalogado devolve Surface certa, não
+catalogado devolve `None`, sheet cacheada não recarrega o PNG 2x);
+`IconManager.get()` (ícone do atlas, ícone fora do atlas cai pro
+arquivo individual, ícone inexistente devolve `None`, escala pro
+tamanho pedido); e uma amostra dos PNGs de atlas REAIS já commitados
+batendo pixel a pixel com os arquivos de origem (não testa o script em
+si — dev tool manual, mesmo padrão dos outros scripts de `tools/`, sem
+suíte própria — só o RESULTADO que o jogo consome). Revert-to-confirm:
+`git stash` de `ui/icon_manager.py`/`ui/icon_atlas.py`/
+`ui/icon_atlas_catalog.py`/atlas PNGs → `ModuleNotFoundError: No
+module named 'ui.icon_atlas'` na coleta.
+
+Suíte: `test_icon_atlas.py` (9) + `test_client_ui.py` (175) +
+`pytest tests/ -k "icon or hotbar or inventory or tooltip or shop"`
+(135, com Postgres ativo) — sem regressão.
+
+**Fase 2 (adiada, decisão separada com o usuário)**: usar o atlas pra
+desenhar arte de verdade nos nós de talento (troca do retângulo+letra
+atual em `ui/talent_system.py::_render_node`) — precisa de decisão
+por-talento de qual ícone usar (alguns talentos têm candidato óbvio
+via `unlocks_skill`, outros são só bônus de atributo sem ícone óbvio
+pra reaproveitar). Não implementado ainda.

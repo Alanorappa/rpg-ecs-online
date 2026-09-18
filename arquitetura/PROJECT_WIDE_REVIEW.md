@@ -280,7 +280,7 @@ como duplicação de risco, só de assinatura).
 | 7 | Reticle/mira do Tiro Múltiplo sem cache de rotação | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §178. Ângulo quantizado em buckets de 5°, `Surface` rotacionada cacheada por bucket (espaço de chaves naturalmente limitado a 72). Sem bug de comportamento, só custo. |
 | 8 | `IconManager._cache` sem teto/eviction | PROCEDE |
 | 9 | `FloatingTextManager`/`DashTrailManager`/`ProcTextManager` sem remoção in-place | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §180. Helper compartilhado `_prune_expired_inplace()` (compactação de 1 passada, sem alocar lista nova) substituiu o padrão repetido 3x. Sem bug de comportamento, só custo. |
-| 10 | Sem atlas de ícones | PROCEDE, cresceu (54→67 PNGs) |
+| 10 | Sem atlas de ícones | **🟡 Fase 1 concluída 18/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §181. `atlas_skills.png`/`atlas_items.png` (256 slots cada, 49 catalogados hoje, resto em branco pra crescer) + `tools/build_icon_atlas.py` (script aditivo). Fase 2 (arte de ícone de verdade nos nós de talento, reaproveitando ícone de skill) fica pra depois — decisão separada, precisa de mapeamento talento→ícone por item. |
 | 11 | 6 imports locais redundantes de `RemoteControlled` | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §176. |
 | 12 | `except Exception: pass` em `save_sync_handlers.py` | **✅ concluído 17/09/2026** — mesmo achado do "Mais achados" já corrigido em §166 (`PROBLEMAS_ARQUITETURA.md`), mantida a captura mas agora loga. |
 | 13 | Imports mortos de loot/spawn offline em `ui/systems.py` | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §176. Linha mudou (58-59), confirmado. |
