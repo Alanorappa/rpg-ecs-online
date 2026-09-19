@@ -329,7 +329,20 @@ class RenderSystem(System):
             _gst_rnd = self.world.get_component(entity_id, GhostState)
             # Corpo (morto, espírito ainda não liberado): permanece visível no
             # local da morte. Ghost (espírito liberado): renderiza semi-transparente.
-            _is_corpse_rnd = _gst_rnd is not None and _gst_rnd.is_dead and not _gst_rnd.is_ghost
+            # GhostState só existe no player LOCAL (client/network_handlers.py
+            # só anexa em self.player_entity) — player/bot REMOTO morto nunca
+            # bate aqui, só em RemoteControlled.hp<=0 (mesmo sinal já usado
+            # embaixo no branch de desenho/Y-sort). Sem esse fallback, o corpo
+            # remoto nunca era reconhecido como "corpo" nesta 1ª passagem —
+            # 3ª vez que esse mesmo gap aparece nesta sessão (animação de
+            # morte e colisão tiveram o mesmo bug, ver PROBLEMAS_ARQUITETURA.md
+            # §186), desta vez quebrando o Y-sort (corpo remoto continuava
+            # ordenado como personagem em pé, na frente de quem andava por
+            # cima dele).
+            _rc_rnd = self.world.get_component(entity_id, RemoteControlled)
+            _is_remote_dead_rnd = _rc_rnd is not None and _rc_rnd.hp <= 0
+            _is_corpse_rnd = ((_gst_rnd is not None and _gst_rnd.is_dead and not _gst_rnd.is_ghost)
+                              or _is_remote_dead_rnd)
             _is_ghost_rnd  = _gst_rnd is not None and _gst_rnd.is_ghost
             if combat_stats and combat_stats.current_hp <= 0 and not _is_corpse_rnd and not _is_ghost_rnd:
                 continue
