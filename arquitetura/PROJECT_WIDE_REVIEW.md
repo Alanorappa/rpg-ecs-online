@@ -272,7 +272,7 @@ como duplicação de risco, só de assinatura).
 | # | Achado | Veredito consolidado |
 |---|--------|----------------------|
 | 1 | Painéis NPC fechados por proximidade duplicado em `game.py` | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §175. `GameEngine._npc_proximity_panels()` novo, fonte única usada pelos 2 métodos. Verificado manualmente: `_close_modals_if_too_far` (1274) e `_close_all_modals` (1377) são métodos DIFERENTES, cada um com sua própria lista de `if` por painel (Loot/Shop/Crafting/Trainer/QuestDialog) — duplicação real, entre 2 métodos com gatilhos diferentes (auto-close por distância vs. fechar tudo explícito). O relatório de qualidade olhou só o 1º método isoladamente e errou o veredito. |
-| 2 | `ui/systems.py` monolítico (4954 linhas, 10 Systems) | PROCEDE, confirmado por 2 agentes |
+| 2 | `ui/systems.py` monolítico (4954 linhas, 10 Systems) | **✅ concluído 18/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §185. Dividido em 7 arquivos por domínio (`ui/player_input_system.py`, `ui/render_system.py`, `ui/tile_render_system.py`, `ui/shop_system.py`, `ui/consumable_system.py`, `ui/loot_system.py`, `ui/skill_system.py`) + `ui/click_rect_helpers.py` (hit-test compartilhado); `ui/systems.py` virou shim de re-exportação. Validado por revisão multiagente (guardrails/mercado reprovaram na 1ª rodada — imports não podados + acoplamento cruzado — corrigidos; performance aprovado com medição real). |
 | 3 | `BuffBar.render()` sem cache de Surface/fonte | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §179. Cache de instância por `(icon_size, effect_type, segundo_exibido)` — reusa a `Surface` entre frames enquanto nada muda visualmente. Escopo restrito à `BuffBar` (nameplate, que compartilha `_build_effects_row`, não foi tocado). |
 | 4 | `_cheby()` duplicado (2 arquivos reais) | **✅ concluído 17/09/2026** — mesmo achado do item de Convergência já corrigido em §173 (`PROBLEMAS_ARQUITETURA.md`). |
 | 5 | `get_entities_with()` sem variante singleton (43 ocorrências) | **✅ concluído 18/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §184. `World.get_first()` novo + 37 call sites migrados em `ui/`/`game.py` (client-side, único contexto onde os tipos usados — Camera/Tilemap/FogOfWar/PlayerControlled — são realmente singleton). **Nunca migrar o mesmo padrão no servidor** — lá esses tipos existem em múltiplas instâncias (1 Tilemap por mapa, 1 PlayerControlled por player conectado). |
@@ -286,10 +286,10 @@ como duplicação de risco, só de assinatura).
 | 13 | Imports mortos de loot/spawn offline em `ui/systems.py` | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §176. Linha mudou (58-59), confirmado. |
 | 14 | `TILE_SPRITES`/`is_target_alive` reimportados localmente | **✅ concluído 17/09/2026** — ver `PROBLEMAS_ARQUITETURA.md` §176. |
 
-Itens #1, #3, #4, #5, #6, #7, #8, #9, #10, #11, #12, #13, #14
-concluídos (17-18/09/2026, fila priorizada, atacando um a um/em lotes
-por decisão do usuário). Resta só #2 (`ui/systems.py` monolítico,
-4954 linhas/10 Systems) — mudança estrutural maior.
+**Todos os 14 itens do backlog antigo concluídos** (17-18/09/2026,
+fila priorizada, atacando um a um/em lotes por decisão do usuário —
+#2, o maior/mais estrutural, fechado por último com revisão
+multiagente antes de aplicar).
 
 ---
 
