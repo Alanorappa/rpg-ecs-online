@@ -4115,6 +4115,14 @@ mudança por outro motivo (rejeição de autorização por talento — o script 
 revertendo a mudança e reproduzindo o mesmo erro — não é regressão desta correção,
 fica registrado como débito à parte, fora de escopo.
 
+**Validado em jogo (19/09/2026):** primeiro teste do usuário foi contra o servidor
+de produção ANTES do deploy (código antigo ainda rodando lá) — pareceu não ter
+resolvido. Após `release_tools/deploy_server.ps1` (commit `97bdbbd`), usuário
+confirmou "agora está validado". **Decisão nova do usuário nesta mesma sessão**:
+deploy pra produção passa a ser automático depois de qualquer correção — o
+servidor de produção hoje só serve pra desenvolvimento (jogo ainda não lançado,
+sem jogadores reais), não precisa mais de confirmação a cada vez.
+
 ---
 
 ## Feature — Variante melee/ranged por raça de mob (`alt_variant`) — 07/07/2026
