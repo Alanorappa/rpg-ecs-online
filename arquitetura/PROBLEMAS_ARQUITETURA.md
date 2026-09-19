@@ -21289,6 +21289,32 @@ agora pula a entidade também quando `RemoteControlled.hp<=0` (nunca
 existe no servidor — autoritativo, sem "entidade remota" — então não
 muda nada lá, só corrige o lado cliente).
 
+**Follow-up 2 (mesmo dia — usuário testou de novo: corpo de bot
+desenhava NA FRENTE de quem andava por cima, "como se eu passasse por
+trás dele").** Y-sort de corpo de player/bot (`ui/render_system.py`,
+variável `foot_y` no loop de coleta de drawables) usava a mesma âncora
+de personagem EM PÉ (`CHAR_COLLISION_SIZE/2=16`) que um personagem vivo
+no mesmo tile — empatava o `sort_y` com quem estava andando por cima,
+decidido por ordem de iteração em vez de "quem está de fato na
+frente". Corpo de MOB nunca teve esse problema (nunca resolve
+`class_id`, sempre cai no branch `renderable.height/2=12`, mais "atrás"
+que o personagem vivo por construção). Pedido explícito do usuário:
+corpo de player/bot deve ordenar IGUAL a corpo de mob. Fix nº1: usar
+`renderable.height/2` pra corpo (via `_is_corpse_rnd`) em vez da âncora
+de personagem — só que essa exceção dependia de `_is_corpse_rnd`, que
+**também** só reconhecia `GhostState` (3ª ocorrência do MESMO gap
+GhostState-só-local nesta sessão — itens A e B acima tiveram o mesmo
+bug antes). Fix nº2 (correção do fix nº1): `_is_corpse_rnd`, calculado
+na 1ª passagem do loop (coleta/culling/Y-sort), agora também reconhece
+`RemoteControlled.hp<=0` — mesmo sinal que `_is_corpse_draw` (2ª
+passagem, desenho) já tinha ganhado no item B. **Lição registrada**:
+qualquer sinal novo de "está morto" adicionado a este arquivo precisa
+ser conferido nas DUAS passagens do loop (coleta E desenho computam
+`_is_corpse_*`/`_is_ghost_*` de forma independente, não compartilham a
+mesma variável) — não é o mesmo bug reaparecendo, é o mesmo
+BUG-CLASSE (checagem de morte que esquece o caso remoto) tendo 3 pontos
+de aplicação diferentes que precisavam da mesma correção cada um.
+
 **B — Guerreiro morto (remoto/bot) continua na animação "idle".**
 `engine/character_animation.py::resolve_display_state` nunca teve
 noção de morte — resolve pra "idle"/"run" pela `TileMovement` sozinha.
