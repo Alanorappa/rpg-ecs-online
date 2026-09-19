@@ -370,18 +370,31 @@ class TileValidationSystem(System):
         # TileMovement (necessário pra posição/AOI). Import tardio evita
         # dependência de Harvestable no topo do arquivo (componente raro
         # aqui, mesmo padrão dos outros imports pontuais deste módulo).
-        from engine.components import Harvestable as _Hv_tv, GhostState as _Gst_tv
+        from engine.components import (Harvestable as _Hv_tv, GhostState as _Gst_tv,
+                                       RemoteControlled as _Rc_tv)
         occupied = {}
         for entity_id, tm in _tile_movement_on_map(self.world, tile_movement_by_map, self._map_filter):
             _hv_tv = self.world.get_component(entity_id, _Hv_tv)
             if _hv_tv is not None and not _hv_tv.solid:
                 continue
-            # Corpo de player/bot morto (GhostState.is_dead) nunca bloqueia
-            # tile — morte de mob remove a entidade (sem esse problema);
-            # morte de player só marca GhostState, TileMovement continua
-            # "vivo" pra sempre no tile de morte (ver PROBLEMAS_ARQUITETURA.md).
+            # Corpo de player/bot morto nunca bloqueia tile — morte de mob
+            # remove a entidade (sem esse problema); morte de player só
+            # marca GhostState, TileMovement continua "vivo" pra sempre no
+            # tile de morte (ver PROBLEMAS_ARQUITETURA.md). GhostState só
+            # existe no player LOCAL do cliente (client/network_handlers.py
+            # só anexa em self.player_entity) — o corpo de um player/bot
+            # REMOTO nunca bate nesse check, então continuava sólido pro
+            # cliente mesmo depois do fix de GhostState (bug real relatado
+            # pelo usuário, 19/09/2026, mesma causa raiz do bug de
+            # animação de morte remota, §186). RemoteControlled.hp<=0 é o
+            # mesmo sinal que remote_entity_handlers.py/render_system.py
+            # já usam pra "player remoto morto" — nunca existe no servidor
+            # (autoritativo, não tem entidade "remota"), então não afeta a
+            # colisão real ali.
             _gst_tv = self.world.get_component(entity_id, _Gst_tv)
-            if _gst_tv is not None and _gst_tv.is_dead:
+            _rc_tv = self.world.get_component(entity_id, _Rc_tv)
+            if ((_gst_tv is not None and _gst_tv.is_dead)
+                    or (_rc_tv is not None and _rc_tv.hp <= 0)):
                 continue
             for _fx, _fy in entity_footprint_tiles(self.world, entity_id, tm):
                 occupied[(_fx, _fy)] = entity_id

@@ -21275,6 +21275,20 @@ revive. Fix: pular entidade com `GhostState.is_dead=True` nos dois
 pontos de varredura, mesmo padrão que `Harvestable.solid` já usa ali do
 lado (não bloqueia se não é sólido).
 
+**Follow-up (19/09/2026, mesmo dia — usuário testou e corpo de BOT
+continuava sólido):** o fix acima só cobria `GhostState`, que — mesma
+causa raiz do item B abaixo — **só existe no player LOCAL do cliente**
+(`client/network_handlers.py` só anexa em `self.player_entity`).
+`TileValidationSystem.update()` é código COMPARTILHADO: no cliente, ele
+também valida a própria predição de movimento local contra o corpo de
+um player/bot REMOTO — que nunca tem `GhostState`, só
+`RemoteControlled.hp<=0` (mesmo sinal já usado em B). Sem esse segundo
+sinal, o corpo de qualquer um que não seja o PRÓPRIO jogador continuava
+sólido pro cliente, mesmo já corrigido no servidor. Fix: `update()`
+agora pula a entidade também quando `RemoteControlled.hp<=0` (nunca
+existe no servidor — autoritativo, sem "entidade remota" — então não
+muda nada lá, só corrige o lado cliente).
+
 **B — Guerreiro morto (remoto/bot) continua na animação "idle".**
 `engine/character_animation.py::resolve_display_state` nunca teve
 noção de morte — resolve pra "idle"/"run" pela `TileMovement` sozinha.
