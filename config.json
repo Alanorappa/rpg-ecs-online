@@ -1,13 +1,13 @@
 {
   "scale": 1.5,
   "window_mode": "windowed_fullsize",
-  "server_host": "localhost",
+  "server_host": "5.161.104.174",
   "server_port": 8765,
   "net_user": "teste",
   "net_pass": "123456",
   "music_volume": 0.058823529411764705,
   "sfx_volume": 0.06722689075630252,
-  "music_enabled": false,
+  "music_enabled": true,
   "sfx_enabled": true,
   "hotbar": {
     "slots": [
@@ -235,10 +235,10 @@
           "picada_escorpiao",
           "so_um_gole",
           "cancao_inspiracao",
-          "tiro_repulsivo",
-          "recarregar",
           "camuflagem",
+          "tiro_repulsivo",
           "tiro_multiplo",
+          "recarregar",
           "cancao_ninar",
           null
         ],
@@ -276,10 +276,10 @@
         "picada_escorpiao": 1,
         "so_um_gole": 2,
         "cancao_inspiracao": 3,
-        "tiro_repulsivo": 4,
-        "recarregar": 5,
-        "camuflagem": 6,
-        "tiro_multiplo": 7,
+        "tiro_repulsivo": 5,
+        "recarregar": 7,
+        "camuflagem": 4,
+        "tiro_multiplo": 6,
         "cancao_ninar": 8
       }
     },
@@ -772,10 +772,10 @@
         "slots": [
           "bola_de_fogo",
           "calamidade_flamejante",
-          "pirofagia",
           "calcinar",
-          "polimorfia",
           "escudo_fogo",
+          "polimorfia",
+          "pirofagia",
           "nova_congelante",
           "bloco_de_gelo",
           null,
@@ -813,9 +813,9 @@
       "skill_slot_prefs": {
         "bola_de_fogo": 0,
         "calamidade_flamejante": 1,
-        "pirofagia": 2,
-        "calcinar": 3,
-        "escudo_fogo": 5,
+        "pirofagia": 5,
+        "calcinar": 2,
+        "escudo_fogo": 3,
         "polimorfia": 4,
         "nova_congelante": 6,
         "bloco_de_gelo": 7
@@ -870,14 +870,14 @@
         "slots": [
           "golpe_poderoso",
           "impacto",
-          null,
           "vitoria_iminente",
-          null,
+          "executar",
+          "brado_provocativo",
           "interceptar",
+          "punho_no_queixo",
+          "fatiador_de_corpos",
           null,
-          null,
-          null,
-          null
+          "golpe_debilitante"
         ],
         "keybinds": [
           49,
@@ -894,7 +894,7 @@
       },
       "consumable_bar": {
         "slots": [
-          "roasted_meat",
+          "hearty_stew",
           "hp_potion",
           null,
           null,
@@ -910,10 +910,14 @@
       },
       "skill_slot_prefs": {
         "golpe_poderoso": 0,
-        "punho_no_queixo": 1,
+        "punho_no_queixo": 6,
         "interceptar": 5,
         "impacto": 1,
-        "vitoria_iminente": 3
+        "vitoria_iminente": 2,
+        "executar": 3,
+        "golpe_debilitante": 9,
+        "fatiador_de_corpos": 7,
+        "brado_provocativo": 4
       }
     },
     "Faelara": {
@@ -1148,6 +1152,51 @@
       "skill_slot_prefs": {
         "golpe_poderoso": 0
       }
+    },
+    "Juuguerin": {
+      "hotbar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {}
     }
   },
   "debug_mode": true,
