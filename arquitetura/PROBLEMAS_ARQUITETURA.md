@@ -21315,6 +21315,27 @@ mesma variável) — não é o mesmo bug reaparecendo, é o mesmo
 BUG-CLASSE (checagem de morte que esquece o caso remoto) tendo 3 pontos
 de aplicação diferentes que precisavam da mesma correção cada um.
 
+**Follow-up 3 (mesmo dia — usuário testou de novo: ordem já saía
+certa parado em cima do corpo, mas piscava invertida por um instante ao
+ANDAR por cima).** O fix nº1 do follow-up 2 (`renderable.height/2=12`
+pro corpo) só tinha 4px de folga contra o personagem vivo
+(`CHAR_COLLISION_SIZE/2=16`) — muito menor que os 32px de um tile: a
+travessia a pé por cima do corpo faz o `position.y` real do personagem
+cruzar essa margem de 4px, invertendo a ordem por um instante. Usuário
+esclareceu a intenção: corpo é CHÃO, não personagem — não devia
+competir por Y-sort contra quem anda por cima, devia estar SEMPRE
+atrás, não só na maior parte do tempo. Fix: em vez de somar uma âncora
+ao `position.y` do corpo (competindo com o `position.y` de quem está
+por cima), agora SUBTRAI meio tile (`position.y - TILE_SIZE/2`) —
+garante `foot_y` do corpo menor que o de QUALQUER personagem vivo em
+QUALQUER ponto do mesmo tile (pior caso: personagem na borda norte do
+tile, `foot_y` = `position.y_do_corpo`, ainda maior que
+`position.y_do_corpo - TILE_SIZE/2`). Escopo de 1 tile — não muda
+ordenação contra árvore/objeto 2+ tiles de distância. Corpo de MOB não
+passa por este branch (nunca resolve `class_id`), comportamento
+intocado — só corpo de player/bot ganhou o tratamento "chão, sempre
+atrás".
+
 **B — Guerreiro morto (remoto/bot) continua na animação "idle".**
 `engine/character_animation.py::resolve_display_state` nunca teve
 noção de morte — resolve pra "idle"/"run" pela `TileMovement` sozinha.
