@@ -381,19 +381,40 @@ class RenderSystem(System):
             # frame específico ainda cai no retângulo de fallback (ex:
             # direção sem arte ainda), pra o Y-sort não pular dependendo
             # de qual arte já existe.
-            # Corpo de player/bot (is_dead, não-ghost) NUNCA usa a âncora
-            # de personagem em pé (CHAR_COLLISION_SIZE/2=16) — cai pro
-            # mesmo `renderable.height/2` que corpo de MOB já usa (24/2=12).
-            # Sem essa exceção, o corpo (que ainda resolve class_id normal,
-            # PlayerControlled/RemoteControlled não somem na morte) empatava
-            # o sort_y com QUALQUER personagem vivo parado no MESMO tile —
-            # empate decidido por ordem de iteração, não por quem está "na
-            # frente" de verdade, e o corpo às vezes desenhava por cima de
-            # quem estava andando em cima dele (bug real relatado pelo
-            # usuário, 19/09/2026 — corpo de mob nunca teve esse problema
-            # porque nunca resolve class_id, sempre cai neste MESMO branch).
+            # Corpo de player/bot (is_dead, não-ghost) — plano no chão, não
+            # compete por Y-sort com quem anda por cima: precisa SEMPRE
+            # desenhar atrás, não só "às vezes" por ter um foot_y um pouco
+            # menor que o de personagem vivo (`renderable.height/2=12` vs
+            # `CHAR_COLLISION_SIZE/2=16` — margem de só 4px, MUITO menor que
+            # o passo de 32px de um tile: durante a travessia a pé por cima
+            # do corpo, o `position.y` real do personagem vivo cruza essa
+            # margem de 4px e a ordem inverte por um instante — bug real
+            # relatado pelo usuário, 19/09/2026, "anda pra cima, ele fica
+            # por baixo por um breve momento"). Pedido explícito do
+            # usuário: corpo é chão, não personagem — "sem Y-sort, ele
+            # sempre precisa estar atrás". Fix: em vez de SOMAR uma âncora
+            # (competindo com `position.y` de quem está por cima), SUBTRAI
+            # meio tile — garante `foot_y` do corpo sempre menor que o de
+            # QUALQUER personagem vivo parado em qualquer ponto do MESMO
+            # tile (a pior posição do personagem, na borda norte do tile,
+            # ainda tem `foot_y` = `position.y_do_corpo`, ainda maior que
+            # `position.y_do_corpo - TILE_SIZE/2`). Escopo de 1 tile só —
+            # não afeta ordenação contra árvore/objeto 2+ tiles de
+            # distância. Corpo de MOB não passa por aqui (não resolve
+            # `class_id`) — comportamento dele intocado.
+            _is_corpse_rnd_sort = _is_corpse_rnd
             _char_class_id_sort = self._resolve_character_class_id(entity_id)
-            if _char_class_id_sort and not _is_corpse_rnd:
+            if _is_corpse_rnd_sort:
+                foot_y = position.y - TILE_SIZE / 2
+            elif _char_class_id_sort:
+                # Personagem com animação (guerreiro/mago/arqueiro, local ou
+                # remoto — 10/09/2026): Y-sort usa o tile de colisão REAL de
+                # 32×32 dentro do sprite (`CHAR_COLLISION_SIZE`, ver
+                # engine/character_animation.py), nunca `renderable.height`
+                # (24, convenção antiga do retângulo) — vale mesmo quando o
+                # frame específico ainda cai no retângulo de fallback (ex:
+                # direção sem arte ainda), pra o Y-sort não pular dependendo
+                # de qual arte já existe.
                 from engine.character_animation import CHAR_COLLISION_SIZE as _CCS_sort
                 foot_y = position.y + _CCS_sort / 2
             elif renderable.sprite_id:
