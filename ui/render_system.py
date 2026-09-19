@@ -368,8 +368,19 @@ class RenderSystem(System):
             # frame específico ainda cai no retângulo de fallback (ex:
             # direção sem arte ainda), pra o Y-sort não pular dependendo
             # de qual arte já existe.
+            # Corpo de player/bot (is_dead, não-ghost) NUNCA usa a âncora
+            # de personagem em pé (CHAR_COLLISION_SIZE/2=16) — cai pro
+            # mesmo `renderable.height/2` que corpo de MOB já usa (24/2=12).
+            # Sem essa exceção, o corpo (que ainda resolve class_id normal,
+            # PlayerControlled/RemoteControlled não somem na morte) empatava
+            # o sort_y com QUALQUER personagem vivo parado no MESMO tile —
+            # empate decidido por ordem de iteração, não por quem está "na
+            # frente" de verdade, e o corpo às vezes desenhava por cima de
+            # quem estava andando em cima dele (bug real relatado pelo
+            # usuário, 19/09/2026 — corpo de mob nunca teve esse problema
+            # porque nunca resolve class_id, sempre cai neste MESMO branch).
             _char_class_id_sort = self._resolve_character_class_id(entity_id)
-            if _char_class_id_sort:
+            if _char_class_id_sort and not _is_corpse_rnd:
                 from engine.character_animation import CHAR_COLLISION_SIZE as _CCS_sort
                 foot_y = position.y + _CCS_sort / 2
             elif renderable.sprite_id:
