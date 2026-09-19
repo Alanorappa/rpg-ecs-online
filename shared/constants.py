@@ -13,6 +13,19 @@ TICK_INTERVAL      = 1.0 / TICK_RATE   # ~33ms
 # Janela de lag compensation: servidor aceita inputs com até N ms de atraso
 LAG_COMP_WINDOW_MS = 200
 
+# Tiro Múltiplo: folga extra somada ao cast_time no timer de conclusão do
+# servidor, pra dar tempo real do CAST_DIR_UPDATE (direção do mouse na
+# conclusão do cast local, ver ui/spell_system.py::_capture_tiro_multiplo_dir)
+# chegar ANTES do servidor resolver os alvos do cone. Sem folga, os dois
+# caminhos (timer do servidor vs. correção do cliente) chegam ao servidor
+# matematicamente no MESMO instante (L + cast_time == cast_time + L, L =
+# latência de 1 salto de rede) — não é uma corrida rara de latência alta,
+# é um empate estrutural que o servidor vencia na maioria das vezes mesmo
+# em LAN (folga de tick de 33ms/frame de 16ms decidindo o empate). Ver
+# arquitetura/PROBLEMAS_ARQUITETURA.md, "Bug — Tiro Múltiplo: direção
+# capturada no keypress em vez da conclusão do cast — 01/07/2026".
+TIRO_MULTIPLO_DIR_UPDATE_GRACE_MS = 150
+
 # ── Mundo ─────────────────────────────────────────────────────────────────────
 TILE_SIZE          = 32          # pixels por tile (deve ser igual ao cliente)
 AOI_RADIUS         = 15          # tiles de visão ao redor do jogador

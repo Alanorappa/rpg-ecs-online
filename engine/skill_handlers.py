@@ -1458,11 +1458,17 @@ class SkillHandlers:
 
         _server_pending = self._server_pending_spells
         if _server_pending is not None:
+            # Folga extra além do cast_time — dá tempo real do CAST_DIR_UPDATE
+            # (direção corrigida na conclusão do cast local) chegar antes do
+            # servidor resolver o cone. Ver TIRO_MULTIPLO_DIR_UPDATE_GRACE_MS
+            # (shared/constants.py) e PROBLEMAS_ARQUITETURA.md, "Bug — Tiro
+            # Múltiplo: direção capturada no keypress..., 01/07/2026".
+            from shared.constants import TIRO_MULTIPLO_DIR_UPDATE_GRACE_MS
             _server_pending.append({
                 "player_eid":         self.player_entity_id,
                 "spell_id":           "tiro_multiplo",
                 "target_id":          -1,
-                "timer":              skill.cast_time,
+                "timer":              skill.cast_time + TIRO_MULTIPLO_DIR_UPDATE_GRACE_MS / 1000.0,
                 "concentration_cost": cost,
                 "cooldown":           skill.cooldown,
                 "dir_x":              getattr(tile_move, "_server_dir_x", 0.0),

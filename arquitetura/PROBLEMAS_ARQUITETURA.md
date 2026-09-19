@@ -4080,6 +4080,41 @@ dano era aplicado na direção inicial — o que o jogador via diferia do que ac
 expirar (latência alta), o servidor usa a direção inicial do keypress. Ocorre só em latências
 extremas e é muito melhor que o bug original onde SEMPRE usava a direção errada.
 
+**Atualização — 19/09/2026: a suposição acima estava errada, a corrida acontecia sempre,
+não só em latência alta.** Usuário reportou de novo: "a mira está sendo considerada a
+direção do mouse no momento de apertar a skill, e não no final do cast" — ou seja, o
+fallback (direção do keypress) estava vencendo na prática, não só em caso raro.
+
+**Causa raiz do "sempre" (não "às vezes"):** o timer do SERVIDOR (`entry["timer"]`,
+inicia quando o `CAST_SKILL` original chega) termina em `L + cast_time` (`L` = latência
+de 1 salto de rede). A correção do CLIENTE (`CAST_DIR_UPDATE`) só é calculada quando o
+cast LOCAL termina (`cast_time` após o keypress, sem rede) e precisa de mais 1 salto pra
+chegar ao servidor — chega em `cast_time + L`. **Os dois caminhos chegam ao servidor
+matematicamente no MESMO instante** (`L + cast_time == cast_time + L`) — não é uma
+corrida rara de latência alta, é um empate estrutural, decidido por qualquer diferença
+pequena de overhead (tick do servidor a 30Hz = até 33ms de folga; frame do cliente a
+60fps = até 16ms) — o servidor tinha boas chances de vencer o empate mesmo em LAN.
+
+**Fix (opção escolhida pelo usuário entre 2 propostas — a outra era o servidor esperar
+a confirmação de verdade em vez de um timer cego, descartada por mexer mais na lógica
+de conclusão de cast):** `TIRO_MULTIPLO_DIR_UPDATE_GRACE_MS = 150`
+(`shared/constants.py`, ao lado de `LAG_COMP_WINDOW_MS`) somado ao `cast_time` só no
+`entry["timer"]` de `tiro_multiplo`
+(`engine/skill_handlers.py::_skill_tiro_multiplo`) — dá 150ms de folga real pro
+`CAST_DIR_UPDATE` chegar antes do servidor resolver os alvos do cone. Se mesmo assim
+não chegar (lag extremo/desconexão), cai no mesmo fallback de sempre (direção do
+keypress) — nenhuma mudança nesse caminho. Não afeta a barra de cast visual do cliente
+(`SpellCast.cast_time` no cliente continua o valor original do catálogo, só o timer
+INTERNO do servidor ganhou a folga) — só atrasa ~150ms quando as flechas
+entram em voo/o cooldown é aplicado no servidor, imperceptível.
+
+Validado: `pytest tests/ -k "tiro_multiplo or spell_completion or skill_handlers or
+cast_dir"` (3 passed). `tests/diag_tiro_multiplo.py` está quebrado desde antes desta
+mudança por outro motivo (rejeição de autorização por talento — o script seta
+`cs.tiro_multiplo_targets` direto sem alocar o talento de verdade), confirmado
+revertendo a mudança e reproduzindo o mesmo erro — não é regressão desta correção,
+fica registrado como débito à parte, fora de escopo.
+
 ---
 
 ## Feature — Variante melee/ranged por raça de mob (`alt_variant`) — 07/07/2026
