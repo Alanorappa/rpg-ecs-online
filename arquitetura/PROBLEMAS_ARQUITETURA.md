@@ -21252,3 +21252,96 @@ byte-idêntico ao original, confirmado por diff AST na própria revisão
 multiagente).
 
 **Backlog dos 14 itens antigos: 14 de 14 concluídos.**
+
+---
+
+## 186. 4 bugs reportados juntos (19/09/2026) — corpo com colisão, animação de morte, transparência de bush, bot vs. própria torre
+
+Usuário reportou 4 sintomas na mesma mensagem. 3 tiveram causa raiz
+confirmada por leitura direta do código (nunca por suposição) e foram
+corrigidos; o 4º ficou **em aberto** — reproduzido duas vezes com o
+pipeline REAL (não montagem sintética) e o comportamento saiu correto
+nos dois casos, então a causa real ainda não foi encontrada.
+
+**A — Corpo de player/bot morto continua com colisão.** `TileValidationSystem.
+update()` (`engine/world_systems.py`, varredura que popula `self._occupied`)
+e `EnemyAISystem._get_occupied_tiles` (mesmo arquivo, usado como
+`dynamic_obstacles` do pathfinding de minion) marcavam qualquer entidade
+com `TileMovement` como ocupando seu tile, sem checar `GhostState.is_dead`.
+Morte de MOB remove a entidade (`world.remove_entity`), então nunca teve
+esse problema; morte de player/bot só marca `GhostState` — a entidade
+(e o `TileMovement`) continuam vivos pra sempre no tile de morte até o
+revive. Fix: pular entidade com `GhostState.is_dead=True` nos dois
+pontos de varredura, mesmo padrão que `Harvestable.solid` já usa ali do
+lado (não bloqueia se não é sólido).
+
+**B — Guerreiro morto (remoto/bot) continua na animação "idle".**
+`engine/character_animation.py::resolve_display_state` nunca teve
+noção de morte — resolve pra "idle"/"run" pela `TileMovement` sozinha.
+O `RenderSystem` (`ui/render_system.py`) já tinha um `elif _is_corpse_draw`
+que cai pro retângulo cinza — mas `_is_corpse_draw` vinha só de
+`GhostState`, que **só existe no player LOCAL** (`client/network_handlers.py`
+só anexa em `self.player_entity`). Player/bot REMOTO nunca tem
+`GhostState` — "morto" pra eles é `RemoteControlled.hp<=0` (mesmo sinal
+que `client/remote_entity_handlers.py` já usa pra esconder a barra de
+HP do nameplate remoto), sinal que o branch de corpo/animação nunca
+consultava. Fix: `_is_corpse_draw` (`ui/render_system.py`) agora também
+é `True` quando `RemoteControlled.hp<=0` — sem introduzir detecção
+nova, só estendendo o ponto único já existente pro caso remoto que
+faltava.
+
+**C — Transparência de bush só funciona por acidente, nunca com a
+animação.** O branch de `is_bush_hidden` (`ui/render_system.py`,
+01/09/2026) era um `elif` irmão do branch de animação de personagem
+(09/09/2026) — desenhava sempre um retângulo semi-transparente,
+NUNCA chamava `get_character_frame`, pra qualquer estado (parado,
+andando, atacando). Os dois recursos foram implementados 8 dias
+separados e nunca integrados; o "funciona ao atacar" que o usuário
+percebeu é efeito colateral: atacar quebra o próprio stealth
+(`is_bush_hidden` vira `False`), então nesse instante o código cai no
+branch normal (COM animação, mas SEM transparência) — parecia
+"funcionar" só porque parou de ser bush hidden. Fix: bush deixou de
+ser `elif` separado — dentro do branch de animação, se
+`is_bush_hidden` e existe `_char_frame`, aplica `set_alpha(127)` numa
+**cópia** do frame (nunca no objeto original — `get_character_frame`
+devolve Surface CACHEADA/compartilhada entre qualquer entidade/frame
+igual; mutar sem copy() vazaria a opacidade pra próximo uso do mesmo
+frame) antes de desenhar; sem frame disponível, cai no mesmo retângulo
+translúcido de sempre (fallback preservado).
+
+**D — Bot tratando a própria torre como inimiga (EM ABERTO, não
+reproduzido).** Sintoma relatado: jogador ataca a torre do TIME de um
+bot (torre aliada ao bot); bot fica parado numa distância fixa fora do
+alcance da torre, nunca se aproxima — usuário descreve como idêntico
+ao comportamento correto de recusar entrar no alcance da torre INIMIGA
+ao perseguir o jogador. Mecanismo suspeito óbvio: `BotAISystem.
+_dive_allowed`/`_enemy_towers_covering` (`server/bot_ai_system.py`/
+`server/world_server.py`) — já filtra explicitamente `fac.faction_id
+== my_faction_id` (torre da MESMA facção nunca conta como "inimiga"),
+e isso é coberto por `TestBotDiveGate` (`tests/test_bg_bot.py`).
+Reproduzido 2x sem sucesso:
+1. Montagem sintética (bot+jogador+torre da mesma facção do bot criados
+   na mão) — bot se aproximou normalmente, `dist` caiu de 6 pra 1 em 5
+   ticks.
+2. Pipeline REAL completo (`_tick_bg_queue` → `request_bg_accept` real +
+   bots, instância `moba_battleground.csv` carregada de verdade,
+   jogador teleportado pra dentro do alcance do NEXUS do time
+   inimigo-só-bot) — os 2 bots do time inimigo se aproximaram e
+   chegaram a distância 1 (adjacente) em 10 ticks de decisão.
+
+Confirmado com o usuário: o teste real foi contra a fila de BG de
+verdade (não o enxame de bots de carga `tools/loadtest/`, que tem
+regra deliberada de nunca mirar no jogador real — se fosse esse caso,
+não seria bug). Sem reprodução, nenhum fix foi tentado — próximo passo
+depende de dado adicional (log do servidor no momento exato do
+incidente — `server/spell_debug_log.py`/log padrão já mostra facção e
+posição —, ou uma descrição mais precisa de qual torre/lane e se havia
+outro combate acontecendo ao mesmo tempo).
+
+**Teste**: A/B/C — `pytest tests/ -k "occupied or tile_walkable or ghost
+or corpse or minion_pathfind or character_animation or render_system"`
+(100 passed; as 4 falhas na mesma rodada são `test_session.py`,
+dependentes de Postgres via Docker, que estava parado — não regressão
+desta mudança). Sem teste automatizado novo dedicado (nenhum dos 3
+pontos está no catálogo de "pontos únicos de verdade" que exige teste
+sempre) — validação em jogo fica com o usuário.

@@ -370,11 +370,18 @@ class TileValidationSystem(System):
         # TileMovement (necessário pra posição/AOI). Import tardio evita
         # dependência de Harvestable no topo do arquivo (componente raro
         # aqui, mesmo padrão dos outros imports pontuais deste módulo).
-        from engine.components import Harvestable as _Hv_tv
+        from engine.components import Harvestable as _Hv_tv, GhostState as _Gst_tv
         occupied = {}
         for entity_id, tm in _tile_movement_on_map(self.world, tile_movement_by_map, self._map_filter):
             _hv_tv = self.world.get_component(entity_id, _Hv_tv)
             if _hv_tv is not None and not _hv_tv.solid:
+                continue
+            # Corpo de player/bot morto (GhostState.is_dead) nunca bloqueia
+            # tile — morte de mob remove a entidade (sem esse problema);
+            # morte de player só marca GhostState, TileMovement continua
+            # "vivo" pra sempre no tile de morte (ver PROBLEMAS_ARQUITETURA.md).
+            _gst_tv = self.world.get_component(entity_id, _Gst_tv)
+            if _gst_tv is not None and _gst_tv.is_dead:
                 continue
             for _fx, _fy in entity_footprint_tiles(self.world, entity_id, tm):
                 occupied[(_fx, _fy)] = entity_id
@@ -2050,11 +2057,18 @@ class MinionSystem:
         de cada mapa, e MANTÉM essa cópia mutável — `_walk_toward`/
         `_advance_along_route` atualizam ela a cada `start_tile_movement`
         desta classe, então o próximo minion do loop já vê a reserva."""
+        from engine.components import GhostState as _Gst_ai
         working = self._working_occupied_by_map.get(map_file)
         if working is None:
             working = {}
             for entity_id, tm_occ in _tile_movement_on_map(
                     self.world, self._tile_movement_by_map, map_file):
+                # Corpo de player/bot morto nunca bloqueia tile — mesmo
+                # motivo/mesma checagem de TileValidationSystem.update()
+                # acima (ver PROBLEMAS_ARQUITETURA.md).
+                _gst_ai = self.world.get_component(entity_id, _Gst_ai)
+                if _gst_ai is not None and _gst_ai.is_dead:
+                    continue
                 if not tm_occ.is_moving:
                     for _fx, _fy in entity_footprint_tiles(self.world, entity_id, tm_occ):
                         working[(_fx, _fy)] = entity_id

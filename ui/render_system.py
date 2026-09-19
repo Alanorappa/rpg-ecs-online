@@ -405,7 +405,19 @@ class RenderSystem(System):
 
             # ── Entidade ──────────────────────────────────────────────────────
             _, _, entity_id, position, renderable, combat_stats, _gst_draw = item
-            _is_corpse_draw = _gst_draw is not None and _gst_draw.is_dead and not _gst_draw.is_ghost
+            # GhostState só existe no PRÓPRIO player local (ver
+            # client/network_handlers.py) — player/bot REMOTO nunca tem
+            # esse componente; "morto" pra eles é `RemoteControlled.hp<=0`
+            # (mesmo sinal que remote_entity_handlers.py já usa pra
+            # suprimir a barra de HP do nameplate). Sem isso, um remoto
+            # morto caía direto no branch de animação abaixo (nenhum dos
+            # dois `elif` de corpo/espírito reconhecia ele como morto) e
+            # ficava preso pra sempre em "idle" — bug real relatado pelo
+            # usuário, 19/09/2026, ver PROBLEMAS_ARQUITETURA.md.
+            _rc_dead_draw = self.world.get_component(entity_id, RemoteControlled)
+            _is_remote_dead_draw = _rc_dead_draw is not None and _rc_dead_draw.hp <= 0
+            _is_corpse_draw = ((_gst_draw is not None and _gst_draw.is_dead and not _gst_draw.is_ghost)
+                               or _is_remote_dead_draw)
             _is_ghost_draw  = _gst_draw is not None and _gst_draw.is_ghost
             # Feedback visual de bush stealth (01/09/2026, pedido do usuário)
             # — calculado 1x aqui, reusado tanto no branch de opacidade
@@ -496,25 +508,24 @@ class RenderSystem(System):
                 elif _is_ghost_draw:
                     # Espírito: semi-transparente
                     self.world_surf.blit(fill_surf((rect.width, rect.height), (*renderable.color[:3], 127)), rect.topleft)
-                elif _is_local_player and _combat_state_draw is not None and _combat_state_draw.is_bush_hidden:
-                    # Bush stealth (01/09/2026, pedido do usuário, mesma
-                    # técnica do espírito acima): só o PRÓPRIO jogador vê seu
-                    # sprite com 50% de opacidade ao entrar numa zona de bush
-                    # (server/bush_zone_processor.py::_get_bush_zone) — sinal
-                    # pessoal de "estou escondido dos outros agora". Mecanismo
-                    # separado de Camuflagem/is_visible; nunca broadcast pros
-                    # outros players (ver CombatState.is_bush_hidden).
-                    self.world_surf.blit(fill_surf((rect.width, rect.height), (*renderable.color[:3], 127)), rect.topleft)
                 else:
                     # Animação base de personagem (09/09/2026, pedido do
                     # usuário — implementação incremental, ver
                     # engine/character_animation.py). Só players (local
                     # via CharacterStats, remoto via RemoteControlled) —
                     # mob/NPC continuam 100% retângulo, sem class_id pra
-                    # resolver sprite nenhum. Corpo/espírito/bush-hidden
-                    # (branches acima) continuam com o tratamento visual
-                    # de retângulo que já tinham — este branch só cobre o
-                    # caso "vivo, sem estado visual especial".
+                    # resolver sprite nenhum. Corpo/espírito (branches
+                    # acima) continuam com o tratamento visual de
+                    # retângulo que já tinham — este branch cobre "vivo",
+                    # incluindo bush stealth (opacidade aplicada NA sprite
+                    # animada, não só no retângulo — 19/09/2026, bug real
+                    # relatado pelo usuário: bush stealth era um `elif`
+                    # separado, escrito em 01/09 ANTES da animação existir
+                    # (09/09) — nunca chamava get_character_frame, então
+                    # parado/andando sobre bush sempre perdia a animação
+                    # e caía no retângulo, mesmo com sprite disponível).
+                    _bush_hidden_draw = (_is_local_player and _combat_state_draw is not None
+                                        and _combat_state_draw.is_bush_hidden)
                     _char_id_rnd = self._resolve_character_class_id(entity_id)
 
                     _char_frame = None
@@ -528,6 +539,14 @@ class RenderSystem(System):
                                 _anim_t_rnd, _frame_ms_rnd)
 
                     if _char_frame is not None:
+                        if _bush_hidden_draw:
+                            # get_character_frame devolve Surface CACHEADA
+                            # (compartilhada por qualquer entidade/frame
+                            # igual) — set_alpha muta o objeto direto, nunca
+                            # sem copy() antes, ou a opacidade vaza pra
+                            # próxima entidade/frame que reusar o cache.
+                            _char_frame = _char_frame.copy()
+                            _char_frame.set_alpha(127)
                         # Âncora pelo tile de colisão REAL (32×32) dentro
                         # do frame, não pelo centro/base do frame inteiro
                         # (10/09/2026, decisão do usuário — ver
@@ -540,6 +559,10 @@ class RenderSystem(System):
                         _cblit_y = int(draw_y - _anchor_dy)
                         self.world_surf.blit(_char_frame, (_cblit_x, _cblit_y))
                         _char_anchor_dy_for_hud = _anchor_dy
+                    elif _bush_hidden_draw:
+                        # Sem sprite animada disponível (classe sem asset
+                        # ainda) — mesmo fallback translúcido de sempre.
+                        self.world_surf.blit(fill_surf((rect.width, rect.height), (*renderable.color[:3], 127)), rect.topleft)
                     else:
                         pygame.draw.rect(self.world_surf, renderable.color, rect)
 
