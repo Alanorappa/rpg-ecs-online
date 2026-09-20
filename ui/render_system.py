@@ -219,6 +219,14 @@ def _get_ground_effect_sprite(effect_type: str) -> "pygame.Surface | None":
 
 
 class RenderSystem(System):
+    # occludes_player (20/09/2026, ajustado no mesmo dia 100% -> 80%,
+    # pedido do usuário) — fração mínima da silhueta do jogador local que
+    # precisa estar coberta pelos pixels opacos de um objeto "alto" pra
+    # ele ficar transparente. 1.0 = só quando 100% escondido; valores
+    # menores toleram uma borda do personagem ainda visível (ex: tronco
+    # mais estreito que a silhueta).
+    _OCCLUSION_COVERAGE_THRESHOLD = 0.8
+
     def __init__(self, world: World, screen: pygame.Surface):
         self.world = world
         self.world_surf = screen
@@ -496,22 +504,26 @@ class RenderSystem(System):
                         _obj_mask = self._get_mask(obj["sprite"])
                         _mask_offset = (_local_player_screen_rect.x - int(sx),
                                         _local_player_screen_rect.y - int(sy))
-                        # Cobertura 100% (não só "algum pixel em comum"):
-                        # overlap_area conta quantos pixels opacos coincidem
-                        # nos dois — só ativa quando bate a contagem TOTAL
-                        # de pixels opacos do jogador (nenhum sobrando fora
-                        # da área opaca do objeto).
+                        # Cobertura mínima de _OCCLUSION_COVERAGE_THRESHOLD
+                        # (não só "algum pixel em comum"): overlap_area
+                        # conta quantos pixels opacos coincidem nos dois —
+                        # só ativa quando isso bate pelo menos essa fração
+                        # da contagem TOTAL de pixels opacos do jogador.
                         _occlude_fade = (_obj_mask.overlap_area(_local_player_mask, _mask_offset)
-                                        == _local_player_mask_count)
+                                        >= _local_player_mask_count * self._OCCLUSION_COVERAGE_THRESHOLD)
                     else:
                         # Objeto sem sprite (retângulo de cor cheio) ou
                         # jogador sem frame animado (retângulo sólido de
                         # fallback) — nenhum dos dois tem "parte
-                        # transparente", então "100% atrás" vira conter o
-                        # retângulo do jogador INTEIRO dentro do retângulo
-                        # do objeto (não só tocar), mesmo critério de
-                        # cobertura total do caminho com máscara acima.
-                        _occlude_fade = pygame.Rect(sx, sy, w, h).contains(_local_player_screen_rect)
+                        # transparente", então a cobertura mínima vira a
+                        # ÁREA de interseção dos 2 retângulos dividida pela
+                        # área do retângulo do jogador, mesmo limiar do
+                        # caminho com máscara acima.
+                        _player_area = _local_player_screen_rect.width * _local_player_screen_rect.height
+                        if _player_area > 0:
+                            _inter = pygame.Rect(sx, sy, w, h).clip(_local_player_screen_rect)
+                            _occlude_fade = ((_inter.width * _inter.height)
+                                            >= _player_area * self._OCCLUSION_COVERAGE_THRESHOLD)
                 if obj["sprite"] is not None:
                     if _occlude_fade:
                         # Sprite CACHEADA (TILE_SPRITES), compartilhada por
