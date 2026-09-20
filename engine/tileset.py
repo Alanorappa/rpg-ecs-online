@@ -64,9 +64,10 @@ class TileType:
     is_bush: bool = False
 
     # occludes_player (20/09/2026, pedido do usuário) — objeto "alto"
-    # (árvore, construção) que fica 70% transparente quando o PRÓPRIO
-    # jogador está atrás dele na tela (Y-sort: jogador desenhado ANTES
-    # dele na mesma passada) E os retângulos de tela se sobrepõem —
+    # (árvore, construção) que fica 50% transparente (ajustado de 70%
+    # no mesmo dia) quando o PRÓPRIO jogador está atrás dele na tela
+    # (Y-sort: jogador desenhado ANTES dele na mesma passada) E os
+    # retângulos de tela se sobrepõem —
     # mesmo efeito clássico de "ver o personagem atrás da árvore".
     # Curado por família/grupo no catálogo (não deriva de vision_height/
     # is_solid — nem todo objeto alto deve participar, decisão do
@@ -960,7 +961,7 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
                      "label":  "Árvores",
                      "color":  (46, 92, 40),
                      # occludes_player (20/09/2026, pedido do usuário) —
-                     # árvore fica 70% transparente quando o jogador está
+                     # árvore fica 50% transparente quando o jogador está
                      # atrás dela na tela. Ver TileType.occludes_player.
                      "occludes_player": True,
                      "tiles": [

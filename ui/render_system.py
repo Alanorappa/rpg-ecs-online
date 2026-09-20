@@ -504,12 +504,12 @@ class RenderSystem(System):
                         # set_alpha(), nunca mutar o objeto original (mesma
                         # lição do bush stealth/corpo, ver PROBLEMAS_ARQUITETURA.md).
                         _faded_obj = obj["sprite"].copy()
-                        _faded_obj.set_alpha(77)   # 70% transparente = 30% opaco
+                        _faded_obj.set_alpha(127)   # 50% transparente = 50% opaco (20/09/2026, ajuste do usuário)
                         self.world_surf.blit(_faded_obj, (sx, sy))
                     else:
                         self.world_surf.blit(obj["sprite"], (sx, sy))
                 elif _occlude_fade:
-                    self.world_surf.blit(fill_surf((w, h), (*obj["color"][:3], 77)), (sx, sy))
+                    self.world_surf.blit(fill_surf((w, h), (*obj["color"][:3], 127)), (sx, sy))
                 else:
                     pygame.draw.rect(self.world_surf, obj["color"], (sx, sy, w, h))
                 continue
