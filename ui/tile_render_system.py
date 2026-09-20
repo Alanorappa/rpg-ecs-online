@@ -506,6 +506,10 @@ class TileRenderSystem(System):
                         "height":   total_h,
                         "tile_x":   rx,
                         "tile_y":   ry,
+                        # occludes_player (20/09/2026) — repassado pro
+                        # RenderSystem decidir a transparência de "jogador
+                        # atrás do objeto" (ver TileType.occludes_player).
+                        "occludes_player": getattr(tile_type, "occludes_player", False),
                     })
         return objects
 

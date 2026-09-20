@@ -63,6 +63,18 @@ class TileType:
     # junto com vision_height.
     is_bush: bool = False
 
+    # occludes_player (20/09/2026, pedido do usuário) — objeto "alto"
+    # (árvore, construção) que fica 70% transparente quando o PRÓPRIO
+    # jogador está atrás dele na tela (Y-sort: jogador desenhado ANTES
+    # dele na mesma passada) E os retângulos de tela se sobrepõem —
+    # mesmo efeito clássico de "ver o personagem atrás da árvore".
+    # Curado por família/grupo no catálogo (não deriva de vision_height/
+    # is_solid — nem todo objeto alto deve participar, decisão do
+    # usuário), propagado por discover_object_sheet_tiles(). Único
+    # consumidor: ui/render_system.py (ver get_world_objects() em
+    # ui/tile_render_system.py, que repassa este campo no dict do objeto).
+    occludes_player: bool = False
+
     # ── Sistema de pisos (estruturas escalonáveis) ────────────────────────────
     # elevation    — piso do tile: 0=chão (padrão), 1=primeiro andar, etc.
     # is_transition— True em tiles de escada/"t": acessíveis de qualquer piso.
@@ -947,6 +959,10 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
                      "prefix": "pl",
                      "label":  "Árvores",
                      "color":  (46, 92, 40),
+                     # occludes_player (20/09/2026, pedido do usuário) —
+                     # árvore fica 70% transparente quando o jogador está
+                     # atrás dela na tela. Ver TileType.occludes_player.
+                     "occludes_player": True,
                      "tiles": [
                          # (id, sx, sy, w, h, collision_rect, piso, transpassavel, sort, vision_rect, vision_h)
                          # Árvore/bush ganharam bloqueio de visão em 13/08/2026
@@ -1504,6 +1520,11 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
         "label":  "Construções",
         "color":  (115, 108, 98),
         "underlying_terrain": "G",
+        # occludes_player (20/09/2026, pedido do usuário) — no nível de
+        # FAMÍLIA: cascateia pra TODOS os sub-grupos de construção
+        # abaixo (b01..b0N), sem precisar marcar cada tipo de prédio na
+        # mão. Ver TileType.occludes_player / discover_object_sheet_tiles.
+        "occludes_player": True,
         # Catalogado em 02/09/2026 a partir de 4 arquivos de apoio (ver
         # §98/§99/§100), REcatalogado em 03/09/2026 depois do usuário
         # corrigir os 4 PNGs de apoio (piezas re-slicedas, colisões
@@ -2020,7 +2041,8 @@ def resolve_blob3x3_piece(missing_sides: frozenset) -> "tuple | None":
 def _register_catalog_tiles(sheet_file: str, prefix: str, color: tuple,
                             under: str, tiles: list, default_vh: int,
                             is_bush: bool = False,
-                            no_prefix_separator: bool = False) -> None:
+                            no_prefix_separator: bool = False,
+                            occludes_player: bool = False) -> None:
     """
     Registra um lote de tiles em modo CATÁLOGO (posição/tamanho próprios
     por tile) em OBJECT_MAPPING/OBJECT_CHARS/OBJECT_SHEET_TILE_MAP/
@@ -2086,6 +2108,7 @@ def _register_catalog_tiles(sheet_file: str, prefix: str, color: tuple,
             vision_rect=vision_rect_cfg,
             vision_height=vision_h,
             is_bush=is_bush,
+            occludes_player=occludes_player,
             elevation=elev,
             is_transition=is_trans,
             passthrough=transpass,
@@ -2130,6 +2153,13 @@ def discover_object_sheet_tiles() -> None:
         color    = fam.get("color", (128, 128, 128))
         under    = fam.get("underlying_terrain", "G")
         default_vh = fam.get("default_vision_height", 0)
+        # occludes_player no nível de FAMÍLIA (20/09/2026) cascateia pra
+        # TODOS os sub-grupos dela — diferente de is_bush (só 1 grupo
+        # precisou até hoje), "Construções" tem dezenas de sub-grupos
+        # (1 por tipo de prédio) que devem participar juntos; setar 1 vez
+        # na família evita repetir a flag em cada um. Grupo pode ainda
+        # sobrescrever individualmente via group.get(...) abaixo.
+        default_occludes = fam.get("occludes_player", False)
 
         if "groups" in fam:
             for group in fam["groups"].values():
@@ -2140,11 +2170,13 @@ def discover_object_sheet_tiles() -> None:
                     group.get("default_vision_height", default_vh),
                     group.get("is_bush", False),
                     group.get("no_prefix_separator", False),
+                    group.get("occludes_player", default_occludes),
                 )
         elif "tiles" in fam:
             _register_catalog_tiles(sheet_file, prefix, color, under,
                                     fam["tiles"], default_vh,
-                                    no_prefix_separator=fam.get("no_prefix_separator", False))
+                                    no_prefix_separator=fam.get("no_prefix_separator", False),
+                                    occludes_player=default_occludes)
         else:
             # Modo grade: tile_w × tile_h uniforme, auto-descobre cols/rows
             sw, sh_px   = _read_png_size(path)

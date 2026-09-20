@@ -438,12 +438,37 @@ class RenderSystem(System):
         drawables.sort(key=lambda d: d[0])
 
         # ── Desenha na ordem ──────────────────────────────────────────────────
+        # Retângulo de tela do jogador local, capturado quando ele é
+        # desenhado (mais abaixo neste loop) — usado pra decidir a
+        # transparência de objeto "alto" (occludes_player, 20/09/2026,
+        # pedido do usuário). `None` até o jogador ser desenhado nesta
+        # passada: como a lista está em ORDEM CRESCENTE de sort_y e um
+        # objeto só deve ficar transparente quando o jogador está ATRÁS
+        # dele (sort_y do jogador < sort_y do objeto → jogador desenhado
+        # ANTES na mesma passada), continuar `None` aqui é exatamente
+        # "objeto está na frente/abaixo do jogador no Y-sort" — nenhuma
+        # comparação de sort_y explícita é necessária.
+        _local_player_screen_rect: "pygame.Rect | None" = None
         for item in drawables:
             if item[1] == "object":
                 obj = item[2]
                 sx, sy, w, h = obj["screen_x"], obj["screen_y"], obj["width"], obj["height"]
+                _occlude_fade = (obj.get("occludes_player", False)
+                                and _local_player_screen_rect is not None
+                                and pygame.Rect(sx, sy, w, h).colliderect(_local_player_screen_rect))
                 if obj["sprite"] is not None:
-                    self.world_surf.blit(obj["sprite"], (sx, sy))
+                    if _occlude_fade:
+                        # Sprite CACHEADA (TILE_SPRITES), compartilhada por
+                        # todo tile do mesmo tipo — copy() antes do
+                        # set_alpha(), nunca mutar o objeto original (mesma
+                        # lição do bush stealth/corpo, ver PROBLEMAS_ARQUITETURA.md).
+                        _faded_obj = obj["sprite"].copy()
+                        _faded_obj.set_alpha(77)   # 70% transparente = 30% opaco
+                        self.world_surf.blit(_faded_obj, (sx, sy))
+                    else:
+                        self.world_surf.blit(obj["sprite"], (sx, sy))
+                elif _occlude_fade:
+                    self.world_surf.blit(fill_surf((w, h), (*obj["color"][:3], 77)), (sx, sy))
                 else:
                     pygame.draw.rect(self.world_surf, obj["color"], (sx, sy, w, h))
                 continue
@@ -484,6 +509,12 @@ class RenderSystem(System):
             # sprite (10/09/2026 — a âncora não é mais "base do sprite",
             # é o tile de colisão de 32×32 dentro dele).
             _char_anchor_dy_for_hud = None
+            # Resetado pelo MESMO motivo do campo acima (evita herdar o
+            # frame da entidade anterior do loop) — consumido logo abaixo
+            # pra decidir o retângulo de tela REAL do jogador local, usado
+            # pela transparência de objeto "alto" (occludes_player, ver
+            # branch de objeto mais acima neste método).
+            _char_frame = None
 
             draw_x = position.x - camera_offset_x
             draw_y = position.y - camera_offset_y
@@ -610,6 +641,22 @@ class RenderSystem(System):
                         self.world_surf.blit(fill_surf((rect.width, rect.height), (*renderable.color[:3], 127)), rect.topleft)
                     else:
                         pygame.draw.rect(self.world_surf, renderable.color, rect)
+
+            # Retângulo de tela REAL do jogador local (20/09/2026, pedido do
+            # usuário — transparência de objeto "alto" atrás do qual o
+            # jogador anda). `rect` não reflete o frame animado de verdade
+            # (fica com o tamanho genérico antigo, 24×24) — usa o frame só
+            # quando ele foi de fato desenhado acima; senão `rect` já é
+            # preciso (corpo/espírito/bush/disfarce/retângulo simples).
+            # Só o PRÓPRIO jogador participa (decisão do usuário) — nunca
+            # sobrescrito por outra entidade do loop, por isso o reset
+            # (`_char_frame = None`) no topo desta iteração é obrigatório.
+            if _is_local_player:
+                if _char_frame is not None:
+                    _local_player_screen_rect = pygame.Rect(
+                        _cblit_x, _cblit_y, _char_frame.get_width(), _char_frame.get_height())
+                else:
+                    _local_player_screen_rect = rect.copy()
 
             # ── Efeitos de chão: desenhados NA FRENTE do retângulo da entidade ──
             # Verificação direta em StatusEffects (sem exigir CombatStats) para
