@@ -471,6 +471,11 @@ class RenderSystem(System):
         # fallback — nesse caso não há "parte transparente" a excluir,
         # colisão de retângulo cheio já é o comportamento certo).
         _local_player_mask: "pygame.mask.Mask | None" = None
+        # Total de pixels opacos da máscara acima — usado pra exigir
+        # cobertura 100% (pedido do usuário, 20/09/2026: só ficar
+        # transparente quando o personagem está TOTALMENTE atrás do
+        # objeto, não só parcialmente sobreposto).
+        _local_player_mask_count = 0
         for item in drawables:
             if item[1] == "object":
                 obj = item[2]
@@ -486,17 +491,27 @@ class RenderSystem(System):
                 _occlude_fade = False
                 if (obj.get("occludes_player", False) and _local_player_screen_rect is not None
                         and pygame.Rect(sx, sy, w, h).colliderect(_local_player_screen_rect)):
-                    if obj["sprite"] is not None and _local_player_mask is not None:
+                    if (obj["sprite"] is not None and _local_player_mask is not None
+                            and _local_player_mask_count > 0):
                         _obj_mask = self._get_mask(obj["sprite"])
                         _mask_offset = (_local_player_screen_rect.x - int(sx),
                                         _local_player_screen_rect.y - int(sy))
-                        _occlude_fade = _obj_mask.overlap(_local_player_mask, _mask_offset) is not None
+                        # Cobertura 100% (não só "algum pixel em comum"):
+                        # overlap_area conta quantos pixels opacos coincidem
+                        # nos dois — só ativa quando bate a contagem TOTAL
+                        # de pixels opacos do jogador (nenhum sobrando fora
+                        # da área opaca do objeto).
+                        _occlude_fade = (_obj_mask.overlap_area(_local_player_mask, _mask_offset)
+                                        == _local_player_mask_count)
                     else:
                         # Objeto sem sprite (retângulo de cor cheio) ou
                         # jogador sem frame animado (retângulo sólido de
                         # fallback) — nenhum dos dois tem "parte
-                        # transparente", retângulo cheio já é exato.
-                        _occlude_fade = True
+                        # transparente", então "100% atrás" vira conter o
+                        # retângulo do jogador INTEIRO dentro do retângulo
+                        # do objeto (não só tocar), mesmo critério de
+                        # cobertura total do caminho com máscara acima.
+                        _occlude_fade = pygame.Rect(sx, sy, w, h).contains(_local_player_screen_rect)
                 if obj["sprite"] is not None:
                     if _occlude_fade:
                         # Sprite CACHEADA (TILE_SPRITES), compartilhada por
@@ -711,9 +726,11 @@ class RenderSystem(System):
                     _local_player_screen_rect = pygame.Rect(
                         _cblit_x, _cblit_y, _char_frame.get_width(), _char_frame.get_height())
                     _local_player_mask = self._get_mask(_char_frame_for_mask)
+                    _local_player_mask_count = _local_player_mask.count()
                 else:
                     _local_player_screen_rect = rect.copy()
                     _local_player_mask = None
+                    _local_player_mask_count = 0
 
             # ── Efeitos de chão: desenhados NA FRENTE do retângulo da entidade ──
             # Verificação direta em StatusEffects (sem exigir CombatStats) para
