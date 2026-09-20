@@ -21406,3 +21406,51 @@ dependentes de Postgres via Docker, que estava parado — não regressão
 desta mudança). Sem teste automatizado novo dedicado (nenhum dos 3
 pontos está no catálogo de "pontos únicos de verdade" que exige teste
 sempre) — validação em jogo fica com o usuário.
+
+---
+
+## 187. Investigação — "Interceptar" ficava sempre rejeitado numa partida de BG (19/09/2026, NÃO é bug de código)
+
+**Sintoma relatado:** usuário jogando guerreiro numa partida de BG, ao
+alcançar nível 3 de instância (subindo via jungle), toda tentativa de
+usar Interceptar retornava "Skill não aprendida" — e continuou assim
+pelo resto da partida, mesmo com mais levels depois.
+
+**Investigação:** `is_skill_authorized()` (`engine/world_systems.py`)
+rejeita com essa mensagem quando `sid not in PlayerSkills.
+learned_skill_ids`. Reproduzido 2x com o mecanismo REAL de concessão
+(`server/instance_progression.py::_grant_instance_skill`/
+`_process_instance_levelup`, chamado por `grant_instance_xp`) — uma vez
+chamando a função direto, outra simulando uma morte de mob de JUNGLE de
+verdade (o caminho específico que o usuário apontou como suspeito) — e
+nos dois casos Interceptar desbloqueou certinho no nível 2 (índice 1 de
+`INSTANCE_SKILL_UNLOCK_ORDER["guerreiro"]`) e continuou autorizado daí
+em diante. Nenhum código encontrado em lugar nenhum que remova algo de
+`learned_skill_ids` depois de concedido (só `.add()`, nunca
+`.discard()`/reatribuição do set) — `HOTBAR_UPDATE`
+(`server/session.py::_handle_hotbar_update`) mexe só em `ps.skills`
+(posição visual), nunca em `learned_skill_ids`.
+
+**Causa raiz real, achada no log de produção (`logs/server.log` +
+`journalctl` do Hetzner, timestamps completos):** o incidente
+(rejeições de `interceptar player=255` entre 19/09 00:07:44 e
+00:14:08) caiu bem no meio de uma janela em que o SERVIDOR foi
+reiniciado 4 vezes (19/09 22:56:38, 23:15:15, 23:33:48, 23:59:36) por
+causa dos deploys de `release_tools/deploy_server.ps1` rodados a cada
+correção de bug DIFERENTE nessa mesma sessão (item #186, iterações do
+Y-sort de corpo). Cada restart derruba a conexão do jogador; o cliente
+reconecta sozinho rápido o bastante pra passar despercebido, mas o
+servidor carrega uma instância de BG NOVA a cada reconexão
+(`carregando mapa: moba_battleground.csv (instância ...::bg_1)` se
+repete no log a cada vez) — resetando a progressão normalizada
+(nível/skills da instância) do zero. Resultado: o jogador via "cheguei
+no nível 3" em uma tentativa, o restart apagava esse progresso sem
+aviso, e a tentativa seguinte de usar Interceptar caía numa instância
+ainda no nível 1 de verdade — sem NENHUM bug no mecanismo de
+desbloqueio em si.
+
+**Não é código — é processo.** Ver `[[feedback-auto-deploy-after-fix]]`
+(memória): daqui pra frente, deploy durante uma sessão de teste ATIVA
+do usuário é anunciado/combinado antes, não automático a cada commit —
+só volta a ser automático quando ele confirma que não está testando ao
+vivo naquele momento.
