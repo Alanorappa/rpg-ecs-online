@@ -21454,3 +21454,69 @@ desbloqueio em si.
 do usuário é anunciado/combinado antes, não automático a cada commit —
 só volta a ser automático quando ele confirma que não está testando ao
 vivo naquele momento.
+
+---
+
+## 188. Feature — objeto "alto" (árvore/construção) fica transparente com o jogador atrás dele (20/09/2026)
+
+Efeito clássico "ver o personagem atrás da árvore", pedido do usuário.
+Validado em jogo após 4 rodadas de calibração no mesmo dia — design
+final documentado aqui pra próxima pessoa (ou próxima sessão) não
+reconstruir do zero.
+
+**Dado novo no catálogo**: `TileType.occludes_player: bool = False`
+(`engine/tileset.py`) — curado por família/grupo em
+`discover_object_sheet_tiles()` (mesmo mecanismo de `default_vision_height`:
+família cascateia pra todos os sub-grupos, grupo pode sobrescrever).
+Marcado hoje em 2 lugares: grupo `"arvores"` (1 grupo só) e família
+inteira `"TX Village Building with Shadow"`/label "Construções"
+(cascateia pra todos os ~97 sub-grupos de prédio de uma vez, sem marcar
+cada tipo na mão). `get_world_objects()` (`ui/tile_render_system.py`)
+repassa o campo no dict de cada objeto visível.
+
+**Mecanismo de desenho** (`ui/render_system.py::RenderSystem.render()`):
+- Escopo (decisão do usuário): só o **jogador LOCAL** participa (nunca
+  outro player/bot/mob) — 1 checagem por objeto visível, não N.
+- Aproveita a passada ÚNICA de Y-sort (ordem crescente por `sort_y`):
+  guarda o retângulo de tela real do jogador local (`_local_player_screen_rect`)
+  e sua máscara de pixel (`_local_player_mask`, via `pygame.mask.from_surface`
+  no frame de animação — NUNCA `renderable.width/height`, que não reflete
+  o sprite de verdade) assim que ele é desenhado. Objeto com
+  `occludes_player=True` desenhado DEPOIS dele na mesma passada (== na
+  frente dele no Y-sort) é candidato; um objeto desenhado ANTES nunca vê
+  o retângulo do jogador (ainda `None`) e fica opaco automaticamente —
+  nenhuma comparação de `sort_y` explícita é necessária.
+- Filtro em 2 estágios: `Rect.colliderect()` primeiro (barato, corta a
+  esmagadora maioria dos objetos longe do jogador) — só paga o custo de
+  `Mask.overlap_area()` pros poucos candidatos que já se sobrepõem em
+  bounding box.
+- Critério final: **cobertura ≥ `RenderSystem._OCCLUSION_COVERAGE_THRESHOLD`**
+  (constante nomeada, hoje `0.8` — ajustada de 100% depois do usuário
+  testar) — `Mask.overlap_area()` conta quantos pixels OPACOS do jogador
+  coincidem com pixels opacos do objeto; só ativa quando isso bate pelo
+  menos essa fração da contagem total de pixels opacos do jogador
+  (`Mask.count()`). Corrige o erro de 1ª tentativa (retângulo cheio
+  colliderect — disparava encostando na moldura TRANSPARENTE ao redor
+  do sprite, não só no tronco/copa desenhados de verdade) e o de 2ª
+  tentativa ("qualquer 1 pixel em comum" — trocava fácil demais,
+  bastava encostar numa borda). Fallback sem sprite (objeto OU jogador
+  caiu no retângulo sólido genérico) usa a MESMA fração, mas por ÁREA de
+  interseção de retângulo em vez de máscara (nenhum dos dois tem parte
+  transparente nesse caso).
+- Opacidade final: `set_alpha(127)` (50%, ajustado de 70% inicial) numa
+  **cópia** do sprite — nunca no objeto original, que é cacheado/
+  compartilhado por todo tile do mesmo tipo (`TILE_SPRITES`). Máscaras
+  cacheadas por `id(surface)` em `RenderSystem._occlusion_mask_cache`,
+  sem teto — seguro pelo mesmo motivo de `TILE_SPRITES`/`_frame_cache`
+  (as Surfaces mascaradas já são cacheadas pra sempre em dicts de
+  módulo, `id()` nunca reciclado enquanto o processo roda). Cuidado
+  já resolvido: a máscara do jogador precisa vir do frame ORIGINAL
+  (antes do `.copy()+set_alpha()` do bush stealth), nunca da cópia —
+  `set_alpha()` não muda o canal alpha POR PIXEL (só multiplicador
+  global de blit), então a forma da máscara é idêntica de qualquer
+  jeito, mas usar a cópia faria o cache de máscara crescer sem teto (1
+  `id()` novo por frame enquanto o bush stealth estivesse ativo).
+
+**Extensão futura**: marcar outro grupo/família do catálogo como
+"alto" é só `"occludes_player": True` no dict certo — nenhuma lógica
+nova, mesmo padrão de `is_bush`.

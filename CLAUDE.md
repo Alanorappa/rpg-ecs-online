@@ -873,6 +873,16 @@ padrão a quebrar, não só os bugs individuais.
   entidade arbitrária, não "a certa". Fora de dúvida sobre se um tipo
   é singleton no mundo em questão, usar `get_entities_with()` normal.
   Ver PROBLEMAS_ARQUITETURA.md §184.
+- **Objeto de mapa "alto" (árvore, construção) ficar transparente com o
+  jogador atrás dele** → marcar `"occludes_player": True` no
+  grupo/família certo do catálogo (`engine/tileset.py::OBJECT_SHEET_FAMILIES`,
+  mesmo mecanismo de `is_bush`/`default_vision_height` — família
+  cascateia pra todos os sub-grupos, grupo pode sobrescrever) — NUNCA
+  reimplementar a lógica de desenho, que já existe em
+  `ui/render_system.py::RenderSystem.render()` (colisão por
+  `pygame.mask`, escopo só do jogador LOCAL, cobertura mínima
+  `RenderSystem._OCCLUSION_COVERAGE_THRESHOLD`). Ver
+  PROBLEMAS_ARQUITETURA.md §188.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem
