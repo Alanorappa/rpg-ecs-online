@@ -247,6 +247,23 @@ class RenderSystem(System):
         # nome (a caixinha da HUD tem proporção diferente).
         from ui.hud_bars import LEVEL_FONT_SIZE as _LFS
         self._level_font = _make_name(_LFS * 2)
+        # Cache de Mask por Surface (20/09/2026, ver occludes_player) —
+        # chave = id(surface). Seguro sem teto/eviction aqui porque as
+        # Surfaces mascaradas (sprite de objeto via TILE_SPRITES, frame de
+        # personagem via engine.character_animation._frame_cache) já são
+        # elas mesmas cacheadas pra sempre em dicts de módulo — o id()
+        # nunca é reciclado enquanto o processo roda (mesmo raciocínio já
+        # documentado pra esses 2 caches: espaço de chaves fixo, limitado
+        # pelo catálogo/classes do jogo, não por quantos frames rodaram).
+        self._occlusion_mask_cache: "dict[int, pygame.mask.Mask]" = {}
+
+    def _get_mask(self, surf: "pygame.Surface") -> "pygame.mask.Mask":
+        key = id(surf)
+        mask = self._occlusion_mask_cache.get(key)
+        if mask is None:
+            mask = pygame.mask.from_surface(surf)
+            self._occlusion_mask_cache[key] = mask
+        return mask
 
     def set_name_font(self, font: "pygame.font.Font") -> None:
         """GameEngine injeta self.font_sm aqui (logo após construir este
@@ -449,13 +466,37 @@ class RenderSystem(System):
         # "objeto está na frente/abaixo do jogador no Y-sort" — nenhuma
         # comparação de sort_y explícita é necessária.
         _local_player_screen_rect: "pygame.Rect | None" = None
+        # Máscara de pixel do jogador local (None = sem sprite animada
+        # disponível nesta iteração, jogador caiu no retângulo sólido de
+        # fallback — nesse caso não há "parte transparente" a excluir,
+        # colisão de retângulo cheio já é o comportamento certo).
+        _local_player_mask: "pygame.mask.Mask | None" = None
         for item in drawables:
             if item[1] == "object":
                 obj = item[2]
                 sx, sy, w, h = obj["screen_x"], obj["screen_y"], obj["width"], obj["height"]
-                _occlude_fade = (obj.get("occludes_player", False)
-                                and _local_player_screen_rect is not None
-                                and pygame.Rect(sx, sy, w, h).colliderect(_local_player_screen_rect))
+                # Colisão por MÁSCARA DE PIXEL (20/09/2026, pedido do
+                # usuário — checagem por retângulo cheio disparava a
+                # transparência encostando na moldura invisível ao redor
+                # da árvore, não só no tronco/copa desenhados de verdade).
+                # Primeiro filtra por retângulo (barato, corta a esmagadora
+                # maioria dos objetos fora da tela/longe do jogador) — só
+                # paga o custo de mask.overlap() pros poucos candidatos que
+                # já se sobrepõem em bounding box.
+                _occlude_fade = False
+                if (obj.get("occludes_player", False) and _local_player_screen_rect is not None
+                        and pygame.Rect(sx, sy, w, h).colliderect(_local_player_screen_rect)):
+                    if obj["sprite"] is not None and _local_player_mask is not None:
+                        _obj_mask = self._get_mask(obj["sprite"])
+                        _mask_offset = (_local_player_screen_rect.x - int(sx),
+                                        _local_player_screen_rect.y - int(sy))
+                        _occlude_fade = _obj_mask.overlap(_local_player_mask, _mask_offset) is not None
+                    else:
+                        # Objeto sem sprite (retângulo de cor cheio) ou
+                        # jogador sem frame animado (retângulo sólido de
+                        # fallback) — nenhum dos dois tem "parte
+                        # transparente", retângulo cheio já é exato.
+                        _occlude_fade = True
                 if obj["sprite"] is not None:
                     if _occlude_fade:
                         # Sprite CACHEADA (TILE_SPRITES), compartilhada por
@@ -515,6 +556,7 @@ class RenderSystem(System):
             # pela transparência de objeto "alto" (occludes_player, ver
             # branch de objeto mais acima neste método).
             _char_frame = None
+            _char_frame_for_mask = None
 
             draw_x = position.x - camera_offset_x
             draw_y = position.y - camera_offset_y
@@ -614,6 +656,19 @@ class RenderSystem(System):
                                 _char_id_rnd, _state_rnd, _tm_rnd.facing,
                                 _anim_t_rnd, _frame_ms_rnd)
 
+                    # Guarda a referência ESTÁVEL (cacheada em _frame_cache,
+                    # nunca substituída) ANTES do possível .copy() do bush
+                    # stealth abaixo — usada só pra máscara de pixel
+                    # (occludes_player, ver captura de _local_player_mask
+                    # mais abaixo). set_alpha() não muda o canal alpha POR
+                    # PIXEL (é multiplicador global de blit), então a
+                    # máscara da cópia seria idêntica à do original mesmo
+                    # assim — mas usar o original evita cachear uma Surface
+                    # nova (id() novo) a cada frame que o bush stealth
+                    # estiver ativo, o que faria _occlusion_mask_cache
+                    # crescer sem teto por bem pouco ganho.
+                    _char_frame_for_mask = _char_frame
+
                     if _char_frame is not None:
                         if _bush_hidden_draw:
                             # get_character_frame devolve Surface CACHEADA
@@ -655,8 +710,10 @@ class RenderSystem(System):
                 if _char_frame is not None:
                     _local_player_screen_rect = pygame.Rect(
                         _cblit_x, _cblit_y, _char_frame.get_width(), _char_frame.get_height())
+                    _local_player_mask = self._get_mask(_char_frame_for_mask)
                 else:
                     _local_player_screen_rect = rect.copy()
+                    _local_player_mask = None
 
             # ── Efeitos de chão: desenhados NA FRENTE do retângulo da entidade ──
             # Verificação direta em StatusEffects (sem exigir CombatStats) para
