@@ -653,6 +653,11 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
                                            for o in _remaining))
 
         if (not match["team_a"] and not match["team_b"]) or _no_real_player_left:
+            from server.log import log as _log_bglv
+            _reason_bglv = ("sem jogador real restante" if _no_real_player_left
+                            else "times 100% vazios")
+            _log_bglv.info(f"[BG] partida {match_id} encerrada ({_reason_bglv}) "
+                          f"— destruindo {match['instance_key']}")
             self._bg_active_matches.pop(match_id, None)
             # Despawna os bots que sobravam ANTES de descarregar a
             # instância — `_despawn_bot_player` precisa do componente

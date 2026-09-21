@@ -956,6 +956,12 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         Ver docstring de _load_map_for pro racional de instance_key."""
         bundle = self._load_map_for(template_file, instance_key=instance_key)
         self._map_bundles[instance_key] = bundle
+        # Log de acompanhamento (20/09/2026, pedido do usuário — sem
+        # visibilidade nenhuma de quais instâncias sobem/descem, difícil
+        # de testar a limpeza sem acesso ao terminal do servidor). Ponto
+        # único — cobre BG (fila real), Arena e /testbg, os 3 chamadores
+        # de _load_instance/_unload_instance.
+        log.info(f"[Instance] criada: {instance_key} (template {template_file})")
         return bundle
 
     def _unload_instance(self, instance_key: str) -> None:
@@ -970,6 +976,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # remove_entity já tolera alvo ausente sozinho — ver PROBLEMAS_ARQUITETURA.md §165.
         for eid in _to_remove:
             self.world.remove_entity(eid)
+        # Mesmo motivo do log em _load_instance — par "criada"/"destruída"
+        # pra acompanhar o ciclo de vida completo sem precisar inspecionar
+        # o processo por dentro.
+        log.info(f"[Instance] destruída: {instance_key} ({len(_to_remove)} entidades removidas)")
         self._map_bundles.pop(instance_key, None)
         self._pvp_zones_by_map.pop(instance_key, None)
         self._bush_zones_by_map.pop(instance_key, None)
