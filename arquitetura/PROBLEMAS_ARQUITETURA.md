@@ -21646,3 +21646,65 @@ dentro da suíte completa quando outro teste já redimensionou a janela
 antes). Suíte relacionada (`render_system`, `minimap`, `camera`,
 `tile_render`): 19 passed, mais os 181 de `test_client_ui.py` inteiro —
 sem regressão.
+
+---
+
+## 191. Clamp de câmera não aparecia na tela de jogo + clique no NPC da loja parou de funcionar — 2 duplicatas esquecidas de `get_camera_offset()` (20/09/2026)
+
+Sequência de 2 bugs na mesma sessão do item 190, mesma causa raiz de
+fundo: cópias locais da fórmula de offset de câmera que nunca foram
+migradas pro ponto único (`engine/utils.py::get_camera_offset()`,
+consolidado 15/09/2026) continuavam vivas em outros arquivos, cada uma
+descoberta só depois que ALGUMA outra parte do código já usava a versão
+nova (com clamp).
+
+**A — `game.py`, loop de render principal.** O clamp do item 190 foi
+implementado e testado corretamente em `get_camera_offset()`, mas o
+usuário reportou via print que a câmera continuava mostrando vazio além
+da borda do mapa. Causa: o loop de render de verdade em `game.py` nunca
+chamava essa função — tinha sua PRÓPRIA cópia inline
+(`cam_x = (camera_pos.x - lw/2) if camera_pos else 0`, calculada direto
+de `Position` do `camera_entity`) que nunca foi atualizada quando a
+função compartilhada ganhou o clamp. Fix: substituída pela chamada real
+a `get_camera_offset(self.world, lw, lh)`, removendo o fetch de
+`camera_pos` que só servia pra essa conta.
+
+**B — `ui/shop_system.py`/`ui/quest_system.py`, clique direito em NPC.**
+Assim que o fix do item A entrou em produção, o usuário reportou que o
+clique direito no NPC Mercador da BG parou de funcionar por completo —
+nem o "andar até o NPC" acontecia, em qualquer modo de câmera
+(travada/livre). Causa: `ShopSystem._get_cam()`
+(`ui/shop_system.py`) e `QuestDialogSystem._get_cam()`
+(`ui/quest_system.py`) tinham cada uma sua PRÓPRIA cópia idêntica da
+fórmula antiga (uma comentava explicitamente "ver ShopSystem._get_cam()",
+confirmando que foi copiada de propósito em vez de reusar a função).
+Convertiam clique de tela pra posição de mundo usando o offset SEM
+clamp, enquanto o NPC já era desenhado usando o offset COM clamp (item
+A) — perto da borda do mapa os dois offsets divergem, o clique erra o
+retângulo do NPC por completo (`abs(wx - pos.x) <= hw` nunca bate). Fix:
+as duas passam a delegar pra `get_camera_offset()`, igual
+`LootSystem`/`PlayerInputSystem`/`SpellCastSystem`/`SkillHandlers`/
+`CraftingSystem`/`TrainerSystem` já faziam.
+
+**Lição:** um "ponto único de verdade" só protege contra esta classe de
+bug enquanto TODOS os consumidores de fato chamam ele — uma cópia local
+esquecida (mesmo pequena, mesmo já catalogada como "13+ pontos
+consolidados" antes) fica invisível até o dia em que o comportamento da
+função central muda e a cópia não acompanha. Antes de mudar o
+comportamento de uma função "ponto único" já consolidada (não só ao
+criá-la), vale grep por fórmulas equivalentes reimplementadas
+(`cam_pos.x -`, `- SW / 2`, `- SH / 2`, `_get_cam`) em vez de assumir
+que a consolidação anterior pegou 100% dos casos.
+
+**Teste**: novo `test_shop_click_direito_acerta_npc_perto_da_borda_do_mapa`
+(`tests/test_client_ui.py`) — reproduz o cenário exato relatado (câmera
+perto do canto inferior-direito de um mapa 1600×1600px, clique na
+posição de tela onde o offset CLAMPADO desenha o NPC) e confirma que o
+clique é reconhecido. Revert-to-confirm: com `ShopSystem._get_cam()`
+revertida pra fórmula antiga, o teste falha exatamente no ponto
+esperado (`_right_click_consumed is False`) — confirma que o teste
+prova o bug relatado, não só um cenário sintético qualquer. Suíte
+completa (`pytest tests/ -q`, 1750 passed, 1 falha pré-existente e não
+relacionada em `test_perf_log_improvements.py` — timing flaky de
+`time.sleep(0.01)` medindo 0.009956s, tolerância de relógio do SO, não
+regressão desta mudança).

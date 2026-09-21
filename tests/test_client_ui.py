@@ -228,6 +228,64 @@ def test_get_camera_offset_sem_clamp_no_meio_do_mapa():
     assert offset_y == 800.0 - 720 / 2
 
 
+# ── ui/shop_system.py::ShopSystem — clique no NPC perto da borda do mapa ─────
+# Bug real relatado pelo usuário 20/09/2026: depois do clamp de borda de
+# câmera (acima) entrar no render loop real (game.py), o clique direito no
+# NPC Mercador parou de funcionar por completo (nem andar até o NPC
+# acontecia) — reproduzia perto de canto de mapa, sumia longe dele.
+# Causa: ShopSystem._get_cam() tinha sua PRÓPRIA cópia da fórmula de offset
+# de câmera, sem o clamp novo — o clique convertia a posição de tela pra
+# mundo usando o offset ANTIGO (sem clamp), enquanto o NPC era desenhado
+# usando o offset NOVO (com clamp) — perto da borda os dois divergem, o
+# clique erra o NPC. Fix: ShopSystem._get_cam() delega pra
+# engine.utils.get_camera_offset() (mesmo já feito em QuestDialogSystem).
+def test_shop_click_direito_acerta_npc_perto_da_borda_do_mapa():
+    from engine.world import World
+    from engine.components import (Camera, Position, Tilemap, TileMovement,
+                                    PlayerAutoMove, Merchant, Renderable, CombatState)
+    from ui.shop_system import ShopSystem
+    from ui.ui_components import ShopUIState
+
+    world = World()
+    world.add_component(world.create_entity(), Tilemap(
+        tile_matrix=[], terrain_matrix=[], object_matrix=[],
+        tile_size=32, map_width_tiles=50, map_height_tiles=50,
+    ))
+    # Câmera perto do canto inferior-direito do mapa (1600x1600 px) — clamp
+    # ativo, offset real = (320, 880), NÃO o centralizado ingênuo (950, 1230).
+    cam = world.create_entity()
+    world.add_component(cam, Camera(target_entity_id=-1))
+    world.add_component(cam, Position(x=1590.0, y=1590.0))
+
+    player = world.create_entity()
+    world.add_component(player, TileMovement(current_tile_x=49, current_tile_y=49))
+    world.add_component(player, PlayerAutoMove())
+    world.add_component(player, CombatState())
+    world.add_component(player, ShopUIState())
+
+    merchant = world.create_entity()
+    world.add_component(merchant, Position(x=1580.0, y=1580.0))
+    world.add_component(merchant, Renderable(color=(0, 0, 0), width=32, height=32))
+    world.add_component(merchant, Merchant())
+
+    screen = pygame.display.get_surface()  # 320x240, mas world_surf é setado manual abaixo
+    shop = ShopSystem(world, player_entity=player, screen=screen)
+    shop.world_surf = pygame.Surface((1280, 720))
+    shop.hud_surf   = shop.world_surf
+
+    # Clique no ponto de tela onde o offset CLAMPADO (320, 880) coloca o
+    # NPC — é exatamente onde ele é desenhado de verdade.
+    click_screen_pos = (1580 - 320, 1580 - 880)
+    ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=3, pos=click_screen_pos)
+    shop.update(events=[ev], dt=1 / 30)
+
+    assert shop._right_click_consumed is True, \
+        "clique no NPC perto da borda do mapa deveria ser reconhecido (offset desatualizado sem clamp o fazia errar o alvo)"
+    # Player e merchant caem no mesmo tile (49,49) — já adjacente, abre
+    # direto em vez de andar (mesma lógica de ShopSystem.update()).
+    assert shop.open_merchant_id == merchant
+
+
 # ── ui/map_markers.py ────────────────────────────────────────────────────────
 
 def _make_marker_world():

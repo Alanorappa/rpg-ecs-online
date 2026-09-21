@@ -23,10 +23,10 @@ try:
 except ImportError:
     _MCL = None  # não disponível no ambiente do cliente
 
-from engine.components import Position, Renderable, Camera, TileMovement, PlayerAutoMove, Inventory, Equipment, Wallet, Merchant, CharacterStats, NPC, NPCInteractionRequest
+from engine.components import Position, Renderable, TileMovement, PlayerAutoMove, Inventory, Equipment, Wallet, Merchant, CharacterStats, NPC, NPCInteractionRequest
 from engine.world import World
 from engine.tileset import TILE_SIZE
-from engine.utils import chebyshev
+from engine.utils import chebyshev, get_camera_offset
 # Hoisted pro topo (14/09/2026, revisão de performance — ver
 # arquitetura/CLIENT_PERFORMANCE_REVIEW.md item 2): estavam sendo
 # reimportados dentro de RenderSystem.render(), no loop de desenho mais
@@ -145,11 +145,7 @@ class ShopSystem(UIScaleMixin, System):
     def _get_cam(self):
         SW = self.world_surf.get_width()
         SH = self.world_surf.get_height()
-        _cam_pos_first = self.world.get_first(Position, Camera)
-        if _cam_pos_first is not None:
-            pos = _cam_pos_first[1]
-            return pos.x - SW / 2, pos.y - SH / 2
-        return 0.0, 0.0
+        return get_camera_offset(self.world, SW, SH)
 
     # ------------------------------------------------------------------
     # Update — detecção de clique no mundo

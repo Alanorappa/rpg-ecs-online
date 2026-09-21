@@ -1293,17 +1293,16 @@ class QuestDialogSystem(UIScaleMixin, System):
     def _get_cam(self):
         # Usa world_surf (superfície lógica de zoom), não hud_surf (tela
         # real) — sem isso o clique calcula a posição mundial errada quando
-        # self._zoom != 1.0 (ver ShopSystem._get_cam() em systems.py, que já
-        # faz certo). _open_dialog/click usa esse offset + _sc (ver update()).
-        # Fallback pra hud_surf se world_surf ainda não foi atribuído (1º
-        # frame, antes de game.py::_assign_world_surf rodar — zoom=1.0).
-        from engine.components import Camera, Position as _Pos
+        # self._zoom != 1.0. _open_dialog/click usa esse offset + _sc (ver
+        # update()). Fallback pra hud_surf se world_surf ainda não foi
+        # atribuído (1º frame, antes de game.py::_assign_world_surf rodar —
+        # zoom=1.0). Delega pro ponto único de verdade (engine.utils.
+        # get_camera_offset) — já inclui o clamp de borda de mapa; uma cópia
+        # local sem o clamp ficava fora de sincronia com o que é desenhado
+        # de verdade perto da borda (ver PROBLEMAS_ARQUITETURA.md §190).
+        from engine.utils import get_camera_offset
         SW, SH = (self.world_surf or self.hud_surf).get_size()
-        _cam_qs_first = self.world.get_first(_Pos, Camera)
-        if _cam_qs_first is not None:
-            pos = _cam_qs_first[1]
-            return pos.x - SW / 2, pos.y - SH / 2
-        return 0.0, 0.0
+        return get_camera_offset(self.world, SW, SH)
 
     def _player_tile(self):
         from engine.components import TileMovement
