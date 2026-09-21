@@ -883,6 +883,20 @@ padrão a quebrar, não só os bugs individuais.
   `pygame.mask`, escopo só do jogador LOCAL, cobertura mínima
   `RenderSystem._OCCLUSION_COVERAGE_THRESHOLD`). Ver
   PROBLEMAS_ARQUITETURA.md §188.
+- **Objeto de mapa que emite luz própria (lampião/tocha/fogueira, base
+  do sistema de dia/noite)** → 12º campo posicional (`light`) na tupla
+  do tile em `OBJECT_SHEET_FAMILIES` (modo catálogo,
+  `engine/tileset.py::_register_catalog_tiles`) — tupla `(off_x, off_y,
+  w, h, intensity_pct, radius_tiles)`, propagada pra
+  `TileType.light_source` (ver docstring do campo pro formato exato).
+  `off_x`/`off_y` são RELATIVOS ao canto do sprite (mesmo espaço que
+  `sx`/`sy` da própria entrada) — NUNCA coordenada absoluta da folha de
+  sprites inteira. Exemplo real: `vp_170` (grupo "decoracao_vila",
+  família "TX Village Props with Shadow"). Consumidor de render (glow/
+  dia-noite) ainda NÃO existe — este campo é só o dado na fonte, mesmo
+  padrão de `is_bush`/`occludes_player` (dado nasce no catálogo, nunca
+  inferido por `sprite_name` em runtime). Ver PROBLEMAS_ARQUITETURA.md
+  §193.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

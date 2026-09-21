@@ -88,6 +88,40 @@ class TileType:
     passthrough:    bool = False
     no_ysort:       bool = False  # True → renderiza como terreno (abaixo de entidades, sem Y-sort)
 
+    # light_source (21/09/2026, pedido do usuário — infraestrutura pro
+    # sistema de dia/noite: objeto de mundo que emite luz própria, ex:
+    # lampião/tocha/fogueira). None = objeto não emite luz (padrão —
+    # imensa maioria dos objetos do catálogo).
+    #
+    #   (off_x, off_y, w, h, intensity_pct, radius_tiles)
+    #
+    #   off_x, off_y   — posição do PONTO exato da chama/lâmpada dentro do
+    #                    sprite, RELATIVA ao canto superior-esquerdo do
+    #                    recorte (mesmo espaço que sprite_px_w/h — NÃO é
+    #                    coordenada absoluta da folha de sprites; se você
+    #                    achou a posição olhando a folha inteira, subtraia
+    #                    sx/sy do objeto primeiro).
+    #   w, h           — tamanho do retangulozinho ao redor desse ponto
+    #                    (só pra precisão visual de onde fica a chama —
+    #                    o centro dele é o ponto de onde a luz se espalha,
+    #                    não afeta o alcance).
+    #   intensity_pct  — brilho máximo da luz, 0-100 (%). Atingido só à
+    #                    noite plena — de dia a luz fica apagada/invisível
+    #                    (decisão do usuário: não faz sentido ver o brilho
+    #                    de uma tocha sob sol forte). Interpolação
+    #                    dia→noite é responsabilidade do sistema de
+    #                    render/dia-noite (fora do catálogo), não daqui.
+    #   radius_tiles   — alcance da luz a partir do ponto, em TILES (mesmo
+    #                    padrão de raio em tiles do resto do projeto —
+    #                    AOI_RADIUS etc.).
+    #
+    # Propagado por discover_object_sheet_tiles()/_register_catalog_tiles()
+    # (12º campo posicional da tupla de tile, opcional). Consumidor real
+    # (renderização da luz/glow) ainda não implementado — este campo é só
+    # o dado na fonte, mesmo padrão de is_bush/occludes_player (dado nasce
+    # no catálogo, nunca inferido por sprite_name em runtime).
+    light_source: tuple | None = None
+
 
 # ── Terrenos não-sólidos (passáveis) ──────────────────────────────────────────
 FLOOR_TILE    = TileType("Floor",      ( 50,  50,  50), is_solid=False)  # Chão genérico
@@ -785,6 +819,8 @@ def discover_sheet_tiles() -> None:
 #       ("caixao",    96,   0,  32,  64,   None,            1),  # médio, não bloqueia
 #   ],
 #   O 7º campo (vision_height) é opcional — omita para usar default_vision_height.
+#   Campos posicionais adicionais (piso, transpassável, sort, vision_rect,
+#   vision_h, light) — ver docstring completa de _register_catalog_tiles.
 #
 # Campos comuns:
 #   file                 — nome do PNG sem extensão, em assets/tiles/
@@ -1399,8 +1435,13 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
                     ("121",  448, 1456,   48,   48, (  0,  32,  32,  16)),
                     ("168",  864, 1504,   64,   64, None),
                     ("169",  960, 1504,   64,   64, None),
-                    ("170",  368, 1664,   80,   96, (  0,  80,  32,  16)),
-                    ("171",  448, 1664,   80,   96, ( 32,  80,  32,  16)),
+                    # "170" — 1º objeto do catálogo marcado como fonte de luz
+                    # (21/09/2026, pedido do usuário). Ponto da chama a
+                    # (44, 41) do canto do sprite (368,1664 na folha inteira
+                    # menos sx,sy), retângulo 5×6, 75% de intensidade máxima
+                    # (só à noite), raio 3 tiles.
+                    ("170",  368, 1664,   80,   96, (  0,  80,  32,  16), 0, 0, 1, None, 0, (44, 41, 5, 6, 75, 3)),
+                    ("171",  448, 1664,   80,   96, ( 32,  80,  32,  16), 0, 0, 1, None, 0, (16, 41, 5, 6, 75, 3)),
                     ("174",  720, 1680,   48,   32, None),
                     ("175",  736, 1712,   48,   48, (  0,  32,  32,  16)),
                     ("176",  800, 1664,   80,   64, (  0,  32,  63,  32)),
@@ -1723,9 +1764,9 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
                 "label":  "Torre com celeiro anexo",
                 "color":  (115, 108, 98),
                 "tiles": [
-                    ("035",  1536,   624,   32,  368, (0, 112, 32, 64), 0, False, 1, None, 2),
+                    ("035",  1536,   624,   32,  368, (0, 112,  32,  64), 0, False, 1, None, 2),
                     ("036",  1568,   624,  128,  368, (0, 112, 128, 256), 0, False, 1, None, 2),
-                    ("037",  1696,   672,  256,  320, (0, 224, 224, 64), 0, False, 1, None, 2),
+                    ("037",  1696,   672,  256,  320, (0, 224, 224,  64), 0, False, 1, None, 2),
                 ],
             },
             "b19": {
@@ -2054,7 +2095,7 @@ def _register_catalog_tiles(sheet_file: str, prefix: str, color: tuple,
     lugares.
 
     Cada entrada de `tiles`:
-      (id, sx, sy, w, h, col, piso, transpassavel, sort, vision_rect, vision_h)
+      (id, sx, sy, w, h, col, piso, transpassavel, sort, vision_rect, vision_h, light)
         piso         — int (0/1/2...) ou "t" (transição)
         transpassavel— 1 = jogador de piso inferior passa por trás
         vision_rect  — (13/08/2026) pegada de BLOQUEIO DE VISÃO,
@@ -2067,6 +2108,11 @@ def _register_catalog_tiles(sheet_file: str, prefix: str, color: tuple,
                        inteira bloqueando visão) — ver TileType.vision_rect.
         vision_h     — vision_height explícito por tile; omita pra usar
                        default_vh.
+        light        — (21/09/2026) tupla (off_x, off_y, w, h,
+                       intensity_pct, radius_tiles) pra objeto que emite
+                       luz (lampião/tocha/fogueira) — ver docstring de
+                       TileType.light_source pro formato completo.
+                       Opcional, omita pra objeto sem luz (imensa maioria).
 
     no_prefix_separator (03/09/2026, pedido do usuário) — pula o "_"
     entre `prefix` e o id de cada peça (`tile_id = f"{prefix}{id_suffix}"`
@@ -2087,6 +2133,7 @@ def _register_catalog_tiles(sheet_file: str, prefix: str, color: tuple,
         sort_val       = entry[8] if n > 8 else 1   # 1=Y-sort (padrão), 0=sem Y-sort
         vision_rect_cfg = entry[9] if n > 9 else None
         vision_h        = entry[10] if n > 10 else default_vh
+        light_cfg       = entry[11] if n > 11 else None
 
         # Interpreta piso: int → elevation normal; "t" → tile de transição
         if piso_raw == "t":
@@ -2114,6 +2161,7 @@ def _register_catalog_tiles(sheet_file: str, prefix: str, color: tuple,
             is_transition=is_trans,
             passthrough=transpass,
             no_ysort=(sort_val == 0),
+            light_source=light_cfg,
         )
         OBJECT_SHEET_TILE_MAP[tile_id] = (sheet_file, sx, sy, tw, th)
         OBJECT_CHARS.add(tile_id)

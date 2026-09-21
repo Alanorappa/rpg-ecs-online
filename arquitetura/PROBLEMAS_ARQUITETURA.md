@@ -21763,3 +21763,74 @@ constroem `CameraSystem` isolado e injetam `hud_surf` manualmente, então
 não cobrem — e não cobriam — esta lacuna de wiring do boot). Validação
 fica com o usuário, em jogo, entrando numa BG SEM tocar no menu Janela e
 testando a câmera livre direto.
+
+---
+
+## 193. Feature (infraestrutura, Fase 1) — dado de catálogo pra objeto emitir luz própria (lampião/tocha), base do sistema de dia/noite (21/09/2026)
+
+**Pedido original do usuário:** sistema de dia/noite no jogo. Pygame não
+tem iluminação nativa — proposta discutida e aprovada: overlay de cor
+semi-transparente (`BLEND_MULT`) por cima do mundo renderizado, sem
+tocar em gameplay/servidor (relógio calculado como função determinística
+do tempo real, igual em todo cliente, sem mensagem de rede nova). Só
+mundo aberto tem dia/noite (BG/Arena ficam num horário fixo — decisão do
+usuário, evita a luz mudar no meio de uma partida competitiva). Ciclo:
+60+ minutos reais por dia completo.
+
+**Achado que mudou o escopo antes de desenhar o resto:** o usuário pediu
+que a 1ª versão já incluísse luz de tocha/fogueira brilhando à noite.
+Pesquisa no catálogo (`engine/tileset.py::OBJECT_SHEET_FAMILIES`) e nos
+assets achou que **não existe nenhuma tocha/fogueira/lampião plantado em
+mapa nenhum hoje** — só um item de quest chamado "Lampião"
+(`content/quests_data.py`, sem lógica de luz) e 2 ÍCONES de inventário
+(`item_lampiao.png`, `Torch.png`). A família "TX Props" que teria um
+`lampiao`/`lighting` catalogado está inteira COMENTADA (nunca ativada em
+produção, apesar do PNG existir). Reportado ao usuário antes de
+prosseguir — decisão dele: em vez de fase-1-overlay/fase-2-luz-separadas,
+construir agora a INFRAESTRUTURA de dado (onde fica a luz, intensidade,
+raio) direto no catálogo, aplicada num objeto que JÁ existe e já parece
+visualmente um lampião de vila (`vp_170`/`vp_171`, grupo
+"decoracao_vila", família "TX Village Props with Shadow" — essa família
+está ATIVA, diferente de "TX Props").
+
+**Iteração de formato (usuário propôs, 3 rodadas de confirmação —
+"se ficar dúvida me pergunte, não tire conclusões", seguido à risca):**
+usuário deu um exemplo com posição em coordenada ABSOLUTA da folha de
+sprites inteira (412, 1705) — perguntei se era coincidência bater com
+sx+44/sy+41 do objeto (368, 1664); ele confirmou que o certo é relativo
+(44, 41) e que descreveu errado na 1ª tentativa. Confirmado também: w/h
+do bloco de luz (5, 6) = tamanho do pixel exato da chama (não colisão,
+não vision_rect — só precisão visual de onde fica o glow); intensidade
+0-100% (aplicada plena, só à noite — de dia a luz fica apagada, não faz
+sentido ver brilho de tocha sob sol); raio em TILES (mesmo padrão de
+`AOI_RADIUS`/etc. já usado no resto do projeto).
+
+**Implementação (só o dado, sem consumidor ainda):**
+- `TileType.light_source: tuple | None = None` (`engine/tileset.py`) —
+  `(off_x, off_y, w, h, intensity_pct, radius_tiles)`, `off_x`/`off_y`
+  RELATIVOS ao canto do sprite (mesmo espaço que `sx`/`sy` da entrada,
+  nunca absoluto da folha inteira — ponto que gerou a 1ª rodada de
+  dúvida acima).
+- `_register_catalog_tiles()` ganha o 12º campo posicional da tupla
+  (`entry[11]`), mesmo padrão já usado pelos campos opcionais anteriores
+  (`piso`/`transpassavel`/`sort`/`vision_rect`/`vision_h`) — sem
+  parâmetro nomeado novo, só mais uma posição opcional no fim.
+- `vp_170` (linha ~1438) ganhou `(44, 41, 5, 6, 75, 3)` — confirmado por
+  script headless que `OBJECT_MAPPING["vp_170"].light_source == (44, 41,
+  5, 6, 75, 3)`. `vp_171` (sprite vizinho na mesma folha, possivelmente a
+  mesma peça noutra variante) ficou SEM luz nesta rodada — usuário não
+  deu a posição da chama pra ele, e não presumi que o mesmo offset
+  relativo se aplica (sprites vizinhos na folha não necessariamente têm
+  o elemento de luz no mesmo lugar interno) — fica pendente até o
+  usuário confirmar/medir.
+
+**Fora de escopo desta rodada, decisão consciente:** renderização da luz
+(glow/radial gradient), o overlay de cor dia/noite em si, e o relógio
+determinístico — nenhum desses tem consumidor implementado ainda. Este
+item é só a fonte de dado (mesmo padrão de `is_bush`/`occludes_player`:
+o dado nasce no catálogo primeiro, o sistema que o lê vem depois).
+
+**Teste**: `py -3.10 -m pytest tests/ -k "tileset or object_sheet or
+catalog or map_loader or entity_factory"` (53 passed) + suíte completa
+de `test_client_ui.py` (182 passed) — sem regressão, campo é aditivo e
+default `None` pra todo objeto que não o define.
