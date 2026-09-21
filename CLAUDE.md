@@ -891,12 +891,34 @@ padrão a quebrar, não só os bugs individuais.
   `TileType.light_source` (ver docstring do campo pro formato exato).
   `off_x`/`off_y` são RELATIVOS ao canto do sprite (mesmo espaço que
   `sx`/`sy` da própria entrada) — NUNCA coordenada absoluta da folha de
-  sprites inteira. Exemplo real: `vp_170` (grupo "decoracao_vila",
-  família "TX Village Props with Shadow"). Consumidor de render (glow/
-  dia-noite) ainda NÃO existe — este campo é só o dado na fonte, mesmo
-  padrão de `is_bush`/`occludes_player` (dado nasce no catálogo, nunca
-  inferido por `sprite_name` em runtime). Ver PROBLEMAS_ARQUITETURA.md
-  §193.
+  sprites inteira. Exemplo real: `vp_170`/`vp_171` (grupo
+  "decoracao_vila", família "TX Village Props with Shadow"). Consumidor:
+  `ui/day_night_system.py::DayNightSystem` (ver bullet de dia/noite
+  abaixo) — dado nasce no catálogo, nunca inferido por `sprite_name` em
+  runtime, mesmo padrão de `is_bush`/`occludes_player`. Ver
+  PROBLEMAS_ARQUITETURA.md §193.
+- **Ciclo dia/noite (cosmético, só mundo aberto)** →
+  `ui/day_night_system.py::DayNightSystem` — 100% client-only, relógio
+  determinístico (`day_night_fraction()`/`day_night_color()`, função
+  pura de `time.time()`, `DAY_NIGHT_CYCLE_S` = 60min reais/dia) — SEM
+  mensagem de rede nova, servidor nunca sabe a hora (não é gameplay).
+  Desenha um overlay de cor por cima de TUDO que já foi renderizado no
+  mundo (mesmo padrão de Surface `SRCALPHA` cacheada que
+  `TileRenderSystem.render_fog()` já usa) — chamado em `game.py` logo
+  após `CHAT_BUBBLE.render()` e ANTES do grayscale de fantasma. NUNCA
+  aplica dentro de BG/Arena (`InstanceInventoryUIState.active` — mesma
+  flag já usada pra câmera livre/minimap tela-cheia) — decisão do
+  usuário, luz não deve mudar no meio de uma partida competitiva. Objeto
+  com `TileType.light_source` (ver bullet acima) "fura" um buraco no
+  overlay com gradiente radial cacheado por raio + `BLEND_RGBA_SUB` —
+  gradiente é SEMPRE cor `(0,0,0)`, só o alpha varia (subtrair RGB não-
+  zero com `BLEND_RGBA_SUB` estouraria pra preto puro, não ponderado
+  pelo alpha do pixel — ver docstring de `_get_light_gradient`). Luz
+  "liga" sozinha conforme escurece (de dia o overlay já é alpha=0,
+  subtrair não muda nada) — nenhuma lógica extra de liga/desliga.
+  Posição de tela da luz vem de `screen_x`/`screen_y` que
+  `get_world_objects()` já calcula (nunca recalcular offset de câmera à
+  parte — mesma lição de §191). Ver PROBLEMAS_ARQUITETURA.md §194.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

@@ -4744,3 +4744,117 @@ def test_screen_to_tile_fullmap_nao_usa_geometria_do_modo_radar():
         "os 2 modos usam geometria diferente (radar centraliza no player e "
         "usa RADIUS fixo; fullmap escala cols/rows inteiros) — resultado "
         "pro mesmo clique não deveria bater")
+
+
+# ── ui/day_night_system.py — ciclo dia/noite (21/09/2026) ────────────────────
+# 100% cosmético, client-only: relógio determinístico (função pura de
+# time.time(), sem servidor/rede), overlay de cor por cima do mundo já
+# renderizado, luz de objeto (lampião) "fura" o overlay com gradiente
+# radial + BLEND_RGBA_SUB. Só mundo aberto — BG/Arena ficam num horário
+# fixo (InstanceInventoryUIState.active).
+
+def test_day_night_color_meio_dia_sem_tingimento():
+    from ui.day_night_system import day_night_color, DAY_NIGHT_CYCLE_S
+    # fração 0.5 do ciclo cai dentro do platô "tarde, sem tingimento" (0.33-0.67)
+    now = DAY_NIGHT_CYCLE_S * 0.5
+    r, g, b, a = day_night_color(now)
+    assert a == 0, f"meio-dia deveria ter alpha 0 (sem tingimento), achou {a}"
+
+
+def test_day_night_color_meia_noite_tingimento_maximo():
+    from ui.day_night_system import day_night_color, DAY_NIGHT_CYCLE_S
+    now = DAY_NIGHT_CYCLE_S * 0.0
+    r, g, b, a = day_night_color(now)
+    assert a == 150, f"meia-noite deveria ter alpha 150 (tingimento máximo), achou {a}"
+    assert (r, g, b) == (20, 25, 60)
+
+
+def test_day_night_color_interpola_entre_keyframes():
+    from ui.day_night_system import day_night_color, DAY_NIGHT_CYCLE_S
+    # Meio do amanhecer (0.27) -> manhã (0.33): valor intermediário, nem
+    # o alpha do amanhecer (70) nem o do dia pleno (0).
+    now = DAY_NIGHT_CYCLE_S * 0.30
+    _, _, _, a = day_night_color(now)
+    assert 0 < a < 70, f"esperava alpha entre 0 e 70 (interpolando), achou {a}"
+
+
+def _make_day_night_world(instance_active: bool = False):
+    from engine.world import World
+    from ui.ui_components import InstanceInventoryUIState
+    from ui.day_night_system import DayNightSystem
+    world = World()
+    player = world.create_entity()
+    iius = InstanceInventoryUIState()
+    iius.active = instance_active
+    world.add_component(player, iius)
+    sys = DayNightSystem(world, player)
+    sys.world_surf = pygame.Surface((400, 300))
+    return world, player, sys
+
+
+def test_day_night_render_pula_dentro_de_instancia():
+    """BG/Arena ficam num horário fixo — decisão do usuário 21/09/2026."""
+    import ui.day_night_system as dns
+    world, player, sys = _make_day_night_world(instance_active=True)
+    sys.world_surf.fill((10, 10, 10))
+    orig = dns.day_night_color
+    dns.day_night_color = lambda now=None: (20, 25, 60, 150)
+    try:
+        sys.render(world_objects=[])
+    finally:
+        dns.day_night_color = orig
+    assert sys.world_surf.get_at((5, 5))[:3] == (10, 10, 10), \
+        "dentro de instância o overlay não deveria desenhar nada"
+
+
+def test_day_night_render_dia_pleno_nao_desenha():
+    """alpha=0 (dia) — early-return, economiza o frame inteiro."""
+    import ui.day_night_system as dns
+    world, player, sys = _make_day_night_world(instance_active=False)
+    sys.world_surf.fill((77, 88, 99))
+    orig = dns.day_night_color
+    dns.day_night_color = lambda now=None: (0, 0, 0, 0)
+    try:
+        sys.render(world_objects=[])
+    finally:
+        dns.day_night_color = orig
+    assert sys.world_surf.get_at((5, 5))[:3] == (77, 88, 99)
+    assert sys._overlay_surf is None, "não deveria nem alocar a surface de overlay em dia pleno"
+
+
+def test_day_night_luz_de_lampiao_fura_o_escurecimento():
+    """Bug-class evitada aqui: luz precisa clarear só perto do centro,
+    decaindo suave até o raio, sem afetar cor (só o alpha do overlay é
+    subtraído — RGB do gradiente é sempre 0, ver docstring de
+    _get_light_gradient)."""
+    import ui.day_night_system as dns
+    world, player, sys = _make_day_night_world(instance_active=False)
+    base_color = (200, 180, 160)
+    sys.world_surf.fill(base_color)
+    orig = dns.day_night_color
+    dns.day_night_color = lambda now=None: (20, 25, 60, 150)
+    objs = [{
+        "screen_x": 150, "screen_y": 150,
+        "light_source": (44, 41, 5, 6, 75, 3),   # off_x,off_y,w,h,intensidade%,raio_tiles
+    }]
+    try:
+        sys.render(world_objects=objs)
+    finally:
+        dns.day_night_color = orig
+
+    cx, cy = 150 + 44 + 2, 150 + 41 + 3   # centro do ponto de luz
+    center_px = sys.world_surf.get_at((cx, cy))[:3]
+    far_px    = sys.world_surf.get_at((5, 5))[:3]
+
+    assert center_px == base_color, \
+        f"centro da luz deveria revelar a cor original {base_color}, achou {center_px}"
+    # Longe da luz, só o tingimento cru se aplica (mistura alpha=150 padrão)
+    expected_far = tuple(
+        round(t * 150 / 255 + o * (255 - 150) / 255)
+        for t, o in zip((20, 25, 60), base_color)
+    )
+    assert far_px == expected_far, f"esperava {expected_far} longe da luz, achou {far_px}"
+    # Ponto intermediário (metade do raio) precisa estar ENTRE os dois extremos
+    mid_px = sys.world_surf.get_at((cx + 48, cy))[:3]
+    assert center_px[0] > mid_px[0] > far_px[0] - 1, \
+        "gradiente deveria decair suavemente do centro pra borda, não ser binário"

@@ -465,6 +465,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._char_stats_ui = CharStatsUI(self.screen)
         self._char_stats_ui.on_open = self._send_char_stats_request
         self._shop_system   = ShopSystem(self.world, self.player_entity, self.screen)
+        from ui.day_night_system import DayNightSystem
+        self._day_night_system = DayNightSystem(self.world, self.player_entity)
         self._quest_system  = QuestSystem(self.world, self.player_entity)
         from ui.buff_bar import BuffBar
         self._buff_bar = BuffBar(self.world, self.player_entity)
@@ -1383,6 +1385,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         "_channeling_system",  "_aoe_targeting_system",
         "_spell_cast_system",  "_shop_system",
         "_quest_dialog",       "_crafting_system", "_trainer_system",
+        "_day_night_system",
     )
 
     def _assign_world_surf(self, surf: "pygame.Surface") -> None:
@@ -2460,6 +2463,21 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # nameplates.
             CHAT_BUBBLE.render(self.world)
 
+            # Dia/noite (21/09/2026, pedido do usuário) — por cima de TUDO
+            # que já foi desenhado no mundo, ANTES do grayscale de
+            # fantasma (senão o efeito de morto sumiria com o tingimento
+            # de cor; aplicado antes, o grayscale só reduz a cor do
+            # tingimento já aplicado, mantendo a diferença de brilho
+            # dia/noite mesmo como fantasma). Só mundo aberto — BG/Arena
+            # ficam num horário fixo (ver DayNightSystem.render()).
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
+                self._day_night_system.render(world_objects=_world_objs)
+                self._prof_record(f"rnd:{type(self._day_night_system).__name__}",
+                                  _time.perf_counter() - _ts)
+            else:
+                self._day_night_system.render(world_objects=_world_objs)
+
             # Morto/espírito: grayscale no zoom_surf menor (pré-scale) — ~44% menos
             # pixels a zoom=1.5 vs aplicar na tela cheia (853×480 vs 1280×720).
             _gst_gray = self.world.get_component(self.player_entity, GhostState)
@@ -3305,7 +3323,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                      "_render_system", "_tile_render_system",
                      "_talent_system", "_skill_level_ui", "_char_stats_ui",
                      "_shop_system", "_quest_dialog", "_quest_journal",
-                     "_blacksmith_system", "_crafting_system", "_trainer_system"):
+                     "_blacksmith_system", "_crafting_system", "_trainer_system",
+                     "_day_night_system"):
             _refresh(getattr(self, attr, None))
         # Overlays e UI (MapOverlay/Minimap — não são System, só .screen)
         self._map_overlay.screen = new_screen

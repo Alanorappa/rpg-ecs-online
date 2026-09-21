@@ -510,6 +510,11 @@ class TileRenderSystem(System):
                         # RenderSystem decidir a transparência de "jogador
                         # atrás do objeto" (ver TileType.occludes_player).
                         "occludes_player": getattr(tile_type, "occludes_player", False),
+                        # light_source (21/09/2026) — repassado pro
+                        # DayNightSystem calcular a posição de tela da luz
+                        # (screen_x/screen_y + off_x/off_y, sem recalcular
+                        # offset de câmera à parte — ver TileType.light_source).
+                        "light_source": getattr(tile_type, "light_source", None),
                     })
         return objects
 

@@ -21834,3 +21834,105 @@ o dado nasce no catálogo primeiro, o sistema que o lê vem depois).
 catalog or map_loader or entity_factory"` (53 passed) + suíte completa
 de `test_client_ui.py` (182 passed) — sem regressão, campo é aditivo e
 default `None` pra todo objeto que não o define.
+
+---
+
+## 194. Feature — sistema de dia/noite (overlay de cor + luz de objeto), consumidor real do dado de §193 (21/09/2026)
+
+Continuação de §193, mesmo pedido do usuário. Design discutido e
+aprovado em conversa (não em arquivo) antes de codar, seguindo
+"pesquisar antes de codar": mapeado o pipeline de render inteiro em
+`game.py` (tudo do mundo desenha em `self._zoom_surf`, HUD desenha
+depois em tela nativa — mesmo ponto onde o grayscale de fantasma já se
+aplica hoje) e o overlay de Fog of War (`TileRenderSystem.render_fog()`)
+como precedente direto da técnica a reusar (Surface `SRCALPHA` cacheada,
+blit simples por cima do mundo).
+
+**Relógio (`ui/day_night_system.py`):** `day_night_fraction(now=None)`
+— `(time.time() % DAY_NIGHT_CYCLE_S) / DAY_NIGHT_CYCLE_S`, função pura,
+SEM estado/servidor/mensagem de rede — todo cliente calcula a MESMA
+hora sozinho porque usa a mesma fórmula sobre o mesmo relógio de parede.
+`DAY_NIGHT_CYCLE_S = 3600.0` (60 minutos reais por dia completo,
+decisão do usuário). `day_night_color(now=None)` interpola entre 8
+keyframes (fração→RGB+alpha) e é o ÚNICO ponto de verdade da cor/
+intensidade do tingimento atual — tanto o overlay quanto a luz de
+lampião leem dele (luz nunca tem sua própria tabela de "quando acender"
+— ver abaixo).
+
+**Overlay (`DayNightSystem.render()`):** Surface `SRCALPHA` do tamanho
+de `world_surf`, preenchida com `day_night_color()` atual, blitada por
+cima de tudo — chamada em `game.py` logo após `CHAT_BUBBLE.render()` e
+ANTES do grayscale de fantasma (ordem testada e escolhida de propósito:
+se fosse depois, o tingimento apareceria como uma cor estranha por cima
+de um mundo já cinza; antes, o grayscale só reduz a saturação do
+tingimento já aplicado, preservando a diferença de brilho dia/noite
+mesmo como fantasma). `if a <= 0: return` logo no início — dia pleno
+não aloca nem desenha nada, custo zero na maior parte do ciclo (2/3 do
+tempo, keyframes 0.33-0.67).
+
+**Escopo (`InstanceInventoryUIState.active`):** BG/Arena ficam sempre
+num horário fixo — mesma flag client-side já usada pra câmera
+livre/minimap tela-cheia (§190), reaproveitada aqui sem checagem nova.
+Decisão do usuário: luz não deve mudar no meio de uma partida
+competitiva.
+
+**Luz de lampião "fura" o overlay, não desenha por cima:** em vez da
+técnica aditiva óbvia (desenhar um brilho colorido por cima do
+tingimento), a luz remove alpha do PRÓPRIO overlay de escuridão com
+`BLEND_RGBA_SUB` — revela a cor normal do mundo por baixo, em vez de
+somar luz artificial. Consequência elegante: de dia o overlay já tem
+alpha=0 em todo canto, então subtrair não muda nada visualmente — a luz
+"liga" sozinha conforme escurece, sem nenhum "if é noite" explícito.
+**Achado de implementação (pego ANTES de rodar, por raciocínio, não por
+bug ao vivo):** o gradiente radial usado no `BLEND_RGBA_SUB` precisa ter
+RGB sempre `(0, 0, 0)` — só o canal alpha varia. `BLEND_RGBA_SUB`
+subtrai TODOS os canais diretamente, sem ponderar pelo alpha do próprio
+pixel (diferente de um blit normal) — um gradiente colorido (branco,
+por exemplo) estouraria a subtração de R/G/B pra 0 em qualquer pixel com
+alpha>0, virando um buraco preto sólido de bordas duras em vez de um
+degradê suave. Com RGB=0, subtrair 0 de R/G/B é sempre no-op — só o
+alpha do overlay é reduzido, gradualmente, exatamente como o gradiente
+descreve.
+
+**Posição da luz em tela** vem de `screen_x`/`screen_y` que
+`TileRenderSystem.get_world_objects()` JÁ calcula (mesma lista usada pra
+desenhar os objetos) — somados ao offset relativo `off_x`/`off_y` do
+catálogo. Propositalmente NÃO recalcula offset de câmera à parte —
+exatamente a lição do item #191 desta mesma sessão (duas cópias
+esquecidas de `get_camera_offset()` quebraram clique de NPC perto da
+borda do mapa). `get_world_objects()` ganhou 1 campo novo no dict
+(`"light_source"`), mesmo padrão já usado por `"occludes_player"`.
+
+**Cache:** gradiente radial calculado 1x por RAIO em pixels distinto
+(poucos valores possíveis — `radius_tiles` do catálogo é inteiro
+pequeno), `dict` de instância `_light_gradient_cache` — mesmo padrão de
+`ui/floating_text.py::_outline_cache`. Overlay em si só é realocado
+quando o tamanho de `world_surf` muda (zoom/resize), preenchido (`fill`)
+de novo todo frame (barato, é só um `fill` de superfície).
+
+**Wiring em `game.py`:** `DayNightSystem(world, player_entity)` — igual
+`ShopSystem`/`TrainerSystem`, recebe `player_entity` porque precisa
+consultar `InstanceInventoryUIState` DO player. Adicionado a
+`_WORLD_SYSTEM_ATTRS` (refresh de `world_surf` todo frame,
+`_assign_world_surf`) e à lista de `_rebuild_screen_refs` (mesmo padrão
+de todo `System` novo — ver §192, cuidado de wiring de boot já
+documentado ali).
+
+**Teste**: 6 casos novos em `tests/test_client_ui.py` — cor em meio-dia
+(alpha=0), meia-noite (alpha=150, RGB do keyframe), interpolação
+intermediária, gate de instância (não desenha nada dentro de BG/Arena),
+early-return de dia pleno (nem aloca a surface), e o caso principal —
+luz de lampião revela a cor original EXATA no centro, aplica só o
+tingimento cru longe da luz (valor de blend alpha calculado à mão e
+comparado), com decaimento suave (não binário) num ponto intermediário.
+Suíte completa (`pytest tests/ -q`, 1755 passed, 2 falhas pré-existentes
+e não relacionadas em `test_perf_log_improvements.py`/`test_server.py`
+— mesma classe de timing flaky de `time.sleep(0.01)` já documentada em
+§191, não regressão desta mudança).
+
+**Fora de escopo desta rodada:** luz aditiva por cima (deixar a área MAIS
+clara que o dia normal, não só cancelar o escuro) — decisão consciente
+do usuário de manter simples por enquanto, pode virar um "brilho quente"
+por cima depois. `vp_171` está com posição de luz própria (16,41),
+diferente do `vp_170` (44,41) — usuário confirmou que NÃO é o mesmo
+offset por padrão (perguntei em vez de presumir).
