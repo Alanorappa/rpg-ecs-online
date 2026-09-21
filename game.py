@@ -912,6 +912,19 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # world_surf começa como self.screen (zoom=1); será atualizado cada frame.
         # zoom_surf criada com tamanho inicial (zoom=1). world_surf é atribuída
         # a cada sistema todo frame pelo render loop — não precisa estar aqui.
+        #
+        # hud_surf É preciso inicializar aqui: diferente de world_surf, nada
+        # reatribui hud_surf por frame (ver docstring de _rebuild_screen_refs)
+        # — sem esta chamada, ficava None (default de classe, engine/
+        # world_systems.py::System) até o usuário abrir o menu Janela e
+        # trocar de modo pelo menos 1x. CameraSystem._pan_free_camera() lê
+        # hud_surf direto (precisa da resolução REAL da janela, não
+        # world_surf/zoom) e faz no-op silencioso quando é None — bug real
+        # relatado pelo usuário 21/09/2026: câmera livre (tecla Y, BG) só
+        # reagia ao cursor na borda depois de reselecionar "tela cheia" no
+        # menu, mesmo já estando em tela cheia (era o 1º gatilho de
+        # _rebuild_screen_refs() na sessão inteira). Ver PROBLEMAS_ARQUITETURA.md.
+        self._rebuild_screen_refs(self.screen)
         self._zoom_surf    = pygame.Surface((self.screen.get_width(), self.screen.get_height()))
         self._zoom_surf_sz = (self.screen.get_width(), self.screen.get_height())
 

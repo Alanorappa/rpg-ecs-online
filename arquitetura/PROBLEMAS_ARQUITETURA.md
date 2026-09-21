@@ -21708,3 +21708,58 @@ completa (`pytest tests/ -q`, 1750 passed, 1 falha pré-existente e não
 relacionada em `test_perf_log_improvements.py` — timing flaky de
 `time.sleep(0.01)` medindo 0.009956s, tolerância de relógio do SO, não
 regressão desta mudança).
+
+---
+
+## 192. Câmera livre (tecla Y, BG) só reagia ao cursor na borda depois de reselecionar "tela cheia" — `hud_surf` nunca inicializado no boot (21/09/2026)
+
+**Sintoma relatado pelo usuário:** dentro de uma partida de BG, empurrar a
+câmera livre (item 190/B) com o cursor na borda da janela só funcionava
+depois de abrir Configurações > Janela e escolher "Tela cheia" — mesmo já
+estando em tela cheia (reselecionar a MESMA opção já destravava).
+
+**Causa raiz:** `engine/world_systems.py::System.hud_surf` é atributo de
+CLASSE, default `None` — cada `System` (inclusive `CameraSystem`) só recebe
+um `hud_surf` de verdade via `GameEngine._rebuild_screen_refs()`
+(`game.py`), a única função que atribui esse campo (confirmado pela
+própria docstring dela, escrita em 24/07/2026: "`world_surf` escapa por
+acaso [reatribuído todo frame]; `hud_surf` não tem esse refresh por frame
+em lugar nenhum — só aqui"). Essa função só é chamada a partir de
+`_apply_window_mode()`/`_apply_scale()` — ou seja, só quando o jogador
+troca de modo de janela ou escala PELO MENU, em tempo real. No boot,
+`_compute_and_set_window_mode()` também é chamado (pra aplicar
+`window_mode` salvo), mas nesse ponto do `__init__` `self.world` ainda não
+existe — o guard `if hasattr(self, "world")` pula `_rebuild_screen_refs()`
+de propósito (comentário already existente explica por quê: os sistemas
+que ela atualiza ainda não foram criados). Resultado: `hud_surf` de TODOS
+os `System` (não só `CameraSystem`) ficava `None` a sessão inteira, até o
+usuário mexer no menu Janela pela 1ª vez.
+
+Isso nunca importou pros outros consumidores de `hud_surf`
+(`ShopSystem`/`QuestDialogSystem`/etc.) porque todos eles só o leem DENTRO
+de um handler de clique, e ou têm fallback pra `world_surf` (que É
+reatribuído todo frame por `_assign_world_surf`) ou só importam no exato
+frame de um evento de mouse (praticamente nunca o 1º frame). Mas
+`CameraSystem._pan_free_camera()` (item 190) lê `hud_surf` DIRETO, sem
+fallback — precisa da resolução REAL da janela, não a escalada por zoom de
+`world_surf` — e faz no-op silencioso quando `None` (`if self.hud_surf is
+None or dt <= 0: return`). Câmera livre nasce funcionalmente "morta" até
+o gatilho acidental do menu Janela ligar tudo pela 1ª vez.
+
+**Fix:** `GameEngine.__init__` passa a chamar `self._rebuild_screen_refs(
+self.screen)` uma vez, logo após montar `self.systems` (mesmo ponto onde
+um comentário PRÉ-EXISTENTE já afirmava, incorretamente, que "hud_surf é
+inicializado em todos os sistemas" — a inicialização real nunca tinha sido
+escrita). Nesse ponto do `__init__`, `self.world`/`self.systems`/
+`self._map_overlay`/`self._minimap`/`self._god_mode` (tudo que
+`_rebuild_screen_refs` toca) já existe — chamada seguível sem duplicar
+lógica, só disparando o ponto único já existente 1x a mais cedo do que
+antes.
+
+**Teste**: sem teste automatizado novo — instanciar `GameEngine` completo
+em teste headless exige rede/servidor (nenhum precedente no projeto faz
+isso; os testes de câmera livre já existentes em `test_client_ui.py`
+constroem `CameraSystem` isolado e injetam `hud_surf` manualmente, então
+não cobrem — e não cobriam — esta lacuna de wiring do boot). Validação
+fica com o usuário, em jogo, entrando numa BG SEM tocar no menu Janela e
+testando a câmera livre direto.
