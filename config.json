@@ -870,12 +870,12 @@
         "slots": [
           "golpe_poderoso",
           "golpe_debilitante",
-          "vitoria_iminente",
+          "fatiador_de_corpos",
           "brado_provocativo",
           "punho_no_queixo",
           "interceptar",
-          "fatiador_de_corpos",
           null,
+          "vitoria_iminente",
           "impacto",
           "executar"
         ],
@@ -913,10 +913,10 @@
         "punho_no_queixo": 4,
         "interceptar": 5,
         "impacto": 8,
-        "vitoria_iminente": 2,
+        "vitoria_iminente": 7,
         "executar": 9,
         "golpe_debilitante": 1,
-        "fatiador_de_corpos": 6,
+        "fatiador_de_corpos": 2,
         "brado_provocativo": 3
       }
     },
