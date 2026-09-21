@@ -173,6 +173,46 @@ class TestTickBgQueueBotBackfill(unittest.TestCase):
         self.assertEqual(len(bot_eids), 2)
 
 
+class TestBgLeaveDestroysWhenNoRealPlayerLeft(unittest.TestCase):
+    """20/09/2026, pedido do usuário: o único jogador real saindo (forfeit
+    seguido de saída, fechar o jogo, deslogar — todos convergem pra
+    `request_bg_leave`) deve destruir a instância NA HORA, mesmo com bots
+    ainda presentes dos 2 lados — não esperar cada bot sair um por um até
+    os times ficarem 100% vazios (podia levar bem mais tempo: Nexus
+    caindo organicamente + timeout de resultado de 15s)."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.solo = spawn_player(self.ws, "leave_solo", 130, 374)
+        self.ws.request_bg_queue_join(self.solo, "2v2")
+        _age_token(self.ws, "2v2", self.solo, "solo", BG_BOT_BACKFILL_WAIT_S + 1)
+        self.ws._tick_bg_queue()
+        self.match_id = self.ws._pending_bg_invite[self.solo]
+        self.instance_key = self.ws._bg_active_matches[self.match_id]["instance_key"]
+        self.ws.request_bg_accept(self.solo)
+        match = self.ws._bg_active_matches[self.match_id]
+        self.bot_eids = [eid for eid in match["team_a"] + match["team_b"]
+                         if eid != self.solo]
+        self.assertEqual(len(self.bot_eids), 3, "setup inválido — esperava 3 bots")
+
+    def test_sair_destroi_instancia_na_hora_mesmo_com_bots_presentes(self):
+        self.ws.request_bg_leave(self.solo)
+        self.assertNotIn(self.match_id, self.ws._bg_active_matches)
+        self.assertNotIn(self.instance_key, self.ws._map_bundles)
+        for bot_eid in self.bot_eids:
+            self.assertNotIn(bot_eid, self.ws._player_eid_to_sid,
+                             "bot deveria ter sido despawnado junto com a instância")
+
+    def test_flag_desligada_preserva_comportamento_antigo_pros_testes(self):
+        self.ws.bg_destroy_when_no_real_players = False
+        self.ws.request_bg_leave(self.solo)
+        self.assertIn(self.match_id, self.ws._bg_active_matches,
+                      "com a flag desligada, a partida só-de-bot deveria continuar viva")
+        self.assertIn(self.instance_key, self.ws._map_bundles)
+        match = self.ws._bg_active_matches[self.match_id]
+        self.assertEqual(set(match["team_a"] + match["team_b"]), set(self.bot_eids))
+
+
 class TestBotSkillReady(unittest.TestCase):
     """`WorldServer._skill_ready` (25/08/2026): bot consulta o cooldown
     AUTORITATIVO do servidor antes de decidir usar uma skill — nunca o

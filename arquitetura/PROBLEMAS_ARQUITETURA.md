@@ -21520,3 +21520,62 @@ repassa o campo no dict de cada objeto visível.
 **Extensão futura**: marcar outro grupo/família do catálogo como
 "alto" é só `"occludes_player": True` no dict certo — nenhuma lógica
 nova, mesmo padrão de `is_bush`.
+
+---
+
+## 189. Feature — instância de BG (fila real) destruída assim que não sobra jogador REAL (20/09/2026)
+
+Investigação prévia (mesma sessão) mapeou o ciclo de vida completo:
+`request_bg_leave()` (`server/bg_queue_processor.py`) é o único ponto
+que tira alguém de uma partida de verdade — `/forfeit` (`_finish_bg_match`)
+só decide o vencedor e manda a tela de resultado, NUNCA teleporta nem
+destrói nada; a saída de fato só acontecia quando o critério antigo
+batia: os 2 times (`team_a`+`team_b`) ficarem 100% vazios. Problema
+real: se o único jogador humano desconecta/desloga/fecha o jogo no meio
+da luta, `request_bg_leave` só remove ELE — os bots continuavam nos 2
+times, então a instância ficava viva até um Nexus cair organicamente
+(bot vs. bot, sem limite de tempo) + o timeout de resultado de 15s.
+
+**Fix (pedido explícito do usuário):** critério novo — uma partida da
+fila REAL só existe enquanto tiver pelo menos 1 jogador NÃO-bot em
+qualquer um dos 2 times. `request_bg_leave` agora computa, depois de
+remover `eid`, se sobrou algum ocupante sem `BotControlled` — se não
+sobrou (e a flag abaixo estiver ligada), destrói a instância na hora,
+mesmo com bots ainda presentes, em vez de esperar cada um sair
+individualmente.
+
+**Decisão de timing** (perguntado ao usuário antes de codar): `/ff`
+continua em 2 fases — decide o vencedor e mostra o placar, sem destruir
+nada na hora. O critério novo só entra em ação no momento em que o
+jogador REALMENTE sai (clica "Voltar", o timeout de 15s força a saída
+de todos, ou desconexão/logout dispara direto). Não mexe no fluxo de
+2 fases que a Arena usa como referência.
+
+**Boolean pedido pelo usuário** (`WorldServer.bg_destroy_when_no_real_players`,
+default `True`) — válvula de escape pra teste que precisa inspecionar
+uma partida só-de-bot ainda viva (comportamento antigo). `False`
+desliga o critério novo, volta a exigir os 2 times 100% vazios.
+
+**Bug real achado ESCREVENDO o teste desta mudança** (não suposição —
+`test_sair_destroi_instancia_na_hora_mesmo_com_bots_presentes`
+falhou na 1ª tentativa): a ordem inicial chamava `_unload_instance`
+(que já remove a entidade ECS de todo mundo via varredura por
+`MapLocation`) ANTES de percorrer os bots restantes pra despawná-los
+individualmente (`_despawn_bot_player`, que limpa a sessão falsa +
+`_player_eid_to_sid`/`_eid_to_sid` do `SessionManager` — bookkeeping
+que `_unload_instance` não toca). Com a entidade já removida,
+`world.get_component(bot_eid, BotControlled)` voltava `None` pra TODOS
+os bots (não só 1 — `World.remove_entity` é síncrono, `_components.pop`
+imediato), então a checagem "é bot?" falhava sempre e nenhum bot
+recebia a limpeza de sessão — ficavam órfãos em `_player_eid_to_sid`
+mesmo com a entidade ECS já apagada. Fix: despawnar os bots restantes
+ANTES de chamar `_unload_instance`, não depois — mesma disciplina de
+"varredura tolerante a alvo ausente" que já existe em outros pontos do
+projeto, mas a ORDEM importa quando o dado necessário pra decidir QUEM
+limpar (o componente `BotControlled`) só existe enquanto a entidade
+ainda não foi removida.
+
+**Teste**: `tests/test_bg_bot.py::TestBgLeaveDestroysWhenNoRealPlayerLeft`
+(2 casos novos — comportamento novo default + flag desligada preserva o
+antigo). Suíte completa relacionada (`bg`, `minion`, `instance_progression`,
+`respawn`, `disconnect`): 314 passed, sem regressão.

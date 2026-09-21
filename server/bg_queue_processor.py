@@ -634,12 +634,43 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
             "eid": eid, "map_file": r_map, "target_x": r_x, "target_y": r_y,
         })
 
+        from engine.components import BotControlled as _BotCLeave
+
         team_key = "team_a" if eid in match["team_a"] else "team_b"
         match[team_key] = [m for m in match[team_key] if m != eid]
 
-        if not match["team_a"] and not match["team_b"]:
+        _remaining = match["team_a"] + match["team_b"]
+        # Nenhum jogador REAL (não-bot) resta nos 2 times (20/09/2026,
+        # pedido do usuário) — critério pra uma partida da fila REAL
+        # existir é ter um humano nela; sem isso a instância ficava viva
+        # até cada bot sair sozinho (Nexus cair organicamente + timeout de
+        # resultado), podendo levar bem mais tempo que o necessário depois
+        # que o único jogador real já foi embora. `bg_destroy_when_no_real_
+        # players` (WorldServer.__init__) é a válvula de escape pra teste
+        # que precisa inspecionar uma partida só-de-bot ainda viva.
+        _no_real_player_left = (self.bg_destroy_when_no_real_players
+                                and not any(self.world.get_component(o, _BotCLeave) is None
+                                           for o in _remaining))
+
+        if (not match["team_a"] and not match["team_b"]) or _no_real_player_left:
             self._bg_active_matches.pop(match_id, None)
+            # Despawna os bots que sobravam ANTES de descarregar a
+            # instância — `_despawn_bot_player` precisa do componente
+            # `BotControlled` ainda vivo pra achar a sessão falsa/mapeamento
+            # (bug real pego escrevendo o teste desta mudança: invertida, a
+            # entidade já tinha sido removida por `_unload_instance` antes
+            # da checagem "é bot?" rodar, então `get_component` voltava
+            # None pra TODOS e nenhum bot era limpo de verdade — ficavam
+            # órfãos em `_player_eid_to_sid`/`SessionManager._sessions`
+            # mesmo com a entidade ECS já apagada). `_unload_instance`
+            # depois só limpa o que sobrar (torre/minion/tilemap) — sua
+            # varredura por `MapLocation` já tolera entidade ausente.
+            for _other_eid in _remaining:
+                if self.world.get_component(_other_eid, _BotCLeave) is not None:
+                    self._despawn_bot_player(_other_eid)
             self._unload_instance(match["instance_key"])
+            match["team_a"] = []
+            match["team_b"] = []
 
         # Bot não tem cliente pra sair sozinho nem personagem pra salvar —
         # ao sair da partida (Nexus destruído + timeout de resultado, OU
@@ -648,7 +679,6 @@ class BgQueueProcessorMixin(InstancedMatchMixin):
         # caminhos de saída (timeout de resultado via _im_results_timeout,
         # sweep de time incompleto, saída manual) já convergem pra esta
         # mesma função.
-        from engine.components import BotControlled as _BotCLeave
         if self.world.get_component(eid, _BotCLeave) is not None:
             self._despawn_bot_player(eid)
         return None

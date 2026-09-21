@@ -479,6 +479,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         from server.bg_queue_processor import BG_MODES as _BG_MODES_INIT
         self._bg_queues: dict[str, list] = {mid: [] for mid in _BG_MODES_INIT}
         self._bg_active_matches: dict[str, dict] = {}
+        # Destrói a instância assim que NENHUM jogador REAL (não-bot) resta
+        # nos 2 times, em vez de esperar cada bot sair um por um até os
+        # times ficarem 100% vazios (20/09/2026, pedido do usuário — sem
+        # isso, o único jogador real desconectando no meio da luta deixava
+        # a instância viva indefinidamente, só bots brigando até um Nexus
+        # cair organicamente + timeout de resultado). `True` por padrão
+        # (comportamento real de produção); testes que precisam de uma
+        # partida só-de-bot persistindo (ex: inspecionar estado depois que
+        # o único humano saiu) setam `False` antes de disparar o cenário —
+        # ver `request_bg_leave` (server/bg_queue_processor.py).
+        self.bg_destroy_when_no_real_players: bool = True
         self._player_bg_match_id: dict[int, str] = {}
         self._next_bg_match_id: int = 1
         self._pending_bg_invite: dict[int, str] = {}
