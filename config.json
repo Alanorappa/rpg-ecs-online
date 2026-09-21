@@ -869,15 +869,15 @@
       "hotbar": {
         "slots": [
           "golpe_poderoso",
-          "impacto",
+          "golpe_debilitante",
           "vitoria_iminente",
-          "executar",
           "brado_provocativo",
-          "interceptar",
           "punho_no_queixo",
+          "interceptar",
           "fatiador_de_corpos",
           null,
-          "golpe_debilitante"
+          "impacto",
+          "executar"
         ],
         "keybinds": [
           49,
@@ -910,14 +910,14 @@
       },
       "skill_slot_prefs": {
         "golpe_poderoso": 0,
-        "punho_no_queixo": 6,
+        "punho_no_queixo": 4,
         "interceptar": 5,
-        "impacto": 1,
+        "impacto": 8,
         "vitoria_iminente": 2,
-        "executar": 3,
-        "golpe_debilitante": 9,
-        "fatiador_de_corpos": 7,
-        "brado_provocativo": 4
+        "executar": 9,
+        "golpe_debilitante": 1,
+        "fatiador_de_corpos": 6,
+        "brado_provocativo": 3
       }
     },
     "Faelara": {
