@@ -97,6 +97,137 @@ def test_camera_sem_suavizacao_gruda_direto_no_alvo():
     assert cam_pos.y == -30.0
 
 
+# ── CameraSystem — câmera livre estilo MOBA (Camera.free_mode) ───────────────
+# 20/09/2026, pedido do usuário (tecla Y, só dentro da BG — gate fica em
+# game.py, fora do escopo destes testes de unidade do CameraSystem em si).
+
+def test_camera_livre_nao_segue_mais_o_alvo():
+    from engine.world import World
+    from engine.components import Camera, Position
+    from ui.render_system import CameraSystem
+
+    world = World()
+    target = world.create_entity()
+    world.add_component(target, Position(x=500.0, y=500.0))
+    cam = world.create_entity()
+    world.add_component(cam, Camera(target_entity_id=target, free_mode=True))
+    world.add_component(cam, Position(x=0.0, y=0.0))
+
+    sys_cam = CameraSystem(world)
+    sys_cam.update(dt=1 / 60)
+
+    cam_pos = world.get_component(cam, Position)
+    # Sem hud_surf (headless) _pan_free_camera é no-op — câmera fica
+    # parada onde estava, NUNCA pula pro alvo (é isso que free_mode muda).
+    assert cam_pos.x == 0.0
+    assert cam_pos.y == 0.0
+
+
+def test_camera_livre_empurra_com_cursor_na_borda():
+    from engine.world import World
+    from engine.components import Camera, Position
+    from ui.render_system import CameraSystem
+    import pygame
+
+    world = World()
+    cam = world.create_entity()
+    world.add_component(cam, Camera(target_entity_id=-1, free_mode=True))
+    world.add_component(cam, Position(x=1000.0, y=1000.0))
+
+    sys_cam = CameraSystem(world)
+    sys_cam.hud_surf = pygame.Surface((1280, 720))
+    # Cursor no canto superior-esquerdo (dentro da margem) — empurra pra
+    # cima-esquerda (dx=-1, dy=-1). Monkeypatch de get_pos (não set_pos —
+    # set_pos depende da janela REAL do SDL, passa isolado mas falha
+    # dentro da suíte completa, lição já documentada nesta sessão pro
+    # cache de mira do Tiro Múltiplo).
+    _orig_get_pos = pygame.mouse.get_pos
+    pygame.mouse.get_pos = lambda: (5, 5)
+    try:
+        sys_cam.update(dt=1.0)   # dt=1s pra facilitar a conta (1x PAN_SPEED)
+    finally:
+        pygame.mouse.get_pos = _orig_get_pos
+
+    cam_pos = world.get_component(cam, Position)
+    assert cam_pos.x == 1000.0 - CameraSystem.FREE_CAM_PAN_SPEED
+    assert cam_pos.y == 1000.0 - CameraSystem.FREE_CAM_PAN_SPEED
+
+
+def test_camera_livre_cursor_longe_da_borda_nao_move():
+    from engine.world import World
+    from engine.components import Camera, Position
+    from ui.render_system import CameraSystem
+    import pygame
+
+    world = World()
+    cam = world.create_entity()
+    world.add_component(cam, Camera(target_entity_id=-1, free_mode=True))
+    world.add_component(cam, Position(x=1000.0, y=1000.0))
+
+    sys_cam = CameraSystem(world)
+    sys_cam.hud_surf = pygame.Surface((1280, 720))
+    _orig_get_pos = pygame.mouse.get_pos
+    pygame.mouse.get_pos = lambda: (640, 360)   # bem no meio da tela
+    try:
+        sys_cam.update(dt=1.0)
+    finally:
+        pygame.mouse.get_pos = _orig_get_pos
+
+    cam_pos = world.get_component(cam, Position)
+    assert cam_pos.x == 1000.0
+    assert cam_pos.y == 1000.0
+
+
+# ── engine/utils.py::get_camera_offset — clamp de borda de mapa ──────────────
+# 20/09/2026, pedido do usuário: perto do canto do mapa, a câmera continuava
+# centralizando o personagem, mostrando vazio além da borda. Fix: limita o
+# offset retornado entre 0 e (mapa_em_px - tela), nos 2 eixos.
+
+def _make_camera_world(cam_x: float, cam_y: float,
+                       map_w_tiles: int = 50, map_h_tiles: int = 50, tile_size: int = 32):
+    from engine.world import World
+    from engine.components import Camera, Position, Tilemap
+    world = World()
+    tm_eid = world.create_entity()
+    world.add_component(tm_eid, Tilemap(
+        tile_matrix=[], terrain_matrix=[], object_matrix=[],
+        tile_size=tile_size, map_width_tiles=map_w_tiles, map_height_tiles=map_h_tiles,
+    ))
+    cam = world.create_entity()
+    world.add_component(cam, Camera(target_entity_id=-1))
+    world.add_component(cam, Position(x=cam_x, y=cam_y))
+    return world
+
+
+def test_get_camera_offset_trava_no_canto_superior_esquerdo():
+    from engine.utils import get_camera_offset
+    # Personagem bem perto de (0,0) — sem clamp, o offset ficaria negativo
+    # (mostrando "vazio" antes do início do mapa).
+    world = _make_camera_world(cam_x=10.0, cam_y=10.0)
+    offset_x, offset_y = get_camera_offset(world, screen_w=1280, screen_h=720)
+    assert offset_x == 0.0
+    assert offset_y == 0.0
+
+
+def test_get_camera_offset_trava_no_canto_inferior_direito():
+    from engine.utils import get_camera_offset
+    # Mapa 50x50 tiles * 32px = 1600x1600px. Personagem no canto oposto.
+    world = _make_camera_world(cam_x=1590.0, cam_y=1590.0)
+    offset_x, offset_y = get_camera_offset(world, screen_w=1280, screen_h=720)
+    assert offset_x == 1600 - 1280
+    assert offset_y == 1600 - 720
+
+
+def test_get_camera_offset_sem_clamp_no_meio_do_mapa():
+    from engine.utils import get_camera_offset
+    # Bem no meio do mapa 1600x1600 — longe das 2 bordas, clamp não deve
+    # alterar o offset normal (câmera centrada no personagem).
+    world = _make_camera_world(cam_x=800.0, cam_y=800.0)
+    offset_x, offset_y = get_camera_offset(world, screen_w=1280, screen_h=720)
+    assert offset_x == 800.0 - 1280 / 2
+    assert offset_y == 800.0 - 720 / 2
+
+
 # ── ui/map_markers.py ────────────────────────────────────────────────────────
 
 def _make_marker_world():

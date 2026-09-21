@@ -1842,6 +1842,22 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         self._close_all_modals()
                         if not already_open:
                             self._show_debug = True
+                    elif event.key == pygame.K_y:
+                        # Câmera livre estilo MOBA (20/09/2026, pedido do
+                        # usuário — tecla Y, igual League of Legends) — só
+                        # dentro da BG (InstanceInventoryUIState.active é o
+                        # mesmo eco de in_instance já usado pro clique de
+                        # minimapa/modo tela-cheia logo abaixo). Re-trava
+                        # é manual (aperta Y de novo) — CameraSystem volta
+                        # sozinho a seguir o personagem no frame seguinte
+                        # assim que free_mode vira False, sem código extra.
+                        from ui.ui_components import InstanceInventoryUIState as _IIUSCamY
+                        _iius_y = self.world.get_component(self.player_entity, _IIUSCamY)
+                        if _iius_y is not None and _iius_y.active:
+                            from engine.components import Camera as _CamY
+                            _cam_y_first = self.world.get_first(_CamY)
+                            if _cam_y_first is not None:
+                                _cam_y_first[1].free_mode = not _cam_y_first[1].free_mode
                 elif event.type == pygame.TEXTINPUT:
                     self._handle_chat_text_input(event)
                 elif (event.type == pygame.MOUSEBUTTONDOWN
@@ -2043,6 +2059,31 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                                     _auto.active        = True
                                 _minimap_click_consumed = True
                                 break
+                        elif _ev.type == pygame.MOUSEBUTTONDOWN and _ev.button == 1:
+                            # Clique ESQUERDO no minimapa em tela-cheia (BG)
+                            # — pula a câmera LIVRE pro ponto clicado, sem
+                            # mexer no personagem (20/09/2026, pedido do
+                            # usuário). Botão direito continua "andar até
+                            # aqui" (bloco acima) — os dois nunca colidem.
+                            # Gate só por `Camera.free_mode` (não precisa
+                            # checar InstanceInventoryUIState de novo aqui)
+                            # — free_mode só pode ter sido ligado pela
+                            # tecla Y, que JÁ exige estar na BG antes de
+                            # ligar; fora da BG a flag nunca fica True.
+                            from engine.components import Camera as _CamMmClick
+                            _cam_mm_first = self.world.get_first(_CamMmClick)
+                            if _cam_mm_first is not None and _cam_mm_first[1].free_mode:
+                                _mm_tile2 = self._minimap.screen_to_tile_fullmap(
+                                    _ev.pos[0], _ev.pos[1])
+                                if _mm_tile2 is not None:
+                                    from engine.tileset import TILE_SIZE as _TS_mmClick
+                                    _cam_pos_mm = self.world.get_component(
+                                        _cam_mm_first[0], Position)
+                                    if _cam_pos_mm is not None:
+                                        _cam_pos_mm.x = _mm_tile2[0] * _TS_mmClick + _TS_mmClick / 2
+                                        _cam_pos_mm.y = _mm_tile2[1] * _TS_mmClick + _TS_mmClick / 2
+                                    _minimap_click_consumed = True
+                                    break
 
             # Bloqueia sistemas enquanto um painel estiver aberto ou clique do mapa pendente.
             # _topmost_open_modal() é o único ponto de verdade de prioridade de modal

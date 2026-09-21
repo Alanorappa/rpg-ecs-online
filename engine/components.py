@@ -357,6 +357,14 @@ class Camera:
     offset_x: float = 0.0
     offset_y: float = 0.0
     zoom: float = 1.0
+    # free_mode (20/09/2026, pedido do usuário) — câmera livre estilo MOBA
+    # (League of Legends, tecla Y), só disponível dentro da BG. True: para
+    # de seguir `target_entity_id`; passa a mover só via clique no
+    # minimapa (game.py) ou cursor na borda da tela (CameraSystem.update,
+    # ui/render_system.py). Re-trava manual (aperta a tecla de novo) —
+    # NUNCA volta sozinha ao mover o personagem, decisão explícita do
+    # usuário (mesmo comportamento do LoL).
+    free_mode: bool = False
 
 @dataclass
 class Collider:

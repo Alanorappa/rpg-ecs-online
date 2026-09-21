@@ -326,10 +326,33 @@ def get_camera_offset(world, screen_w: float, screen_h: float) -> tuple:
     `MouseTargetingSystem` e `LootSystem`, copy-paste em vez de função
     de módulo). Sem câmera no mundo (ex: cena de login/tela de
     transição): (0.0, 0.0), mesmo fallback que todas as cópias já
-    usavam."""
-    from engine.components import Camera, Position
+    usavam.
+
+    Clamp de borda de mapa (20/09/2026, pedido do usuário — perto do
+    canto, a câmera parava de mostrar mapa e passava a mostrar vazio,
+    mantendo o personagem sempre centralizado mesmo sem ter mais mundo
+    pra mostrar naquela direção). Limita o offset entre 0 e
+    `dimensão_do_mapa_em_px - dimensão_da_tela`, nos 2 eixos — vale
+    tanto pra câmera travada no personagem quanto pra câmera livre
+    (`Camera.free_mode`, ver ui/render_system.py::CameraSystem), já que
+    as duas passam por aqui. Mapa MENOR que a tela num eixo (não deve
+    acontecer em produção — mapas são desenhados maiores que a tela de
+    propósito) cairia num intervalo invertido (`min>max` do clamp);
+    `max(0.0, ...)` no limite superior evita clamp() explodir nesse
+    caso, resultado só fica sem centralizar (aceitável, cenário que não
+    deveria existir de verdade)."""
+    from engine.components import Camera, Position, Tilemap
     for _, _, cam_pos in world.get_entities_with(Camera, Position):
-        return cam_pos.x - screen_w / 2, cam_pos.y - screen_h / 2
+        offset_x = cam_pos.x - screen_w / 2
+        offset_y = cam_pos.y - screen_h / 2
+        _tm_first = world.get_first(Tilemap)
+        if _tm_first is not None:
+            _tilemap = _tm_first[1]
+            _map_px_w = _tilemap.map_width_tiles * _tilemap.tile_size
+            _map_px_h = _tilemap.map_height_tiles * _tilemap.tile_size
+            offset_x = max(0.0, min(offset_x, max(0.0, _map_px_w - screen_w)))
+            offset_y = max(0.0, min(offset_y, max(0.0, _map_px_h - screen_h)))
+        return offset_x, offset_y
     return 0.0, 0.0
 
 

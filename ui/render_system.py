@@ -966,10 +966,28 @@ class CameraSystem(System):
     # usado — ver ARQUITETURA_ONLINE.md.
     SMOOTHING_ENABLED = False
 
+    # Câmera livre estilo MOBA (20/09/2026, pedido do usuário — tecla Y,
+    # só dentro da BG, ver game.py) — margem em pixels de TELA (espaço do
+    # hud_surf, resolução real da janela, não world_surf/zoom) a partir da
+    # qual o cursor perto da borda empurra a câmera; velocidade em pixels
+    # de MUNDO por segundo (não afetada por zoom — câmera se move na
+    # mesma velocidade "real" não importa o nível de zoom).
+    FREE_CAM_EDGE_MARGIN_PX = 24
+    FREE_CAM_PAN_SPEED = 900.0
+
     def update(self, events: list = None, dt: float = 0) -> None:
         _cam_upd_first = self.world.get_first(Camera, Position)
         if _cam_upd_first is not None:
             entity_id, camera_component, camera_position = _cam_upd_first
+
+            if camera_component.free_mode:
+                # Câmera livre: NUNCA gruda no personagem (mesmo se ele se
+                # mover) — só reage a cursor na borda (minimapa é
+                # tratado à parte, em game.py, por clique). Re-trava é
+                # manual (tecla Y de novo), decisão explícita do usuário.
+                self._pan_free_camera(camera_position, dt)
+                return
+
             target_entity_id = camera_component.target_entity_id
 
             if target_entity_id != -1:
@@ -988,4 +1006,31 @@ class CameraSystem(System):
                             t = min(1.0, self.LERP_SPEED * dt)
                             camera_position.x += dx * t
                             camera_position.y += dy * t
+
+    def _pan_free_camera(self, camera_position, dt: float) -> None:
+        """Empurra a câmera livre quando o cursor está perto da borda da
+        janela (estilo MOBA) — `self.hud_surf` é atribuído pelo GameEngine
+        todo frame (mesmo padrão de qualquer outro System, ver docstring
+        da classe base). Sem hud_surf (ex: teste headless): no-op."""
+        if self.hud_surf is None or dt <= 0:
+            return
+        import pygame
+        mx, my = pygame.mouse.get_pos()
+        hud_w, hud_h = self.hud_surf.get_size()
+        margin = self.FREE_CAM_EDGE_MARGIN_PX
+
+        dx = dy = 0.0
+        if mx <= margin:
+            dx = -1.0
+        elif mx >= hud_w - margin:
+            dx = 1.0
+        if my <= margin:
+            dy = -1.0
+        elif my >= hud_h - margin:
+            dy = 1.0
+
+        if dx or dy:
+            step = self.FREE_CAM_PAN_SPEED * dt
+            camera_position.x += dx * step
+            camera_position.y += dy * step
 

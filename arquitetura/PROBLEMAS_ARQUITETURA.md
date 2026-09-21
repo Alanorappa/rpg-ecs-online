@@ -21579,3 +21579,70 @@ ainda não foi removida.
 (2 casos novos — comportamento novo default + flag desligada preserva o
 antigo). Suíte completa relacionada (`bg`, `minion`, `instance_progression`,
 `respawn`, `disconnect`): 314 passed, sem regressão.
+
+---
+
+## 190. Feature — câmera trava na borda do mapa + câmera livre estilo MOBA na BG (20/09/2026)
+
+Duas mudanças relacionadas na mesma sessão, ambas 100% client-only (câmera
+é cosmética, servidor nunca sabe pra onde o jogador está olhando).
+
+**A — Clamp de borda.** Antes, perto do canto do mapa, a câmera
+continuava centralizando o personagem, mostrando vazio além da borda em
+vez de mais mapa. Fix no ponto único já existente pra "canto superior-
+esquerdo do mundo visível em tela" — `engine/utils.py::get_camera_offset()`
+(consolidado em 15/09/2026 de 13+ cópias duplicadas) — limita o offset
+retornado entre `0` e `dimensão_do_mapa_em_px - dimensão_da_tela`, nos 2
+eixos, lendo `Tilemap` via `World.get_first()` (seguro — cliente only,
+1 Tilemap por vez). Vale tanto pra câmera travada no personagem quanto
+pra câmera livre (item B abaixo), já que as duas passam pela mesma
+função. Mapa menor que a tela num eixo (não deve acontecer — mapas são
+desenhados maiores que a tela de propósito, confirmado com o usuário)
+cairia num intervalo invertido; `max(0.0, ...)` no limite superior evita
+o clamp explodir nesse caso, só não centraliza (aceitável, cenário que
+não deveria existir de verdade).
+
+**B — Câmera livre (tecla Y, só dentro da BG).** Mesmo mecanismo do
+League of Legends, citado como referência explícita pelo usuário: tecla
+destrava a câmera de seguir o personagem, clique ESQUERDO no minimapa
+(tela-cheia da BG) pula a câmera pro ponto clicado, cursor perto da
+borda da JANELA empurra a câmera naquela direção. Re-trava é 100%
+manual (aperta Y de novo) — NUNCA volta sozinha ao mover o personagem,
+decisão explícita do usuário (mesmo comportamento do LoL).
+
+- `Camera.free_mode: bool` (novo campo, `engine/components.py`) —
+  quando `True`, `CameraSystem.update()` (`ui/render_system.py`) para
+  de seguir `target_entity_id` e chama `_pan_free_camera()` (cursor na
+  borda) em vez disso. Margem/velocidade nomeadas
+  (`FREE_CAM_EDGE_MARGIN_PX`/`FREE_CAM_PAN_SPEED`), fácil de recalibrar
+  depois se o usuário testar e achar rápido/lento demais (mesmo padrão
+  do `_OCCLUSION_COVERAGE_THRESHOLD` da transparência de objeto, §188).
+- Margem de borda é medida em pixels de TELA (`hud_surf`, resolução real
+  da janela) — não em `world_surf`/zoom, então a sensibilidade do
+  "empurrão" não muda com o nível de zoom. Velocidade de pan é em
+  pixels de MUNDO/segundo — também não afetada por zoom (câmera se move
+  na mesma velocidade "real" independente do nível de zoom).
+- `game.py`: tecla Y (novo `elif event.key == pygame.K_y`) alterna
+  `free_mode`, só quando `InstanceInventoryUIState.active` (mesma flag
+  já usada pro modo tela-cheia do minimapa — eco client-side de "estou
+  numa instância"). Clique esquerdo no minimapa (mesmo bloco de evento
+  que já trata o clique DIREITO = "andar até aqui", `screen_to_tile_fullmap`
+  reaproveitado) só ativa quando `Camera.free_mode` já é `True` — nunca
+  precisa checar `InstanceInventoryUIState` de novo ali, porque
+  `free_mode` só liga através da tecla Y, que já exige estar na BG antes
+  — checar só a flag da câmera é suficiente e evita duplicar a checagem.
+- Botão direito (andar) e botão esquerdo (pular câmera) nunca colidem —
+  filtram por `_ev.button` diferente no MESMO loop de eventos.
+
+**Teste**: `tests/test_client_ui.py` — 3 casos novos de `CameraSystem`
+(`free_mode` para de seguir alvo; empurra com cursor na borda; cursor no
+meio da tela não move) + 3 casos novos de `get_camera_offset` (trava no
+canto superior-esquerdo, trava no canto inferior-direito, sem clamp no
+meio do mapa). **Cuidado replicado de uma lição já documentada nesta
+sessão** (cache de mira do Tiro Múltiplo): os testes de cursor usam
+monkeypatch de `pygame.mouse.get_pos`, NUNCA `pygame.mouse.set_pos()` —
+`set_pos` depende da janela REAL do SDL (passa isolado, mas falha
+dentro da suíte completa quando outro teste já redimensionou a janela
+antes). Suíte relacionada (`render_system`, `minimap`, `camera`,
+`tile_render`): 19 passed, mais os 181 de `test_client_ui.py` inteiro —
+sem regressão.
