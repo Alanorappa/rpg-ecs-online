@@ -347,7 +347,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # _show_inventory e _show_talents → UIState component (via property)
         self._show_debug      = False
         self._debug_buttons: list = []      # [(rect, n_levels)] preenchido em _draw_debug_modal
-        self._debug_tab: str = "nivel"      # "nivel" | "itens" | "ouro" | "mapa"
+        self._debug_tab: str = "nivel"      # "nivel" | "itens" | "ouro" | "mapa" | "dianoite"
+        self._debug_dianoite_buttons: list = []  # [(rect, target_fraction)]
         # Atributos brutos/ratings de combate no HUD permanente — desligado
         # por padrão (redundante com a aba Estatísticas do Inventário, só
         # poluía o HUD); liga na aba Nivel do debug (F12) quando precisar

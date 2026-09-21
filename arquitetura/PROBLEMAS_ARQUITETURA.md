@@ -21936,3 +21936,65 @@ do usuário de manter simples por enquanto, pode virar um "brilho quente"
 por cima depois. `vp_171` está com posição de luz própria (16,41),
 diferente do `vp_170` (44,41) — usuário confirmou que NÃO é o mesmo
 offset por padrão (perguntei em vez de presumir).
+
+---
+
+## 195. Bug real — transição dia/noite passava por acinzentado + feature — aba de debug (F12) pra hora/fase (21/09/2026)
+
+**Sintoma relatado:** usuário logou pra ver o efeito de §194 e viu a
+tela "um pouco acizentada" em vez de escura — ficou sem saber se era
+noite fechada, amanhecer ou entardecer.
+
+**Causa raiz (bug real, não achado por acaso — diagnosticado amostrando
+a função `day_night_color()` em vários pontos do ciclo):** os keyframes
+originais tinham só 2 pontos por transição — noite `(20,25,60)` direto
+pro dia/amanhecer `(255,140,70)`. Interpolar RGB em LINHA RETA entre
+azul e laranja (cores quase opostas no círculo de cores) passa por um
+meio-termo dessaturado no caminho: `t=0.5` dava `(137,82,65)` — um
+"cinza sujo" acastanhado, nem azul nem laranja, exatamente o que o
+usuário descreveu. Não é uma percepção errada do usuário; é uma
+propriedade matemática de interpolar linearmente 2 cores distantes no
+espaço RGB (o ponto médio de qualquer par de cores complementares/quase-
+opostas tende a ficar próximo do cinza, já que R≈G≈B no meio do
+caminho).
+
+**Fix:** cadeia de keyframes intermediários em vez de 2 pontas —
+noite→violeta→rosa/aurora→dourado→dia (e o espelho no entardecer). Cada
+segmento consecutivo agora é um tom VIZINHO no círculo de cores (violeta
+puxa pra rosa, rosa pra dourado), nunca 2 extremos opostos — elimina o
+vale de saturação. Resultado amostrado (meio do amanhecer): antes
+`(137,82,65)` acastanhado/cinza, depois `(198,109,128)` rosa/aurora de
+verdade.
+
+**Feature companion, mesmo pedido:** aba "Dia/Noite" nova no painel de
+debug F12 (`client/debug_handlers.py::_draw_debug_tab_dianoite`) —
+mostra fase atual (`current_phase_label()`) + % do ciclo, e 4 botões
+("Meia-noite"/"Amanhecer"/"Meio-dia"/"Entardecer") que pulam o relógio
+na hora. **100% local, NUNCA manda mensagem de rede** — diferente de
+`_debug_levelup`/`_debug_add_gold`/`_debug_add_item` (que são
+server-autoritativos via GM_*), dia/noite não tem conceito de "hora" no
+servidor (é puramente cosmético, `ui/day_night_system.py`), então o
+pulo só precisa mexer em estado do PRÓPRIO cliente.
+
+**Mecanismo do pulo (`jump_to_fraction()`) — desloca, não congela:**
+`_debug_time_offset_s` (global de módulo, só mutado via
+`set_debug_time_offset()` — mesmo padrão de `_svc`/
+`_lethal_interceptor` já documentado em CLAUDE.md "Proibido estado
+mutável ad-hoc") é somado a `time.time()` antes do módulo de
+`DAY_NIGHT_CYCLE_S` — pular pra "Amanhecer" calcula o deslocamento
+necessário pra `day_night_fraction()` bater com o alvo NO INSTANTE do
+clique, mas o relógio CONTINUA correndo normalmente dali em diante
+(nunca fica travado no valor pulado). `day_night_fraction(now=<valor
+explícito>)` (usado pelos testes) ignora esse offset de propósito — só
+o relógio "de verdade" (`now=None`, chamado pelo jogo) passa por ele.
+
+**Teste**: `test_day_night_transicao_nao_passa_por_cinza` — varre a
+transição inteira de amanhecer em passos de 1%, falha se `max(r,g,b) -
+min(r,g,b) < 25` em qualquer ponto com alpha visível (>=20). Revert-to-
+confirm: rodado contra os keyframes ANTIGOS, falhou exatamente em
+`fração 0.21` (RGB=54,41,61, diferença 20) — confirma que o teste prova
+o bug relatado, não só um cenário sintético. Mais 2 testes novos:
+`jump_to_fraction` avança o relógio sem congelar, e
+`current_phase_label` bate com as faixas esperadas. Suíte completa
+(`pytest tests/ -q`, 1759 passed, 1 falha pré-existente e não
+relacionada — mesma classe de timing flaky já documentada em §191/§194).

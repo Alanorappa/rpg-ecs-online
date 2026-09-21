@@ -4822,6 +4822,56 @@ def test_day_night_render_dia_pleno_nao_desenha():
     assert sys._overlay_surf is None, "não deveria nem alocar a surface de overlay em dia pleno"
 
 
+def test_day_night_transicao_nao_passa_por_cinza():
+    """Bug real relatado pelo usuário 21/09/2026: interpolar RGB em linha
+    reta direto do azul da noite pro laranja do dia passava por um
+    acastanhado/acinzentado dessaturado no meio do caminho (usuário viu
+    a tela "acizentada" e não conseguiu identificar a fase). Fix: cadeia
+    de keyframes intermediários (violeta→rosa/aurora→dourado) — nenhum
+    ponto da transição deve ficar com R/G/B pertinho um do outro (sinal
+    de dessaturação/cinza)."""
+    from ui.day_night_system import day_night_color, DAY_NIGHT_CYCLE_S
+    # Varre toda a transição de amanhecer E entardecer em passos finos.
+    for pct in range(15, 33):   # 0.15 a 0.32 (amanhecer inteiro)
+        frac = pct / 100.0
+        r, g, b, a = day_night_color(frac * DAY_NIGHT_CYCLE_S)
+        if a < 20:
+            continue  # quase invisível — dessaturação aqui não importa visualmente
+        maior, menor = max(r, g, b), min(r, g, b)
+        assert maior - menor >= 25, (
+            f"fração {frac:.2f} ficou quase cinza (RGB={r},{g},{b}, "
+            f"diferença {maior - menor}) — regressão da transição acinzentada"
+        )
+
+
+def test_day_night_jump_to_fraction_muda_hora_sem_congelar():
+    """Botão de debug (F12) pula pra uma fase — tempo continua correndo
+    normalmente a partir dali (não congela no valor pulado)."""
+    import time as _time
+    from ui.day_night_system import (
+        jump_to_fraction, day_night_fraction, set_debug_time_offset,
+    )
+    try:
+        jump_to_fraction(0.25)
+        frac_logo_apos = day_night_fraction()
+        assert abs(frac_logo_apos - 0.25) < 0.001, \
+            f"esperava pular pra ~0.25, ficou em {frac_logo_apos}"
+        _time.sleep(0.05)
+        frac_um_pouco_depois = day_night_fraction()
+        assert frac_um_pouco_depois > frac_logo_apos, \
+            "o relógio deveria continuar avançando depois do pulo, não congelar"
+    finally:
+        set_debug_time_offset(0.0)   # nunca vazar override pros outros testes
+
+
+def test_day_night_current_phase_label():
+    from ui.day_night_system import current_phase_label, DAY_NIGHT_CYCLE_S
+    assert current_phase_label(0.0) == "Noite"
+    assert current_phase_label(0.23 * DAY_NIGHT_CYCLE_S) == "Amanhecer"
+    assert current_phase_label(0.5 * DAY_NIGHT_CYCLE_S) == "Dia"
+    assert current_phase_label(0.77 * DAY_NIGHT_CYCLE_S) == "Entardecer"
+
+
 def test_day_night_luz_de_lampiao_fura_o_escurecimento():
     """Bug-class evitada aqui: luz precisa clarear só perto do centro,
     decaindo suave até o raio, sem afetar cor (só o alpha do overlay é

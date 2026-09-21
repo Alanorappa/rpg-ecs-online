@@ -37,24 +37,84 @@ DAY_NIGHT_CYCLE_S = 60.0 * 60.0
 # interpolados linearmente entre os dois mais próximos. alpha=0 = sem
 # tingimento nenhum (dia pleno). Ordem crescente de fração, sempre
 # terminando em 1.00 com o MESMO valor de 0.00 (loop sem costura).
+#
+# 5 pontos por transição (não só noite→dia direto) — pedido do usuário
+# 21/09/2026: interpolar RGB em linha reta direto entre o azul da noite
+# (20,25,60) e o laranja do dia (255,140,70) passa por um acastanhado/
+# acinzentado dessaturado no meio do caminho (ex.: (137,82,65) — nem
+# azul nem laranja, um "cinza sujo"). Cadeia
+# noite→violeta→rosa/aurora→dourado→dia evita esse vale de saturação:
+# cada segmento consecutivo já é um tom vizinho no círculo de cores
+# (violeta puxa pra rosa, rosa pra dourado), nunca 2 extremos opostos.
 _KEYFRAMES: list[tuple[float, tuple[int, int, int], int]] = [
-    (0.00, (20,  25,  60), 150),   # meia-noite
-    (0.20, (20,  25,  60), 150),   # madrugada
-    (0.27, (255, 140, 70),  70),   # amanhecer
-    (0.33, (0,    0,  0),    0),   # manhã — sem tingimento
-    (0.67, (0,    0,  0),    0),   # tarde — sem tingimento
-    (0.73, (255, 120, 60),  70),   # entardecer
-    (0.80, (20,  25,  60), 150),   # anoitecer
-    (1.00, (20,  25,  60), 150),   # volta pra meia-noite
+    (0.00, ( 20,  25,  60), 150),   # meia-noite
+    (0.15, ( 20,  25,  60), 150),   # madrugada (platô)
+    (0.19, ( 55,  40,  90), 140),   # início do amanhecer — violeta
+    (0.23, (190, 100, 130),  95),   # amanhecer pleno — rosa/aurora
+    (0.27, (255, 175, 110),  45),   # fim do amanhecer — dourado suave
+    (0.32, (  0,   0,   0),   0),   # manhã — sem tingimento
+    (0.68, (  0,   0,   0),   0),   # tarde — sem tingimento
+    (0.73, (255, 160, 100),  45),   # início do entardecer — dourado
+    (0.77, (220,  90, 110),  95),   # entardecer pleno — rosa/pôr do sol
+    (0.81, ( 65,  45,  90), 140),   # fim do entardecer — violeta
+    (0.85, ( 20,  25,  60), 150),   # anoitecer -> noite
+    (1.00, ( 20,  25,  60), 150),   # volta pra meia-noite
 ]
+
+# Rótulo simples por faixa de fração — só pra exibição (F12/debug), nunca
+# consultado pelo overlay/luz (que só leem day_night_color()). Faixas
+# alinhadas com os keyframes acima.
+_PHASE_LABELS: list[tuple[float, float, str]] = [
+    (0.00, 0.17, "Noite"),
+    (0.17, 0.29, "Amanhecer"),
+    (0.29, 0.71, "Dia"),
+    (0.71, 0.83, "Entardecer"),
+    (0.83, 1.00, "Noite"),
+]
+
+# Override de debug (F12, só GM/local) — desloca o relógio sem congelar
+# (o tempo continua correndo normalmente a partir do novo ponto). 0.0 =
+# sem override, comportamento normal. Nome de módulo visível + funções
+# dedicadas pra mutar (nunca setado direto por fora) — mesmo padrão de
+# estado plugável já usado em engine/core_systems.py (`_svc`/
+# `_lethal_interceptor`), ver CLAUDE.md "Proibido estado mutável ad-hoc".
+_debug_time_offset_s: float = 0.0
+
+
+def set_debug_time_offset(offset_s: float) -> None:
+    global _debug_time_offset_s
+    _debug_time_offset_s = offset_s
+
+
+def jump_to_fraction(target_fraction: float) -> None:
+    """Pula o relógio pra `target_fraction` (0.0-1.0) SEM congelar — o
+    tempo continua correndo normalmente a partir daí. Usado só pelo
+    painel de debug (F12/GM), 100% local — não existe conceito de "hora"
+    no servidor, é puramente cosmético."""
+    now = time.time()
+    current_fraction = ((now + _debug_time_offset_s) % DAY_NIGHT_CYCLE_S) / DAY_NIGHT_CYCLE_S
+    delta_fraction = (target_fraction - current_fraction) % 1.0
+    set_debug_time_offset(_debug_time_offset_s + delta_fraction * DAY_NIGHT_CYCLE_S)
 
 
 def day_night_fraction(now: float | None = None) -> float:
     """0.0-1.0 — posição no ciclo. Mesma fórmula em TODO cliente (função
     pura de `time.time()`, sem estado/servidor) — todo mundo vê a mesma
-    hora automaticamente, sem sincronizar nada pela rede."""
-    now = now if now is not None else time.time()
-    return (now % DAY_NIGHT_CYCLE_S) / DAY_NIGHT_CYCLE_S
+    hora automaticamente, sem sincronizar nada pela rede. `now` explícito
+    (usado pelos testes) ignora o override de debug de propósito — só o
+    relógio "de verdade" (`now=None`) passa por `_debug_time_offset_s`."""
+    if now is not None:
+        return (now % DAY_NIGHT_CYCLE_S) / DAY_NIGHT_CYCLE_S
+    return ((time.time() + _debug_time_offset_s) % DAY_NIGHT_CYCLE_S) / DAY_NIGHT_CYCLE_S
+
+
+def current_phase_label(now: float | None = None) -> str:
+    """Rótulo textual da fase atual (F12/debug) — ex: "Amanhecer"."""
+    frac = day_night_fraction(now)
+    for f0, f1, label in _PHASE_LABELS:
+        if f0 <= frac < f1:
+            return label
+    return _PHASE_LABELS[-1][2]
 
 
 def day_night_color(now: float | None = None) -> tuple[int, int, int, int]:

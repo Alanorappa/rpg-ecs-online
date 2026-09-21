@@ -919,6 +919,18 @@ padrão a quebrar, não só os bugs individuais.
   Posição de tela da luz vem de `screen_x`/`screen_y` que
   `get_world_objects()` já calcula (nunca recalcular offset de câmera à
   parte — mesma lição de §191). Ver PROBLEMAS_ARQUITETURA.md §194.
+  **Keyframe novo de transição (amanhecer/entardecer) NUNCA interpola
+  direto de 2 pontas opostas no círculo de cores** (ex: azul da noite →
+  laranja do dia) — passa por um cinza/acastanhado dessaturado no meio
+  do caminho (bug real, §195). Sempre usar uma cadeia de tons VIZINHOS
+  (ex: noite→violeta→rosa→dourado→dia). **Ver hora/fase atual e pular
+  pra qualquer uma sem esperar o relógio real** → aba "Dia/Noite" do
+  painel de debug F12 (`client/debug_handlers.py::
+  _draw_debug_tab_dianoite`, `ui/day_night_system.py::jump_to_fraction`)
+  — 100% local, NUNCA manda mensagem de rede (diferente de
+  `_debug_levelup`/`_debug_add_gold`/`_debug_add_item`, que são
+  server-autoritativos via GM_*) — dia/noite não existe no servidor. Ver
+  PROBLEMAS_ARQUITETURA.md §195.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

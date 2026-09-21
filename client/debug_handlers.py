@@ -93,6 +93,13 @@ class DebugHandlers:
                         self._debug_open_map(map_file)
                         return
 
+            elif self._debug_tab == "dianoite":
+                for rect, target_fraction in self._debug_dianoite_buttons:
+                    if rect.collidepoint(mx, my):
+                        from ui.day_night_system import jump_to_fraction
+                        jump_to_fraction(target_fraction)
+                        return
+
         # Aba de itens: clique direito = adicionar ao inventário
         elif event.button == 3 and self._debug_tab == "itens":
             for rect, factory in self._debug_item_buttons:
@@ -196,7 +203,8 @@ class DebugHandlers:
                          (px + self._u(4), py + self._u(52)), (px + PW - self._u(4), py + self._u(52)))
 
         # --- Abas ---
-        TAB_DEFS = [("nivel", "Nivel"), ("itens", "Itens"), ("ouro", "Ouro"), ("mapa", "Mapa")]
+        TAB_DEFS = [("nivel", "Nivel"), ("itens", "Itens"), ("ouro", "Ouro"),
+                    ("mapa", "Mapa"), ("dianoite", "Dia/Noite")]
         tab_w, tab_h, tab_gap = self._u(160), self._u(38), self._u(10)
         tabs_total_w = len(TAB_DEFS) * tab_w + (len(TAB_DEFS) - 1) * tab_gap
         tx0 = px + PW // 2 - tabs_total_w // 2
@@ -233,6 +241,8 @@ class DebugHandlers:
             self._draw_debug_tab_ouro(px, content_y, PW, font_md, font_sm, wallet, mx, my)
         elif self._debug_tab == "mapa":
             self._draw_debug_tab_mapa(px, content_y, PW, font_md, font_sm, mx, my)
+        elif self._debug_tab == "dianoite":
+            self._draw_debug_tab_dianoite(px, content_y, PW, font_md, font_sm, mx, my)
 
         # Footer
         hint = font_sm.render("ESC para fechar", False, (80, 75, 60))
@@ -344,6 +354,51 @@ class DebugHandlers:
             tag_s = font_sm.render(tag, False, (80, 160, 80) if is_current else (70, 65, 55))
             self.screen.blit(tag_s, (r.x + self._u(16), r.centery + self._u(4)))
             self._debug_map_buttons.append((r, map_file))
+
+    def _draw_debug_tab_dianoite(self, px, content_y, PW, font_md, font_sm, mx, my) -> None:
+        """Aba de debug do ciclo dia/noite (21/09/2026, pedido do usuário
+        — confuso sem ter como saber a hora/fase atual nem testar as 4
+        fases sem esperar o relógio real passar). 100% local — não existe
+        conceito de "hora" no servidor (day/night é puramente cosmético,
+        ver ui/day_night_system.py), então os botões abaixo NUNCA mandam
+        mensagem de rede, só chamam jump_to_fraction() no cliente."""
+        from ui.day_night_system import day_night_fraction, current_phase_label
+
+        frac = day_night_fraction()
+        phase = current_phase_label()
+        minuto = frac * 60.0
+        for i, line in enumerate([
+            f"Fase atual:  {phase}",
+            f"Ciclo:       {frac * 100:.1f}%  (minuto {minuto:.1f} de 60)",
+        ]):
+            surf = font_sm.render(line, False, (200, 190, 160))
+            self.screen.blit(surf, (px + self._u(20), content_y + self._u(8) + i * self._u(22)))
+
+        hint = font_sm.render("Pular para (so local, nao mexe no servidor):", False, (90, 80, 60))
+        self.screen.blit(hint, (px + self._u(20), content_y + self._u(58)))
+
+        self._debug_dianoite_buttons = []
+        btn_labels = [
+            ("Meia-noite", 0.00), ("Amanhecer", 0.23),
+            ("Meio-dia",   0.50), ("Entardecer", 0.77),
+        ]
+        btn_w, btn_h, gap = self._u(170), self._u(48), self._u(14)
+        cols = 2
+        bx0 = px + PW // 2 - (cols * btn_w + (cols - 1) * gap) // 2
+        by0 = content_y + self._u(86)
+        for i, (label, target_fraction) in enumerate(btn_labels):
+            bx = bx0 + (i % cols) * (btn_w + gap)
+            by = by0 + (i // cols) * (btn_h + gap)
+            rect = pygame.Rect(bx, by, btn_w, btn_h)
+            hov = rect.collidepoint(mx, my)
+            col_bg, col_bord = ((50, 60, 80), (110, 150, 220)) if hov else ((22, 24, 32), (60, 65, 80))
+            pygame.draw.rect(self.screen, col_bg,   rect, border_radius=4)
+            pygame.draw.rect(self.screen, col_bord, rect, 1, border_radius=4)
+            col_txt = (220, 230, 255) if hov else (190, 190, 200)
+            lbl = font_md.render(label, False, col_txt)
+            self.screen.blit(lbl, (rect.centerx - lbl.get_width() // 2,
+                                   rect.centery - lbl.get_height() // 2))
+            self._debug_dianoite_buttons.append((rect, target_fraction))
 
     def _draw_debug_tab_itens(self, px, content_y, PW, font_md, font_sm, mx, my) -> None:
         _RARITY_COLORS = {
