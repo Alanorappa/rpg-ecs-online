@@ -231,9 +231,18 @@ class DebugHandlers:
                          (px + self._u(4), py + self._u(52)), (px + PW - self._u(4), py + self._u(52)))
 
         # --- Abas ---
+        # tab_w é CALCULADA a partir de PW/nº de abas (21/09/2026, bug real:
+        # era um valor fixo de 160px — com as 4 abas originais cabia
+        # (4*160+3*10=670 < PW=820), mas a 5ª aba (Dia/Noite) estourou
+        # pra 840px, maior que o painel inteiro — a 1ª e a última aba
+        # ficavam cortadas pra fora, visível no print do usuário). Nunca
+        # mais hardcoded: calculado sempre que uma aba for adicionada/
+        # removida, não precisa lembrar de ajustar isto na mão.
         TAB_DEFS = [("nivel", "Nivel"), ("itens", "Itens"), ("ouro", "Ouro"),
                     ("mapa", "Mapa"), ("dianoite", "Dia/Noite")]
-        tab_w, tab_h, tab_gap = self._u(160), self._u(38), self._u(10)
+        tab_h, tab_gap = self._u(38), self._u(10)
+        tab_margin = self._u(20)   # respiro nas 2 pontas — abas nunca encostam na borda do modal
+        tab_w = (PW - 2 * tab_margin - (len(TAB_DEFS) - 1) * tab_gap) // len(TAB_DEFS)
         tabs_total_w = len(TAB_DEFS) * tab_w + (len(TAB_DEFS) - 1) * tab_gap
         tx0 = px + PW // 2 - tabs_total_w // 2
         ty0 = py + self._u(58)

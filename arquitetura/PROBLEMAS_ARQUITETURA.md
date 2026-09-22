@@ -22072,3 +22072,39 @@ na hora; round-trip `get_anchor_config()`/`set_anchor_config()`; chave
 ausente cai no default sem quebrar; clamp 0-255 nos 2 extremos. Suíte
 completa (`pytest tests/ -q`, 1762 passed, 2 falhas pré-existentes e não
 relacionadas — mesma classe de timing flaky de §191/§195).
+
+---
+
+## 197. Bug real — aba nova do F12 estourou a largura do painel, 1ª e última aba cortadas (21/09/2026)
+
+**Sintoma relatado (com print):** depois da aba "Dia/Noite" (§196), a
+1ª aba ("Nivel") e a última ("Dia/Noite") apareciam cortadas pra fora
+do modal, dos dois lados.
+
+**Causa raiz:** `_draw_debug_modal()` (`client/debug_handlers.py`)
+calculava a largura de cada aba como uma constante FIXA
+(`tab_w = self._u(160)`), nunca dividida pelo número de abas. Com as 4
+abas originais (`4*160 + 3*10 = 670px`) cabia dentro do painel
+(`DEBUG_W = 820px`) por acaso — sobrava até margem. A 5ª aba
+("Dia/Noite") empurrou o total pra `5*160 + 4*10 = 840px`, MAIOR que o
+painel inteiro; como a fileira de abas é centralizada
+(`tx0 = px + PW//2 - tabs_total_w//2`), o excesso "vazou" pros 2 lados
+igualmente — 1ª aba cortada à esquerda, última cortada à direita,
+exatamente o que o print mostrou.
+
+**Fix:** `tab_w` passa a ser CALCULADA a partir de `PW`/número de abas
+(`(PW - 2*margem - (n-1)*gap) // n`), nunca mais um número fixo — se uma
+6ª aba for adicionada no futuro, a largura de cada uma encolhe
+automaticamente pra continuar cabendo, sem precisar lembrar de ajustar
+esta conta na mão de novo. Verificado por script (`PW=820`, 5 abas):
+`tab_w=148px`, fileira total `780px`, margem de 20px sobrando em cada
+ponta — cabe com folga. Rótulo mais longo ("Dia/Noite", 9 caracteres)
+mede 72px de largura renderizado (fonte `FONT_MD=28`) — bem menor que
+os 148px disponíveis por aba, sem risco de o texto também estourar o
+botão.
+
+**Teste**: sem teste automatizado novo (mesmo caso de §195/§196 — UI de
+debug do F12 não tem precedente de teste dedicado no projeto, validada
+manualmente pelo usuário). Verificação por script headless confirmando
+a matemática do layout (`tx0 >= 0` e `tx0 + tabs_total_w <= PW`) antes
+de aplicar.
