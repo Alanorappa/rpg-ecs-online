@@ -94,11 +94,11 @@ class DebugHandlers:
                         return
 
             elif self._debug_tab == "dianoite":
-                for rect, target_fraction in self._debug_dianoite_buttons:
-                    if rect.collidepoint(mx, my):
-                        from ui.day_night_system import jump_to_fraction
-                        jump_to_fraction(target_fraction)
-                        return
+                # Slider (arrastar/clicar pra qualquer ponto do ciclo) é
+                # tratado à parte, em _handle_debug_dianoite_slider_events()
+                # — precisa da lista de eventos INTEIRA pra suportar
+                # MOUSEMOTION com botão preso, não só este dispatch de
+                # clique único.
                 for rect, anchor_id, chan_label, delta, setter in self._debug_dianoite_channel_buttons:
                     if rect.collidepoint(mx, my):
                         self._debug_adjust_daynight_channel(anchor_id, chan_label, delta, setter)
@@ -392,14 +392,64 @@ class DebugHandlers:
             self.screen.blit(tag_s, (r.x + self._u(16), r.centery + self._u(4)))
             self._debug_map_buttons.append((r, map_file))
 
+    def _debug_dianoite_slider_rect(self) -> "pygame.Rect":
+        """Geometria do slider do ciclo dia/noite (22/09/2026) —
+        compartilhada entre desenho e o handler de clique/arraste
+        (mesmo padrão de _trade_qty_modal_rect(): recalculada sempre do
+        zero, nunca lida de um valor cacheado de frame anterior)."""
+        px, py = self._safe_panel_origin(UI.DEBUG_W, UI.DEBUG_H)
+        px, py = px + UI.DEBUG_OFFSET_X, py + UI.DEBUG_OFFSET_Y
+        PW = self._u(UI.DEBUG_W)
+        content_y = py + self._u(114)
+        sl_x = px + self._u(20)
+        sl_y = content_y + self._u(80)
+        sl_w = PW - self._u(40)
+        sl_h = self._u(24)
+        return pygame.Rect(sl_x, sl_y, sl_w, sl_h)
+
+    def _handle_debug_dianoite_slider_events(self, events: list) -> None:
+        """Processa TODOS os eventos do frame pro slider do ciclo (22/09/
+        2026) — precisa da lista completa (não só o elif single-event de
+        _handle_debug_click) pra suportar arrastar (MOUSEMOTION com botão
+        preso), mesmo padrão de _handle_trade_qty_modal_events(). 100%
+        local, nunca manda mensagem de rede — dia/noite não existe no
+        servidor (ver docstring de _draw_debug_tab_dianoite)."""
+        from ui.day_night_system import jump_to_fraction
+        sl_r = self._debug_dianoite_slider_rect()
+
+        def _apply(mouse_x: int) -> None:
+            ratio = max(0.0, min(1.0, (mouse_x - sl_r.x) / sl_r.width))
+            jump_to_fraction(ratio)
+
+        for event in events:
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if sl_r.collidepoint(event.pos):
+                    self._debug_dianoite_dragging = True
+                    _apply(event.pos[0])
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                self._debug_dianoite_dragging = False
+            elif event.type == pygame.MOUSEMOTION and self._debug_dianoite_dragging:
+                # event.buttons[0] confirma que o botão esquerdo AINDA está
+                # preso de verdade — sem isso, soltar o mouse fora da janela
+                # (sem gerar MOUSEBUTTONUP) ou fechar/reabrir o painel no
+                # meio do arraste deixaria _debug_dianoite_dragging preso em
+                # True pro resto da sessão, arrastando sozinho no próximo
+                # MOUSEMOTION mesmo sem clique nenhum.
+                if not event.buttons[0]:
+                    self._debug_dianoite_dragging = False
+                else:
+                    _apply(event.pos[0])
+
     def _draw_debug_tab_dianoite(self, px, content_y, PW, font_md, font_sm, mx, my) -> None:
         """Aba de debug do ciclo dia/noite (21/09/2026, pedido do usuário
-        — confuso sem ter como saber a hora/fase atual nem testar as 4
-        fases sem esperar o relógio real passar). 100% local — não existe
-        conceito de "hora" no servidor (day/night é puramente cosmético,
-        ver ui/day_night_system.py), então os botões abaixo NUNCA mandam
-        mensagem de rede, só chamam jump_to_fraction() no cliente."""
-        from ui.day_night_system import day_night_fraction, current_phase_label
+        — confuso sem ter como saber a hora/fase atual). 100% local — não
+        existe conceito de "hora" no servidor (day/night é puramente
+        cosmético, ver ui/day_night_system.py), então nada aqui manda
+        mensagem de rede, só chama jump_to_fraction()/set_*() no cliente."""
+        from ui.day_night_system import (
+            day_night_fraction, current_phase_label, day_night_color,
+            DAY_NIGHT_CYCLE_S,
+        )
 
         frac = day_night_fraction()
         phase = current_phase_label()
@@ -411,31 +461,53 @@ class DebugHandlers:
             surf = font_sm.render(line, False, (200, 190, 160))
             self.screen.blit(surf, (px + self._u(20), content_y + self._u(8) + i * self._u(22)))
 
-        hint = font_sm.render("Pular para (so local, nao mexe no servidor):", False, (90, 80, 60))
+        hint = font_sm.render(
+            "Arraste para ver qualquer momento do ciclo (so local):", False, (90, 80, 60))
         self.screen.blit(hint, (px + self._u(20), content_y + self._u(58)))
 
-        self._debug_dianoite_buttons = []
-        btn_labels = [
-            ("Meia-noite", 0.00), ("Amanhecer", 0.23),
-            ("Meio-dia",   0.50), ("Entardecer", 0.77),
-        ]
-        btn_w, btn_h, gap = self._u(170), self._u(48), self._u(14)
-        cols = 2
-        bx0 = px + PW // 2 - (cols * btn_w + (cols - 1) * gap) // 2
-        by0 = content_y + self._u(86)
-        for i, (label, target_fraction) in enumerate(btn_labels):
-            bx = bx0 + (i % cols) * (btn_w + gap)
-            by = by0 + (i // cols) * (btn_h + gap)
-            rect = pygame.Rect(bx, by, btn_w, btn_h)
-            hov = rect.collidepoint(mx, my)
-            col_bg, col_bord = ((50, 60, 80), (110, 150, 220)) if hov else ((22, 24, 32), (60, 65, 80))
-            pygame.draw.rect(self.screen, col_bg,   rect, border_radius=4)
-            pygame.draw.rect(self.screen, col_bord, rect, 1, border_radius=4)
-            col_txt = (220, 230, 255) if hov else (190, 190, 200)
-            lbl = font_md.render(label, False, col_txt)
-            self.screen.blit(lbl, (rect.centerx - lbl.get_width() // 2,
-                                   rect.centery - lbl.get_height() // 2))
-            self._debug_dianoite_buttons.append((rect, target_fraction))
+        # --- Slider com trilha em gradiente (22/09/2026, pedido do
+        # usuário — substituiu os 4 botões fixos de pular hora: arrastar
+        # já cobre qualquer ponto do ciclo, e a trilha pintada com a cor
+        # real de cada instante deixa a curva inteira visível de
+        # relance, sem precisar clicar em nada). Trilha composta contra
+        # um cinza neutro só pra o alpha ficar visível (a cor real que
+        # aparece no jogo é sempre composta contra o MUNDO, não contra
+        # cinza — aqui é só pra dar uma prévia de relance, não uma
+        # simulação exata do resultado final).
+        sl_r = self._debug_dianoite_slider_rect()
+        SAMPLES = 60
+        base = (45, 42, 36)
+        seg_w = sl_r.width / SAMPLES
+        for i in range(SAMPLES):
+            seg_frac = i / SAMPLES
+            r, g, b, a = day_night_color(seg_frac * DAY_NIGHT_CYCLE_S)
+            cr = round(r * a / 255 + base[0] * (255 - a) / 255)
+            cg = round(g * a / 255 + base[1] * (255 - a) / 255)
+            cb = round(b * a / 255 + base[2] * (255 - a) / 255)
+            seg_rect = pygame.Rect(sl_r.x + round(i * seg_w), sl_r.y,
+                                   round(seg_w) + 1, sl_r.height)
+            pygame.draw.rect(self.screen, (cr, cg, cb), seg_rect)
+        pygame.draw.rect(self.screen, (140, 120, 90), sl_r, 1, border_radius=3)
+
+        handle_x = sl_r.x + round(frac * sl_r.width)
+        pygame.draw.line(self.screen, (255, 255, 255),
+                         (handle_x, sl_r.y - self._u(4)), (handle_x, sl_r.bottom + self._u(4)),
+                         self._u(3))
+        pygame.draw.circle(self.screen, (255, 255, 255), (handle_x, sl_r.centery), self._u(7))
+        pygame.draw.circle(self.screen, (30, 30, 30), (handle_x, sl_r.centery), self._u(7), 2)
+
+        for label, frac_pos, align in (
+            ("Meia-noite", 0.0, "left"), ("Meio-dia", 0.5, "center"), ("Meia-noite", 1.0, "right"),
+        ):
+            lbl_s = font_sm.render(label, False, (130, 120, 100))
+            lx = sl_r.x + round(frac_pos * sl_r.width)
+            if align == "left":
+                blit_x = lx
+            elif align == "right":
+                blit_x = lx - lbl_s.get_width()
+            else:
+                blit_x = lx - lbl_s.get_width() // 2
+            self.screen.blit(lbl_s, (blit_x, sl_r.bottom + self._u(6)))
 
         # --- Editor de cores-âncora (21/09/2026, pedido do usuário: poder
         # "escurecer mais a noite"/"diminuir o efeito no amanhecer" etc.
@@ -459,7 +531,7 @@ class DebugHandlers:
 
         edit_hint = font_sm.render(
             "Editar cores (salvo ao fechar o jogo):", False, (90, 80, 60))
-        edit_y0 = by0 + 2 * (btn_h + gap) + self._u(14)
+        edit_y0 = sl_r.bottom + self._u(30)
         self.screen.blit(edit_hint, (px + self._u(20), edit_y0))
 
         self._debug_dianoite_channel_buttons = []

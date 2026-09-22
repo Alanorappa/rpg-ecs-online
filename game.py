@@ -354,9 +354,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._show_debug      = False
         self._debug_buttons: list = []      # [(rect, n_levels)] preenchido em _draw_debug_modal
         self._debug_tab: str = "nivel"      # "nivel" | "itens" | "ouro" | "mapa" | "dianoite"
-        self._debug_dianoite_buttons: list = []  # [(rect, target_fraction)]
         self._debug_dianoite_channel_buttons: list = []  # [(rect, anchor_id, chan_label, delta, setter)]
         self._debug_dianoite_reset_r: "pygame.Rect | None" = None
+        # Slider do ciclo (22/09/2026, substituiu os 4 botões de pular
+        # hora fixa — arrastar já cobre qualquer ponto do ciclo, mesmo
+        # padrão visual/de drag do slider de quantidade do trade/loja).
+        self._debug_dianoite_slider_r: "pygame.Rect | None" = None
+        self._debug_dianoite_dragging: bool = False
         # Atributos brutos/ratings de combate no HUD permanente — desligado
         # por padrão (redundante com a aba Estatísticas do Inventário, só
         # poluía o HUD); liga na aba Nivel do debug (F12) quando precisar
@@ -2023,6 +2027,14 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # padrão de ShopSystem._qty_modal/_handle_qty_modal_event.
             if self._trade_qty_modal is not None:
                 self._handle_trade_qty_modal_events(events)
+
+            # Slider do ciclo dia/noite no F12 (22/09/2026, pedido do
+            # usuário) — mesmo motivo do modal de quantidade acima:
+            # precisa da lista de eventos INTEIRA (não só o elif
+            # single-event) pra suportar arrastar (MOUSEMOTION com botão
+            # preso).
+            if self._show_debug and self._debug_tab == "dianoite":
+                self._handle_debug_dianoite_slider_events(events)
 
             # Quest dialog recebe eventos (possivelmente filtrados)
             self._quest_dialog.update(

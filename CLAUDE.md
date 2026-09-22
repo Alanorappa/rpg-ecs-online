@@ -936,7 +936,18 @@ padrão a quebrar, não só os bugs individuais.
   persistidas em `config.json` (`GameEngine._save_config()`/boot) —
   `_build_keyframes()` deriva a transição INTEIRA dessas 3 âncoras
   (nunca hardcoded à parte, senão mudar uma âncora não mudaria a
-  transição de verdade). Ver PROBLEMAS_ARQUITETURA.md §196.
+  transição de verdade). Ver PROBLEMAS_ARQUITETURA.md §196. **Ver a
+  curva de cor do ciclo inteiro e arrastar pra qualquer momento** →
+  slider com trilha em gradiente na mesma aba
+  (`client/debug_handlers.py::_debug_dianoite_slider_rect()`/
+  `_handle_debug_dianoite_slider_events()`, substituiu os 4 botões fixos
+  de §195) — mesmo padrão de drag do slider de quantidade do trade/loja
+  (`_trade_qty_modal_rect()`), geometria SEMPRE recalculada (nunca
+  cacheada de um frame de render anterior). `MOUSEMOTION` confirma
+  `event.buttons[0]` antes de aplicar o arraste — sem isso, soltar o
+  mouse fora da janela ou fechar o painel no meio do arraste deixaria o
+  estado de "arrastando" travado pro resto da sessão. Ver
+  PROBLEMAS_ARQUITETURA.md §198.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

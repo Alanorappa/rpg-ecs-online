@@ -22108,3 +22108,60 @@ debug do F12 não tem precedente de teste dedicado no projeto, validada
 manualmente pelo usuário). Verificação por script headless confirmando
 a matemática do layout (`tx0 >= 0` e `tx0 + tabs_total_w <= PW`) antes
 de aplicar.
+
+---
+
+## 198. Feature — slider com trilha em gradiente no F12, substitui os 4 botões fixos de pular hora (22/09/2026)
+
+Continuação de §194-197, mesmo pedido do usuário: poder ver a curva de
+cor do ciclo inteiro (não só 4 pontos fixos) e arrastar pra qualquer
+momento exato. Decisão fechada com o usuário antes de codar
+(AskUserQuestion): os 4 botões fixos (Meia-noite/Amanhecer/Meio-dia/
+Entardecer) saem, substituídos pelo slider — arrastar já cobre esses 4
+pontos e qualquer outro, sem redundância nem apertar mais o painel
+(que acabou de ter um bug de estouro de largura corrigido, §197).
+
+**Trilha em gradiente, não barra genérica:** em vez de uma barra cinza
+com uma bolinha, a TRILHA do slider é pintada amostrando
+`day_night_color()` em 60 pontos ao longo do ciclo — o usuário vê a
+curva inteira (noite→amanhecer→dia→entardecer→noite) de relance, sem
+precisar arrastar nada. Cada amostra é composta contra um cinza neutro
+fixo `(45,42,36)` só pra o canal alpha (que controla "quão visível" é
+o tingimento) ficar perceptível na prévia — é uma aproximação visual,
+não uma simulação exata do resultado final em jogo (que compõe contra
+o MUNDO renderizado, não contra cinza).
+
+**Drag reaproveitando um padrão já existente:** mesma técnica do slider
+de quantidade do trade/loja (`client/trade_handlers.py::
+_handle_trade_qty_modal_events`, já em produção) — clique/arraste
+calcula `ratio = (mouse_x - slider_x) / slider_width` e aplica. Só que
+aqui o "aplicar" é `jump_to_fraction(ratio)` (§195) em vez de mutar uma
+quantidade local — mesmo 100%-local-sem-rede de sempre (dia/noite não
+existe no servidor).
+
+**Robustez adicionada que o precedente (qty modal) não precisava:** o
+qty modal é um dict recriado do zero toda vez que abre
+(`dragging: False` sempre fresco); o slider do F12 usa um atributo
+PERSISTENTE de `GameEngine` (`_debug_dianoite_dragging`), que sobrevive
+fechar/reabrir o painel. Sem cuidado extra, soltar o botão do mouse
+FORA da janela (sem gerar `MOUSEBUTTONUP`) ou fechar o painel no meio
+de um arraste deixaria essa flag travada em `True` pro resto da sessão
+— o próximo `MOUSEMOTION` qualquer (mesmo sem clique nenhum) recomeçaria
+a arrastar sozinho. Fix: o branch de `MOUSEMOTION` confirma
+`event.buttons[0]` (pygame informa quais botões estão fisicamente
+presos em CADA evento de movimento) antes de aplicar — se o botão não
+está mais preso de verdade, a flag se autocorrige na hora, mesmo sem
+nenhum `MOUSEBUTTONUP` ter chegado.
+
+**Geometria compartilhada, nunca cacheada:** `_debug_dianoite_slider_rect()`
+é chamada tanto pelo desenho quanto pelo handler de clique/arraste,
+recalculada do zero em cada chamada (mesmo padrão de
+`_trade_qty_modal_rect()`) — nunca lida de um `pygame.Rect` guardado de
+um frame de render anterior, que arriscaria ficar 1 frame desatualizado
+dependendo da ordem exata evento→render do loop principal.
+
+**Teste**: sem teste automatizado novo pro slider em si (mesmo caso de
+§195-197 — UI de debug do F12 não tem precedente de teste dedicado,
+validado manualmente pelo usuário; a lógica de fundo que o slider aciona,
+`jump_to_fraction()`, já tinha teste próprio desde §195, intocado aqui).
+Suíte completa (`pytest tests/ -q`) rodada sem regressão.
