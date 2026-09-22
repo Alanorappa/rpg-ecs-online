@@ -4792,6 +4792,64 @@ def _make_day_night_world(instance_active: bool = False):
     return world, player, sys
 
 
+def test_day_night_anchors_editaveis_afetam_a_cor():
+    """Editor de âncoras do F12 (21/09/2026) — mudar a âncora da noite
+    muda o que day_night_color() devolve na meia-noite, sem precisar
+    mexer em _build_keyframes()."""
+    from ui.day_night_system import (
+        set_night, day_night_color, reset_anchors_to_default, DAY_NIGHT_CYCLE_S,
+    )
+    try:
+        set_night(color=(1, 2, 3), alpha=200)
+        assert day_night_color(0.0) == (1, 2, 3, 200)
+    finally:
+        reset_anchors_to_default()
+
+
+def test_day_night_anchor_config_round_trip():
+    from ui.day_night_system import (
+        get_anchor_config, set_anchor_config, set_dawn, reset_anchors_to_default,
+    )
+    try:
+        set_dawn(color=(9, 8, 7), alpha=33)
+        cfg = get_anchor_config()
+        assert cfg["dawn_color"] == [9, 8, 7]
+        assert cfg["dawn_alpha"] == 33
+        reset_anchors_to_default()
+        assert get_anchor_config()["dawn_color"] != [9, 8, 7]
+        set_anchor_config(cfg)   # aplica de volta a config "salva"
+        assert get_anchor_config()["dawn_color"] == [9, 8, 7]
+    finally:
+        reset_anchors_to_default()
+
+
+def test_day_night_anchor_config_chave_ausente_usa_default():
+    """1ª vez / save antigo sem a chave "daynight" — não deve quebrar,
+    mantém os defaults do módulo."""
+    from ui.day_night_system import (
+        set_anchor_config, get_anchor_config, DEFAULT_NIGHT_COLOR,
+        DEFAULT_NIGHT_ALPHA, reset_anchors_to_default,
+    )
+    try:
+        set_anchor_config({})
+        cfg = get_anchor_config()
+        assert cfg["night_color"] == list(DEFAULT_NIGHT_COLOR)
+        assert cfg["night_alpha"] == DEFAULT_NIGHT_ALPHA
+    finally:
+        reset_anchors_to_default()
+
+
+def test_day_night_anchor_clampa_0_255():
+    from ui.day_night_system import set_dusk, get_anchor_config, reset_anchors_to_default
+    try:
+        set_dusk(color=(300, -50, 128), alpha=999)
+        cfg = get_anchor_config()
+        assert cfg["dusk_color"] == [255, 0, 128]
+        assert cfg["dusk_alpha"] == 255
+    finally:
+        reset_anchors_to_default()
+
+
 def test_day_night_render_pula_dentro_de_instancia():
     """BG/Arena ficam num horário fixo — decisão do usuário 21/09/2026."""
     import ui.day_night_system as dns

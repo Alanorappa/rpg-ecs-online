@@ -33,33 +33,119 @@ from ui.ui_components import InstanceInventoryUIState
 # 60 minutos reais = 1 dia completo (pedido do usuário, 21/09/2026).
 DAY_NIGHT_CYCLE_S = 60.0 * 60.0
 
-# Keyframes (fração do ciclo 0.0-1.0, RGB do tingimento, alpha 0-255) —
-# interpolados linearmente entre os dois mais próximos. alpha=0 = sem
-# tingimento nenhum (dia pleno). Ordem crescente de fração, sempre
-# terminando em 1.00 com o MESMO valor de 0.00 (loop sem costura).
+# ── Cores-âncora editáveis (F12 → aba Dia/Noite, 21/09/2026, pedido do
+# usuário) ────────────────────────────────────────────────────────────
+# Só estes 3 pontos são configuráveis em tempo real — os keyframes da
+# transição inteira são DERIVADOS deles em _build_keyframes() (nunca
+# hardcoded à parte), então mudar uma âncora já ajusta a transição
+# inteira automaticamente. Persistidos em config.json (ver
+# game.py::_save_config()/_load_day_night_config()) — client/
+# debug_handlers.py::_draw_debug_tab_dianoite() é quem edita.
 #
-# 5 pontos por transição (não só noite→dia direto) — pedido do usuário
-# 21/09/2026: interpolar RGB em linha reta direto entre o azul da noite
-# (20,25,60) e o laranja do dia (255,140,70) passa por um acastanhado/
-# acinzentado dessaturado no meio do caminho (ex.: (137,82,65) — nem
-# azul nem laranja, um "cinza sujo"). Cadeia
-# noite→violeta→rosa/aurora→dourado→dia evita esse vale de saturação:
-# cada segmento consecutivo já é um tom vizinho no círculo de cores
-# (violeta puxa pra rosa, rosa pra dourado), nunca 2 extremos opostos.
-_KEYFRAMES: list[tuple[float, tuple[int, int, int], int]] = [
-    (0.00, ( 20,  25,  60), 150),   # meia-noite
-    (0.15, ( 20,  25,  60), 150),   # madrugada (platô)
-    (0.19, ( 55,  40,  90), 140),   # início do amanhecer — violeta
-    (0.23, (190, 100, 130),  95),   # amanhecer pleno — rosa/aurora
-    (0.27, (255, 175, 110),  45),   # fim do amanhecer — dourado suave
-    (0.32, (  0,   0,   0),   0),   # manhã — sem tingimento
-    (0.68, (  0,   0,   0),   0),   # tarde — sem tingimento
-    (0.73, (255, 160, 100),  45),   # início do entardecer — dourado
-    (0.77, (220,  90, 110),  95),   # entardecer pleno — rosa/pôr do sol
-    (0.81, ( 65,  45,  90), 140),   # fim do entardecer — violeta
-    (0.85, ( 20,  25,  60), 150),   # anoitecer -> noite
-    (1.00, ( 20,  25,  60), 150),   # volta pra meia-noite
-]
+# Por que só uma âncora por transição (não 5 pontos como na 1ª versão)
+# resolve o problema do acinzentado sozinho: interpolar RGB em linha
+# reta direto do azul da noite (20,25,60) pro laranja do dia (255,140,70)
+# passava por um acastanhado dessaturado no meio (ex.: (137,82,65) — bug
+# real, ver PROBLEMAS_ARQUITETURA.md §195). A âncora de amanhecer/
+# entardecer já nasce como um tom ROSA/AURORA (não laranja puro) —
+# vizinho o bastante do azul da noite no círculo de cores pra não
+# desaturar no meio do caminho. Editar a âncora pra uma cor muito
+# diferente (ex.: um amarelo puro) pode reintroduzir alguma
+# dessaturação passageira — é o preço de dar controle manual direto ao
+# usuário; ele vê o resultado ao vivo (F12) e ajusta se não gostar.
+DEFAULT_NIGHT_COLOR: tuple[int, int, int] = (20, 25, 60)
+DEFAULT_NIGHT_ALPHA: int = 150
+DEFAULT_DAWN_COLOR:  tuple[int, int, int] = (190, 100, 130)
+DEFAULT_DAWN_ALPHA:  int = 95
+DEFAULT_DUSK_COLOR:  tuple[int, int, int] = (220, 90, 110)
+DEFAULT_DUSK_ALPHA:  int = 95
+
+_night_color: list[int] = list(DEFAULT_NIGHT_COLOR)
+_night_alpha: int = DEFAULT_NIGHT_ALPHA
+_dawn_color:  list[int] = list(DEFAULT_DAWN_COLOR)
+_dawn_alpha:  int = DEFAULT_DAWN_ALPHA
+_dusk_color:  list[int] = list(DEFAULT_DUSK_COLOR)
+_dusk_alpha:  int = DEFAULT_DUSK_ALPHA
+
+
+def _clamp255(v: int) -> int:
+    return max(0, min(255, int(v)))
+
+
+def set_night(color: tuple[int, int, int] | None = None, alpha: int | None = None) -> None:
+    global _night_color, _night_alpha
+    if color is not None:
+        _night_color = [_clamp255(c) for c in color]
+    if alpha is not None:
+        _night_alpha = _clamp255(alpha)
+
+
+def set_dawn(color: tuple[int, int, int] | None = None, alpha: int | None = None) -> None:
+    global _dawn_color, _dawn_alpha
+    if color is not None:
+        _dawn_color = [_clamp255(c) for c in color]
+    if alpha is not None:
+        _dawn_alpha = _clamp255(alpha)
+
+
+def set_dusk(color: tuple[int, int, int] | None = None, alpha: int | None = None) -> None:
+    global _dusk_color, _dusk_alpha
+    if color is not None:
+        _dusk_color = [_clamp255(c) for c in color]
+    if alpha is not None:
+        _dusk_alpha = _clamp255(alpha)
+
+
+def reset_anchors_to_default() -> None:
+    set_night(DEFAULT_NIGHT_COLOR, DEFAULT_NIGHT_ALPHA)
+    set_dawn(DEFAULT_DAWN_COLOR, DEFAULT_DAWN_ALPHA)
+    set_dusk(DEFAULT_DUSK_COLOR, DEFAULT_DUSK_ALPHA)
+
+
+def get_anchor_config() -> dict:
+    """Snapshot pra persistir em config.json (game.py::_save_config())."""
+    return {
+        "night_color": list(_night_color), "night_alpha": _night_alpha,
+        "dawn_color":  list(_dawn_color),  "dawn_alpha":  _dawn_alpha,
+        "dusk_color":  list(_dusk_color),  "dusk_alpha":  _dusk_alpha,
+    }
+
+
+def set_anchor_config(cfg: dict) -> None:
+    """Aplica config salva (game.py, no boot) — chave ausente mantém o
+    default do módulo (save antigo sem essas chaves, ou 1ª vez)."""
+    set_night(cfg.get("night_color", DEFAULT_NIGHT_COLOR), cfg.get("night_alpha", DEFAULT_NIGHT_ALPHA))
+    set_dawn(cfg.get("dawn_color", DEFAULT_DAWN_COLOR), cfg.get("dawn_alpha", DEFAULT_DAWN_ALPHA))
+    set_dusk(cfg.get("dusk_color", DEFAULT_DUSK_COLOR), cfg.get("dusk_alpha", DEFAULT_DUSK_ALPHA))
+
+
+def _build_keyframes() -> list[tuple[float, tuple[int, int, int], int]]:
+    """Keyframes (fração 0.0-1.0, RGB, alpha 0-255) derivados das 3
+    âncoras atuais — recalculado a cada chamada de `day_night_color()`
+    (8 tuplas fixas, custo desprezível). Ordem crescente de fração,
+    terminando em 1.00 com o MESMO valor de 0.00 (loop sem costura)."""
+    night = (tuple(_night_color), _night_alpha)
+    dawn  = (tuple(_dawn_color),  _dawn_alpha)
+    dusk  = (tuple(_dusk_color),  _dusk_alpha)
+    # "Limpo" (alpha=0) herda a COR da âncora vizinha em vez de (0,0,0) —
+    # sem isso, o alpha caindo pra 0 e o RGB caindo pra preto ao mesmo
+    # tempo faziam a cor "escurecer pro preto" bem no fim do fade em vez
+    # de simplesmente sumir mantendo o tom (achado ao escrever o teste de
+    # regressão — a diferença só é visível em alpha bem baixo, mas ainda
+    # contava como "quase cinza" pro teste, e é mais correto de qualquer
+    # forma: sumir de vista não deveria mudar a matiz do que está sumindo).
+    clear_pos_amanhecer = (tuple(_dawn_color), 0)
+    clear_pre_entardecer = (tuple(_dusk_color), 0)
+    return [
+        (0.00, *night),                  # meia-noite
+        (0.15, *night),                  # madrugada (platô)
+        (0.23, *dawn),                   # amanhecer pleno
+        (0.32, *clear_pos_amanhecer),    # manhã — sem tingimento
+        (0.68, *clear_pre_entardecer),   # tarde — sem tingimento
+        (0.77, *dusk),                   # entardecer pleno
+        (0.85, *night),                  # anoitecer -> noite
+        (1.00, *night),                  # volta pra meia-noite
+    ]
 
 # Rótulo simples por faixa de fração — só pra exibição (F12/debug), nunca
 # consultado pelo overlay/luz (que só leem day_night_color()). Faixas
@@ -118,11 +204,14 @@ def current_phase_label(now: float | None = None) -> str:
 
 
 def day_night_color(now: float | None = None) -> tuple[int, int, int, int]:
-    """RGBA do tingimento atual — ver docstring do módulo."""
+    """RGBA do tingimento atual — ver docstring do módulo. Keyframes
+    recalculados a cada chamada (`_build_keyframes()`) pra sempre
+    refletir as âncoras atuais, inclusive editadas ao vivo pelo F12."""
     frac = day_night_fraction(now)
-    for i in range(len(_KEYFRAMES) - 1):
-        f0, rgb0, a0 = _KEYFRAMES[i]
-        f1, rgb1, a1 = _KEYFRAMES[i + 1]
+    keyframes = _build_keyframes()
+    for i in range(len(keyframes) - 1):
+        f0, rgb0, a0 = keyframes[i]
+        f1, rgb1, a1 = keyframes[i + 1]
         if f0 <= frac <= f1:
             t = 0.0 if f1 == f0 else (frac - f0) / (f1 - f0)
             r = round(rgb0[0] + (rgb1[0] - rgb0[0]) * t)
@@ -130,7 +219,7 @@ def day_night_color(now: float | None = None) -> tuple[int, int, int, int]:
             b = round(rgb0[2] + (rgb1[2] - rgb0[2]) * t)
             a = round(a0 + (a1 - a0) * t)
             return (r, g, b, a)
-    last = _KEYFRAMES[-1]
+    last = keyframes[-1]
     return (last[1][0], last[1][1], last[1][2], last[2])
 
 

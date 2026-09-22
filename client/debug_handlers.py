@@ -99,6 +99,15 @@ class DebugHandlers:
                         from ui.day_night_system import jump_to_fraction
                         jump_to_fraction(target_fraction)
                         return
+                for rect, anchor_id, chan_label, delta, setter in self._debug_dianoite_channel_buttons:
+                    if rect.collidepoint(mx, my):
+                        self._debug_adjust_daynight_channel(anchor_id, chan_label, delta, setter)
+                        return
+                if self._debug_dianoite_reset_r and self._debug_dianoite_reset_r.collidepoint(mx, my):
+                    from ui.day_night_system import reset_anchors_to_default
+                    reset_anchors_to_default()
+                    self._save_config()
+                    return
 
         # Aba de itens: clique direito = adicionar ao inventário
         elif event.button == 3 and self._debug_tab == "itens":
@@ -126,6 +135,25 @@ class DebugHandlers:
         from shared.messages import MsgType
         self._net.send(MsgType.GM_ADD_ITEM, {"item_name": item_name})
         LOG.add(f"[DEBUG] Pedido de '{item_name}' enviado ao servidor.", (120, 200, 255))
+
+    def _debug_adjust_daynight_channel(self, anchor_id: str, chan_label: str,
+                                        delta: int, setter) -> None:
+        """Aplica +-delta num canal (R/G/B/Alpha) de uma âncora de dia/
+        noite e persiste na hora (21/09/2026, pedido do usuário — "salvar
+        permanentemente"). 100% local, sem mensagem de rede (ver
+        docstring de _draw_debug_tab_dianoite)."""
+        from ui.day_night_system import get_anchor_config
+        cfg = get_anchor_config()
+        color = list(cfg[f"{anchor_id}_color"])
+        alpha = cfg[f"{anchor_id}_alpha"]
+        idx = {"R": 0, "G": 1, "B": 2}.get(chan_label)
+        if idx is not None:
+            color[idx] = max(0, min(255, color[idx] + delta))
+            setter(color=color)
+        else:  # "A"
+            alpha = max(0, min(255, alpha + delta))
+            setter(alpha=alpha)
+        self._save_config()
 
     def _debug_open_map(self, map_file: str) -> None:
         """Carrega map_file no overlay e abre para o jogador clicar o destino de teleporte."""
@@ -399,6 +427,83 @@ class DebugHandlers:
             self.screen.blit(lbl, (rect.centerx - lbl.get_width() // 2,
                                    rect.centery - lbl.get_height() // 2))
             self._debug_dianoite_buttons.append((rect, target_fraction))
+
+        # --- Editor de cores-âncora (21/09/2026, pedido do usuário: poder
+        # "escurecer mais a noite"/"diminuir o efeito no amanhecer" etc.
+        # em tempo real, direto no F12). Só as 3 âncoras (Noite/Amanhecer/
+        # Entardecer) são editáveis — os pontos de transição inteiros são
+        # DERIVADOS delas (ui/day_night_system.py::_build_keyframes()),
+        # nunca mexidos aqui separadamente. Persistido em config.json —
+        # ver GameEngine._save_config()/_load_day_night_config(). 100%
+        # local, nunca manda mensagem de rede (mesma razão dos botões de
+        # pular hora acima — dia/noite não existe no servidor).
+        from ui.day_night_system import (
+            get_anchor_config, set_night, set_dawn, set_dusk,
+            reset_anchors_to_default,
+        )
+        cfg = get_anchor_config()
+        anchors = [
+            ("Noite",      "night", cfg["night_color"], cfg["night_alpha"], set_night),
+            ("Amanhecer",  "dawn",  cfg["dawn_color"],  cfg["dawn_alpha"],  set_dawn),
+            ("Entardecer", "dusk",  cfg["dusk_color"],  cfg["dusk_alpha"],  set_dusk),
+        ]
+
+        edit_hint = font_sm.render(
+            "Editar cores (salvo ao fechar o jogo):", False, (90, 80, 60))
+        edit_y0 = by0 + 2 * (btn_h + gap) + self._u(14)
+        self.screen.blit(edit_hint, (px + self._u(20), edit_y0))
+
+        self._debug_dianoite_channel_buttons = []
+        name_w   = self._u(96)
+        val_w    = self._u(34)
+        step_w   = self._u(22)
+        row_h    = self._u(30)
+        swatch_w = self._u(34)
+        row_x0   = px + self._u(20)
+        row_y0   = edit_y0 + self._u(26)
+
+        for a_idx, (anchor_label, anchor_id, color, alpha, setter) in enumerate(anchors):
+            ry = row_y0 + a_idx * (row_h + self._u(12))
+            name_s = font_sm.render(anchor_label, False, (200, 190, 160))
+            self.screen.blit(name_s, (row_x0, ry + row_h // 2 - name_s.get_height() // 2))
+
+            channels = [("R", color[0]), ("G", color[1]), ("B", color[2]), ("A", alpha)]
+            cx = row_x0 + name_w
+            for chan_label, value in channels:
+                lbl_s = font_sm.render(chan_label, False, (150, 145, 135))
+                self.screen.blit(lbl_s, (cx, ry + row_h // 2 - lbl_s.get_height() // 2))
+                minus_r = pygame.Rect(cx + self._u(14), ry, step_w, row_h)
+                val_r   = pygame.Rect(minus_r.right + self._u(2), ry, val_w, row_h)
+                plus_r  = pygame.Rect(val_r.right + self._u(2), ry, step_w, row_h)
+
+                for rect, delta, sign in ((minus_r, -10, "-"), (plus_r, 10, "+")):
+                    hov = rect.collidepoint(mx, my)
+                    pygame.draw.rect(self.screen, (60, 60, 75) if hov else (30, 30, 38),
+                                     rect, border_radius=3)
+                    pygame.draw.rect(self.screen, (100, 100, 130), rect, 1, border_radius=3)
+                    s_s = font_sm.render(sign, False, (210, 210, 230))
+                    self.screen.blit(s_s, (rect.centerx - s_s.get_width() // 2,
+                                           rect.centery - s_s.get_height() // 2))
+                    self._debug_dianoite_channel_buttons.append((rect, anchor_id, chan_label, delta, setter))
+
+                val_s = font_sm.render(str(value), False, (220, 220, 220))
+                self.screen.blit(val_s, (val_r.centerx - val_s.get_width() // 2,
+                                         val_r.centery - val_s.get_height() // 2))
+                cx = plus_r.right + self._u(10)
+
+            swatch_r = pygame.Rect(cx + self._u(6), ry, swatch_w, row_h)
+            pygame.draw.rect(self.screen, tuple(color), swatch_r, border_radius=3)
+            pygame.draw.rect(self.screen, (120, 120, 120), swatch_r, 1, border_radius=3)
+
+        reset_y = row_y0 + len(anchors) * (row_h + self._u(12)) + self._u(6)
+        self._debug_dianoite_reset_r = pygame.Rect(row_x0, reset_y, self._u(180), self._u(36))
+        hov_reset = self._debug_dianoite_reset_r.collidepoint(mx, my)
+        pygame.draw.rect(self.screen, (90, 40, 40) if hov_reset else (55, 25, 25),
+                         self._debug_dianoite_reset_r, border_radius=4)
+        pygame.draw.rect(self.screen, (150, 70, 70), self._debug_dianoite_reset_r, 1, border_radius=4)
+        reset_s = font_sm.render("Resetar padrao", False, (255, 210, 210))
+        self.screen.blit(reset_s, (self._debug_dianoite_reset_r.centerx - reset_s.get_width() // 2,
+                                   self._debug_dianoite_reset_r.centery - reset_s.get_height() // 2))
 
     def _draw_debug_tab_itens(self, px, content_y, PW, font_md, font_sm, mx, my) -> None:
         _RARITY_COLORS = {

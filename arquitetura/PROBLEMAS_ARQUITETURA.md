@@ -21998,3 +21998,77 @@ o bug relatado, não só um cenário sintético. Mais 2 testes novos:
 `current_phase_label` bate com as faixas esperadas. Suíte completa
 (`pytest tests/ -q`, 1759 passed, 1 falha pré-existente e não
 relacionada — mesma classe de timing flaky já documentada em §191/§194).
+
+---
+
+## 196. Feature — cores-âncora do dia/noite editáveis ao vivo no F12, persistidas em config.json (21/09/2026)
+
+Continuação de §194/§195, mesmo pedido do usuário: poder "escurecer
+mais a noite"/"diminuir o efeito no amanhecer" sem editar código,
+testando o resultado na hora. 3 decisões fechadas com o usuário antes de
+codar (AskUserQuestion): (1) só as 3 cores-âncora (Noite/Amanhecer/
+Entardecer) são editáveis, não os 12 pontos de transição da v1; (2)
+edições persistem em `config.json` (sobrevivem reiniciar); (3) duração
+do ciclo (60min) NÃO fica editável nesta rodada.
+
+**Refatoração necessária pra "só 3 âncoras" funcionar de verdade:** a
+tabela de 12 keyframes fixos de §195 tinha pontos INTERMEDIÁRIOS
+hardcoded (violeta pré-amanhecer, dourado pós-amanhecer, etc.) que NÃO
+eram deriváveis das 3 âncoras (eram tons escolhidos à mão,
+independentes). Se a UI só deixasse editar 3 pontos e os outros 9
+continuassem fixos, mudar a âncora do amanhecer não mudaria a
+transição toda — a "violeta" fixa ficaria destoante de um amanhecer
+escolhido pra outra cor. Fix: `_build_keyframes()` (função, não mais
+lista estática) gera os 8 pontos necessários TODOS a partir das 3
+âncoras (`night`/`dawn`/`dusk`, cada uma com cor RGB + alpha) — a
+transição inteira (não só o pico) reage a uma mudança de âncora.
+Reduzido de 12 pra 8 pontos (removidos os hard-coded violeta/dourado
+intermediários) — verificado que a versão simplificada AINDA evita o
+acinzentado de §195 com os valores-padrão (amostrado por script:
+nenhum ponto da transição cai abaixo do limiar de saturação do teste de
+regressão).
+
+**Achado ao escrever o teste de regressão pra versão simplificada:**
+o ponto "sem tingimento" (fim da transição de amanhecer/início da de
+entardecer) usava `(0,0,0)` como RGB com alpha caindo pra 0 — como
+RGB E alpha caem JUNTOS até esse ponto, a cor visitava um tom
+"escurecendo pro preto" logo antes de desaparecer (não é o mesmo bug
+de §195 — não é um acinzentado de transição opondo 2 matizes, é um
+apagão pro preto no finalzinho do fade). Corrigido usando a cor da
+PRÓPRIA âncora vizinha (amanhecer/entardecer) no ponto "limpo", só com
+alpha=0 — sumir de vista não deveria mudar a matiz do que está
+sumindo. Sem efeito visual real (alpha já baixíssimo nesse trecho), mas
+o teste de regressão pegou porque a diferença R/G/B ainda contava.
+
+**API nova (`ui/day_night_system.py`):** `set_night`/`set_dawn`/
+`set_dusk(color=None, alpha=None)` (clampam 0-255, mutam só o que for
+passado), `get_anchor_config()`/`set_anchor_config(dict)` (snapshot pra
+salvar/carregar), `reset_anchors_to_default()`. Estado em globais de
+módulo (`_night_color`/`_dawn_color`/`_dusk_color` + alphas) — mesmo
+padrão de estado plugável já usado (`_debug_time_offset_s` de §195,
+`_svc`/`_lethal_interceptor` em `engine/core_systems.py`).
+
+**UI (`client/debug_handlers.py::_draw_debug_tab_dianoite`):** 3 linhas
+(Noite/Amanhecer/Entardecer), cada uma com 4 canais (R/G/B/Transparência)
+e botões `-10`/`+10` por canal (mesmo padrão de "denominação grosseira"
+já usado pelos botões de ouro — não precisa de precisão de 1 em 1 pra
+testar atmosfera) + swatch de cor ao lado. Botão "Resetar padrão"
+restaura os 3 defaults do módulo. Clique em qualquer botão chama
+`GameEngine._debug_adjust_daynight_channel()` (novo, `client/
+debug_handlers.py`), que aplica o delta E already persiste
+(`self._save_config()`) — sem esperar um autosave periódico.
+
+**Persistência:** `GameEngine._save_config()` ganhou a chave
+`"daynight"` (`get_anchor_config()`); no boot, `set_anchor_config(
+_cfg_data.get("daynight", {}))` — chave ausente (save antigo, 1ª vez)
+mantém os defaults do módulo, sem quebrar nada. **100% local em todo o
+fluxo** — nenhuma mensagem de rede nova, dia/noite não existe no
+servidor (mesma razão de `jump_to_fraction` em §195), diferente de
+`_debug_levelup`/`_debug_add_gold`/`_debug_add_item` (que SÃO
+server-autoritativos via GM_*).
+
+**Teste**: 4 casos novos — âncora editada reflete em `day_night_color()`
+na hora; round-trip `get_anchor_config()`/`set_anchor_config()`; chave
+ausente cai no default sem quebrar; clamp 0-255 nos 2 extremos. Suíte
+completa (`pytest tests/ -q`, 1762 passed, 2 falhas pré-existentes e não
+relacionadas — mesma classe de timing flaky de §191/§195).

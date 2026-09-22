@@ -930,7 +930,13 @@ padrão a quebrar, não só os bugs individuais.
   — 100% local, NUNCA manda mensagem de rede (diferente de
   `_debug_levelup`/`_debug_add_gold`/`_debug_add_item`, que são
   server-autoritativos via GM_*) — dia/noite não existe no servidor. Ver
-  PROBLEMAS_ARQUITETURA.md §195.
+  PROBLEMAS_ARQUITETURA.md §195. **Cores-âncora (Noite/Amanhecer/
+  Entardecer) são editáveis ao vivo na mesma aba** (`set_night`/
+  `set_dawn`/`set_dusk`, botões -10/+10 por canal R/G/B/Alpha),
+  persistidas em `config.json` (`GameEngine._save_config()`/boot) —
+  `_build_keyframes()` deriva a transição INTEIRA dessas 3 âncoras
+  (nunca hardcoded à parte, senão mudar uma âncora não mudaria a
+  transição de verdade). Ver PROBLEMAS_ARQUITETURA.md §196.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

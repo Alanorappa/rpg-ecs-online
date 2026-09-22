@@ -288,6 +288,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         DEBUG_MODE     = _cfg_data.get("debug_mode",     False)
         PROFILE_FRAMES = _cfg_data.get("profile_frames", False)
 
+        # Cores-âncora do ciclo dia/noite editadas no F12 (21/09/2026,
+        # pedido do usuário — "salvar permanentemente"). Chave ausente
+        # (save antigo, ou 1ª vez) mantém o default do próprio módulo.
+        from ui.day_night_system import set_anchor_config
+        set_anchor_config(_cfg_data.get("daynight", {}))
+
         # Modo de janela (Fase G, 23/07 — reformulado 24/07/2026 após crash
         # real, ver _apply_window_mode()/comentário lá). "maximized" era o
         # padrão antigo (chamava pygame.Window.maximize() nativo) — REMOVIDO:
@@ -349,6 +355,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._debug_buttons: list = []      # [(rect, n_levels)] preenchido em _draw_debug_modal
         self._debug_tab: str = "nivel"      # "nivel" | "itens" | "ouro" | "mapa" | "dianoite"
         self._debug_dianoite_buttons: list = []  # [(rect, target_fraction)]
+        self._debug_dianoite_channel_buttons: list = []  # [(rect, anchor_id, chan_label, delta, setter)]
+        self._debug_dianoite_reset_r: "pygame.Rect | None" = None
         # Atributos brutos/ratings de combate no HUD permanente — desligado
         # por padrão (redundante com a aba Estatísticas do Inventário, só
         # poluía o HUD); liga na aba Nivel do debug (F12) quando precisar
@@ -3001,6 +3009,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
     def _save_config(self) -> None:
         """Persiste configurações em config.json. Hotbar/consumable são salvos por personagem."""
         import config as _cfg
+        from ui.day_night_system import get_anchor_config
         data = {
             "scale":          self._scale,
             "music_volume":   SOUNDS.music_volume,
@@ -3011,6 +3020,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             "profile_frames": PROFILE_FRAMES,
             "menu_keybinds":  self._menu_keys,
             "window_mode":    self._window_mode_pref,
+            "daynight":       get_anchor_config(),
         }
         # Dentro da BG, PlayerSkills/ConsumableBar guardam o estado
         # TEMPORÁRIO da instância (04/08/2026, bug real relatado pelo
