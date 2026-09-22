@@ -22165,3 +22165,84 @@ dependendo da ordem exata evento→render do loop principal.
 validado manualmente pelo usuário; a lógica de fundo que o slider aciona,
 `jump_to_fraction()`, já tinha teste próprio desde §195, intocado aqui).
 Suíte completa (`pytest tests/ -q`) rodada sem regressão.
+
+---
+
+## 199. Bug real — suíte completa chegava a ~11,2GB de memória, derrubando o Postgres/qualquer coisa rodando na máquina (22/09/2026)
+
+**Sintoma relatado:** usuário rodou a suíte completa (fora desta
+conversa, num terminal próprio) e viu a aba "bugar" — o container do
+Postgres tinha caído no meio da rodada. Não sabia dizer se era o Docker
+não estar aberto que causava o problema, ou o contrário.
+
+**Medido, não suposto** (regra do projeto: observabilidade antes de
+otimização) — rodada real da suíte completa (`pytest tests/ -q`) com
+amostragem externa de memória do processo Python a cada 5s
+(`Get-Process` via PowerShell, fora do processo medido — não precisa de
+nenhuma dependência nova no projeto):
+
+| | Sem correção | Com `gc.collect()` por teste |
+|---|---|---|
+| Pico de memória do processo | **11.186 MB (~11,2GB)** | **300-309 MB** |
+| RAM livre mínima da máquina (16GB total) | **260-535 MB** | **7,7+ GB** |
+| Tempo total da suíte | 311-357s (variável, achado abaixo) | 357-364s |
+| Resultado dos testes | Mesmos 1763 passed/1 failed (flaky pré-existente) | Idêntico |
+
+Com só 260-535MB livres numa máquina de 16GB (Docker Desktop precisa de
+memória pra manter sua própria VM — WSL2/Hyper-V — rodando o
+Postgres), QUALQUER coisa extra rodando ao mesmo tempo (o próprio Docker
+Desktop reajustando memória, outro programa, até uma 2ª tentativa de
+rodar a suíte em paralelo) é candidata a ser derrubada por falta de
+memória. Numa tentativa anterior nesta mesma sessão, o container
+realmente morreu (`docker ps -a` mostrou `Exited (255)`) bem no meio de
+uma rodada de ~933s (quase 3x mais lenta que o normal — sinal de que a
+máquina já estava sob pressão de memória/swap antes de travar de vez).
+
+**Causa raiz:** NÃO é vazamento de memória de verdade (nada fica
+inacessível pra sempre) — é o coletor de lixo CÍCLICO do Python
+(`gc`, diferente da contagem de referência normal, que É imediata) não
+rodando com frequência suficiente. Arquitetura ECS cria referências
+circulares o tempo todo por design (`World` referencia `Entity`,
+`Entity`/`Component` frequentemente referenciam de volta o `World`/
+`System` dono) — cada teste que cria um `World`/`WorldServer` novo (69
+arquivos de teste chamam `make_world_server()`, cada chamada carregando
+3 mapas reais + populando entidades) deixa lixo cíclico pra trás. O
+coletor automático do Python dispara por CONTAGEM de alocação (não por
+tempo/quantidade de memória) — sob o volume e o ritmo de ~1700 testes
+independentes rodando em sequência no MESMO processo, esse gatilho não
+acompanha o ritmo de acúmulo, e o "lixo" (tecnicamente coletável, só
+ainda não coletado) se empilha até quase esgotar a RAM da máquina.
+
+**Investigação que NÃO confirmou a hipótese inicial** (registrada pra
+não repetir): antes de chegar no `gc.collect()`, foram checados e
+descartados como causa — (1) vazamento de pool `asyncpg` (§123) — já
+tinha `AuthPoolCleanupMixin`/`restore_auth_schema` cobrindo TODOS os
+arquivos que de fato tocam `server.auth` de verdade (1 falso-positivo
+encontrado e descartado: `test_loadtest_bot_reconnect.py` só tem uma
+função local chamada `fake_login_cycle`, sem nenhuma relação com
+`server.auth`); (2) caches de módulo sem teto (`ui/*.py`) — todos os
+relevantes já têm `_CACHE_MAX` explícito desde §183, e os 2 sem teto
+encontrados (`engine/entity_disguise.py`/`engine/character_animation.py`
+`_frame_cache`) são bounded por natureza (chave = classe×direção×estado,
+espaço pequeno e fixo, populado 1x e reusado) — não crescem com o
+número de testes; (3) `engine/save_system.py::_autosave_listeners`
+(lista que só cresce via `append`, nunca some) — só é populado por um
+`GameEngine` real, que nenhum teste da suíte instancia (é pesado
+demais/precisa de rede) — lista fica vazia a suíte inteira.
+
+**Fix**: `tests/conftest.py` (arquivo NOVO — não existia nenhum
+`conftest.py` antes) com 1 hook padrão do pytest
+(`pytest_runtest_teardown`) chamando `gc.collect()` depois de CADA
+teste. Mecanismo 100% de infraestrutura de teste — zero mudança em
+`server/`, `client/`, `engine/` ou `ui/`, aplica pra suíte inteira
+automaticamente sem precisar tocar em nenhum arquivo de teste
+existente.
+
+**Teste**: a própria suíte completa é o teste — rodada 2x com o fix
+(1x via driver Python customizado pra medir, 1x via `pytest` de
+verdade — o comando que o usuário roda no dia a dia) e 1x sem, todas
+as 3 rodadas com amostragem externa de memória. Revert-to-confirm
+natural: a MESMA suíte, SEM o `conftest.py`, já tinha sido medida
+2x nesta mesma sessão como parte da investigação (933s com crash real
+do Postgres numa rodada, 11.186MB de pico na outra) — não precisou
+reverter de propósito, o "antes" já existia como dado real.

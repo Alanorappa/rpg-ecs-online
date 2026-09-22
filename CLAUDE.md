@@ -1117,6 +1117,16 @@ python main.py
 
 Conta de teste criada automaticamente: `usuario=teste  senha=123456`
 
+**Suíte completa (`pytest tests/ -q`) chegava a ~11GB de memória e podia
+derrubar o Postgres/qualquer outra coisa rodando na máquina por falta
+de RAM** (causa: coletor de lixo cíclico do Python não acompanhava o
+ritmo de referências circulares que uma arquitetura ECS cria a cada
+`World`/`WorldServer` novo — não é vazamento de verdade, ver
+PROBLEMAS_ARQUITETURA.md §199) — `tests/conftest.py` já resolve isso
+(`gc.collect()` a cada teste, pico medido caiu pra ~300MB). Não precisa
+fazer nada extra pra rodar a suíte normal; só não REMOVER esse
+`conftest.py` achando que é redundante.
+
 Testar algo que depende de nível/talento/gold/item: conceder GM
 (`python -m server.grant_gm <username>`) + `"debug_mode": true` em
 `config.json` — abre F12 com nível/ouro/itens server-autoritativos de
