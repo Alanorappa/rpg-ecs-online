@@ -4762,11 +4762,14 @@ def test_day_night_color_meio_dia_sem_tingimento():
 
 
 def test_day_night_color_meia_noite_tingimento_maximo():
-    from ui.day_night_system import day_night_color, DAY_NIGHT_CYCLE_S
+    from ui.day_night_system import (
+        day_night_color, DAY_NIGHT_CYCLE_S, DEFAULT_NIGHT_COLOR, DEFAULT_NIGHT_ALPHA,
+    )
     now = DAY_NIGHT_CYCLE_S * 0.0
     r, g, b, a = day_night_color(now)
-    assert a == 150, f"meia-noite deveria ter alpha 150 (tingimento máximo), achou {a}"
-    assert (r, g, b) == (20, 25, 60)
+    assert a == DEFAULT_NIGHT_ALPHA, \
+        f"meia-noite deveria ter o alpha padrão ({DEFAULT_NIGHT_ALPHA}), achou {a}"
+    assert (r, g, b) == DEFAULT_NIGHT_COLOR
 
 
 def test_day_night_color_interpola_entre_keyframes():

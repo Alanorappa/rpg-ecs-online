@@ -947,7 +947,14 @@ padrão a quebrar, não só os bugs individuais.
   `event.buttons[0]` antes de aplicar o arraste — sem isso, soltar o
   mouse fora da janela ou fechar o painel no meio do arraste deixaria o
   estado de "arrastando" travado pro resto da sessão. Ver
-  PROBLEMAS_ARQUITETURA.md §198.
+  PROBLEMAS_ARQUITETURA.md §198. **Config do F12 (`config.json`, local)
+  NUNCA chega ao executável empacotado** — `release_tools/
+  build_client.ps1` sobrescreve `dist/RPG_Online/config.json` com só
+  `server_host`/`server_port`. Pra um valor ajustado no F12 virar o
+  padrão de verdade pra todo jogador, atualizar as constantes
+  `DEFAULT_*` em `ui/day_night_system.py` (mesmo mecanismo de "Resetar
+  padrão" do F12 — atualizar lá muda pra ONDE o reset volta). Ver
+  PROBLEMAS_ARQUITETURA.md §200.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

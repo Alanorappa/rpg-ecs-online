@@ -53,12 +53,18 @@ DAY_NIGHT_CYCLE_S = 60.0 * 60.0
 # diferente (ex.: um amarelo puro) pode reintroduzir alguma
 # dessaturação passageira — é o preço de dar controle manual direto ao
 # usuário; ele vê o resultado ao vivo (F12) e ajusta se não gostar.
-DEFAULT_NIGHT_COLOR: tuple[int, int, int] = (20, 25, 60)
-DEFAULT_NIGHT_ALPHA: int = 150
+#
+# Valores validados pelo usuário em jogo via F12 (22/09/2026) — eram só
+# config LOCAL (config.json, não sobrevive ao build do executável, ver
+# release_tools/build_client.ps1) até virarem o padrão de verdade aqui.
+# "Resetar padrão" no F12 volta pra ESTES valores, não mais os originais
+# da v1 (§195/§196) — ver PROBLEMAS_ARQUITETURA.md §200.
+DEFAULT_NIGHT_COLOR: tuple[int, int, int] = (10, 5, 30)
+DEFAULT_NIGHT_ALPHA: int = 230
 DEFAULT_DAWN_COLOR:  tuple[int, int, int] = (190, 100, 130)
-DEFAULT_DAWN_ALPHA:  int = 95
+DEFAULT_DAWN_ALPHA:  int = 15
 DEFAULT_DUSK_COLOR:  tuple[int, int, int] = (220, 90, 110)
-DEFAULT_DUSK_ALPHA:  int = 95
+DEFAULT_DUSK_ALPHA:  int = 15
 
 _night_color: list[int] = list(DEFAULT_NIGHT_COLOR)
 _night_alpha: int = DEFAULT_NIGHT_ALPHA

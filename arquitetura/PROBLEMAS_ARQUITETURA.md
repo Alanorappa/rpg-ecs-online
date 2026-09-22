@@ -22246,3 +22246,55 @@ natural: a MESMA suíte, SEM o `conftest.py`, já tinha sido medida
 2x nesta mesma sessão como parte da investigação (933s com crash real
 do Postgres numa rodada, 11.186MB de pico na outra) — não precisou
 reverter de propósito, o "antes" já existia como dado real.
+
+---
+
+## 200. Feature — cores ajustadas no F12 viram o padrão de verdade do jogo (22/09/2026)
+
+Continuação de §196-198. Usuário validou em jogo os valores ajustados
+ao vivo no editor de âncoras do F12 e perguntou como fazer isso "valer
+pra build do executável" — achado importante: a config do F12
+(`config.json`, local, do lado de onde o jogo roda a partir do
+código-fonte) NUNCA chega ao executável empacotado, porque
+`release_tools/build_client.ps1` SOBRESCREVE `dist/RPG_Online/
+config.json` com um arquivo novo contendo só `server_host`/
+`server_port` — qualquer coisa ajustada via F12 fica presa no ambiente
+de dev, nunca chega em quem baixa o instalador.
+
+**Decisão do usuário (2 opções apresentadas, ver AskUserQuestion):**
+os valores viram o PADRÃO DE VERDADE do jogo — atualizados direto nas
+constantes `DEFAULT_NIGHT_COLOR`/`DEFAULT_NIGHT_ALPHA`/
+`DEFAULT_DAWN_COLOR`/`DEFAULT_DAWN_ALPHA`/`DEFAULT_DUSK_COLOR`/
+`DEFAULT_DUSK_ALPHA` (`ui/day_night_system.py`) — em vez da alternativa
+descartada (fazer o script de build copiar o `config.json` local, que
+ficaria sendo uma config pessoal do usuário, não o padrão do jogo, e
+precisaria repetir o passo a cada build futura). Valores novos (lidos
+do `config.json` local do usuário, já validados em jogo):
+
+| | Antes (§196) | Agora (padrão) |
+|---|---|---|
+| Noite (RGB, alpha) | (20,25,60), 150 | (10,5,30), 230 |
+| Amanhecer (RGB, alpha) | (190,100,130), 95 | (190,100,130), 15 |
+| Entardecer (RGB, alpha) | (220,90,110), 95 | (220,90,110), 15 |
+
+Noite ficou mais escura e mais azulada; amanhecer/entardecer mantiveram
+a MESMA cor (rosa/aurora), só bem mais sutis (alpha 95→15) — efeito bem
+mais discreto na transição, a noite carregando o peso visual principal.
+
+**Efeito colateral esperado, não um bug**: botão "Resetar padrão" do
+F12 (§196) agora volta pra ESTES valores, não mais os da v1 — é
+literalmente o que "padrão" deveria significar a partir de agora.
+`config.json` local do usuário continua com a chave `"daynight"`
+explícita (agora redundante, já que bate com o novo default) — não foi
+limpa de propósito, sem efeito prático (`set_anchor_config()` aplicaria
+os mesmos valores de qualquer forma).
+
+**Teste**: `test_day_night_color_meia_noite_tingimento_maximo`
+(§196/197) tinha os valores ANTIGOS hardcoded como literais — corrigido
+pra importar `DEFAULT_NIGHT_COLOR`/`DEFAULT_NIGHT_ALPHA` em vez de
+repetir os números (nunca mais fica obsoleto se o padrão mudar de novo).
+Os outros 12 testes de dia/noite (incluindo o de regressão do
+acinzentado, §195/§197) passaram sem alteração — confirma que a lógica
+de transição continua correta mesmo com os novos valores de alpha bem
+mais baixos no amanhecer/entardecer. Suíte completa de
+`test_client_ui.py`: 195 passed.
