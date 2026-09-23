@@ -902,28 +902,46 @@ padrão a quebrar, não só os bugs individuais.
   determinístico (`day_night_fraction()`/`day_night_color()`, função
   pura de `time.time()`, `DAY_NIGHT_CYCLE_S` = 60min reais/dia) — SEM
   mensagem de rede nova, servidor nunca sabe a hora (não é gameplay).
-  Desenha um overlay de cor por cima de TUDO que já foi renderizado no
-  mundo (mesmo padrão de Surface `SRCALPHA` cacheada que
-  `TileRenderSystem.render_fog()` já usa) — chamado em `game.py` logo
-  após `CHAT_BUBBLE.render()` e ANTES do grayscale de fantasma. NUNCA
-  aplica dentro de BG/Arena (`InstanceInventoryUIState.active` — mesma
-  flag já usada pra câmera livre/minimap tela-cheia) — decisão do
-  usuário, luz não deve mudar no meio de uma partida competitiva. Objeto
-  com `TileType.light_source` (ver bullet acima) "fura" um buraco no
-  overlay com gradiente radial cacheado por raio + `BLEND_RGBA_SUB` —
-  gradiente é SEMPRE cor `(0,0,0)`, só o alpha varia (subtrair RGB não-
-  zero com `BLEND_RGBA_SUB` estouraria pra preto puro, não ponderado
-  pelo alpha do pixel — ver docstring de `_get_light_gradient`). Luz
-  "liga" sozinha conforme escurece (de dia o overlay já é alpha=0,
-  subtrair não muda nada) — nenhuma lógica extra de liga/desliga.
-  Posição de tela da luz vem de `screen_x`/`screen_y` que
-  `get_world_objects()` já calcula (nunca recalcular offset de câmera à
-  parte — mesma lição de §191). Ver PROBLEMAS_ARQUITETURA.md §194.
-  **Keyframe novo de transição (amanhecer/entardecer) NUNCA interpola
-  direto de 2 pontas opostas no círculo de cores** (ex: azul da noite →
-  laranja do dia) — passa por um cinza/acastanhado dessaturado no meio
-  do caminho (bug real, §195). Sempre usar uma cadeia de tons VIZINHOS
-  (ex: noite→violeta→rosa→dourado→dia). **Ver hora/fase atual e pular
+  Chamado em `game.py` logo após `CHAT_BUBBLE.render()` e ANTES do
+  grayscale de fantasma. NUNCA aplica dentro de BG/Arena
+  (`InstanceInventoryUIState.active` — mesma flag já usada pra câmera
+  livre/minimap tela-cheia) — decisão do usuário, luz não deve mudar no
+  meio de uma partida competitiva.
+  **Técnica (22/09/2026, §203 — MULTIPLICAÇÃO, não mais transparência,
+  ver histórico obsoleto em §194/§195):** `day_night_color()` devolve um
+  fator MULTIPLICADOR (não um tingimento misturado) — `(255,255,255)` =
+  identidade (sem efeito); `DayNightSystem` preenche uma Surface SEM
+  `pygame.SRCALPHA` (a técnica precisa dos canais RGB cheios) com essa
+  cor e aplica com `special_flags=pygame.BLEND_RGBA_MULT` — cada pixel
+  do mundo escurece PROPORCIONAL à própria luminosidade original (mais
+  natural que uma lavada uniforme de cor). O 4º valor (alpha) que
+  `day_night_color()` ainda devolve é VESTIGIAL — nenhum cálculo o
+  consome mais, existe só porque o usuário pediu pra manter o campo/
+  editor no F12 mesmo sem uso real; NUNCA reintroduzir lógica que
+  dependa dele sem repensar o desenho primeiro. Objeto com
+  `TileType.light_source` (ver bullet acima) clareia a área ao redor de
+  volta em direção ao branco com um gradiente radial + `BLEND_RGBA_ADD`
+  (SOMAR, não subtrair — numa camada que começa ESCURA, subtrair só
+  escureceria mais). **`Surface.set_alpha()` NÃO pondera `BLEND_RGBA_
+  ADD`/`SUB`/`MULT`** (confirmado empiricamente antes de codar) — a
+  intensidade da luz precisa estar "assada" nos valores RGB do
+  gradiente no momento em que ele é GERADO, daí o cache de
+  `_get_light_add_gradient` ser por `(radius_px, intensity_pct)`, não só
+  raio. **Brilho quente** (pedido separado do usuário) — círculo
+  `(255,200,100)` de opacidade baixa, desenhado DEPOIS do blit de
+  multiplicação, DIRETO no `world_surf` (não na camada de escurecimento)
+  com blend NORMAL (esse sim é ponderado por `set_alpha()` de verdade —
+  única diferença entre os 2 tipos de gradiente deste arquivo). Posição
+  de tela da luz vem de `screen_x`/`screen_y` que `get_world_objects()`
+  já calcula (nunca recalcular offset de câmera à parte — mesma lição
+  de §191). Ver PROBLEMAS_ARQUITETURA.md §194/§203.
+  **Keyframe novo de transição (amanhecer/entardecer)**: com
+  multiplicação o "vale de saturação" que existia na técnica antiga de
+  transparência (§195) fica bem mais fraco (uma cor multiplicadora
+  "acinzentada" só escurece de forma neutra, não pinta um wash feio) —
+  ainda assim, prefira âncoras próximas do branco/claras (nunca um
+  multiplicador muito escuro no meio da transição, que escureceria a
+  cena inteira ali). **Ver hora/fase atual e pular
   pra qualquer uma sem esperar o relógio real** → aba "Dia/Noite" do
   painel de debug F12 (`client/debug_handlers.py::
   _draw_debug_tab_dianoite`, `ui/day_night_system.py::jump_to_fraction`)

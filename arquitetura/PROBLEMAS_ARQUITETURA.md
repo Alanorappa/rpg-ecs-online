@@ -22443,3 +22443,112 @@ princípio: captura incondicional, só a ação cara fica condicional.
 projeto instancia isso, mesmo caso já registrado em §192: pesado
 demais, precisa de tela/rede). Validação fica com o usuário, apertando
 F11 em jogo (o cenário exato relatado).
+
+---
+
+## 203. Reescrita — técnica de escurecimento trocada de transparência pra MULTIPLICAÇÃO de cor + brilho quente aditivo (22/09/2026)
+
+Pedido do usuário, chegou como uma especificação já bem detalhada
+("Instruções para Implementação"). Seguindo a regra do projeto de
+verificar recomendação de terceiro contra o código/comportamento real
+antes de aceitar — a ideia central (trocar `alpha blending` por
+`BLEND_RGBA_MULT`) é sólida e foi aceita, mas achei e corrigi 1
+inconsistência técnica real na especificação ANTES de escrever
+qualquer código, e 1 achado adicional só depois de verificar
+empiricamente.
+
+**Achado #1 — `BLEND_RGBA_SUB` não funciona mais, precisa ser
+`BLEND_RGBA_ADD`:** a especificação pedia pra MANTER `BLEND_RGBA_SUB`
+pra "limpar" a escuridão onde tem luz. Isso fazia sentido na técnica
+ANTIGA (a camada começava em alpha=0/"nada", subtrair não tinha efeito
+visível). Na técnica NOVA, a camada começa ESCURA de propósito (ex.:
+`(30,40,80)` de noite) — **subtrair** de um valor já escuro só deixa
+mais escuro ainda (tende a preto), o oposto do que se quer (clarear de
+volta perto do branco). A operação certa é **somar**
+(`BLEND_RGBA_ADD`). Usuário confirmou a correção antes de eu tocar em
+qualquer arquivo.
+
+**Achado #2 — `Surface.set_alpha()` não pondera `BLEND_RGBA_ADD` (nem
+`SUB`), verificado empiricamente antes de escrever o código real**
+(`scratchpad/verify_blend.py`, não fica no repo — script de
+investigação): testei `set_alpha(128)` numa Surface e usei ela com
+`BLEND_RGBA_ADD` — resultado IDÊNTICO ao caso sem `set_alpha()`
+nenhum. Confirma e generaliza a MESMA lição já documentada em §194 pro
+`BLEND_RGBA_SUB` (blends "crus" da família RGBA_ADD/SUB/MULT/MIN/MAX
+não são ponderados por alpha de superfície) — pra `intensity_pct`
+continuar controlando a força da luz, precisa estar "assado" nos
+PRÓPRIOS valores RGB do gradiente no momento em que ele é gerado, não
+aplicado depois via `set_alpha()`. Por causa disso, o cache do
+gradiente aditivo mudou de chave — de só `radius_px` (v1, §194) pra
+`(radius_px, intensity_pct)` — poucas combinações reais existem no
+catálogo hoje, sem risco de crescer sem controle.
+
+**Mecanismo novo (`ui/day_night_system.py`):**
+- `day_night_color()` continua devolvendo um RGBA de 4 valores (mesma
+  assinatura, evita quebrar quem já chama), mas a SEMÂNTICA mudou:
+  agora é um **fator multiplicador** — `(255,255,255)` = identidade
+  (sem efeito nenhum), quanto mais escuro, mais a cena escurece. O 4º
+  valor (alpha) virou **VESTIGIAL** — por decisão EXPLÍCITA do usuário
+  ("manter mesmo sem uso real"), continua existindo, editável no F12,
+  persistido em `config.json`, só que NENHUM cálculo em
+  `day_night_color()`/`DayNightSystem.render()` o consome mais.
+- `DEFAULT_NIGHT_COLOR = (30,40,80)` e o platô de dia
+  `_MULT_IDENTITY = (255,255,255)` vieram de valor EXATO dado pelo
+  usuário. `DEFAULT_DAWN_COLOR`/`DEFAULT_DUSK_COLOR` (`(255,205,190)`/
+  `(255,190,175)`) são palpite inicial meu — usuário decidiu ajustar ao
+  vivo no F12 depois, mesmo fluxo já usado em §196/§200.
+- `DayNightSystem._overlay_surf` deixou de usar `pygame.SRCALPHA`
+  (técnica de multiplicação precisa dos canais RGB cheios, sem
+  propósito nenhum pro canal alpha aqui). Early-return de "dia pleno"
+  trocou de `if a <= 0` pra `if (r,g,b) == _MULT_IDENTITY`.
+- `_get_light_add_gradient(radius_px, intensity_pct)` substituiu
+  `_get_light_gradient(radius_px)` — branco no centro (ESCALADO pela
+  intensidade, achado #2 acima) decaindo até preto na borda, usado com
+  `BLEND_RGBA_ADD` sobre a `camada_noite`.
+- Blit final: `world_surf.blit(overlay, (0,0), special_flags=
+  pygame.BLEND_RGBA_MULT)`.
+- **Brilho quente (adição nova, pedido explícito do usuário)** —
+  `_get_warm_glow_gradient(radius_px)`: círculo cor `(255,200,100)`,
+  opacidade BAIXA (pico 90/255), desenhado DEPOIS do blit de
+  multiplicação, DIRETO no `world_surf` (não na `camada_noite`) — blend
+  NORMAL (sem `special_flags`), que É ponderado por `set_alpha()` de
+  verdade (diferente do gradiente aditivo acima) — por isso intensidade
+  é aplicada no BLIT (`.set_alpha()`), sem precisar de chave composta
+  no cache.
+
+**Teste**: 3 dos testes já existentes (§195-198) quebraram — corrigidos
+refletindo o comportamento NOVO, verificado com script isolado antes de
+mexer no teste (não assumido):
+1. `test_day_night_render_dia_pleno_nao_desenha` — mock mudou de
+   `(0,0,0,0)` pra `(255,255,255,0)` (identidade nova).
+2. `test_day_night_transicao_nao_estoura_faixa_das_ancoras` (renomeado,
+   era `..._nao_passa_por_cinza`) — o teste ORIGINAL checava uma
+   saturação mínima fixa; com multiplicação, essa classe de bug fica
+   estruturalmente muito mais fraca (uma cor multiplicadora
+   "acinzentada" só escurece de forma neutra, não pinta um wash feio
+   como a transparência fazia) E as âncoras agora são editáveis ao vivo
+   pelo usuário — uma trava numérica fixa quebraria pra qualquer
+   combinação de âncoras válida escolhida por ELE, sem ser bug de
+   verdade. Reescrito pro invariante que TEM que valer sempre,
+   estrutural: cada canal interpolado nunca sai da faixa das 2 pontas
+   do segmento (prova que a interpolação está correta, não uma opinião
+   sobre "quão colorida" a transição fica).
+3. `test_day_night_luz_de_lampiao_fura_o_escurecimento` — reescrito com
+   números conferidos por script (`center_px` não é mais EXATAMENTE
+   `base_color`, porque intensidade 75%<100% não clareia 100% de volta
+   E o brilho quente soma um viés laranja por cima de propósito) — novo
+   teste verifica decaimento monotônico centro→borda em cada canal E
+   que o canal R ganha mais que o B perto da luz (prova o viés laranja
+   do brilho quente).
+
+Suíte completa (`pytest tests/ -q`, 1768 passed, 1 falha pré-existente
+e não relacionada — mesma classe de timing flaky já documentada).
+
+**Também corrigido, achado na revisão final antes de fechar**: a
+trilha em gradiente do slider do F12 (§198) ainda simulava a técnica
+ANTIGA (mistura por transparência contra um cinza ESCURO de
+referência) — com a semântica nova, isso desenharia a prévia inteira
+quase preta (multiplicar um cinza escuro por qualquer coisa continua
+escuro) e ainda dependeria do alpha vestigial. Corrigido pra simular
+MULTIPLICAÇÃO de verdade contra um cinza CLARO de referência (deixa a
+curva de cor visível), ignorando o alpha.

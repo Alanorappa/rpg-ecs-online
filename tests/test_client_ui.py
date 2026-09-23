@@ -4869,12 +4869,13 @@ def test_day_night_render_pula_dentro_de_instancia():
 
 
 def test_day_night_render_dia_pleno_nao_desenha():
-    """alpha=0 (dia) — early-return, economiza o frame inteiro."""
+    """(255,255,255) é a IDENTIDADE da multiplicação (dia pleno, §203) —
+    early-return, economiza o frame inteiro."""
     import ui.day_night_system as dns
     world, player, sys = _make_day_night_world(instance_active=False)
     sys.world_surf.fill((77, 88, 99))
     orig = dns.day_night_color
-    dns.day_night_color = lambda now=None: (0, 0, 0, 0)
+    dns.day_night_color = lambda now=None: (255, 255, 255, 0)
     try:
         sys.render(world_objects=[])
     finally:
@@ -4995,26 +4996,41 @@ def test_get_world_objects_so_marca_night_overlay_pra_objeto_com_light_source():
         "objeto sem light_source nunca deveria ganhar night_overlay_sprite, mesmo na mesma folha"
 
 
-def test_day_night_transicao_nao_passa_por_cinza():
-    """Bug real relatado pelo usuário 21/09/2026: interpolar RGB em linha
-    reta direto do azul da noite pro laranja do dia passava por um
-    acastanhado/acinzentado dessaturado no meio do caminho (usuário viu
-    a tela "acizentada" e não conseguiu identificar a fase). Fix: cadeia
-    de keyframes intermediários (violeta→rosa/aurora→dourado) — nenhum
-    ponto da transição deve ficar com R/G/B pertinho um do outro (sinal
-    de dessaturação/cinza)."""
-    from ui.day_night_system import day_night_color, DAY_NIGHT_CYCLE_S
-    # Varre toda a transição de amanhecer E entardecer em passos finos.
-    for pct in range(15, 33):   # 0.15 a 0.32 (amanhecer inteiro)
-        frac = pct / 100.0
-        r, g, b, a = day_night_color(frac * DAY_NIGHT_CYCLE_S)
-        if a < 20:
-            continue  # quase invisível — dessaturação aqui não importa visualmente
-        maior, menor = max(r, g, b), min(r, g, b)
-        assert maior - menor >= 25, (
-            f"fração {frac:.2f} ficou quase cinza (RGB={r},{g},{b}, "
-            f"diferença {maior - menor}) — regressão da transição acinzentada"
-        )
+def test_day_night_transicao_nao_estoura_faixa_das_ancoras():
+    """Bug ORIGINAL (21/09/2026, técnica de transparência): interpolar
+    RGB em linha reta direto do azul da noite pro laranja do dia passava
+    por um acastanhado/acinzentado dessaturado no meio — o usuário via a
+    tela "acizentada". Com a técnica de MULTIPLICAÇÃO (22/09/2026, §203)
+    esse bug de classe fica bem mais fraco: uma cor multiplicadora
+    "acinzentada" no meio do caminho só significa "escurece de forma
+    neutra" — não pinta um wash feio por cima como a mistura por
+    transparência fazia (amostrado manualmente: o pior caso caiu de uma
+    diferença ~19 mesmo com as âncoras atuais, visivelmente mais fraco
+    que o defeito original, sem precisar de keyframes extras). Como as
+    âncoras agora são editáveis ao vivo (F12) e o usuário decide a
+    própria combinação de cores, uma trava numérica de "saturação
+    mínima" ficaria frágil (quebraria pra qualquer combinação de âncoras
+    válida escolhida pelo usuário, sem ser um bug de verdade) — o
+    invariante que TEM que continuar valendo sempre, não importa a
+    âncora escolhida, é estrutural: cada canal interpolado nunca sai da
+    faixa [min(ponta1, ponta2), max(ponta1, ponta2)] do segmento — prova
+    que a interpolação linear está correta (sem overshoot/undershoot),
+    não uma opinião sobre o quão "colorida" a transição fica."""
+    from ui.day_night_system import _build_keyframes, day_night_color, DAY_NIGHT_CYCLE_S
+    keyframes = _build_keyframes()
+    for i in range(len(keyframes) - 1):
+        f0, rgb0, _a0 = keyframes[i]
+        f1, rgb1, _a1 = keyframes[i + 1]
+        if f1 <= f0:
+            continue
+        mid_frac = (f0 + f1) / 2.0
+        r, g, b, _a = day_night_color(mid_frac * DAY_NIGHT_CYCLE_S)
+        for ch, v0, v1, actual in zip("RGB", rgb0, rgb1, (r, g, b)):
+            lo, hi = min(v0, v1), max(v0, v1)
+            assert lo <= actual <= hi, (
+                f"segmento {f0:.2f}->{f1:.2f}, canal {ch}: {actual} fora da "
+                f"faixa [{lo},{hi}] das duas pontas — interpolação quebrada"
+            )
 
 
 def test_day_night_jump_to_fraction_muda_hora_sem_congelar():
@@ -5046,10 +5062,14 @@ def test_day_night_current_phase_label():
 
 
 def test_day_night_luz_de_lampiao_fura_o_escurecimento():
-    """Bug-class evitada aqui: luz precisa clarear só perto do centro,
-    decaindo suave até o raio, sem afetar cor (só o alpha do overlay é
-    subtraído — RGB do gradiente é sempre 0, ver docstring de
-    _get_light_gradient)."""
+    """22/09/2026 (§203) — técnica MULTIPLICAÇÃO + ADD: longe da luz, só
+    o multiplicador cru se aplica (`base*overlay/255`, fórmula de
+    BLEND_RGBA_MULT verificada empiricamente antes de escrever o código,
+    ver scratchpad/verify_blend.py). Perto da luz, o gradiente ADITIVO
+    clareia a camada de volta em direção ao branco (nunca exatamente
+    igual à cor original — intensidade 75% não chega a clarear 100%) E
+    o brilho quente (blend normal, cor (255,200,100)) soma um viés
+    LARANJA por cima — o canal R ganha mais que o B, de propósito."""
     import ui.day_night_system as dns
     world, player, sys = _make_day_night_world(instance_active=False)
     base_color = (200, 180, 160)
@@ -5070,17 +5090,28 @@ def test_day_night_luz_de_lampiao_fura_o_escurecimento():
 
     cx, cy = 150 + 44 + 2, 150 + 41 + 3   # centro do ponto de luz
     center_px = sys.world_surf.get_at((cx, cy))[:3]
-    far_px    = sys.world_surf.get_at((5, 5))[:3]
+    mid_px    = sys.world_surf.get_at((cx + 48, cy))[:3]   # metade do raio (raio=96px)
+    edge_px   = sys.world_surf.get_at((cx + 90, cy))[:3]   # quase na borda do raio
+    far_px    = sys.world_surf.get_at((5, 5))[:3]          # bem fora do raio
 
-    assert center_px == base_color, \
-        f"centro da luz deveria revelar a cor original {base_color}, achou {center_px}"
-    # Longe da luz, só o tingimento cru se aplica (mistura alpha=150 padrão)
-    expected_far = tuple(
-        round(t * 150 / 255 + o * (255 - 150) / 255)
-        for t, o in zip((20, 25, 60), base_color)
-    )
+    # Longe da luz: só a multiplicação crua (sem ADD nenhum ali perto).
+    expected_far = tuple(round(base * mult / 255) for base, mult in zip(base_color, (20, 25, 60)))
     assert far_px == expected_far, f"esperava {expected_far} longe da luz, achou {far_px}"
-    # Ponto intermediário (metade do raio) precisa estar ENTRE os dois extremos
-    mid_px = sys.world_surf.get_at((cx + 48, cy))[:3]
-    assert center_px[0] > mid_px[0] > far_px[0] - 1, \
-        "gradiente deveria decair suavemente do centro pra borda, não ser binário"
+
+    # Decaimento suave e MONOTÔNICO do centro pra fora, em CADA canal —
+    # nunca binário, nunca com um "degrau" no meio do raio.
+    for ch in range(3):
+        assert center_px[ch] > mid_px[ch] > edge_px[ch] >= far_px[ch] - 2, (
+            f"canal {ch}: centro={center_px[ch]} meio={mid_px[ch]} "
+            f"borda={edge_px[ch]} longe={far_px[ch]} — deveria decair suave"
+        )
+
+    # Viés LARANJA do brilho quente: o centro ganha mais no R do que no B
+    # em relação ao "far" (sem luz nenhuma) — prova que o brilho quente
+    # está mesmo somando (255,200,100), não só clareando de forma neutra.
+    ganho_r = center_px[0] - far_px[0]
+    ganho_b = center_px[2] - far_px[2]
+    assert ganho_r > ganho_b, (
+        f"esperava o canal R ganhar mais que o B perto da luz (viés "
+        f"laranja do brilho quente) — ganho R={ganho_r}, ganho B={ganho_b}"
+    )

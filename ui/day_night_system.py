@@ -7,18 +7,27 @@ cliente calcula a MESMA hora sozinho. Só mundo aberto tem dia/noite —
 BG/Arena ficam sempre num horário fixo (decisão do usuário: evita a luz
 mudar no meio de uma partida competitiva).
 
-Desenho (ver PROBLEMAS_ARQUITETURA.md §194):
-  1. `day_night_color()` — ponto único de verdade da cor/alpha do
-     tingimento atual, derivado de `day_night_fraction()` por
-     interpolação entre keyframes.
-  2. `DayNightSystem.render()` — desenha esse tingimento por cima de TODO
-     o mundo já renderizado (zoom_surf), igual o overlay de Fog of War já
-     faz (mesmo padrão de Surface SRCALPHA cacheada).
-  3. Objeto com `TileType.light_source` (lampião etc.) "fura" um buraco
-     no tingimento com um gradiente radial + `BLEND_RGBA_SUB` — o brilho
-     nasce sozinho conforme escurece (de dia o tingimento já é alpha=0,
-     então subtrair não muda nada visualmente — sem precisar de um
-     "liga/desliga" separado).
+Desenho (22/09/2026, reescrito de alpha blending pra multiplicação de
+cor — pedido do usuário, ver PROBLEMAS_ARQUITETURA.md §203; §194 tem o
+desenho ORIGINAL, obsoleto):
+  1. `day_night_color()` — ponto único de verdade da cor atual (agora um
+     FATOR MULTIPLICADOR, não mais um tingimento misturado por
+     transparência), derivado de `day_night_fraction()` por
+     interpolação entre keyframes. Branco (255,255,255) = sem efeito
+     (multiplicar por branco preserva a cor original); quanto mais
+     escura a cor, mais a cena escurece — e como é MULTIPLICAÇÃO (não
+     mistura), cada pixel escurece proporcional à sua PRÓPRIA
+     luminosidade original, em vez de todos levarem a mesma lavada de
+     cor por cima (resultado visualmente mais natural — objeto já
+     escuro continua quase igual, objeto claro fica visivelmente azulado).
+  2. `DayNightSystem.render()` — desenha essa cor por cima de TODO o
+     mundo já renderizado (zoom_surf) com `BLEND_RGBA_MULT`.
+  3. Objeto com `TileType.light_source` (lampião etc.) clareia a área ao
+     redor de volta em direção ao branco com um gradiente radial +
+     `BLEND_RGBA_ADD` (SOMA, não mais subtração — numa camada que começa
+     ESCURA, precisa SOMAR claridade pra clarear, nunca subtrair, que só
+     escureceria ainda mais). Liga/desliga junto com `is_night()`
+     (binário, não gradual).
 """
 from __future__ import annotations
 import time
@@ -43,27 +52,40 @@ DAY_NIGHT_CYCLE_S = 60.0 * 60.0
 # debug_handlers.py::_draw_debug_tab_dianoite() é quem edita.
 #
 # Por que só uma âncora por transição (não 5 pontos como na 1ª versão)
-# resolve o problema do acinzentado sozinho: interpolar RGB em linha
-# reta direto do azul da noite (20,25,60) pro laranja do dia (255,140,70)
-# passava por um acastanhado dessaturado no meio (ex.: (137,82,65) — bug
-# real, ver PROBLEMAS_ARQUITETURA.md §195). A âncora de amanhecer/
-# entardecer já nasce como um tom ROSA/AURORA (não laranja puro) —
-# vizinho o bastante do azul da noite no círculo de cores pra não
-# desaturar no meio do caminho. Editar a âncora pra uma cor muito
-# diferente (ex.: um amarelo puro) pode reintroduzir alguma
-# dessaturação passageira — é o preço de dar controle manual direto ao
-# usuário; ele vê o resultado ao vivo (F12) e ajusta se não gostar.
+# resolve o problema do acinzentado sozinho (histórico, alpha blending):
+# interpolar RGB em linha reta direto do azul da noite pro laranja do
+# dia passava por um acastanhado dessaturado no meio (bug real, ver
+# PROBLEMAS_ARQUITETURA.md §195) — a âncora de amanhecer/entardecer
+# nascia como um tom ROSA/AURORA (não laranja puro) só pra evitar isso.
+# Com MULTIPLICAÇÃO (22/09/2026, §203) esse problema específico é bem
+# mais fraco — multiplicar 2 cores intermediárias não produz o mesmo
+# "vale de saturação" que misturar por transparência produzia — mas as
+# âncoras continuam próximas do branco/claras de propósito (nunca um
+# multiplicador muito escuro no amanhecer/entardecer), porque um
+# multiplicador ESCURO no meio da transição escureceria a cena inteira
+# ali, não só tingiria — mantém a mesma disciplina de "âncora vizinha",
+# agora por um motivo ligeiramente diferente.
 #
-# Valores validados pelo usuário em jogo via F12 (22/09/2026) — eram só
-# config LOCAL (config.json, não sobrevive ao build do executável, ver
-# release_tools/build_client.ps1) até virarem o padrão de verdade aqui.
-# "Resetar padrão" no F12 volta pra ESTES valores, não mais os originais
-# da v1 (§195/§196) — ver PROBLEMAS_ARQUITETURA.md §200.
-DEFAULT_NIGHT_COLOR: tuple[int, int, int] = (10, 5, 30)
+# "Resetar padrão" no F12 volta pra ESTES valores.
+#
+# 22/09/2026 — valores redefinidos pra semântica de MULTIPLICAÇÃO (antes
+# eram cor de tingimento misturada por transparência, ver histórico em
+# §195/§196/§200 — obsoleto). Noite/Dia vieram de instrução explícita do
+# usuário; Amanhecer/Entardecer são o palpite inicial desta reescrita
+# (usuário decidiu ajustar ao vivo no F12 depois, mesmo fluxo de sempre).
+#
+# O campo ALPHA continua existindo e editável no F12/config.json por
+# decisão explícita do usuário ("manter mesmo sem uso real") — a
+# multiplicação de cor não tem conceito de transparência, então nenhum
+# cálculo em `day_night_color()`/`DayNightSystem.render()` LÊ esses 3
+# valores de alpha pra decidir a cor final. Existem só pra não quebrar o
+# editor/config já construído — NUNCA reintroduzir lógica que dependa
+# deles sem repensar o desenho primeiro.
+DEFAULT_NIGHT_COLOR: tuple[int, int, int] = (30, 40, 80)
 DEFAULT_NIGHT_ALPHA: int = 230
-DEFAULT_DAWN_COLOR:  tuple[int, int, int] = (190, 100, 130)
+DEFAULT_DAWN_COLOR:  tuple[int, int, int] = (255, 205, 190)
 DEFAULT_DAWN_ALPHA:  int = 15
-DEFAULT_DUSK_COLOR:  tuple[int, int, int] = (220, 90, 110)
+DEFAULT_DUSK_COLOR:  tuple[int, int, int] = (255, 190, 175)
 DEFAULT_DUSK_ALPHA:  int = 15
 
 _night_color: list[int] = list(DEFAULT_NIGHT_COLOR)
@@ -125,32 +147,34 @@ def set_anchor_config(cfg: dict) -> None:
     set_dusk(cfg.get("dusk_color", DEFAULT_DUSK_COLOR), cfg.get("dusk_alpha", DEFAULT_DUSK_ALPHA))
 
 
+# Multiplicador identidade — multiplicar qualquer cor por branco a
+# preserva exatamente. É o "meio-dia"/"sem efeito nenhum" da técnica de
+# MULTIPLICAÇÃO (22/09/2026, §203) — equivalente ao antigo alpha=0 da
+# técnica de transparência, só que expresso como cor, não como
+# transparência (esta técnica não tem canal de transparência).
+_MULT_IDENTITY: tuple[int, int, int] = (255, 255, 255)
+
+
 def _build_keyframes() -> list[tuple[float, tuple[int, int, int], int]]:
-    """Keyframes (fração 0.0-1.0, RGB, alpha 0-255) derivados das 3
-    âncoras atuais — recalculado a cada chamada de `day_night_color()`
-    (8 tuplas fixas, custo desprezível). Ordem crescente de fração,
-    terminando em 1.00 com o MESMO valor de 0.00 (loop sem costura)."""
+    """Keyframes (fração 0.0-1.0, RGB multiplicador, alpha 0-255 — alpha
+    é VESTIGIAL, ver comentário nas constantes DEFAULT_*, não influencia
+    `day_night_color()`) derivados das 3 âncoras atuais — recalculado a
+    cada chamada (8 tuplas fixas, custo desprezível). Ordem crescente de
+    fração, terminando em 1.00 com o MESMO valor de 0.00 (loop sem
+    costura)."""
     night = (tuple(_night_color), _night_alpha)
     dawn  = (tuple(_dawn_color),  _dawn_alpha)
     dusk  = (tuple(_dusk_color),  _dusk_alpha)
-    # "Limpo" (alpha=0) herda a COR da âncora vizinha em vez de (0,0,0) —
-    # sem isso, o alpha caindo pra 0 e o RGB caindo pra preto ao mesmo
-    # tempo faziam a cor "escurecer pro preto" bem no fim do fade em vez
-    # de simplesmente sumir mantendo o tom (achado ao escrever o teste de
-    # regressão — a diferença só é visível em alpha bem baixo, mas ainda
-    # contava como "quase cinza" pro teste, e é mais correto de qualquer
-    # forma: sumir de vista não deveria mudar a matiz do que está sumindo).
-    clear_pos_amanhecer = (tuple(_dawn_color), 0)
-    clear_pre_entardecer = (tuple(_dusk_color), 0)
+    clear = (_MULT_IDENTITY, 0)
     return [
-        (0.00, *night),                  # meia-noite
-        (0.15, *night),                  # madrugada (platô)
-        (0.23, *dawn),                   # amanhecer pleno
-        (0.32, *clear_pos_amanhecer),    # manhã — sem tingimento
-        (0.68, *clear_pre_entardecer),   # tarde — sem tingimento
-        (0.77, *dusk),                   # entardecer pleno
-        (0.85, *night),                  # anoitecer -> noite
-        (1.00, *night),                  # volta pra meia-noite
+        (0.00, *night),   # meia-noite
+        (0.15, *night),   # madrugada (platô)
+        (0.23, *dawn),    # amanhecer pleno
+        (0.32, *clear),   # manhã — sem efeito (multiplica por branco)
+        (0.68, *clear),   # tarde — sem efeito (multiplica por branco)
+        (0.77, *dusk),    # entardecer pleno
+        (0.85, *night),   # anoitecer -> noite
+        (1.00, *night),   # volta pra meia-noite
     ]
 
 # Rótulo simples por faixa de fração — só pra exibição (F12/debug), nunca
@@ -222,9 +246,12 @@ def is_night(now: float | None = None) -> bool:
 
 
 def day_night_color(now: float | None = None) -> tuple[int, int, int, int]:
-    """RGBA do tingimento atual — ver docstring do módulo. Keyframes
-    recalculados a cada chamada (`_build_keyframes()`) pra sempre
-    refletir as âncoras atuais, inclusive editadas ao vivo pelo F12."""
+    """Fator multiplicador (R,G,B) atual + alpha VESTIGIAL (4º valor,
+    nunca consumido por `DayNightSystem.render()` — ver comentário nas
+    constantes DEFAULT_*) — ver docstring do módulo. (255,255,255) =
+    sem efeito algum. Keyframes recalculados a cada chamada
+    (`_build_keyframes()`) pra sempre refletir as âncoras atuais,
+    inclusive editadas ao vivo pelo F12."""
     frac = day_night_fraction(now)
     keyframes = _build_keyframes()
     for i in range(len(keyframes) - 1):
@@ -247,33 +274,79 @@ class DayNightSystem(System):
         self.player_entity = player_entity
         self._overlay_surf: "pygame.Surface | None" = None
         self._overlay_size: tuple[int, int] = (0, 0)
-        # Cache de gradiente radial por raio em PIXELS (poucos valores
-        # possíveis — radius_tiles do catálogo é um inteiro pequeno) —
-        # mesmo padrão de recurso cacheado com teto natural de
-        # `ui/floating_text.py::_outline_cache`.
-        self._light_gradient_cache: dict[int, "pygame.Surface"] = {}
+        # Cache de gradiente ADITIVO por (raio em PIXELS, intensidade%) —
+        # 22/09/2026, §203. Precisa incluir intensity_pct na CHAVE (não só
+        # o raio, como na v1 baseada em SUB) porque BLEND_RGBA_ADD, igual
+        # BLEND_RGBA_SUB antes dele, NÃO é ponderado por `Surface.
+        # set_alpha()` — confirmado empiricamente (script de verificação,
+        # scratchpad) antes de escrever este código: aplicar
+        # `set_alpha(128)` numa Surface e usá-la com BLEND_RGBA_ADD dá
+        # EXATAMENTE o mesmo resultado que sem `set_alpha()` nenhum — a
+        # intensidade só afeta o resultado se for "assada" nos próprios
+        # valores RGB do gradiente no momento em que ele é gerado. Poucas
+        # combinações reais existem na prática (catálogo pequeno), sem
+        # risco de o cache crescer sem controle.
+        self._light_gradient_cache: dict[tuple[int, int], "pygame.Surface"] = {}
+        # Cache do brilho quente — SÓ por raio (não por intensidade, ver
+        # `_get_warm_glow_gradient`): usa blend NORMAL (sem special_flags),
+        # que é ponderado por `set_alpha()` de verdade — diferente do
+        # gradiente aditivo acima, dá pra escalar a intensidade no BLIT,
+        # sem precisar assar ela nos pixels no momento de gerar.
+        self._warm_glow_cache: dict[int, "pygame.Surface"] = {}
 
-    def _get_light_gradient(self, radius_px: int) -> "pygame.Surface":
-        """Gradiente radial cacheado por raio — alpha máximo no centro,
-        decaindo linearmente até 0 na borda, cor SEMPRE (0,0,0) (só o
-        canal alpha varia). Usado com BLEND_RGBA_SUB: como RGB do
-        gradiente é 0, subtrair nunca altera a COR do overlay — só
-        reduz seu alpha, "abrindo um buraco" suave nele. Se a cor do
-        gradiente não fosse 0, BLEND_RGBA_SUB subtrairia RGB também
-        (não ponderado pelo alpha do próprio pixel), estourando pra
-        preto puro em vez de revelar a cor normal do mundo por baixo."""
-        cached = self._light_gradient_cache.get(radius_px)
+    def _get_light_add_gradient(self, radius_px: int, intensity_pct: int) -> "pygame.Surface":
+        """Gradiente radial ADITIVO cacheado por (raio, intensidade) —
+        branco (255,255,255) no centro ESCALADO pela intensidade,
+        decaindo linearmente até preto (0,0,0) na borda. Usado com
+        BLEND_RGBA_ADD sobre a camada de escuridão (que começa ESCURA,
+        ver `_MULT_IDENTITY`): somar clareia de volta em direção ao
+        branco — a borda soma (0,0,0), no-op, then o centro soma o
+        máximo permitido pela intensidade. NUNCA usar `set_alpha()` pra
+        modular a força — ver comentário do cache acima, não tem efeito
+        nenhum nesse blend flag."""
+        key = (radius_px, intensity_pct)
+        cached = self._light_gradient_cache.get(key)
         if cached is not None:
             return cached
+        strength = max(0.0, min(1.0, intensity_pct / 100.0))
         d = radius_px * 2
-        surf = pygame.Surface((d, d), pygame.SRCALPHA)
+        surf = pygame.Surface((d, d))
+        surf.fill((0, 0, 0))
         for y in range(d):
             for x in range(d):
                 dist = ((x - radius_px) ** 2 + (y - radius_px) ** 2) ** 0.5
                 if dist <= radius_px:
-                    a = round(255 * (1.0 - dist / radius_px))
-                    surf.set_at((x, y), (0, 0, 0, a))
-        self._light_gradient_cache[radius_px] = surf
+                    v = round(255 * (1.0 - dist / radius_px) * strength)
+                    surf.set_at((x, y), (v, v, v))
+        self._light_gradient_cache[key] = surf
+        return surf
+
+    def _get_warm_glow_gradient(self, radius_px: int) -> "pygame.Surface":
+        """Brilho quente (22/09/2026, pedido do usuário) — toque de cor
+        amarela/laranja sutil sobre o ponto de luz, desenhado DEPOIS da
+        multiplicação, direto no mundo (não na camada_noite) — a
+        multiplicação sozinha só CLAREIA de volta a cor original ali
+        (via `_get_light_add_gradient`), nunca pinta uma cor de fogo por
+        cima; este é o toque estético que reproduz isso. Blend NORMAL
+        (sem special_flags) de propósito — é o único gradiente deste
+        arquivo que PODE usar `Surface.set_alpha()` pra escalar por
+        intensidade no momento do blit (blend normal É ponderado por
+        alpha de superfície; ADD/SUB/MULT não são, ver os outros
+        métodos) — por isso cacheado só por raio, sem precisar da
+        intensidade na chave."""
+        cached = self._warm_glow_cache.get(radius_px)
+        if cached is not None:
+            return cached
+        d = radius_px * 2
+        surf = pygame.Surface((d, d), pygame.SRCALPHA)
+        peak_alpha = 90   # opacidade BAIXA de propósito (pedido do usuário)
+        for y in range(d):
+            for x in range(d):
+                dist = ((x - radius_px) ** 2 + (y - radius_px) ** 2) ** 0.5
+                if dist <= radius_px:
+                    a = round(peak_alpha * (1.0 - dist / radius_px))
+                    surf.set_at((x, y), (255, 200, 100, a))
+        self._warm_glow_cache[radius_px] = surf
         return surf
 
     def render(self, world_objects: list | None = None) -> None:
@@ -285,20 +358,25 @@ class DayNightSystem(System):
         if iius is not None and iius.active:
             return
 
-        r, g, b, a = day_night_color()
-        if a <= 0:
-            return  # dia pleno — nada pra desenhar, economiza o frame inteiro
+        r, g, b, _a = day_night_color()   # _a vestigial, ver docstring
+        if (r, g, b) == _MULT_IDENTITY:
+            return  # dia pleno — multiplicar por branco não muda nada, economiza o frame inteiro
 
         surf_w, surf_h = self.world_surf.get_size()
         if self._overlay_surf is None or self._overlay_size != (surf_w, surf_h):
-            self._overlay_surf = pygame.Surface((surf_w, surf_h), pygame.SRCALPHA)
+            # SEM SRCALPHA de propósito (22/09/2026, §203) — a técnica de
+            # MULTIPLICAÇÃO precisa dos canais RGB cheios; um canal alpha
+            # aqui não teria papel nenhum (BLEND_RGBA_MULT multiplicaria
+            # o alpha do MUNDO por ele também, sem necessidade).
+            self._overlay_surf = pygame.Surface((surf_w, surf_h))
             self._overlay_size = (surf_w, surf_h)
-        self._overlay_surf.fill((r, g, b, a))
+        self._overlay_surf.fill((r, g, b))
 
         # Luz de objeto (lampião etc.) é BINÁRIA — só na fase Noite, não
-        # segue o alpha contínuo do tingimento ambiente (22/09/2026,
-        # pedido do usuário — mesmo corte que liga a camada de sprite
-        # "aceso" em ui/tile_render_system.py::get_world_objects()).
+        # segue o gradual do multiplicador ambiente (22/09/2026, pedido
+        # do usuário — mesmo corte que liga a camada de sprite "aceso"
+        # em ui/tile_render_system.py::get_world_objects()).
+        _lit_positions: list[tuple[float, float, int, float]] = []
         if world_objects and is_night():
             for obj in world_objects:
                 light = obj.get("light_source")
@@ -313,11 +391,18 @@ class DayNightSystem(System):
                 if (cx < -radius_px or cx > surf_w + radius_px
                         or cy < -radius_px or cy > surf_h + radius_px):
                     continue  # fora da tela — não desenha
-                gradient = self._get_light_gradient(radius_px)
-                strength = max(0.0, min(1.0, intensity_pct / 100.0))
-                gradient.set_alpha(round(255 * strength))
+                gradient = self._get_light_add_gradient(radius_px, round(intensity_pct))
                 self._overlay_surf.blit(
                     gradient, (cx - radius_px, cy - radius_px),
-                    special_flags=pygame.BLEND_RGBA_SUB)
+                    special_flags=pygame.BLEND_RGBA_ADD)
+                _lit_positions.append((cx, cy, radius_px, intensity_pct))
 
-        self.world_surf.blit(self._overlay_surf, (0, 0))
+        self.world_surf.blit(self._overlay_surf, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+
+        # Brilho quente — DEPOIS da multiplicação, direto no mundo (ver
+        # docstring de _get_warm_glow_gradient). Reusa as posições já
+        # resolvidas no loop acima, sem recalcular offset/tela à parte.
+        for cx, cy, radius_px, intensity_pct in _lit_positions:
+            warm = self._get_warm_glow_gradient(radius_px)
+            warm.set_alpha(round(255 * max(0.0, min(1.0, intensity_pct / 100.0))))
+            self.world_surf.blit(warm, (cx - radius_px, cy - radius_px))

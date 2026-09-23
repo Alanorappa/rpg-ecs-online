@@ -469,21 +469,24 @@ class DebugHandlers:
         # usuário — substituiu os 4 botões fixos de pular hora: arrastar
         # já cobre qualquer ponto do ciclo, e a trilha pintada com a cor
         # real de cada instante deixa a curva inteira visível de
-        # relance, sem precisar clicar em nada). Trilha composta contra
-        # um cinza neutro só pra o alpha ficar visível (a cor real que
-        # aparece no jogo é sempre composta contra o MUNDO, não contra
-        # cinza — aqui é só pra dar uma prévia de relance, não uma
-        # simulação exata do resultado final).
+        # relance, sem precisar clicar em nada). Trilha simula
+        # MULTIPLICAÇÃO (22/09/2026, §203 — antes era mistura por
+        # transparência, técnica trocada) contra um cinza CLARO de
+        # referência — não pode ser escuro, ou a prévia inteira ficaria
+        # perto de preto (multiplicar um cinza já escuro por qualquer
+        # coisa continua escuro, escondendo a curva de cor). `a` (4º
+        # valor de day_night_color) é VESTIGIAL nesta técnica — nunca
+        # usado aqui, só (r,g,b) importam.
         sl_r = self._debug_dianoite_slider_rect()
         SAMPLES = 60
-        base = (45, 42, 36)
+        base = (200, 195, 180)   # referência clara — deixa a curva de cor visível
         seg_w = sl_r.width / SAMPLES
         for i in range(SAMPLES):
             seg_frac = i / SAMPLES
-            r, g, b, a = day_night_color(seg_frac * DAY_NIGHT_CYCLE_S)
-            cr = round(r * a / 255 + base[0] * (255 - a) / 255)
-            cg = round(g * a / 255 + base[1] * (255 - a) / 255)
-            cb = round(b * a / 255 + base[2] * (255 - a) / 255)
+            r, g, b, _a = day_night_color(seg_frac * DAY_NIGHT_CYCLE_S)
+            cr = round(base[0] * r / 255)
+            cg = round(base[1] * g / 255)
+            cb = round(base[2] * b / 255)
             seg_rect = pygame.Rect(sl_r.x + round(i * seg_w), sl_r.y,
                                    round(seg_w) + 1, sl_r.height)
             pygame.draw.rect(self.screen, (cr, cg, cb), seg_rect)
@@ -548,6 +551,13 @@ class DebugHandlers:
             name_s = font_sm.render(anchor_label, False, (200, 190, 160))
             self.screen.blit(name_s, (row_x0, ry + row_h // 2 - name_s.get_height() // 2))
 
+            # "A" continua editável aqui por decisão explícita do usuário
+            # (22/09/2026, §203) mesmo sem efeito real no resultado
+            # final — a técnica de MULTIPLICAÇÃO não tem conceito de
+            # transparência. NUNCA reintroduzir lógica em
+            # day_night_color()/DayNightSystem que dependa deste valor
+            # sem repensar o desenho primeiro (ver comentário nas
+            # constantes DEFAULT_* em ui/day_night_system.py).
             channels = [("R", color[0]), ("G", color[1]), ("B", color[2]), ("A", alpha)]
             cx = row_x0 + name_w
             for chan_label, value in channels:
