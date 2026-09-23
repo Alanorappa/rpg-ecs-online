@@ -200,6 +200,15 @@ class UI:
     MINIMAP_MARGIN_RIGHT = 10    # distância do minimapa até a borda direita da tela
     MINIMAP_MARGIN_TOP   = 68    # distância do minimapa até o topo da tela (abaixo do texto de zona/coordenadas)
 
+    # ── Relógio de ciclo dia/noite (HUD, topo-centro, 23/09/2026) ───────────
+    # Arquivo: ui/day_night_clock_hud.py. Único elemento de HUD no topo-
+    # CENTRO da tela — topo-esquerda já é HP/mana/fúria (client/hud_handlers.py),
+    # topo-direita já é zona/coordenadas+minimapa+buff bar, então topo-centro
+    # ficava livre.
+    DAYNIGHT_CLOCK_W          = 160  # largura da trilha (bem menor que o slider de debug, 220px)
+    DAYNIGHT_CLOCK_H          = 8    # altura — bem fina, elemento discreto
+    DAYNIGHT_CLOCK_MARGIN_TOP = 10   # distância do topo da tela, mesmo valor usado pelos outros textos de topo
+
     # ── Buff bar (jogador local, 31/08/2026) ────────────────────────────────
     # Arquivo: ui/buff_bar.py. Fica à ESQUERDA do minimapa, topo alinhado com
     # ele — derivado de MINIMAP_MARGIN_TOP, nunca hardcode (mesmo motivo de

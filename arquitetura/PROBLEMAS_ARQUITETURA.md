@@ -22592,3 +22592,66 @@ mesmas fases após o reposicionamento) — confirmado por script isolado
 varrendo minuto a minuto (0, 11, 11.9, 12, 12.1, 48.9, 49, 49.1) antes
 de considerar fechado: corte exato em 12 e 49, nenhum "quase". Suíte de
 tests/test_client_ui.py completa: 200 passed.
+
+## 205. Feature — relógio visual do ciclo dia/noite no HUD do jogador (23/09/2026)
+
+Pedido do usuário: uma noção visual de "quando a noite está chegando"
+sempre visível na tela, sem ser um relógio numérico comum — reaproveitar
+a MESMA forma do slider de debug do F12 (trilha em gradiente, ver §198),
+só que simplificada pro jogador comum entender de relance.
+
+Discutido ANTES de codar (2 perguntas via AskUserQuestion, respostas do
+usuário 23/09/2026): (1) incluir um texto pequeno da fase atual do lado
+da trilha (ex: "Noite") — SIM; (2) desenhar ícone de sol/lua nas
+pontas/centro pra marcar meio-dia/meia-noite — NÃO, sem asset pronto no
+jogo, a cor sozinha (escuro=noite, claro=dia) já é intuitiva.
+
+**Levantamento de layout ANTES de decidir posição**: topo-esquerda já é
+HP/mana/fúria (`client/hud_handlers.py`), topo-direita já é zona/
+coordenadas + minimapa + buff bar + tracker de quest (`ui/ui_sizes.py`).
+Topo-centro estava livre — único lugar sem conflito.
+
+**Implementação** — `ui/day_night_clock_hud.py::DayNightClockHud`
+(classe nova, `UIScaleMixin`, mesmo padrão de `BuffBar`/`Minimap`):
+- Trilha fina (160×8px base) topo-centro, amostra `day_night_color()`
+  em 24 pontos fixos do ciclo inteiro (0.0 a 1.0, SEMPRE a curva
+  completa, independente da hora atual) e simula MULTIPLICAÇÃO contra
+  um cinza CLARO de referência — EXATAMENTE a mesma técnica de
+  `_draw_debug_tab_dianoite` (§198/§203), só que 24 amostras em vez de
+  60 (trilha bem menor, mais amostras seria custo sem ganho) e SEM
+  interação de arraste (`rect()`/`render()` — sem
+  `_handle_..._events()` companheiro, o HUD normal nunca deixa o
+  jogador "viajar no tempo").
+- Marcador (linha branca vertical) na posição X correspondente à
+  FRAÇÃO ATUAL (`day_night_fraction()`, hora real) — esse sim reage ao
+  relógio de verdade, diferente da trilha (sempre a curva completa).
+  Rótulo de fase (`current_phase_label()`) centralizado embaixo.
+- Some inteiro (return antecipado) quando
+  `InstanceInventoryUIState.active` — MESMO campo/mesma regra que
+  `DayNightSystem.render()` (§201/§203) já usa pro tingimento ambiente:
+  dia/noite é cosmético só de mundo aberto, nunca aparece em BG/Arena.
+- `ui/ui_sizes.py`: `DAYNIGHT_CLOCK_W/H/MARGIN_TOP` (160/8/10) — mesmo
+  ponto único de tamanhos "de design" que todo outro painel/HUD usa.
+- `game.py`: instanciado junto de `_day_night_system`; registrado nas
+  DUAS listas de propagação de `set_ui_scale` (push inicial + troca ao
+  vivo no menu de pausa — mesmo padrão de todo outro painel fora de
+  GameEngine); chamado dentro do MESMO bloco `if not
+  self._map_overlay.is_open:` que já protege minimap/buff bar/tracker
+  de quest (mapa-múndi aberto — tecla M — cobre a tela inteira, não faz
+  sentido desenhar por baixo).
+
+**Verificação visual** (23/09/2026, antes de considerar fechado):
+script isolado renderizando a trilha em 5 frações (0.02/0.25/0.5/0.75/
+0.98) pra uma Surface, screenshot comparado lado a lado — confirmado:
+extremos escuros/azulados (Noite), transição quente (Amanhecer/
+Entardecer), centro claro (Dia), marcador seguindo a posição certa em
+cada frame, rótulo batendo com a fase.
+
+**Teste**: `tests/test_client_ui.py` — geometria (`rect()` centralizado,
+tamanho batendo com `UI.DAYNIGHT_CLOCK_*`), oculto durante instância
+(`iius.active=True` não desenha nada na trilha), marcador na posição X
+certa pra uma fração mockada, e um invariante estrutural (soma dos
+canais do centro > soma da ponta + margem, prova que a trilha É mais
+clara no meio) — nunca comparar pixel exato (âncoras de cor são
+editáveis pelo usuário no F12, um valor fixo quebraria à toa). Suíte
+completa de `tests/test_client_ui.py`: 204 passed.

@@ -277,6 +277,12 @@ rpg_ecs_online/
 │   ├── map_markers.py               ← MapMarker/collect_markers — pontos de
 │   │   interesse do mapa/minimapa (morte, quest givers, treinadores,
 │   │   mercadores), consumido por map_overlay.py/minimap.py
+│   ├── day_night_system.py          ← DayNightSystem — ciclo dia/noite
+│   │   cosmético (21/09/2026), relógio determinístico + tingimento
+│   │   ambiente por MULTIPLICAÇÃO (§203) + luz binária de lampião (§201/§204)
+│   ├── day_night_clock_hud.py       ← DayNightClockHud — indicador visual
+│   │   do ciclo no HUD (topo-centro, 23/09/2026), trilha em gradiente
+│   │   só-leitura reaproveitando day_night_color() (ver §205)
 │   ├── god_mode.py                  ← editor de nível/level (F10)
 │   ├── login_screen.py, char_creation_screen.py, settings_screen.py
 │   ├── skill_level_ui.py, talent_system.py, quest_system.py, trainer_system.py,

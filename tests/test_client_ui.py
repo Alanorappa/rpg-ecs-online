@@ -5115,3 +5115,75 @@ def test_day_night_luz_de_lampiao_fura_o_escurecimento():
         f"esperava o canal R ganhar mais que o B perto da luz (viés "
         f"laranja do brilho quente) — ganho R={ganho_r}, ganho B={ganho_b}"
     )
+
+
+# ── ui/day_night_clock_hud.py — relógio do ciclo dia/noite no HUD (23/09/2026) ─
+
+def _make_day_night_clock_hud(instance_active: bool = False):
+    from engine.world import World
+    from ui.ui_components import InstanceInventoryUIState
+    from ui.day_night_clock_hud import DayNightClockHud
+    world = World()
+    player = world.create_entity()
+    iius = InstanceInventoryUIState()
+    iius.active = instance_active
+    world.add_component(player, iius)
+    hud = DayNightClockHud(world, player)
+    return world, player, hud
+
+
+def test_day_night_clock_hud_rect_fica_centralizado_no_topo():
+    _, _, hud = _make_day_night_clock_hud()
+    screen_w = 1280
+    r = hud.rect(screen_w)
+    assert r.centerx == screen_w // 2
+    assert r.y == hud._u(10)   # UI.DAYNIGHT_CLOCK_MARGIN_TOP
+    assert r.width == hud._u(160) and r.height == hud._u(8)
+
+
+def test_day_night_clock_hud_nao_desenha_em_instancia():
+    """Mesma regra de DayNightSystem.render() — dia/noite é só cosmético
+    de mundo aberto, some inteiro em BG/Arena (23/09/2026)."""
+    _, _, hud = _make_day_night_clock_hud(instance_active=True)
+    screen = pygame.Surface((1280, 720))
+    screen.fill((10, 20, 30))
+    hud.render(screen)
+    r = hud.rect(screen.get_width())
+    assert screen.get_at((r.centerx, r.centery))[:3] == (10, 20, 30), (
+        "não devia ter desenhado nada dentro da trilha durante BG/Arena"
+    )
+
+
+def test_day_night_clock_hud_marcador_acompanha_a_fracao_atual():
+    """O marcador (linha branca) fica na posição X correspondente à fração
+    atual do ciclo — meio-dia (frac=0.5) cai bem no centro da trilha."""
+    import ui.day_night_clock_hud as dnc
+    _, _, hud = _make_day_night_clock_hud(instance_active=False)
+    screen = pygame.Surface((1280, 720))
+    orig = dnc.day_night_fraction
+    dnc.day_night_fraction = lambda now=None: 0.5
+    try:
+        hud.render(screen)
+    finally:
+        dnc.day_night_fraction = orig
+    r = hud.rect(screen.get_width())
+    # marcador é branco puro — nenhum segmento da trilha (mistura contra
+    # cinza claro) produz branco puro, então achar (255,255,255) no meio
+    # da trilha prova que o marcador foi desenhado ali.
+    assert screen.get_at((r.centerx, r.centery))[:3] == (255, 255, 255)
+
+
+def test_day_night_clock_hud_escuro_na_meia_noite_claro_no_meio_dia():
+    """A trilha simula a MESMA técnica de multiplicação do slider de debug
+    (§203) — extremos (meia-noite) precisam ficar visivelmente mais
+    escuros que o centro (meio-dia), senão o "relógio" não comunica nada
+    por cor sozinha (decisão do usuário 23/09/2026 de não usar ícone)."""
+    _, _, hud = _make_day_night_clock_hud(instance_active=False)
+    screen = pygame.Surface((1280, 720))
+    hud.render(screen)
+    r = hud.rect(screen.get_width())
+    edge_px = screen.get_at((r.x + 2, r.y + 2))[:3]
+    mid_px  = screen.get_at((r.centerx, r.centery))[:3]
+    # meio-dia é branco na mistura (fator identidade) — soma dos canais do
+    # centro tem que ser bem maior que a da ponta (meia-noite, âncora escura).
+    assert sum(mid_px) > sum(edge_px) + 30

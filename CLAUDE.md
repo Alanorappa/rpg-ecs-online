@@ -993,7 +993,19 @@ padrão a quebrar, não só os bugs individuais.
   NUNCA um valor de fração solto; mudar o minuto é a ÚNICA edição
   necessária, os dois lados (`is_night()` + rótulo "Noite" do F12) já
   seguem junto por lerem a mesma tabela. Ver PROBLEMAS_ARQUITETURA.md
-  §204.
+  §204. **Indicador no HUD do jogador (não-debug)** →
+  `ui/day_night_clock_hud.py::DayNightClockHud` (23/09/2026) — topo-
+  centro da tela (único ponto livre; topo-esquerda é HP/mana, topo-
+  direita é zona/minimapa/buff bar), trilha em gradiente SÓ LEITURA
+  reaproveitando a mesma amostragem de `day_night_color()` do slider de
+  debug (`client/debug_handlers.py::_draw_debug_tab_dianoite`) — NUNCA
+  duplicar essa amostragem num 3º lugar, sempre chamar
+  `day_night_color()` direto. Sem ícone de sol/lua (decisão do usuário —
+  sem asset pronto, a cor escuro/claro já é intuitiva sozinha), com
+  rótulo de fase (`current_phase_label()`) embaixo da trilha. Some
+  inteiro em BG/Arena (mesmo gate de `InstanceInventoryUIState.active`
+  que `DayNightSystem.render()` já usa). Ver PROBLEMAS_ARQUITETURA.md
+  §205.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

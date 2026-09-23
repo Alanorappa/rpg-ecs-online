@@ -480,6 +480,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._shop_system   = ShopSystem(self.world, self.player_entity, self.screen)
         from ui.day_night_system import DayNightSystem
         self._day_night_system = DayNightSystem(self.world, self.player_entity)
+        from ui.day_night_clock_hud import DayNightClockHud
+        self._day_night_clock_hud = DayNightClockHud(self.world, self.player_entity)
         self._quest_system  = QuestSystem(self.world, self.player_entity)
         from ui.buff_bar import BuffBar
         self._buff_bar = BuffBar(self.world, self.player_entity)
@@ -502,7 +504,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # (ver ui_scale_mixin.py e arquitetura/PROBLEMAS_ARQUITETURA.md, IU3).
         for _sys in (self._talent_system, self._skill_level_ui, self._char_stats_ui, self._shop_system,
                      self._quest_system, self._quest_dialog, self._quest_journal,
-                     self._crafting_system, self._trainer_system, self._buff_bar):
+                     self._crafting_system, self._trainer_system, self._buff_bar,
+                     self._day_night_clock_hud):
             _sys.set_ui_scale(self._ui_scale)
         # Insere QuestSystem após xp_system (posição 13, depois do índice de xp_system)
         _xp_idx = next((i for i, s in enumerate(self.systems)
@@ -1291,7 +1294,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         for _sys in (self._talent_system, self._skill_level_ui, self._shop_system, self._quest_system,
                      self._quest_dialog, self._quest_journal,
                      self._crafting_system, self._trainer_system,
-                     self._loot_system, self._map_overlay, self._minimap, self._buff_bar):
+                     self._loot_system, self._map_overlay, self._minimap, self._buff_bar,
+                     self._day_night_clock_hud):
             _sys.set_ui_scale(self._ui_scale)
         import config as _cfg
         _cfg.save({"ui_scale": self._ui_scale})
@@ -2620,6 +2624,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 self._quest_system.render_hud(self.screen)
                 # Buff bar — à esquerda do minimap (só jogador local)
                 self._buff_bar.render(self.screen)
+                # Relógio do ciclo dia/noite — topo-centro (23/09/2026,
+                # pedido do usuário). Some sozinho em BG/Arena (checa
+                # InstanceInventoryUIState.active dentro do próprio render()).
+                self._day_night_clock_hud.render(self.screen)
                 # Tooltip ao passar o mouse num ícone da buff bar
                 # (01/09/2026) — reaproveita a MESMA caixa de correio que
                 # item/mob já usam (self._pending_tooltip), sem desenho
