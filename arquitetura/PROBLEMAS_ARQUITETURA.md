@@ -22389,3 +22389,57 @@ confirma que só o primeiro ganha `night_overlay_sprite` — o gate real
 funciona ponta a ponta, não só na função de baixo nível. Suíte completa
 (`pytest tests/ -q`, 1768 passed, 1 falha pré-existente e não
 relacionada — mesma classe de timing flaky já documentada).
+
+---
+
+## 202. Bug real — F11 crashava o jogo com `UnboundLocalError: _ts` (22/09/2026, pré-existente, não relacionado às mudanças desta sessão)
+
+**Sintoma relatado (com traceback):** apertar F11 em jogo crashava com
+`UnboundLocalError: local variable '_ts' referenced before assignment`
+em `game.py:2167` (`self._prof_record("input_dispatch", ...)`).
+
+**Causa raiz:** o bloco que mede o tempo do dispatch de input inteiro
+(`game.py`, instrumentado em 15/09/2026, item #143) tinha essa forma:
+
+```python
+if PROFILE_FRAMES:              # só captura SE já estava ligado
+    _ts = _time.perf_counter()
+
+for event in events:            # ... e AQUI DENTRO, o handler de F11:
+    ...
+    elif event.key == pygame.K_F11:
+        globals()["PROFILE_FRAMES"] = self._show_perf_overlay
+
+...
+if PROFILE_FRAMES:              # se ligou DURANTE o loop acima, lê um
+    self._prof_record(..., _time.perf_counter() - _ts)   # _ts que nunca existiu
+```
+
+F11 (a MESMA tecla que liga/desliga `PROFILE_FRAMES`) é processada
+DENTRO do próprio bloco de eventos que este trecho mede. Apertar F11
+pra LIGAR o overlay com ele desligado no início do frame faz a
+checagem de fechamento ver `PROFILE_FRAMES=True` e tentar ler um `_ts`
+que nunca foi capturado nesta iteração — 100% determinístico, não é
+uma corrida rara (acontece toda vez que se liga o overlay, nunca
+quando já está ligado ou ao desligar).
+
+**Não é bug desta sessão** — o bloco existe desde 15/09/2026 (§143),
+nenhuma mudança recente desta sessão tocou nele; só apareceu agora
+porque o usuário reativou o overlay de performance pela 1ª vez desde
+então.
+
+**Fix:** `_ts = _time.perf_counter()` passa a ser capturado SEMPRE
+(fora do `if PROFILE_FRAMES:`) — custo de `perf_counter()` sozinho é
+irrelevante (nanosegundos, nada a ver com o custo real de
+`_prof_record()`, que continua condicional). Mesma classe de bug
+(variável só existe dentro de 1 branch de um `if`, lida fora dele
+achando que as 2 checagens do MESMO flag sempre concordam) — se outro
+par capture/leitura condicional aparecer no futuro em código que
+processa o PRÓPRIO evento que muda a condição no meio, aplicar o mesmo
+princípio: captura incondicional, só a ação cara fica condicional.
+
+**Teste**: sem teste automatizado — reproduzir de verdade exige
+`GameEngine.run()` completo com loop de eventos real (nenhum teste do
+projeto instancia isso, mesmo caso já registrado em §192: pesado
+demais, precisa de tela/rede). Validação fica com o usuário, apertando
+F11 em jogo (o cenário exato relatado).

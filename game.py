@@ -1723,8 +1723,19 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # DELETE ficava invisível — em vez de caçar call site por call
             # site de novo, mede o bloco INTEIRO de uma vez: o próximo log
             # mostra com certeza se o tempo sai daqui ou de outro lugar.
-            if PROFILE_FRAMES:
-                _ts = _time.perf_counter()
+            #
+            # _ts SEMPRE capturado (não só quando PROFILE_FRAMES já está
+            # ligado) — bug real relatado pelo usuário 22/09/2026:
+            # UnboundLocalError em `_ts` no F11. A tecla F11 (que liga/
+            # desliga PROFILE_FRAMES) é processada DENTRO do loop de
+            # eventos que este bloco mede — apertar F11 pra LIGAR o
+            # overlay com ele desligado no início do frame significa que
+            # a checagem de fechamento (`if PROFILE_FRAMES:` mais abaixo)
+            # via o flag já True e tentava ler um `_ts` que nunca foi
+            # setado nesta iteração. Custo de `perf_counter()` sozinho é
+            # irrelevante (nanosegundos) — só a GRAVAÇÃO continua
+            # condicional.
+            _ts = _time.perf_counter()
 
             # God Mode consome eventos quando ativo (bloqueia input do jogo).
             # Salva estado ANTES de handle_events: se o god mode fechar via F10/Esc
