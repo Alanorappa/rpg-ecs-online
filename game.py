@@ -444,6 +444,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._ambient_zones:    list = []   # [{name, ambient, rect:(x1,y1,x2,y2)}]
         self._default_ambient:  str  = ""   # ambient padrão do mapa
         self._current_zone:     str  = ""   # nome da zona onde o jogador está
+        # Mapa fechado (caverna/dungeon) — sem luz do sol, o ciclo dia/noite
+        # não deve tingir nem mostrar o relógio nesses mapas (ver
+        # _load_ambient_zones/engine/map_loader.py). True = padrão (mundo
+        # aberto), só mapas marcados no _entities.json viram False.
+        self._day_night_affected: bool = True
         # Zonas PvP (Fase F) — cosmético; decisão de dano é do servidor.
         self._pvp_zones:        list = []   # [{name, rect:(x1,y1,x2,y2)}]
         self._in_pvp_zone_flag: bool = False
@@ -786,6 +791,16 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._ambient_zones   = spawn_points.get("ambient_zones", [])
         self._default_ambient = spawn_points.get("default_ambient", "")
         self._current_zone    = "\x00"  # sentinel: força reavaliação no 1º frame
+
+        # Mapa fechado (caverna/dungeon) — desliga o ciclo dia/noite inteiro
+        # pro mapa recém-carregado (tingimento ambiente + luz de lampião +
+        # relógio do HUD, ver ui/day_night_system.py/ui/day_night_clock_hud.py).
+        # Só precisa setar aqui (1x por troca de mapa) — os dois sistemas já
+        # constam nesse ponto do carregamento (construídos no __init__, bem
+        # antes da 1ª chamada desta função).
+        self._day_night_affected = spawn_points.get("day_night_affected", True)
+        self._day_night_system.map_affected     = self._day_night_affected
+        self._day_night_clock_hud.map_affected  = self._day_night_affected
 
         # Pré-carrega todos os sons das zonas para evitar freeze na primeira entrada
         all_stingers: list[str] = []

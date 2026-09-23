@@ -17,7 +17,10 @@ MULTIPLICAÇÃO contra um cinza claro de referência), só que:
 único de verdade que a trilha do F12 e o tingimento ambiente usam) — sem
 estado próprio novo. Some durante BG/Arena, mesma regra de
 DayNightSystem.render() (checa InstanceInventoryUIState.active) — dia/
-noite é só cosmético de mundo aberto.
+noite é só cosmético de mundo aberto. Some também em mapa fechado
+(caverna/dungeon, `self.map_affected`, setado por game.py::
+_load_ambient_zones() — ver PROBLEMAS_ARQUITETURA.md §206) — sem luz do
+sol, o relógio não faz sentido lá.
 """
 from __future__ import annotations
 import pygame
@@ -41,6 +44,10 @@ class DayNightClockHud(UIScaleMixin):
         super().__init__()
         self.world         = world
         self.player_entity = player_entity
+        # Mapa fechado (caverna/dungeon) — setado por game.py::
+        # _load_ambient_zones() sempre que o mapa troca, mesmo campo que
+        # DayNightSystem.map_affected. True = padrão (mundo aberto).
+        self.map_affected: bool = True
 
     def rect(self, screen_w: int) -> "pygame.Rect":
         """Geometria da trilha (coordenadas de TELA) — topo-centro,
@@ -55,6 +62,8 @@ class DayNightClockHud(UIScaleMixin):
     def render(self, screen: pygame.Surface) -> None:
         iius = self.world.get_component(self.player_entity, InstanceInventoryUIState)
         if iius is not None and iius.active:
+            return
+        if not self.map_affected:
             return
 
         r = self.rect(screen.get_width())

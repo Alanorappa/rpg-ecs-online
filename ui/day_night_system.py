@@ -282,6 +282,11 @@ class DayNightSystem(System):
     def __init__(self, world, player_entity: int):
         self.world         = world
         self.player_entity = player_entity
+        # Mapa fechado (caverna/dungeon) — setado por game.py::
+        # _load_ambient_zones() sempre que o mapa troca (ver
+        # engine/map_loader.py, chave "day_night_affected" do
+        # <mapa>_entities.json). True = padrão (mundo aberto).
+        self.map_affected: bool = True
         self._overlay_surf: "pygame.Surface | None" = None
         self._overlay_size: tuple[int, int] = (0, 0)
         # Cache de gradiente ADITIVO por (raio em PIXELS, intensidade%) —
@@ -366,6 +371,8 @@ class DayNightSystem(System):
         # (decisão do usuário: luz não deve mudar no meio de uma partida).
         iius = self.world.get_component(self.player_entity, InstanceInventoryUIState)
         if iius is not None and iius.active:
+            return
+        if not self.map_affected:
             return
 
         r, g, b, _a = day_night_color()   # _a vestigial, ver docstring

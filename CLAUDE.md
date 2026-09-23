@@ -1005,7 +1005,17 @@ padrão a quebrar, não só os bugs individuais.
   rótulo de fase (`current_phase_label()`) embaixo da trilha. Some
   inteiro em BG/Arena (mesmo gate de `InstanceInventoryUIState.active`
   que `DayNightSystem.render()` já usa). Ver PROBLEMAS_ARQUITETURA.md
-  §205.
+  §205. **Mapa fechado (caverna/dungeon) nunca é afetado pelo ciclo** —
+  chave `"day_night_affected": false` no `<mapa>_entities.json` (ausente
+  = `True`, padrão mundo aberto — SÓ precisa marcar `false` nos
+  fechados), parseada em `engine/map_loader.py` pro dict `spawn_points`,
+  lida por `game.py::_load_ambient_zones()` (chamada em TODA troca de
+  mapa) e propagada pra `DayNightSystem.map_affected`/
+  `DayNightClockHud.map_affected` — os dois checam esse campo logo no
+  início do `render()`, junto do gate de instância. Novo mapa fechado
+  futuro (dungeon, mina, etc.) → só adicionar essa 1 chave no JSON dele,
+  nunca checar nome/prefixo de arquivo em runtime. Ver
+  PROBLEMAS_ARQUITETURA.md §206.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

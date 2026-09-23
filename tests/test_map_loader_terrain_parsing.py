@@ -70,5 +70,25 @@ class TestBattlegroundMapCarregaQuadrado(unittest.TestCase):
             f"— larguras encontradas: {sorted(larguras)}")
 
 
+class TestDayNightAffectedFlag(unittest.TestCase):
+    """day_night_affected (23/09/2026) — mapa fechado (caverna/dungeon)
+    marca False no <mapa>_entities.json pra ui/day_night_system.py e
+    ui/day_night_clock_hud.py pularem o ciclo dia/noite inteiro nesse
+    mapa (sem luz do sol, tingir/mostrar relógio não faz sentido). Ver
+    PROBLEMAS_ARQUITETURA.md §206."""
+
+    def test_mapa_sem_a_chave_no_json_defaults_pra_true(self):
+        _, _, spawn_points, _ = load_map_csv("maps/map_1.csv")
+        self.assertIs(spawn_points["day_night_affected"], True)
+
+    def test_caverna_oeste_marcada_como_nao_afetada(self):
+        _, _, spawn_points, _ = load_map_csv("maps/map_cave_west.csv")
+        self.assertIs(spawn_points["day_night_affected"], False)
+
+    def test_caverna_leste_marcada_como_nao_afetada(self):
+        _, _, spawn_points, _ = load_map_csv("maps/map_cave_east.csv")
+        self.assertIs(spawn_points["day_night_affected"], False)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

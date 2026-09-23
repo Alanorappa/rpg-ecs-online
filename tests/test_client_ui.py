@@ -4884,6 +4884,17 @@ def test_day_night_render_dia_pleno_nao_desenha():
     assert sys._overlay_surf is None, "não deveria nem alocar a surface de overlay em dia pleno"
 
 
+def test_day_night_render_nao_desenha_em_mapa_fechado():
+    """Mapa fechado (caverna/dungeon, map_affected=False) — mesmo
+    comportamento de instância (nada desenhado). 23/09/2026, §206."""
+    world, player, sys = _make_day_night_world(instance_active=False)
+    sys.map_affected = False
+    sys.world_surf.fill((77, 88, 99))
+    sys.render(world_objects=[])
+    assert sys.world_surf.get_at((5, 5))[:3] == (77, 88, 99)
+    assert sys._overlay_surf is None, "não deveria nem alocar a surface de overlay em mapa fechado"
+
+
 def test_is_night_so_true_na_fase_noite():
     from ui.day_night_system import is_night, DAY_NIGHT_CYCLE_S
     assert is_night(0.0) is True                          # meia-noite
@@ -5171,6 +5182,20 @@ def test_day_night_clock_hud_marcador_acompanha_a_fracao_atual():
     # cinza claro) produz branco puro, então achar (255,255,255) no meio
     # da trilha prova que o marcador foi desenhado ali.
     assert screen.get_at((r.centerx, r.centery))[:3] == (255, 255, 255)
+
+
+def test_day_night_clock_hud_nao_desenha_em_mapa_fechado():
+    """Mesma regra do tingimento ambiente — mapa fechado (caverna/dungeon,
+    map_affected=False) não mostra o relógio (23/09/2026, §206)."""
+    _, _, hud = _make_day_night_clock_hud(instance_active=False)
+    hud.map_affected = False
+    screen = pygame.Surface((1280, 720))
+    screen.fill((10, 20, 30))
+    hud.render(screen)
+    r = hud.rect(screen.get_width())
+    assert screen.get_at((r.centerx, r.centery))[:3] == (10, 20, 30), (
+        "não devia ter desenhado nada dentro da trilha em mapa fechado"
+    )
 
 
 def test_day_night_clock_hud_escuro_na_meia_noite_claro_no_meio_dia():

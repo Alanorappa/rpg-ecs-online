@@ -22655,3 +22655,64 @@ canais do centro > soma da ponta + margem, prova que a trilha É mais
 clara no meio) — nunca comparar pixel exato (âncoras de cor são
 editáveis pelo usuário no F12, um valor fixo quebraria à toa). Suíte
 completa de `tests/test_client_ui.py`: 204 passed.
+
+## 206. Feature — mapa fechado (caverna/dungeon) fica de fora do ciclo dia/noite (23/09/2026)
+
+Pedido do usuário: caverna/dungeon nunca recebe luz do sol — aplicar o
+tingimento ambiente e o relógio do HUD (§203/§205) lá não faz sentido
+nenhum (ficaria escurecendo/clareando um lugar que já é sempre igual).
+Pergunta exploratória antes de codar ("qual a complexidade, o que
+acha?") — respondida com complexidade BAIXA + recomendação de desenho
+(campo booleano por mapa, default True, só marcar False nas cavernas),
+usuário confirmou ("Exatamente") antes de qualquer código escrito.
+
+**Levantamento ANTES de decidir onde o campo mora**: cada mapa já tem um
+`<mapa>_entities.json` opcional (`ambient_zones`, `spawn_zones`, etc.,
+`engine/map_loader.py::_merge_entities_json`) mesclado num dict
+`spawn_points` só de escalares/listas — já existia precedente EXATO pra
+um campo escalar simples de mapa inteiro: `"default_ambient"` (string,
+lido por `game.py::_load_ambient_zones()`, guardado como atributo de
+instância do `GameEngine`, não um componente ECS). Copiado o MESMO
+padrão pra `day_night_affected` em vez de inventar um componente
+`Tilemap` novo — mais simples e já é o jeito que o projeto resolve
+"metadado escalar de mapa inteiro" hoje.
+
+**Implementação**:
+- `engine/map_loader.py`: `spawn_points["day_night_affected"] = True`
+  no dict de defaults; `_merge_entities_json` sobrescreve com
+  `bool(data["day_night_affected"])` se a chave existir no JSON.
+- `maps/map_cave_west_entities.json`/`maps/map_cave_east_entities.json`:
+  `"day_night_affected": false` adicionado (únicas cavernas com
+  `_entities.json` de verdade e alcançáveis via transição — existe um
+  `maps/map_worm_cave.csv` órfão sem `_entities.json` e sem nenhuma
+  referência em código Python, fora de escopo, não mexido).
+- `game.py`: `self._day_night_affected: bool = True` (atributo de
+  instância, inicializado no `__init__`, mesma vizinhança de
+  `self._default_ambient`); `_load_ambient_zones(spawn_points)` (ÚNICO
+  ponto de carga por troca de mapa, 2 call sites — carga inicial e
+  transição) lê `spawn_points.get("day_night_affected", True)` e
+  propaga pros DOIS sistemas de UI: `self._day_night_system.
+  map_affected` e `self._day_night_clock_hud.map_affected` — setado 1x
+  por troca de mapa (nunca todo frame, o valor só muda quando o mapa
+  muda).
+- `ui/day_night_system.py::DayNightSystem`/`ui/day_night_clock_hud.py::
+  DayNightClockHud`: campo novo `self.map_affected: bool = True` (init)
+  + 1 `return` a mais no topo de `render()`, logo depois do gate de
+  instância já existente (`InstanceInventoryUIState.active`) — MESMA
+  forma, novo motivo.
+
+**Verificado antes de escrever o campo novo** que nenhum código
+existente itera `spawn_points` de forma exaustiva (`.items()`/`.keys()`/
+`for x in spawn_points`) esperando um conjunto FIXO de chaves — só
+`server/debug_battleground.py::_discover_gate_tiles` faz `for side in
+spawn_points`, mas é um PARÂMETRO homônimo diferente (dict pequeno
+`{"time_a": (x,y), "time_b": (x,y)}`, não o dict de
+`load_map_csv`) — sem risco de a chave nova quebrar esse código.
+
+**Teste**: `tests/test_map_loader_terrain_parsing.py` —
+`TestDayNightAffectedFlag` (mapa sem a chave no JSON default pra True
+via `load_map_csv` real; as 2 cavernas carregam False de verdade, sem
+mock). `tests/test_client_ui.py` — `DayNightSystem.render()`/
+`DayNightClockHud.render()` com `map_affected=False` não desenham nada
+(mesmo formato dos testes de gate de instância já existentes). Suíte
+completa de `tests/test_client_ui.py`: 206 passed.

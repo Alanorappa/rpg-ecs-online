@@ -158,6 +158,7 @@ def load_map_csv(filepath: str) -> tuple[list[str], list[str], dict, list | None
         "pvp_zones":         [],
         "bush_zones":        [],
         "default_ambient":   "",
+        "day_night_affected": True,
         "training_dummies":  [],
         "combat_npcs":       [],
         "towers":            [],
@@ -570,6 +571,15 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
 
     if "default_ambient" in data:
         spawn_points["default_ambient"] = data["default_ambient"]
+
+    if "day_night_affected" in data:
+        # Mapa fechado (caverna/dungeon) nunca recebe luz do sol — cliente
+        # (ui/day_night_system.py::DayNightSystem/ui/day_night_clock_hud.py)
+        # lê essa flag pra pular o tingimento ambiente/luz de lampião/HUD
+        # do relógio inteiro nesses mapas, em vez de escurecer um lugar que
+        # já não tem noção de "hora do dia". Ausente = True (mapa aberto,
+        # comportamento de sempre) — só precisa marcar False nos fechados.
+        spawn_points["day_night_affected"] = bool(data["day_night_affected"])
 
     if "ambient_zones" in data:
         for z in data["ambient_zones"]:
