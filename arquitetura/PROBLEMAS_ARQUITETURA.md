@@ -22552,3 +22552,43 @@ quase preta (multiplicar um cinza escuro por qualquer coisa continua
 escuro) e ainda dependeria do alpha vestigial. Corrigido pra simular
 MULTIPLICAÇÃO de verdade contra um cinza CLARO de referência (deixa a
 curva de cor visível), ignorando o alpha.
+
+## 204. Feature — corte de luz de lampião ancorado em minuto exato do ciclo (23/09/2026)
+
+Pedido do usuário: luz dos postes (o corte binário de is_night(), ver
+§201/§203) devia apagar no minuto 12 e acender no minuto 49 do ciclo de
+60 minutos reais — valores diferentes dos ~10.2/~49.8 que
+_PHASE_LABELS (ui/day_night_system.py) produzia antes (arredondado de
+0.17/0.83 de fração).
+
+is_night() já delegava 100% pra current_phase_label(now) == "Noite"
+(nenhuma lógica própria) — a mudança certa era só onde a fase "Noite"
+começa/termina em _PHASE_LABELS, não criar um 2º mecanismo paralelo.
+Trocado o par fixo (0.17, 0.83) por _light_off_frac/_light_on_frac,
+derivados de _LIGHT_OFF_MINUTE=12.0/_LIGHT_ON_MINUTE=49.0 sobre
+DAY_NIGHT_CYCLE_S (nunca um número de fração mágico solto no código — a
+intenção do usuário era em MINUTOS, não fração). Só o início de
+"Amanhecer" e o fim de "Entardecer" (os 2 vizinhos de "Noite") se movem
+pra abrir espaço — "Dia" e o resto de Amanhecer/Entardecer ficam
+intocados, sem necessidade.
+
+**Achado, não corrigido antes, ajustado de graça no mesmo commit por
+estar bem ao lado da linha editada**: o comentário acima de
+_PHASE_LABELS dizia "nunca consultado pelo overlay/luz (que só leem
+day_night_color())" — falso desde que is_night() passou a existir em
+§201 (ele CONSULTA current_phase_label, que lê _PHASE_LABELS). Não
+afeta comportamento (só doc), mas é exatamente o tipo de
+doc-mentindo-sobre-código que a auditoria de 06/08/2026 pede pra
+registrar — corrigido no comentário do módulo.
+
+O tingimento AMBIENTE (day_night_color(), gradiente suave de cor) usa
+keyframes PRÓPRIOS (_build_keyframes()), totalmente independentes de
+_PHASE_LABELS — não mudou nada aqui, só a luz binária do lampião.
+
+**Teste**: test_is_night_so_true_na_fase_noite/
+test_day_night_current_phase_label continuam passando sem alteração
+(os fracs de amostra usados, 0.23/0.77/0.90, continuam caindo nas
+mesmas fases após o reposicionamento) — confirmado por script isolado
+varrendo minuto a minuto (0, 11, 11.9, 12, 12.1, 48.9, 49, 49.1) antes
+de considerar fechado: corte exato em 12 e 49, nenhum "quase". Suíte de
+tests/test_client_ui.py completa: 200 passed.

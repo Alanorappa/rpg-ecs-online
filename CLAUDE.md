@@ -986,7 +986,14 @@ padrão a quebrar, não só os bugs individuais.
   pintado na folha companheira" — a folha pode ter arte reservada pra
   outras interações futuras, ainda não é pra acender sozinha).
   `RenderSystem` desenha por cima do sprite normal (nunca substitui) só
-  quando `is_night()`. Ver PROBLEMAS_ARQUITETURA.md §201.
+  quando `is_night()`. Ver PROBLEMAS_ARQUITETURA.md §201. **Corte
+  liga/desliga é ANCORADO em minuto exato do ciclo de 60min**
+  (`_LIGHT_OFF_MINUTE`/`_LIGHT_ON_MINUTE` em
+  `ui/day_night_system.py::_PHASE_LABELS`, hoje 12/49, 23/09/2026) —
+  NUNCA um valor de fração solto; mudar o minuto é a ÚNICA edição
+  necessária, os dois lados (`is_night()` + rótulo "Noite" do F12) já
+  seguem junto por lerem a mesma tabela. Ver PROBLEMAS_ARQUITETURA.md
+  §204.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

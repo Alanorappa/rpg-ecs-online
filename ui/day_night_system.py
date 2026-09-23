@@ -177,15 +177,25 @@ def _build_keyframes() -> list[tuple[float, tuple[int, int, int], int]]:
         (1.00, *night),   # volta pra meia-noite
     ]
 
-# Rótulo simples por faixa de fração — só pra exibição (F12/debug), nunca
-# consultado pelo overlay/luz (que só leem day_night_color()). Faixas
-# alinhadas com os keyframes acima.
+# Rótulo simples por faixa de fração — usado pra exibição (F12/debug) E
+# como corte da fase "Noite" que `is_night()` consulta (luz de lampião +
+# camada de sprite "aceso", ver docstring de `is_night()`). Fronteiras de
+# Noite ANCORADAS em minuto do ciclo de 60min (23/09/2026, pedido
+# explícito do usuário: luz apaga no minuto 12, acende no minuto 49) — só
+# o início de Amanhecer e o fim de Entardecer se movem pra abrir espaço;
+# Dia e o resto de Amanhecer/Entardecer não mudam. Ver
+# PROBLEMAS_ARQUITETURA.md §204.
+_LIGHT_OFF_MINUTE = 12.0
+_LIGHT_ON_MINUTE = 49.0
+_CYCLE_MINUTES = DAY_NIGHT_CYCLE_S / 60.0
+_light_off_frac = _LIGHT_OFF_MINUTE / _CYCLE_MINUTES
+_light_on_frac = _LIGHT_ON_MINUTE / _CYCLE_MINUTES
 _PHASE_LABELS: list[tuple[float, float, str]] = [
-    (0.00, 0.17, "Noite"),
-    (0.17, 0.29, "Amanhecer"),
+    (0.00, _light_off_frac, "Noite"),
+    (_light_off_frac, 0.29, "Amanhecer"),
     (0.29, 0.71, "Dia"),
-    (0.71, 0.83, "Entardecer"),
-    (0.83, 1.00, "Noite"),
+    (0.71, _light_on_frac, "Entardecer"),
+    (_light_on_frac, 1.00, "Noite"),
 ]
 
 # Override de debug (F12, só GM/local) — desloca o relógio sem congelar
