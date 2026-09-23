@@ -1940,6 +1940,23 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
 # Mapeamento id_tile → (sheet_file, sx, sy, tile_w, tile_h) — lido pelo TileSpriteManager
 OBJECT_SHEET_TILE_MAP: dict[str, tuple] = {}
 
+# Folha "noturna" companheira de uma folha base (22/09/2026, pedido do
+# usuário — camada de sprite que liga à noite, ex: lanterna acesa do
+# lampião). MESMAS dimensões e MESMAS coordenadas (sx,sy,w,h) de cada
+# tile que a folha base — usuário desenhou a versão "ligada" de cada
+# objeto exatamente por cima da posição correspondente na folha base,
+# deixando o resto do canvas transparente. `TileSpriteManager.
+# get_night_overlay_sprite()` usa este dict pra saber qual folha
+# companheira existe (se existir) pra um `sheet_file` — NUNCA associar
+# isso por tile individual, é uma propriedade da FOLHA inteira. Gate de
+# verdade (só objetos com TileType.light_source ganham a camada de
+# verdade, mesmo que a folha noturna tenha arte extra desenhada pra
+# outras coisas — "próximas interações", ainda não ativadas) fica em
+# `ui/tile_render_system.py::get_world_objects()`, não aqui.
+NIGHT_SHEET_BY_FILE: dict[str, str] = {
+    "TX Village Props with Shadow": "TX Village Props Light",
+}
+
 
 def _resolve_collision(col_rect) -> tuple[bool, object]:
     """

@@ -209,6 +209,18 @@ def current_phase_label(now: float | None = None) -> str:
     return _PHASE_LABELS[-1][2]
 
 
+def is_night(now: float | None = None) -> bool:
+    """Corte BINÁRIO — True só durante a fase "Noite" (22/09/2026, pedido
+    do usuário). Ponto único de verdade pra qualquer efeito que deve
+    ligar/desligar exatamente junto (luz de lampião + camada de sprite
+    "aceso", ver DayNightSystem.render() e
+    ui/tile_render_system.py::get_world_objects()) — NUNCA reimplementar
+    esse corte comparando fração/keyframe em outro lugar. Diferente do
+    tingimento ambiente (`day_night_color()`), que continua suave/
+    gradual — só os efeitos de LUZ (lampião etc.) são binários."""
+    return current_phase_label(now) == "Noite"
+
+
 def day_night_color(now: float | None = None) -> tuple[int, int, int, int]:
     """RGBA do tingimento atual — ver docstring do módulo. Keyframes
     recalculados a cada chamada (`_build_keyframes()`) pra sempre
@@ -283,7 +295,11 @@ class DayNightSystem(System):
             self._overlay_size = (surf_w, surf_h)
         self._overlay_surf.fill((r, g, b, a))
 
-        if world_objects:
+        # Luz de objeto (lampião etc.) é BINÁRIA — só na fase Noite, não
+        # segue o alpha contínuo do tingimento ambiente (22/09/2026,
+        # pedido do usuário — mesmo corte que liga a camada de sprite
+        # "aceso" em ui/tile_render_system.py::get_world_objects()).
+        if world_objects and is_night():
             for obj in world_objects:
                 light = obj.get("light_source")
                 if not light:

@@ -22298,3 +22298,94 @@ acinzentado, §195/§197) passaram sem alteração — confirma que a lógica
 de transição continua correta mesmo com os novos valores de alpha bem
 mais baixos no amanhecer/entardecer. Suíte completa de
 `test_client_ui.py`: 195 passed.
+
+---
+
+## 201. Feature — luz de lampião binária (só na fase Noite) + camada de sprite "aceso" a partir de folha companheira (22/09/2026)
+
+Continuação de §193-200, mesmo pedido do usuário: (1) desligar a luz do
+lampião fora da noite de propósito, não por coincidência de alpha; (2)
+objeto de mapa (lampião) mudar de aparência à noite — uma 2ª imagem
+sobrepondo a 1ª.
+
+**Pesquisa antes de codar (achado real que mudou o desenho):** o
+usuário descreveu a ideia de "criar uma camada" — antes de propor
+qualquer campo novo no catálogo, verifiquei o asset que ele já tinha
+exportado (`assets/tiles/TX Village Props Iight.png`, criado no mesmo
+dia): MESMO canvas 2048×2048 da folha base
+(`TX Village Props with Shadow.png`), com arte SÓ nas mesmas posições
+`(sx,sy,w,h)` de alguns objetos — inclusive, confirmado por crop
+programático (`PIL`) da região exata do `vp_170`/`vp_171`, a lanterna
+ACESA exatamente sobreposta à posição da lanterna apagada da folha
+base. Esse achado eliminou a necessidade de QUALQUER campo novo por
+tile no catálogo — a "camada" já existe pronta como arquivo, só falta
+o mecanismo de runtime saber que ela existe e buscar a MESMA posição.
+
+**Achado de escopo (evitou ativar coisa errada):** a folha nova tem
+MAIS conteúdo pintado além do lampião — o usuário confirmou que é arte
+reservada pra "outras interações com objetos do mapa" ainda não
+implementadas. Varredura por pixel não-transparente (`numpy`) achou
+pelo menos 3 outros clusters de conteúdo na folha, fora da região do
+lampião. Decisão: o mecanismo só ativa a camada noturna pra objetos
+que JÁ têm `TileType.light_source` marcado (hoje só `vp_170`/`vp_171`)
+— nunca pra "qualquer tile que a folha companheira tenha algo
+pintado". Quando as próximas interações forem implementadas, cada uma
+ativa sua própria parte da folha do jeito que fizer sentido pra ela —
+não é escopo deste item.
+
+**Nome do arquivo corrigido antes de referenciar no código**: o export
+saiu como "TX Village Props **I**ight.png" (I maiúsculo em vez de l
+minúsculo) — usuário confirmou que foi sem querer, renomeado pra
+"TX Village Props Light.png" (`git mv`) antes de qualquer código
+apontar pra ele.
+
+**Mecanismo (3 peças, cada uma um ponto único de verdade):**
+
+1. `ui/day_night_system.py::is_night(now=None) -> bool` — `True` só
+   quando `current_phase_label(now) == "Noite"`. Corte BINÁRIO,
+   diferente do tingimento ambiente (`day_night_color()`), que continua
+   suave/gradual — decisão do usuário: só os efeitos de LUZ (buraco no
+   escurecimento + camada de sprite) são liga/desliga, não o tingimento
+   em si. `DayNightSystem.render()`'s loop de furar o escurecimento
+   agora é `if world_objects and is_night():` em vez de rodar sempre
+   que `alpha>0` — antes, com os novos valores de alpha baixo no
+   amanhecer/entardecer (§200), a luz já ficava quase invisível por
+   coincidência; agora é uma regra de verdade.
+2. `engine/tileset.py::NIGHT_SHEET_BY_FILE` — dict de módulo
+   (`{sheet_file_base: sheet_file_noturno}`), 1 entrada hoje
+   (`"TX Village Props with Shadow" → "TX Village Props Light"`).
+   Propriedade da FOLHA inteira, nunca por tile — evita repetir a
+   associação em cada objeto que ganhar uma folha companheira no
+   futuro.
+3. `ui/tile_sprite_manager.py::TileSpriteManager.get_night_overlay_sprite(name)`
+   — reusa `_get_sheet_region()` (mesmo cache já usado por
+   `get_raw_sprite()`) com o MESMO `(sx,sy,w,h)` do tile, só trocando o
+   `sheet_file` pela folha companheira. `None` se a folha base não tem
+   companheira cadastrada. Este método NÃO gateia por `light_source` —
+   só resolve "existe alguma coisa pintada aqui na folha noturna",
+   devolve mesmo pra tile sem light_source (`vp_186`/pedras, testado
+   explicitamente) — o gate real é 1 nível acima.
+
+**Gate real + wiring**: `ui/tile_render_system.py::get_world_objects()`
+só chama `get_night_overlay_sprite()` quando `tile_type.light_source`
+existe — resultado (`Surface | None`) entra no dict do objeto como
+`"night_overlay_sprite"`, mesma posição/tamanho do sprite base (nunca
+recalcula âncora à parte). `ui/render_system.py::RenderSystem.render()`
+desenha essa Surface por cima do sprite normal (nunca substitui) só
+quando `is_night()` — 1 `import` de módulo (`from ui.day_night_system
+import is_night`), não é chamada de System pra System (é função pura,
+mesmo padrão já usado por `day_night_color`/`day_night_fraction`
+alhures).
+
+**Teste**: 6 casos novos — `is_night()` bate com os limites esperados
+das 5 fases; luz de lampião NÃO fura o escurecimento fora da noite
+(revert-to-confirm feito: comentando o gate de propósito, o teste falha
+exatamente como esperado); `get_night_overlay_sprite("vp_170")` com
+catálogo/assets REAIS (não mock) devolve uma Surface 80×96 com pixels
+de verdade; folha sem companheira (`gcn_1`) e nome inexistente devolvem
+`None`; `get_world_objects()` com um mapa sintético plantando `vp_170`
+(light_source) e `vp_186` (mesma folha, SEM light_source) lado a lado
+confirma que só o primeiro ganha `night_overlay_sprite` — o gate real
+funciona ponta a ponta, não só na função de baixo nível. Suíte completa
+(`pytest tests/ -q`, 1768 passed, 1 falha pré-existente e não
+relacionada — mesma classe de timing flaky já documentada).

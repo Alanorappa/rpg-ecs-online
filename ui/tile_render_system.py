@@ -481,10 +481,20 @@ class TileRenderSystem(System):
                     spr_px_w = getattr(tile_type, "sprite_px_w", 0)
                     spr_px_h = getattr(tile_type, "sprite_px_h", 0)
                     spr_name = getattr(tile_type, "sprite_name", "")
+                    light_source = getattr(tile_type, "light_source", None)
+                    night_overlay_sprite = None
                     if spr_px_w > 0 and spr_px_h > 0 and spr_name:
                         sprite_w = spr_px_w
                         total_h  = spr_px_h
                         sprite   = TILE_SPRITES.get_raw_sprite(spr_name)
+                        # Camada "aceso" à noite (22/09/2026, pedido do
+                        # usuário) — só resolvida pra objetos que JÁ são
+                        # fonte de luz (nunca pra qualquer tile com folha
+                        # noturna companheira — a folha pode ter arte
+                        # extra reservada pra outras interações futuras,
+                        # ainda não é pra acender sozinha).
+                        if light_source:
+                            night_overlay_sprite = TILE_SPRITES.get_night_overlay_sprite(spr_name)
                     else:
                         tiles_wide = getattr(tile_type, "sprite_tiles_wide", 1)
                         sprite_w   = tile_size * tiles_wide
@@ -514,7 +524,15 @@ class TileRenderSystem(System):
                         # DayNightSystem calcular a posição de tela da luz
                         # (screen_x/screen_y + off_x/off_y, sem recalcular
                         # offset de câmera à parte — ver TileType.light_source).
-                        "light_source": getattr(tile_type, "light_source", None),
+                        "light_source": light_source,
+                        # night_overlay_sprite (22/09/2026) — Surface da
+                        # versão "acesa" (ou None) — RenderSystem desenha
+                        # por cima do sprite normal quando
+                        # ui.day_night_system.is_night() for True. Mesma
+                        # posição/tamanho do sprite base (screen_x/screen_y/
+                        # width/height acima) — nunca recalcula âncora à
+                        # parte.
+                        "night_overlay_sprite": night_overlay_sprite,
                     })
         return objects
 

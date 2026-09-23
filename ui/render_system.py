@@ -41,6 +41,7 @@ from engine.character_animation import (get_character_frame, resolve_display_sta
                                         character_anchor_offset)
 from ui.ui_helpers import fill_surf
 from ui.tile_sprite_manager import TILE_SPRITES
+from ui.day_night_system import is_night
 from content.status_effects_data import EFFECT_DEFS
 
 # Lookup reverso skill_id → (talent_id, min_points) — fonte única em
@@ -539,6 +540,15 @@ class RenderSystem(System):
                     self.world_surf.blit(fill_surf((w, h), (*obj["color"][:3], 127)), (sx, sy))
                 else:
                     pygame.draw.rect(self.world_surf, obj["color"], (sx, sy, w, h))
+                # Camada "aceso" à noite (22/09/2026, pedido do usuário) —
+                # mesma posição/tamanho do sprite base, desenhada por cima
+                # (nunca substitui) só quando is_night() é True. Já vem
+                # None de get_world_objects() pra qualquer objeto sem
+                # TileType.light_source — gate real fica lá, aqui só
+                # decide QUANDO (a fase) desenhar o que já foi resolvido.
+                _night_overlay = obj.get("night_overlay_sprite")
+                if _night_overlay is not None and is_night():
+                    self.world_surf.blit(_night_overlay, (sx, sy))
                 continue
 
             # ── Entidade ──────────────────────────────────────────────────────

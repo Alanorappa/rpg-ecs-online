@@ -4883,6 +4883,118 @@ def test_day_night_render_dia_pleno_nao_desenha():
     assert sys._overlay_surf is None, "não deveria nem alocar a surface de overlay em dia pleno"
 
 
+def test_is_night_so_true_na_fase_noite():
+    from ui.day_night_system import is_night, DAY_NIGHT_CYCLE_S
+    assert is_night(0.0) is True                          # meia-noite
+    assert is_night(0.5 * DAY_NIGHT_CYCLE_S) is False      # meio-dia
+    assert is_night(0.23 * DAY_NIGHT_CYCLE_S) is False     # amanhecer
+    assert is_night(0.77 * DAY_NIGHT_CYCLE_S) is False     # entardecer
+    assert is_night(0.90 * DAY_NIGHT_CYCLE_S) is True      # madrugada
+
+
+def test_day_night_luz_de_lampiao_desligada_fora_da_noite():
+    """Corte BINÁRIO (22/09/2026, pedido do usuário) — luz de objeto não
+    deve furar o escurecimento fora da fase Noite, mesmo com alpha>0
+    (amanhecer/entardecer têm tingimento visível, mas a luz do lampião
+    fica junto com o resto, sem "buraco")."""
+    import ui.day_night_system as dns
+    world, player, sys = _make_day_night_world(instance_active=False)
+    base_color = (200, 180, 160)
+    sys.world_surf.fill(base_color)
+    orig_color = dns.day_night_color
+    orig_is_night = dns.is_night
+    dns.day_night_color = lambda now=None: (220, 90, 110, 40)   # entardecer, alpha>0
+    dns.is_night = lambda now=None: False
+    objs = [{
+        "screen_x": 150, "screen_y": 150,
+        "light_source": (44, 41, 5, 6, 75, 3),
+    }]
+    try:
+        sys.render(world_objects=objs)
+    finally:
+        dns.day_night_color = orig_color
+        dns.is_night = orig_is_night
+
+    cx, cy = 150 + 44 + 2, 150 + 41 + 3
+    center_px = sys.world_surf.get_at((cx, cy))[:3]
+    far_px    = sys.world_surf.get_at((5, 5))[:3]
+    assert center_px == far_px, \
+        f"fora da noite a luz não deveria furar nada — centro {center_px} deveria bater com longe {far_px}"
+    assert center_px != base_color, "o tingimento em si (fora da luz) continua se aplicando normalmente"
+
+
+def test_get_night_overlay_sprite_lampiao_real():
+    """Usa o catálogo/assets REAIS (não mock) — vp_170 é o lampião
+    marcado com light_source; a folha companheira
+    "TX Village Props Light" tem a lanterna acesa na MESMA posição."""
+    from engine.tileset import discover_object_sheet_tiles
+    discover_object_sheet_tiles()
+    from ui.tile_sprite_manager import TILE_SPRITES
+    surf = TILE_SPRITES.get_night_overlay_sprite("vp_170")
+    assert surf is not None
+    assert surf.get_size() == (80, 96)   # mesmo tamanho do sprite base (§193)
+    non_transparent = sum(
+        1 for x in range(surf.get_width()) for y in range(surf.get_height())
+        if surf.get_at((x, y))[3] > 0
+    )
+    assert non_transparent > 0, "lanterna acesa deveria ter pixels de verdade nessa posição"
+
+
+def test_get_night_overlay_sprite_sem_folha_companheira_devolve_none():
+    """Família sem folha noturna cadastrada (ex: Grade Cemitério) — não
+    quebra, só não tem camada noturna."""
+    from engine.tileset import discover_object_sheet_tiles
+    discover_object_sheet_tiles()
+    from ui.tile_sprite_manager import TILE_SPRITES
+    assert TILE_SPRITES.get_night_overlay_sprite("gcn_1") is None
+    assert TILE_SPRITES.get_night_overlay_sprite("nome_que_nao_existe") is None
+
+
+def test_get_world_objects_so_marca_night_overlay_pra_objeto_com_light_source():
+    """Gate de verdade (22/09/2026): a folha "TX Village Props Light"
+    tem arte extra reservada pra OUTROS objetos (futuras interações,
+    ainda não implementadas) — get_world_objects() só deve popular
+    night_overlay_sprite pros objetos que JÁ são light_source (hoje só
+    o lampião), nunca pra qualquer tile que por acaso tenha pixel
+    pintado na folha companheira."""
+    from engine.world import World
+    from engine.components import Tilemap
+    from engine.tileset import discover_object_sheet_tiles, OBJECT_MAPPING
+    from ui.tile_render_system import TileRenderSystem
+    discover_object_sheet_tiles()
+
+    # vp_170 (light_source) e vp_186 (pedras, SEM light_source, mesma
+    # família/folha) plantados lado a lado num mapa sintético mínimo.
+    assert OBJECT_MAPPING["vp_170"].light_source is not None
+    assert OBJECT_MAPPING["vp_186"].light_source is None
+
+    world = World()
+    tm_eid = world.create_entity()
+    terrain = [["G"] * 5 for _ in range(5)]
+    objects = [["."] * 5 for _ in range(5)]
+    objects[2][1] = "vp_170"
+    objects[2][3] = "vp_186"
+    world.add_component(tm_eid, Tilemap(
+        tile_matrix=[], terrain_matrix=terrain, object_matrix=objects,
+        tile_size=32, map_width_tiles=5, map_height_tiles=5,
+    ))
+    trs = TileRenderSystem(world, pygame.display.get_surface())
+    objs = trs.get_world_objects(0, 0)
+    by_char = {"vp_170": None, "vp_186": None}
+    # get_world_objects não devolve o char de volta — casa pela posição
+    # de tile conhecida (tile_x/tile_y) plantada acima.
+    for obj in objs:
+        if obj["tile_x"] == 1 and obj["tile_y"] == 2:
+            by_char["vp_170"] = obj
+        elif obj["tile_x"] == 3 and obj["tile_y"] == 2:
+            by_char["vp_186"] = obj
+
+    assert by_char["vp_170"] is not None and by_char["vp_186"] is not None
+    assert by_char["vp_170"]["night_overlay_sprite"] is not None
+    assert by_char["vp_186"]["night_overlay_sprite"] is None, \
+        "objeto sem light_source nunca deveria ganhar night_overlay_sprite, mesmo na mesma folha"
+
+
 def test_day_night_transicao_nao_passa_por_cinza():
     """Bug real relatado pelo usuário 21/09/2026: interpolar RGB em linha
     reta direto do azul da noite pro laranja do dia passava por um
@@ -4942,8 +5054,10 @@ def test_day_night_luz_de_lampiao_fura_o_escurecimento():
     world, player, sys = _make_day_night_world(instance_active=False)
     base_color = (200, 180, 160)
     sys.world_surf.fill(base_color)
-    orig = dns.day_night_color
+    orig_color = dns.day_night_color
+    orig_is_night = dns.is_night
     dns.day_night_color = lambda now=None: (20, 25, 60, 150)
+    dns.is_night = lambda now=None: True   # luz de objeto é binária (22/09/2026) — só liga na fase Noite
     objs = [{
         "screen_x": 150, "screen_y": 150,
         "light_source": (44, 41, 5, 6, 75, 3),   # off_x,off_y,w,h,intensidade%,raio_tiles
@@ -4951,7 +5065,8 @@ def test_day_night_luz_de_lampiao_fura_o_escurecimento():
     try:
         sys.render(world_objects=objs)
     finally:
-        dns.day_night_color = orig
+        dns.day_night_color = orig_color
+        dns.is_night = orig_is_night
 
     cx, cy = 150 + 44 + 2, 150 + 41 + 3   # centro do ponto de luz
     center_px = sys.world_surf.get_at((cx, cy))[:3]

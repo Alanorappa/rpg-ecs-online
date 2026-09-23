@@ -954,7 +954,21 @@ padrão a quebrar, não só os bugs individuais.
   padrão de verdade pra todo jogador, atualizar as constantes
   `DEFAULT_*` em `ui/day_night_system.py` (mesmo mecanismo de "Resetar
   padrão" do F12 — atualizar lá muda pra ONDE o reset volta). Ver
-  PROBLEMAS_ARQUITETURA.md §200.
+  PROBLEMAS_ARQUITETURA.md §200. **Luz de objeto (buraco no
+  escurecimento) é BINÁRIA** — `ui/day_night_system.py::is_night()`
+  (`True` só na fase "Noite") gateia o loop de furar o escurecimento em
+  `DayNightSystem.render()`; o tingimento AMBIENTE continua suave, só a
+  luz é liga/desliga. **Objeto de mapa com aparência "acesa" à noite**
+  (lampião etc.) → folha de sprite COMPANHEIRA cadastrada em
+  `engine/tileset.py::NIGHT_SHEET_BY_FILE` (propriedade da FOLHA
+  inteira, nunca por tile — mesmo `(sx,sy,w,h)` da folha base, só troca
+  o arquivo) — `TileSpriteManager.get_night_overlay_sprite(name)`
+  resolve a Surface, `get_world_objects()` só a popula pra objetos que
+  JÁ têm `TileType.light_source` (nunca "qualquer tile com pixel
+  pintado na folha companheira" — a folha pode ter arte reservada pra
+  outras interações futuras, ainda não é pra acender sozinha).
+  `RenderSystem` desenha por cima do sprite normal (nunca substitui) só
+  quando `is_night()`. Ver PROBLEMAS_ARQUITETURA.md §201.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

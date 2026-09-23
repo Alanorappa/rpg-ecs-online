@@ -112,6 +112,26 @@ class TileSpriteManager:
             return self._get_sheet_region(sheet_file, sx, sy, tw, th)
         return self._load_raw(name)
 
+    def get_night_overlay_sprite(self, name: str) -> "pygame.Surface | None":
+        """Versão "noturna" de um tile de sheet (22/09/2026, pedido do
+        usuário — ex: lanterna acesa do lampião) — MESMO recorte
+        (sx,sy,w,h) do tile base, só que extraído da folha COMPANHEIRA
+        (`engine.tileset.NIGHT_SHEET_BY_FILE`), se existir uma pra essa
+        folha. `None` se a folha base não tiver companheira noturna
+        cadastrada, ou se `name` não for um tile de OBJECT_SHEET_TILE_MAP.
+        Chamador (`ui/tile_render_system.py::get_world_objects()`) é quem
+        decide QUANDO desenhar isso (gate de `TileType.light_source` +
+        `is_night()`) — este método só resolve a Surface."""
+        from engine.tileset import OBJECT_SHEET_TILE_MAP, NIGHT_SHEET_BY_FILE
+        info = OBJECT_SHEET_TILE_MAP.get(name)
+        if info is None:
+            return None
+        sheet_file, sx, sy, tw, th = info
+        night_sheet = NIGHT_SHEET_BY_FILE.get(sheet_file)
+        if night_sheet is None:
+            return None
+        return self._get_sheet_region(night_sheet, sx, sy, tw, th)
+
     def _get_sheet_region(self, sheet_file: str,
                           sx: int, sy: int, tw: int, th: int) -> "pygame.Surface | None":
         """Extrai e cacheiza uma sub-região de um sheet PNG."""
