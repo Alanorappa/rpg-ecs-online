@@ -4884,15 +4884,74 @@ def test_day_night_render_dia_pleno_nao_desenha():
     assert sys._overlay_surf is None, "não deveria nem alocar a surface de overlay em dia pleno"
 
 
-def test_day_night_render_nao_desenha_em_mapa_fechado():
-    """Mapa fechado (caverna/dungeon, map_affected=False) — mesmo
-    comportamento de instância (nada desenhado). 23/09/2026, §206."""
+def test_day_night_render_mapa_fechado_fica_sempre_escuro():
+    """Mapa fechado (caverna/dungeon, map_affected=False) — CORREÇÃO
+    23/09/2026 (usuário testou e reportou o bug): a versão anterior
+    (§206) desligava o tingimento inteiro nesse caso, o que na prática
+    deixava a caverna sempre no brilho MÁXIMO (multiplicar por branco =
+    nada escurece) — o oposto do pretendido pra um lugar sem luz do
+    sol. Correto: sempre escuro (âncora de Noite fixa), mesmo que o
+    relógio REAL diga "dia pleno" — prova que o mapa fechado nem
+    consulta o relógio, mockando day_night_color() pra "dia pleno" e
+    confirmando que o resultado ainda é escuro. Ver PROBLEMAS_ARQUITETURA.md
+    §208."""
+    import ui.day_night_system as dns
     world, player, sys = _make_day_night_world(instance_active=False)
     sys.map_affected = False
-    sys.world_surf.fill((77, 88, 99))
-    sys.render(world_objects=[])
-    assert sys.world_surf.get_at((5, 5))[:3] == (77, 88, 99)
-    assert sys._overlay_surf is None, "não deveria nem alocar a surface de overlay em mapa fechado"
+    base_color = (200, 180, 160)
+    sys.world_surf.fill(base_color)
+    orig_color = dns.day_night_color
+    dns.day_night_color = lambda now=None: (255, 255, 255, 0)   # "dia pleno" no relógio real
+    try:
+        sys.render(world_objects=[])
+    finally:
+        dns.day_night_color = orig_color
+
+    # Ground truth calculada com o MESMO blit real do pygame (nunca
+    # round() na mão — a fórmula interna do BLEND_RGBA_MULT não é
+    # round(a*b/255) exato, ver PROBLEMAS_ARQUITETURA.md §203/§208).
+    ref = pygame.Surface((1, 1))
+    ref.fill(base_color)
+    ref_overlay = pygame.Surface((1, 1))
+    ref_overlay.fill(tuple(dns._night_color))
+    ref.blit(ref_overlay, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+    expected = ref.get_at((0, 0))[:3]
+    assert sys.world_surf.get_at((5, 5))[:3] == expected, (
+        "mapa fechado devia ficar escuro (âncora de Noite) mesmo com o "
+        "relógio real em pleno dia"
+    )
+
+
+def test_day_night_render_mapa_fechado_lampiao_acende_mesmo_fora_da_noite_real():
+    """Luz de objeto (lampião) num mapa fechado tem que acender SEMPRE
+    (mesmo com o relógio real em pleno dia) — senão a caverna fica
+    escura pra sempre sem nenhuma luz de tocha/lampião funcionando
+    durante o "dia" de fora. Nenhum objeto desse tipo existe nas
+    cavernas atuais, mas o corte já nasce certo pra quando existir."""
+    import ui.day_night_system as dns
+    world, player, sys = _make_day_night_world(instance_active=False)
+    sys.map_affected = False
+    sys.world_surf.fill((10, 10, 10))
+    orig_color = dns.day_night_color
+    orig_is_night = dns.is_night
+    dns.day_night_color = lambda now=None: (255, 255, 255, 0)   # dia pleno
+    dns.is_night = lambda now=None: False                       # dia pleno, não é noite de verdade
+    objs = [{
+        "screen_x": 150, "screen_y": 150,
+        "light_source": (44, 41, 5, 6, 75, 3),
+    }]
+    try:
+        sys.render(world_objects=objs)
+    finally:
+        dns.day_night_color = orig_color
+        dns.is_night = orig_is_night
+
+    cx, cy = 150 + 44 + 2, 150 + 41 + 3
+    center_px = sys.world_surf.get_at((cx, cy))[:3]
+    assert sum(center_px) > 30, (
+        "lampião num mapa fechado devia acender mesmo com is_night()==False "
+        f"(relógio real em pleno dia) — pixel central ficou {center_px}"
+    )
 
 
 def test_is_night_so_true_na_fase_noite():
@@ -5196,6 +5255,46 @@ def test_day_night_clock_hud_nao_desenha_em_mapa_fechado():
     assert screen.get_at((r.centerx, r.centery))[:3] == (10, 20, 30), (
         "não devia ter desenhado nada dentro da trilha em mapa fechado"
     )
+
+
+def test_load_ambient_zones_nao_crasha_antes_dos_sistemas_de_dia_noite_existirem():
+    """Bug real relatado pelo usuário 23/09/2026 (ver PROBLEMAS_ARQUITETURA.md
+    §207): AttributeError ao abrir o cliente — GameEngine::__init__() chama
+    _load_map_and_entities() (que chama _load_ambient_zones()) ANTES de
+    self._day_night_system/self._day_night_clock_hud serem construídos
+    (ordem real do __init__, não invertível — os dois precisam de
+    self.player_entity, que só existe depois do mapa carregar). Reproduz a
+    ORDEM EXATA da chamada real (unbound method numa Stub sem os 2
+    atributos) — não um cenário sintético inventado."""
+    import game
+
+    class _Stub:
+        pass
+
+    obj = _Stub()
+    # 1ª chamada real: dentro de _load_map_and_entities(), antes dos 2
+    # sistemas existirem — não pode levantar AttributeError.
+    game.GameEngine._load_ambient_zones(obj, {"day_night_affected": False})
+    assert obj._day_night_affected is False
+
+    # Simula a construção dos 2 sistemas logo depois (__init__ real reaplica
+    # o valor já calculado nesse ponto — ver comentário ao lado da
+    # construção em GameEngine.__init__).
+    class _FakeSys:
+        map_affected = True
+
+    obj._day_night_system    = _FakeSys()
+    obj._day_night_clock_hud = _FakeSys()
+    obj._day_night_system.map_affected    = obj._day_night_affected
+    obj._day_night_clock_hud.map_affected = obj._day_night_affected
+    assert obj._day_night_system.map_affected is False
+    assert obj._day_night_clock_hud.map_affected is False
+
+    # 2ª chamada real: troca de mapa, os 2 sistemas já existem — propaga
+    # normal.
+    game.GameEngine._load_ambient_zones(obj, {"day_night_affected": True})
+    assert obj._day_night_system.map_affected is True
+    assert obj._day_night_clock_hud.map_affected is True
 
 
 def test_day_night_clock_hud_escuro_na_meia_noite_claro_no_meio_dia():

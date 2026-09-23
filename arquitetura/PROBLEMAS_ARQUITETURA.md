@@ -22716,3 +22716,108 @@ mock). `tests/test_client_ui.py` — `DayNightSystem.render()`/
 `DayNightClockHud.render()` com `map_affected=False` não desenham nada
 (mesmo formato dos testes de gate de instância já existentes). Suíte
 completa de `tests/test_client_ui.py`: 206 passed.
+
+## 207. Bug real — AttributeError ao abrir o cliente, `_day_night_system` ainda não existia (23/09/2026, dentro de 1h da §206)
+
+Usuário reportou traceback real ao abrir o jogo:
+```
+File "game.py", line 802, in _load_ambient_zones
+    self._day_night_system.map_affected     = self._day_night_affected
+AttributeError: 'GameEngine' object has no attribute '_day_night_system'
+```
+
+Causa raiz: `GameEngine.__init__()` chama `_load_map_and_entities()`
+(que chama `_load_ambient_zones()`) ANTES de construir
+`self._day_night_system`/`self._day_night_clock_hud` — os dois
+precisam de `self.player_entity`, que só existe depois do mapa carregar
+(ordem do `__init__` não é invertível por esse motivo). Erro de
+verificação da §206: eu tinha CONFIRMADO a ordem lendo o código
+(`self._day_night_system = DayNightSystem(...)` na linha que LI como
+"~481", contra a chamada de `_load_ambient_zones` na linha "~697" que
+eu tinha visto — 481 < 697, parecia seguro) mas a leitura foi feita
+ANTES de várias edições da mesma sessão terem deslocado os números de
+linha reais; a ordem de EXECUÇÃO nunca foi essa — `_load_map_and_entities()`
+é chamada na linha 479 do `__init__`, e a construção dos 2 sistemas só
+vem depois, na 486-489. Verificar "linha X < linha Y" num arquivo que
+está sendo editado na mesma sessão não é o mesmo que verificar ordem de
+CHAMADA real — lição pra qualquer wiring futuro em `__init__`: seguir o
+fluxo de execução (quem chama quem, nessa ordem), nunca comparar
+posição de linha isolada.
+
+**Fix**: `_load_ambient_zones()` passa a usar `getattr(self,
+"_day_night_system", None)`/mesma coisa pro clock hud antes de setar
+`map_affected` — 1ª chamada (mapa inicial, sistemas ainda não existem)
+não crasha mais (nada a propagar ainda de qualquer forma — os 2 objetos
+nascem com `map_affected=True`, igual ao default). Logo depois de
+`self._day_night_system`/`self._day_night_clock_hud` serem construídos
+no `__init__`, o valor já calculado por `self._day_night_affected` é
+reaplicado nos dois — cobre o caso (hoje inexistente, spawn inicial
+sempre é `map_1`, mundo aberto) de o mapa inicial vir a ser fechado no
+futuro.
+
+**Reprodução do cenário real, não sintética**: teste novo chama
+`game.GameEngine._load_ambient_zones` (unbound, método real da classe)
+numa Stub sem os 2 atributos, na MESMA ordem de chamada do `__init__`
+real — revert-to-confirm confirmou que, sem o fix, o teste falha com o
+MESMO `AttributeError` e a MESMA linha do traceback relatado pelo
+usuário (não um cenário inventado). Lançar o cliente de ponta a ponta
+pra confirmar visualmente não foi possível nesta sessão (exige servidor
+rodando + login/seleção de personagem antes de `GameEngine.__init__`
+sequer começar) — a reprodução via unbound method já bate 1:1 com o
+traceback relatado, mas o usuário ainda precisa confirmar que o jogo
+abre normal na próxima tentativa.
+
+**Teste**: `tests/test_client_ui.py::
+test_load_ambient_zones_nao_crasha_antes_dos_sistemas_de_dia_noite_existirem`.
+Suíte completa: 207 passed em `tests/test_client_ui.py`.
+
+## 208. Bug real — mapa fechado (`day_night_affected: false`) ficava sempre no brilho MÁXIMO, não escuro (23/09/2026, dentro de 1h da §206/§207)
+
+Usuário testou a §206 (mapa fechado fora do ciclo) e reportou: "quando
+'day_night_affected': false, o modo default do mapa deve ser noite e
+não dia, pois ambientes fechados como cavernas e dungeons são escuras".
+
+Causa raiz: `DayNightSystem.render()` (§206) tratava `map_affected ==
+False` como "desliga o efeito inteiro" (`return` antecipado). Como a
+técnica de tingimento é MULTIPLICAÇÃO (§203) — onde "sem efeito" =
+multiplicar por branco = brilho ORIGINAL, o mais claro possível — a 1ª
+versão produzia exatamente o OPOSTO do pedido: a caverna sempre no
+brilho máximo (como se fosse sempre meio-dia), nunca escurecida.
+
+**Fix**: `map_affected == False` deixou de ser um `return` antecipado —
+agora usa a âncora `_night_color` (mesma cor editável no F12, "Noite")
+como tingimento FIXO, ignorando por completo `day_night_color()`
+(relógio real) — a caverna nunca "amanhece". A luz de lampião
+(`is_night()`, gate binário) também passou a considerar mapa fechado
+como "sempre noite" (`is_night() or not self.map_affected`) — sem essa
+parte, um lampião numa dungeon nunca acenderia durante o "dia" de fora,
+deixando a caverna escura pra sempre sem nenhuma luz funcionando
+(nenhum objeto desse tipo existe nas 2 cavernas atuais, mas o corte já
+nasce certo pra quando existir — confirmado por grep no `object_matrix`
+das duas, nenhum tile de objeto presente hoje).
+
+`DayNightClockHud` NÃO mudou — continua escondendo o relógio inteiro em
+mapa fechado (não fazia parte do reporte do usuário, e não faz sentido
+mostrar um indicador de "hora do dia" num lugar onde não existe
+variação nenhuma).
+
+**Achado no processo de escrever o teste**: `pygame.BLEND_RGBA_MULT`
+NÃO é `round(a*b/255)` (1ª tentativa de calcular o pixel esperado na
+mão bateu 29 vs 28 num canal) — mesma classe de "verificar contra
+comportamento real do pygame, nunca assumir a fórmula" já documentada
+em §203. Corrigido calculando o valor esperado com um blit de
+referência de verdade (1×1 Surface, mesmo `BLEND_RGBA_MULT`) em vez de
+reimplementar a fórmula em Python.
+
+**Teste**: `tests/test_client_ui.py::
+test_day_night_render_mapa_fechado_fica_sempre_escuro` (mocka
+`day_night_color()` pra "dia pleno" e confirma que o resultado AINDA é
+escuro — prova que o mapa fechado nem consulta o relógio real) +
+`test_day_night_render_mapa_fechado_lampiao_acende_mesmo_fora_da_noite_real`
+(mocka `is_night()` pra `False` e confirma que o lampião acende assim
+mesmo). Revert-to-confirm feito nos dois antes de fechar — ambos
+falham sem o fix, reproduzindo exatamente o comportamento errado
+relatado. Rodados só os testes relacionados (day/night + map_loader +
+wiring), 22 passed — suíte completa E validação manual em jogo ainda
+pendentes por decisão do usuário (novo fluxo combinado 23/09/2026: só
+teste direcionado + validação manual antes de rodar a suíte inteira).

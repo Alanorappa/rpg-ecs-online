@@ -285,7 +285,13 @@ class DayNightSystem(System):
         # Mapa fechado (caverna/dungeon) — setado por game.py::
         # _load_ambient_zones() sempre que o mapa troca (ver
         # engine/map_loader.py, chave "day_night_affected" do
-        # <mapa>_entities.json). True = padrão (mundo aberto).
+        # <mapa>_entities.json). True = padrão (mundo aberto, segue o
+        # relógio real). False = sempre escuro (âncora de Noite fixa,
+        # NUNCA a "dia pleno" do relógio real) — ver render(), correção
+        # 23/09/2026: a 1ª versão desligava o tingimento inteiro nesse
+        # caso, o que na prática deixava a caverna sempre no brilho
+        # MÁXIMO (multiplicar por branco = sem escurecer nada), o
+        # oposto do pretendido pra um lugar sem luz do sol.
         self.map_affected: bool = True
         self._overlay_surf: "pygame.Surface | None" = None
         self._overlay_size: tuple[int, int] = (0, 0)
@@ -372,12 +378,19 @@ class DayNightSystem(System):
         iius = self.world.get_component(self.player_entity, InstanceInventoryUIState)
         if iius is not None and iius.active:
             return
-        if not self.map_affected:
-            return
 
-        r, g, b, _a = day_night_color()   # _a vestigial, ver docstring
-        if (r, g, b) == _MULT_IDENTITY:
-            return  # dia pleno — multiplicar por branco não muda nada, economiza o frame inteiro
+        if self.map_affected:
+            r, g, b, _a = day_night_color()   # _a vestigial, ver docstring
+            if (r, g, b) == _MULT_IDENTITY:
+                return  # dia pleno — multiplicar por branco não muda nada, economiza o frame inteiro
+        else:
+            # Mapa fechado (caverna/dungeon) — sem luz do sol, o padrão
+            # correto é SEMPRE escuro (âncora de Noite), nunca "amanhece"
+            # lá (23/09/2026, correção do usuário: a 1ª versão desligava
+            # o efeito inteiro, o que na prática deixava a caverna sempre
+            # no brilho MÁXIMO — o oposto do pretendido). NUNCA cai no
+            # early-return de "dia pleno" acima — não existe "dia" aqui.
+            r, g, b = tuple(_night_color)
 
         surf_w, surf_h = self.world_surf.get_size()
         if self._overlay_surf is None or self._overlay_size != (surf_w, surf_h):
@@ -392,9 +405,13 @@ class DayNightSystem(System):
         # Luz de objeto (lampião etc.) é BINÁRIA — só na fase Noite, não
         # segue o gradual do multiplicador ambiente (22/09/2026, pedido
         # do usuário — mesmo corte que liga a camada de sprite "aceso"
-        # em ui/tile_render_system.py::get_world_objects()).
+        # em ui/tile_render_system.py::get_world_objects()). Mapa fechado
+        # conta como "sempre noite" pra esse corte — se um dia houver
+        # lampião numa dungeon, ele acende o tempo todo, nunca só durante
+        # a fase real de noite do mundo aberto (nenhum objeto desse tipo
+        # existe nas cavernas atuais, mas o corte já nasce certo).
         _lit_positions: list[tuple[float, float, int, float]] = []
-        if world_objects and is_night():
+        if world_objects and (is_night() or not self.map_affected):
             for obj in world_objects:
                 light = obj.get("light_source")
                 if not light:

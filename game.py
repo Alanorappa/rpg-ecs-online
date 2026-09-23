@@ -487,6 +487,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._day_night_system = DayNightSystem(self.world, self.player_entity)
         from ui.day_night_clock_hud import DayNightClockHud
         self._day_night_clock_hud = DayNightClockHud(self.world, self.player_entity)
+        # _load_ambient_zones() já rodou (dentro de _load_map_and_entities(),
+        # antes destes 2 objetos existirem) e já calculou
+        # self._day_night_affected pro mapa inicial — reaplica aqui, cobre
+        # o caso do spawn inicial cair num mapa fechado (ver comentário em
+        # _load_ambient_zones, PROBLEMAS_ARQUITETURA.md §207).
+        self._day_night_system.map_affected    = self._day_night_affected
+        self._day_night_clock_hud.map_affected = self._day_night_affected
         self._quest_system  = QuestSystem(self.world, self.player_entity)
         from ui.buff_bar import BuffBar
         self._buff_bar = BuffBar(self.world, self.player_entity)
@@ -795,12 +802,24 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # Mapa fechado (caverna/dungeon) — desliga o ciclo dia/noite inteiro
         # pro mapa recém-carregado (tingimento ambiente + luz de lampião +
         # relógio do HUD, ver ui/day_night_system.py/ui/day_night_clock_hud.py).
-        # Só precisa setar aqui (1x por troca de mapa) — os dois sistemas já
-        # constam nesse ponto do carregamento (construídos no __init__, bem
-        # antes da 1ª chamada desta função).
+        # Só precisa setar aqui (1x por troca de mapa) — MAS a 1ª chamada
+        # (dentro de __init__::_load_map_and_entities(), linha ~479) roda
+        # ANTES de _day_night_system/_day_night_clock_hud serem construídos
+        # (linha ~487/489) — bug real corrigido 23/09/2026, ver
+        # PROBLEMAS_ARQUITETURA.md §207: AttributeError ao abrir o cliente.
+        # getattr() cobre esse 1º momento (nada pra propagar ainda — os
+        # dois objetos já nascem com map_affected=True, igual ao default
+        # daqui, então não perde nada); __init__ reaplica o valor logo
+        # depois de construir os dois, cobrindo o caso (hoje inexistente,
+        # mas não impossível no futuro) de o spawn inicial cair num mapa
+        # fechado.
         self._day_night_affected = spawn_points.get("day_night_affected", True)
-        self._day_night_system.map_affected     = self._day_night_affected
-        self._day_night_clock_hud.map_affected  = self._day_night_affected
+        _dns = getattr(self, "_day_night_system", None)
+        if _dns is not None:
+            _dns.map_affected = self._day_night_affected
+        _dnc = getattr(self, "_day_night_clock_hud", None)
+        if _dnc is not None:
+            _dnc.map_affected = self._day_night_affected
 
         # Pré-carrega todos os sons das zonas para evitar freeze na primeira entrada
         all_stingers: list[str] = []
