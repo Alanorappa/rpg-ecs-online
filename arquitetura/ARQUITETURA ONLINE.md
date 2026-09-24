@@ -319,6 +319,78 @@ existe. Ver `tools/loadtest/README.md` pra uso.
   `bot_eids: set[int]` compartilhado, encerramento gracioso
   (LOGOUT em cada bot) por Ctrl+C ou `--duration-s`.
 
+### 16. Item de bag aceso sob demanda — luz de item de jogador (23/09/2026)
+
+Pedido do usuário: item de bag (hoje só `lampiao`) que o jogador acende/
+apaga clicando com o direito, emitindo luz ao redor de si — diferente do
+poste de mapa (`TileType.light_source`, automático, só à noite), este é
+sob demanda e funciona a qualquer hora/mapa, inclusive numa caverna
+sempre escura. Design discutido e aprovado com o usuário antes de
+codar (3 decisões via pergunta direta): visível a jogadores próximos
+(não só o dono); só 1 luz ativa por jogador de cada vez (acender outro
+item troca, nunca acumula); ícone aceso via atlas companheiro do mesmo
+mecanismo já usado pro poste de mapa (`NIGHT_SHEET_BY_FILE`), aplicado
+ao atlas de ícones em vez do tileset.
+
+**Catálogo**: `Item.light_source: dict | None` (`engine/components.py`)
+— `{"intensity_pct": int, "radius_tiles": int}`, mesma unidade de
+`TileType.light_source`. Só itens com essa chave podem ser acesos —
+hoje só `content/item_table.py::ITEMS["lampiao"]`. Item novo com luz
+futuro só precisa dessa 1 chave, nenhum outro código muda.
+
+**Estado — por JOGADOR, não por item** — `PlayerLightSource`
+(`engine/components.py`, MESMO schema usado nos 2 lados): `active`,
+`item_id` (qual item fornece a luz), `intensity_pct`, `radius_tiles`
+(copiados do catálogo no momento do toggle, nunca recalculados depois).
+Servidor autoritativo: `WorldServer.toggle_item_light(session_id,
+{item_id})` confirma posse real no `Inventory` ao vivo + que o item tem
+`light_source` no catálogo ANTES de ligar — nunca confia em valores do
+payload (mesma disciplina de `apply_consumable`, ver
+`PROBLEMAS_ARQUITETURA.md` §152). Clicar no MESMO item já aceso apaga
+(toggle de verdade); clicar num item DIFERENTE troca.
+
+**Protocolo**: `TOGGLE_ITEM_LIGHT` (C→S, `{item_id}`) →
+`PLAYER_LIGHT_UPDATE` (S→C, `{eid, active, item_id, intensity_pct,
+radius_tiles}`) — broadcast via `SessionManager._sessions_in_aoi`
+(`origin_eid=eid`, que já inclui o PRÓPRIO dono sempre) numa chamada só,
+sem precisar de `queue_stats_update` separado pro dono.
+`WorldServer.player_light_field(eid)` (mesmo padrão de
+`player_faction_field`) inclui o estado atual no payload de
+ENTITY_SPAWN — jogador que entra no campo de visão de outro já aceso
+não precisa esperar o próximo toggle alheio pra descobrir.
+
+**Render** (client-only): a cada frame, `game.py` injeta 1 entrada por
+entidade com `PlayerLightSource.active` (local OU remota, via
+`world.get_entities_with`) numa lista SEPARADA de `_world_objs` (nunca a
+mesma que alimenta `RenderSystem` — ela não sabe desenhar um objeto sem
+sprite), marcada `"player_light": True`. Consumida pelo MESMO loop de
+luz que `ui/day_night_system.py::DayNightSystem.render()` já usava pro
+poste de mapa — a marca faz esse tipo de luz ignorar o gate de
+`is_night()`/mapa fechado que o poste automático respeita (funciona
+sempre, inclusive dia pleno mundo aberto).
+
+**Ícone aceso**: `ui/icon_atlas.py::ICON_CHANGE_SHEET_BY_FILE` (mesmo
+mecanismo de `NIGHT_SHEET_BY_FILE`, aplicado ao atlas de ícones —
+`atlas_items.png` → `atlas_items_change.png`, mesma grade 512×512,
+célula por célula) + `IconManager.get_active(name, size)`. A camada
+companheira tem alpha VARIÁVEL por pixel (quase transparente nas
+bordas, opaco só no núcleo do brilho) — `get_active()` **soma** essa
+camada por cima do ícone normal (nunca substitui — bug real corrigido
+no mesmo dia: a 1ª versão trocava o ícone inteiro, fazendo a silhueta
+do item sumir nas bordas quase transparentes, sobrando só o brilho
+isolado "flutuando" sobre o fundo do slot).
+
+Arquivos: `engine/components.py` (`Item.light_source`,
+`PlayerLightSource`), `content/item_table.py`/`content/quests_data.py`
+(lampião migrado de QUEST_ITEMS pro catálogo geral — deixou de ser
+material puro de quest ao ganhar comportamento real), `shared/
+messages.py`, `server/session.py`, `server/world_server.py`,
+`client/inventory_handlers.py`, `client/network_handlers.py`,
+`client/remote_entity_handlers.py`, `ui/day_night_system.py`, `ui/
+icon_atlas.py`, `ui/icon_manager.py`, `game.py`. Testes:
+`tests/test_item_light.py` (servidor) + `tests/test_client_ui.py`
+(render/ícone).
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```

@@ -1016,6 +1016,29 @@ padrão a quebrar, não só os bugs individuais.
   futuro (dungeon, mina, etc.) → só adicionar essa 1 chave no JSON dele,
   nunca checar nome/prefixo de arquivo em runtime. Ver
   PROBLEMAS_ARQUITETURA.md §206.
+- **Item de bag aceso sob demanda pelo jogador (clique direito, emite
+  luz ao redor de si)** → campo `Item.light_source: dict | None`
+  (`{"intensity_pct", "radius_tiles"}`) no catálogo (hoje só `lampiao`,
+  `content/item_table.py`) + `PlayerLightSource` (`engine/
+  components.py`, só 1 ativo por jogador) + `WorldServer.
+  toggle_item_light` (autoritativo, confirma posse real + catálogo,
+  nunca confia no payload) + `TOGGLE_ITEM_LIGHT`/`PLAYER_LIGHT_UPDATE`
+  (broadcast via `_sessions_in_aoi`, alcança dono + próximos numa
+  chamada só). Item novo com luz futura → só a chave `light_source` no
+  catálogo, nenhum outro código muda. Render reaproveita 100% o loop de
+  luz que `ui/day_night_system.py::DayNightSystem.render()` já usa pro
+  poste de mapa (entrada extra em `world_objects`, marcada
+  `"player_light": True` pra ignorar o gate de `is_night()`/mapa
+  fechado — sob demanda funciona sempre, diferente do poste
+  automático). Ícone aceso → `ui/icon_atlas.py::
+  ICON_CHANGE_SHEET_BY_FILE` + `IconManager.get_active()` — mesmo
+  mecanismo do poste (`NIGHT_SHEET_BY_FILE`), aplicado ao atlas de
+  ícones; a camada companheira tem alpha VARIÁVEL por pixel (efeito
+  isolado, não um ícone alternativo opaco) — `get_active()` SOMA por
+  cima do ícone normal, NUNCA substitui (bug real corrigido 23/09/2026:
+  trocar o ícone inteiro fazia a silhueta do item sumir nas bordas
+  quase transparentes da camada de efeito). Ver `ARQUITETURA ONLINE.md`
+  §16.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem
