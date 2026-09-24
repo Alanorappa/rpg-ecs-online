@@ -5418,6 +5418,38 @@ def test_icon_manager_get_active_cai_pro_normal_sem_variante():
     assert active.get_size() == normal.get_size()
 
 
+def test_icon_manager_get_active_lampiao_preserva_a_base_nas_bordas_transparentes():
+    """Bug real relatado pelo usuário 23/09/2026: "em vez de aplicar a
+    camada, ele tira a anterior" — a folha companheira
+    (atlas_items_change.png) tem alpha VARIÁVEL por pixel (quase
+    transparente nas bordas, opaco só no núcleo do brilho/chama — dado
+    real medido: alpha=32 na borda (0,0), alpha=255 no centro (16,16)),
+    não é um ícone alternativo opaco inteiro. A 1ª versão de
+    get_active() devolvia só a região do efeito crua — nas bordas quase
+    transparentes, o item ficava sem silhueta nenhuma sobre o fundo do
+    slot (só o brilho isolado "flutuando"). Prova aqui: pixel de borda
+    (efeito quase transparente) tem que continuar parecido com a BASE,
+    não sumir."""
+    from ui.icon_atlas import ICON_ATLAS_SHEETS
+    from ui.icon_manager import ICONS
+    base = ICON_ATLAS_SHEETS.get_region("item_lampiao")
+    overlay = ICON_ATLAS_SHEETS.get_active_variant_region("item_lampiao")
+    composed = ICONS.get_active("item_lampiao", 32)
+    corner_alpha = overlay.get_at((0, 0)).a
+    assert corner_alpha < 100, (
+        "premissa do teste: pixel de borda (0,0) do efeito devia ser "
+        f"quase transparente — alpha real={corner_alpha}"
+    )
+    base_px = base.get_at((0, 0))[:3]
+    composed_px = composed.get_at((0, 0))[:3]
+    dist = sum(abs(a - b) for a, b in zip(base_px, composed_px))
+    assert dist < 60, (
+        f"pixel de borda deveria continuar parecido com a base "
+        f"(base={base_px}, composed={composed_px}) — indício de substituição "
+        "em vez de soma"
+    )
+
+
 def test_icon_manager_get_active_lampiao_usa_a_variante_nao_o_fallback():
     """Prova que get_active() realmente leu atlas_items_change.png (não
     caiu no fallback de get() normal) comparando os bytes crus dos 2 —

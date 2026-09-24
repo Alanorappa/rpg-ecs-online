@@ -47,19 +47,30 @@ class IconManager:
         return surf
 
     def get_active(self, name: str, size: int) -> "pygame.Surface | None":
-        """Variante "ativa" do ícone (23/09/2026) — mesmo tamanho/escala de
-        `get()`, só troca a fonte pra `ICON_CHANGE_SHEET_BY_FILE`
-        (ui/icon_atlas.py). Cai pro ícone NORMAL (nunca None) se o item
-        não tiver variante ativa cadastrada — chamador não precisa de
-        fallback próprio."""
+        """Variante "ativa" do ícone (23/09/2026) — SOBREPÕE a camada de
+        efeito (`ICON_CHANGE_SHEET_BY_FILE`, ui/icon_atlas.py) por cima do
+        ícone NORMAL, nunca substitui (correção 23/09/2026: a folha
+        companheira só tem o EFEITO desenhado — brilho/chama — num fundo
+        transparente, não o item inteiro de novo; trocar em vez de somar
+        fazia o item "sumir", só o efeito isolado aparecia). Mesmo
+        princípio já usado pro poste de mapa
+        (ui/render_system.py desenha a camada "aceso" POR CIMA do sprite
+        normal, nunca no lugar dele). Cai pro ícone NORMAL (nunca None) se
+        o item não tiver variante ativa cadastrada — chamador não precisa
+        de fallback próprio."""
         key = f"{name}@{size}@active"
         if key in self._cache:
             return self._cache[key]
         from ui.icon_atlas import ICON_ATLAS_SHEETS
-        raw = ICON_ATLAS_SHEETS.get_active_variant_region(name)
-        if raw is None:
+        overlay = ICON_ATLAS_SHEETS.get_active_variant_region(name)
+        if overlay is None:
             return self.get(name, size)   # sem variante cadastrada — ícone normal
-        surf = pygame.transform.scale(raw, (size, size))
+        base = self._load_raw(name)
+        if base is None:
+            return self.get(name, size)
+        composed = base.copy()
+        composed.blit(overlay, (0, 0))   # overlay com alpha — só o efeito soma por cima da base
+        surf = pygame.transform.scale(composed, (size, size))
         if len(self._cache) >= self._CACHE_MAX:
             self._cache.clear()
         self._cache[key] = surf
