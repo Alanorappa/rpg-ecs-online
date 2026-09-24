@@ -802,7 +802,7 @@ _RAW_ITEMS = {
     "lampiao": lambda: Item(
         "Lampião", "ferramenta", slot=None,
         rarity="common", value=15, max_stack=1,
-        light_source={"intensity_pct": 75, "radius_tiles": 3}),
+        light_source={"intensity_pct": 50, "radius_tiles": 7}),
 }
 
 
