@@ -224,7 +224,33 @@ class NetworkHandlers:
                 "level":    payload.get("level", 1),
                 "kind":     kind,
                 **({"faction": payload["faction"]} if "faction" in payload else {}),
+                **({"light_active": True,
+                    "light_item_id": payload.get("light_item_id", ""),
+                    "light_intensity_pct": payload.get("light_intensity_pct", 0),
+                    "light_radius_tiles": payload.get("light_radius_tiles", 0)}
+                   if payload.get("light_active") else {}),
             })
+
+    def _handle_msg_player_light_update(self, payload: dict) -> None:
+        """Luz de item de bag acesa/apagada (23/09/2026) — alcança o dono E
+        jogadores próximos numa mensagem só (_sessions_in_aoi inclui o
+        dono sempre, ver server/session.py). Mesmo componente
+        `PlayerLightSource` usado nos dois lados: entidade LOCAL (dono) ou
+        entidade do jogador REMOTO — o loop de render (game.py) não
+        distingue, só consulta quem tem o componente com active=True."""
+        from engine.components import PlayerLightSource
+        eid = payload.get("eid", -1)
+        target = self.player_entity if eid == self._my_eid else self._remote_players.get(eid)
+        if target is None:
+            return
+        pls = self.world.get_component(target, PlayerLightSource)
+        if pls is None:
+            pls = PlayerLightSource()
+            self.world.add_component(target, pls)
+        pls.active         = bool(payload.get("active", False))
+        pls.item_id        = payload.get("item_id", "")
+        pls.intensity_pct  = float(payload.get("intensity_pct", 0))
+        pls.radius_tiles   = int(payload.get("radius_tiles", 0))
 
     def _handle_msg_combat_result(self, payload: dict) -> None:
         self._apply_combat_result(payload)
@@ -3050,6 +3076,7 @@ NetworkHandlers._NET_DISPATCH_NAMES = {
     MsgType.LOGIN_ERROR: "_handle_msg_login_error",
     MsgType.WORLD_STATE: "_handle_msg_world_state",
     MsgType.ENTITY_SPAWN: "_handle_msg_entity_spawn",
+    MsgType.PLAYER_LIGHT_UPDATE: "_handle_msg_player_light_update",
     MsgType.COMBAT_RESULT: "_handle_msg_combat_result",
     MsgType.SKILL_RESULT: "_handle_msg_skill_result",
     MsgType.SKILL_EFFECT: "_handle_msg_skill_effect",

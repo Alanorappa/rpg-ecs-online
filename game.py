@@ -25,7 +25,7 @@ from engine.stats_system import XPSystem
 from ui.quest_system import QuestSystem, QuestDialogSystem, QuestJournalSystem
 from engine.entity_factory import create_player, create_camera, create_enemy, create_tilemap, create_merchant, create_spawn_zone, create_quest_giver, create_blacksmith, create_trainer
 from ui.god_mode import GodModeEditor
-from engine.components import Inventory, Equipment, PlayerSkills, Wallet, GhostState
+from engine.components import Inventory, Equipment, PlayerSkills, Wallet, GhostState, PlayerLightSource
 from engine.map_loader import load_map_csv, validate_map
 from engine.tileset import TILE_SIZE
 from ui.combat_log import LOG
@@ -2540,13 +2540,33 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # tingimento já aplicado, mantendo a diferença de brilho
             # dia/noite mesmo como fantasma). Só mundo aberto — BG/Arena
             # ficam num horário fixo (ver DayNightSystem.render()).
+            #
+            # Luz de item aceso sob demanda (23/09/2026) — injeta 1 entrada
+            # por jogador (local OU remoto) com PlayerLightSource.active,
+            # numa lista SEPARADA de _world_objs (nunca a mesma passada pro
+            # RenderSystem logo acima — ela não sabe desenhar um objeto sem
+            # sprite/width/height, essas entradas só existem pro
+            # DayNightSystem ler `light_source`). Centralizada na posição
+            # de tela do próprio jogador (off_x/off_y/w/h=0 — mesma tupla
+            # de TileType.light_source, só sem deslocamento de sprite).
+            _lit_world_objs = _world_objs
+            _lit_sources = self.world.get_entities_with(PlayerLightSource, Position)
+            if _lit_sources:
+                _extra_lights = [
+                    {"screen_x": _pos.x - cam_x, "screen_y": _pos.y - cam_y,
+                     "light_source": (0, 0, 0, 0, _pls.intensity_pct, _pls.radius_tiles),
+                     "player_light": True}
+                    for _leid, _pls, _pos in _lit_sources if _pls.active
+                ]
+                if _extra_lights:
+                    _lit_world_objs = _world_objs + _extra_lights
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
-                self._day_night_system.render(world_objects=_world_objs)
+                self._day_night_system.render(world_objects=_lit_world_objs)
                 self._prof_record(f"rnd:{type(self._day_night_system).__name__}",
                                   _time.perf_counter() - _ts)
             else:
-                self._day_night_system.render(world_objects=_world_objs)
+                self._day_night_system.render(world_objects=_lit_world_objs)
 
             # Morto/espírito: grayscale no zoom_surf menor (pré-scale) — ~44% menos
             # pixels a zoom=1.5 vs aplicar na tela cheia (853×480 vs 1280×720).

@@ -816,7 +816,8 @@ class Item:
                  item_level: int = 1,
                  level_requirement: int = 1,
                  description: str = "",
-                 item_id: str = ""):
+                 item_id: str = "",
+                 light_source: dict = None):
         # Identidade ESTÁVEL do item (débito C2, PROBLEMAS_ARQUITETURA.md,
         # resolvido 10/08/2026) — a chave interna do catálogo
         # (content/item_table.py::ITEMS, ex: "iron_sword"), nunca muda
@@ -862,6 +863,19 @@ class Item:
         self.item_level:        int = item_level
         self.level_requirement: int = level_requirement
         self.description:       str = description
+        # Item de bag que pode ser aceso sob demanda (23/09/2026, pedido do
+        # usuário — lampião, reaproveitável pra qualquer item futuro do
+        # mesmo tipo, nunca hardcode de item_id em lógica). None = item
+        # comum, sem interação de luz. dict = {"intensity_pct": int,
+        # "radius_tiles": int} — mesma unidade de TileType.light_source
+        # (ver engine/tileset.py), consumido por
+        # ui/day_night_system.py::DayNightSystem.render() através de uma
+        # entrada extra injetada em world_objects (game.py), NUNCA um
+        # mecanismo de luz paralelo. Alternar aceso/apagado é autoritativo
+        # no servidor via PlayerLightSource (só 1 luz ativa por jogador de
+        # cada vez) — ver PlayerLightSource logo abaixo e
+        # MsgType.TOGGLE_ITEM_LIGHT.
+        self.light_source: "dict | None" = light_source
 
     def __repr__(self):
         return f"Item({self.name!r}, {self.rarity})"
@@ -891,6 +905,36 @@ class Equipment:
         mh = self.slots.get("mainhand")
         return mh is not None and mh.two_handed
 
+
+class PlayerLightSource:
+    """Item de bag aceso sob demanda pelo jogador (23/09/2026, pedido do
+    usuário) — diferente do poste/lampião de MAPA (`TileType.light_source`,
+    automático, só à noite), este é client-triggered (clique direito num
+    item com `Item.light_source` não-None) e funciona a qualquer hora/mapa,
+    inclusive dentro de caverna sempre escura (`day_night_affected=false`)
+    — é justamente a ferramenta pra enxergar lá.
+
+    Só 1 luz ativa por jogador de cada vez (decisão do usuário) — acender
+    um item DIFERENTE troca `item_id`, nunca acumula. Servidor autoritativo
+    (`WorldServer.toggle_item_light`) — confirma posse real no `Inventory`
+    ANTES de ligar, nunca confia em `intensity_pct`/`radius_tiles` vindos
+    do cliente (copiados do catálogo no momento do toggle, mesma disciplina
+    de `apply_consumable`).
+
+    MESMO schema usado nos dois lados: servidor anexa isso na entidade REAL
+    do jogador; cliente anexa uma cópia client-only na entidade LOCAL
+    (dono) e em qualquer jogador REMOTO com luz ativa (visível a jogadores
+    próximos — mensagem `PLAYER_LIGHT_UPDATE`) — o loop que injeta luz em
+    `world_objects` (game.py, consumido por
+    `ui/day_night_system.py::DayNightSystem.render()`) não distingue local/
+    remoto, só consulta `world.get_entities_with(PlayerLightSource, ...)`.
+    """
+    def __init__(self, active: bool = False, item_id: str = "",
+                 intensity_pct: float = 0.0, radius_tiles: int = 0) -> None:
+        self.active:        bool  = active
+        self.item_id:       str   = item_id
+        self.intensity_pct: float = intensity_pct
+        self.radius_tiles:  int   = radius_tiles
 
 
 class EnemyAbilitySlot:

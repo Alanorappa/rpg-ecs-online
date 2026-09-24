@@ -1390,6 +1390,18 @@ class RemoteEntityHandlers:
         if "faction" in data:
             from engine.components import Faction as _FacRemote
             self.world.add_component(local_eid, _FacRemote(faction_id=data["faction"]))
+        # Luz de item já acesa (23/09/2026) — jogador remoto que ENTRA no
+        # campo de visão já aceso precisa nascer com o componente, senão só
+        # descobre a luz no próximo toggle alheio (ver
+        # WorldServer.player_light_field).
+        if data.get("light_active"):
+            from engine.components import PlayerLightSource as _PLSRemote
+            self.world.add_component(local_eid, _PLSRemote(
+                active=True,
+                item_id=data.get("light_item_id", ""),
+                intensity_pct=data.get("light_intensity_pct", 0),
+                radius_tiles=data.get("light_radius_tiles", 0),
+            ))
         self._remote_players[server_eid] = local_eid
         from debug.aoi_debug import AOI_DBG as _AOI_DBG_psp
         _AOI_DBG_psp.log("PLAYER_SPAWN", server_eid=server_eid, name=data.get("name", "?"),

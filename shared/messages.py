@@ -195,6 +195,15 @@ class MsgType(str, Enum):
     BG_FORFEIT      = "bg_forfeit"       # C→S  {} — comando de chat /forfeit ou /ff na fila REAL — declara o time ADVERSÁRIO vencedor na hora, ver server/bg_queue_processor.py::request_bg_forfeit
 
     CONSUMABLE_USE     = "consumable_use"    # C→S  uso de consumível (heal_instant, HoT, buffs futuros)
+    # Item de bag aceso sob demanda (23/09/2026, ver PlayerLightSource em
+    # engine/components.py) — NUNCA decrementa/consome o item, diferente de
+    # CONSUMABLE_USE. Servidor confirma posse real + Item.light_source no
+    # catálogo antes de ligar; só 1 luz ativa por jogador (acender outro
+    # item troca). PLAYER_LIGHT_UPDATE alcança o dono E jogadores próximos
+    # numa chamada só (SessionManager._sessions_in_aoi, origin_eid inclui o
+    # dono sempre) — visível a quem estiver perto, igual o lampião de mapa.
+    TOGGLE_ITEM_LIGHT  = "toggle_item_light" # C→S  {item_id}
+    PLAYER_LIGHT_UPDATE = "player_light_update"  # S→C  {eid, active, item_id, intensity_pct, radius_tiles}
     GOLD_UPDATE        = "gold_update"       # C→S  gold mudou (loot de moedas) {gold: N}
     INV_SYNC           = "inv_sync"          # C→S  inventário mudou (loot de item) {inventory: [...]}
     TALENT_UPDATE      = "talent_update"     # C→S  talento alocado/desalocado {talents: {chosen_build, allocated, available_points}}
@@ -325,6 +334,7 @@ C2S_REQUIRED: dict = {
     MsgType.CAST_DIR_UPDATE:    {"sid": str, "dir_x": _NUM, "dir_y": _NUM},
     MsgType.PROJECTILE_HIT_CS:  {"spell_id": str, "target_id": _NUM},
     MsgType.CONSUMABLE_USE:     {"item_id": str},
+    MsgType.TOGGLE_ITEM_LIGHT:  {"item_id": str},
     MsgType.GOLD_UPDATE:        {"gold": _NUM},
     MsgType.INV_SYNC:           {"inventory": list},
     MsgType.EQUIP_ITEM:         {"inv_index": _NUM},

@@ -1084,6 +1084,14 @@ class SessionManager:
             return
         self.world_server.apply_consumable(session.session_id, payload)
 
+    async def _handle_toggle_item_light(self, session: Session, payload: dict, ts: int) -> None:
+        """Acende/apaga item de bag sob demanda (23/09/2026). Payload:
+        {item_id} — servidor resolve tudo a partir do Inventory/catálogo
+        reais, ver WorldServer.toggle_item_light."""
+        if not session.authenticated:
+            return
+        self.world_server.toggle_item_light(session.session_id, payload)
+
     async def _handle_save_state(self, session: Session, payload: dict, ts: int) -> None:
         """Recebe estado completo do cliente e persiste no banco (via
         `_persist_character` — no-op enquanto o player está dentro de uma
@@ -1977,6 +1985,7 @@ class SessionManager:
             "hp": _nh, "hp_max": _nhm,
             "level":    char_data.get("level", 1), "effects": [],
             **self.world_server.player_faction_field(eid),
+            **self.world_server.player_light_field(eid),
         })
         for s in self._sessions.values():
             if s.authenticated and s.session_id != session.session_id:
@@ -2528,6 +2537,7 @@ class SessionManager:
         MsgType.SAVE_STATE:        _handle_save_state,
         MsgType.PLAYER_STAT_SYNC:  _handle_player_stat_sync,
         MsgType.CONSUMABLE_USE:    _handle_consumable_use,
+        MsgType.TOGGLE_ITEM_LIGHT: _handle_toggle_item_light,
         MsgType.BUY_REQUEST:     _handle_buy_request,
         MsgType.SELL_REQUEST:      _handle_sell_request,
         MsgType.CRAFT_REQUEST:      _handle_craft_request,
@@ -2645,7 +2655,13 @@ class SessionManager:
                        or bool(self.world_server._bg_match_start_events_this_tick)
                        or bool(self.world_server._bg_gate_open_events_this_tick)
                        or bool(self.world_server._bg_match_leave_events_this_tick)
-                       or bool(self.world_server._bg_match_result_events_this_tick))
+                       or bool(self.world_server._bg_match_result_events_this_tick)
+                       # Luz de item sob demanda (23/09/2026) — MESMA classe
+                       # de bug documentada acima (arena/BG/harvestable):
+                       # sem entrar aqui, acender/apagar um item ficaria
+                       # preso no buffer até atividade alheia (movimento,
+                       # combate) destravar o dispatch por acaso.
+                       or bool(self.world_server._light_toggle_events_this_tick))
         if not has_pending:
             return
         # Mescla SEMPRE (nunca substitui) — se um despacho anterior ainda
@@ -2898,6 +2914,17 @@ class SessionManager:
                 for s in self._sessions_in_aoi(_eff_tx, _eff_ty, _eff_map,
                                                origin_eid=_eff_eid):
                     await s.send(MsgType.SKILL_EFFECT, skill_effect)
+
+            # Luz de item de bag acesa/apagada sob demanda (23/09/2026) —
+            # _sessions_in_aoi com origin_eid inclui o PRÓPRIO dono sempre
+            # ("viewer == origin" passa), então 1 broadcast só alcança dono
+            # + jogadores próximos, sem precisar de queue_stats_update
+            # separado pro dono.
+            for light_ev in self.world_server.consume_light_toggle_events():
+                _lt_eid = light_ev.get("eid", -1)
+                for s in self._sessions_in_aoi(light_ev.get("tx", 0), light_ev.get("ty", 0),
+                                               light_ev.get("map"), origin_eid=_lt_eid):
+                    await s.send(MsgType.PLAYER_LIGHT_UPDATE, light_ev)
 
             # Pré-calcula posições de todos os mobs UMA VEZ por tick.
             # Elimina O(mobs) component lookups por player por tick no sweep de AOI.
@@ -3789,6 +3816,7 @@ class SessionManager:
                     "effects":  [],
                     "is_ghost": bool(_ogst and _ogst.is_ghost),
                     **self.world_server.player_faction_field(other_eid),
+                    **self.world_server.player_light_field(other_eid),
                 }
                 result.setdefault("spawned", []).append(spawn_payload)
                 session.known_eids.add(other_eid)

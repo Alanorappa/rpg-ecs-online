@@ -224,8 +224,13 @@ _RAW_QUEST_ITEMS: dict[str, callable] = {
     "pa":                 _qi("Pá",                   "ferramenta", value=15, max_stack=1),
     "picareta":           _qi("Picareta",             "ferramenta", value=15, max_stack=1),
     "mochila_mineracao":  _qi("Mochila de mineração", "ferramenta", value=15, max_stack=1),
-    "lampiao":            _qi("Lampião",              "ferramenta", value=15, max_stack=1),
     "cantil":             _qi("Cantil",                "ferramenta", value=15, max_stack=1),
+    # "lampiao" mudou pra content/item_table.py::ITEMS (23/09/2026) — deixou
+    # de ser material puro de quest ao ganhar comportamento de jogo real
+    # (acender/emitir luz). A ordem de busca de item_key pra recompensa de
+    # quest já prioriza item_table.py::ITEMS antes de QUEST_ITEMS (ver
+    # docstring no topo deste arquivo), então nenhuma quest existente
+    # precisa mudar — só documentando a saída daqui.
 
     # Itens que CONCEDEM quest ao serem saqueados (Fase M4) — sem função de
     # combate/equipamento, só "material" + description como texto de sabor

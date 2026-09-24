@@ -792,6 +792,17 @@ _RAW_ITEMS = {
         "Poção Grande de Mana", "common", 25,
         {"desc": "Restaura 350 de mana instantaneamente.",
          "mana_restore": 350, "ooc_only": False}),
+
+    # ================================================================ FERRAMENTAS (sem helper — não são arma/consumível)
+    # "lampiao" morava em content/quests_data.py::QUEST_ITEMS até
+    # 23/09/2026 — mudou pra cá ao ganhar comportamento de jogo real
+    # (acender sob demanda, ver PlayerLightSource/engine/components.py).
+    # light_source é lido só por quem sabe interpretar (inventory_handlers.py
+    # no clique direito) — item comum sem essa chave ignora normalmente.
+    "lampiao": lambda: Item(
+        "Lampião", "ferramenta", slot=None,
+        rarity="common", value=15, max_stack=1,
+        light_source={"intensity_pct": 75, "radius_tiles": 3}),
 }
 
 

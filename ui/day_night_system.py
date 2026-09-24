@@ -379,10 +379,18 @@ class DayNightSystem(System):
         if iius is not None and iius.active:
             return
 
+        # Luz de item de jogador (23/09/2026) precisa do brilho quente
+        # mesmo em dia pleno mundo aberto — o jogador ligou por vontade
+        # própria, o toggle não deve "sumir" só porque é meio-dia (mesmo
+        # sem efeito visual de furar escuridão nenhuma, que não existe de
+        # dia). Sem isso, o early-return de "dia pleno" logo abaixo
+        # cortaria a função inteira antes do loop de luz sequer rodar.
+        _has_player_light = bool(world_objects) and any(o.get("player_light") for o in world_objects)
+
         if self.map_affected:
             r, g, b, _a = day_night_color()   # _a vestigial, ver docstring
-            if (r, g, b) == _MULT_IDENTITY:
-                return  # dia pleno — multiplicar por branco não muda nada, economiza o frame inteiro
+            if (r, g, b) == _MULT_IDENTITY and not _has_player_light:
+                return  # dia pleno e ninguém com luz acesa — economiza o frame inteiro
         else:
             # Mapa fechado (caverna/dungeon) — sem luz do sol, o padrão
             # correto é SEMPRE escuro (âncora de Noite), nunca "amanhece"
@@ -402,20 +410,27 @@ class DayNightSystem(System):
             self._overlay_size = (surf_w, surf_h)
         self._overlay_surf.fill((r, g, b))
 
-        # Luz de objeto (lampião etc.) é BINÁRIA — só na fase Noite, não
-        # segue o gradual do multiplicador ambiente (22/09/2026, pedido
-        # do usuário — mesmo corte que liga a camada de sprite "aceso"
-        # em ui/tile_render_system.py::get_world_objects()). Mapa fechado
-        # conta como "sempre noite" pra esse corte — se um dia houver
-        # lampião numa dungeon, ele acende o tempo todo, nunca só durante
-        # a fase real de noite do mundo aberto (nenhum objeto desse tipo
-        # existe nas cavernas atuais, mas o corte já nasce certo).
+        # Luz de objeto de MAPA (lampião etc.) é BINÁRIA — só na fase
+        # Noite, não segue o gradual do multiplicador ambiente (22/09/2026,
+        # pedido do usuário — mesmo corte que liga a camada de sprite
+        # "aceso" em ui/tile_render_system.py::get_world_objects()). Mapa
+        # fechado conta como "sempre noite" pra esse corte — se um dia
+        # houver lampião numa dungeon, ele acende o tempo todo (nenhum
+        # objeto desse tipo existe nas cavernas atuais, mas o corte já
+        # nasce certo). Luz de ITEM DE JOGADOR (23/09/2026, marcada
+        # `"player_light": True` no dict — ver game.py) tem um PROPÓSITO
+        # diferente: sob demanda, sempre funciona (dia, noite, mapa aberto
+        # ou fechado) — é a ferramenta pra enxergar numa caverna sempre
+        # escura, não faria sentido gateá-la igual ao poste automático.
+        _ambient_night = is_night() or not self.map_affected
         _lit_positions: list[tuple[float, float, int, float]] = []
-        if world_objects and (is_night() or not self.map_affected):
+        if world_objects:
             for obj in world_objects:
                 light = obj.get("light_source")
                 if not light:
                     continue
+                if not obj.get("player_light") and not _ambient_night:
+                    continue   # objeto de mapa (poste) só acende à noite/mapa fechado
                 off_x, off_y, lw, lh, intensity_pct, radius_tiles = light
                 cx = obj["screen_x"] + off_x + lw / 2
                 cy = obj["screen_y"] + off_y + lh / 2

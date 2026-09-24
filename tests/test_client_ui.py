@@ -5311,3 +5311,123 @@ def test_day_night_clock_hud_escuro_na_meia_noite_claro_no_meio_dia():
     # meio-dia é branco na mistura (fator identidade) — soma dos canais do
     # centro tem que ser bem maior que a da ponta (meia-noite, âncora escura).
     assert sum(mid_px) > sum(edge_px) + 30
+
+
+# ── ui/day_night_system.py — luz de item de jogador (23/09/2026) ──────────────
+
+def test_day_night_render_luz_de_item_de_jogador_funciona_em_dia_pleno():
+    """Correção do usuário 23/09/2026: luz de item de jogador é sob
+    demanda, precisa funcionar mesmo em dia pleno mundo aberto (o toggle
+    não pode "sumir" só porque é meio-dia) — diferente do poste
+    automático, que continua gateado por is_night(). Mocka dia pleno E
+    is_night()=False, confirma que o brilho quente (marcador visual do
+    toggle) ainda aparece."""
+    import ui.day_night_system as dns
+    world, player, sys = _make_day_night_world(instance_active=False)
+    sys.world_surf.fill((10, 10, 10))
+    orig_color = dns.day_night_color
+    orig_is_night = dns.is_night
+    dns.day_night_color = lambda now=None: (255, 255, 255, 0)   # dia pleno
+    dns.is_night = lambda now=None: False
+    objs = [{
+        "screen_x": 150, "screen_y": 150,
+        "light_source": (0, 0, 0, 0, 75, 3),
+        "player_light": True,
+    }]
+    try:
+        sys.render(world_objects=objs)
+    finally:
+        dns.day_night_color = orig_color
+        dns.is_night = orig_is_night
+
+    center_px = sys.world_surf.get_at((150, 150))[:3]
+    assert sum(center_px) > 30, (
+        "luz de item de jogador devia acender mesmo em dia pleno mundo "
+        f"aberto — pixel central ficou {center_px}"
+    )
+
+
+def test_day_night_render_poste_de_mapa_continua_gateado_em_dia_pleno():
+    """Regressão: a mudança acima é só pra `player_light` — objeto de
+    mapa (poste) tem que CONTINUAR sem acender de dia (mesmo teste do
+    parágrafo anterior, sem a marca `player_light`)."""
+    import ui.day_night_system as dns
+    world, player, sys = _make_day_night_world(instance_active=False)
+    sys.world_surf.fill((10, 10, 10))
+    orig_color = dns.day_night_color
+    orig_is_night = dns.is_night
+    dns.day_night_color = lambda now=None: (255, 255, 255, 0)   # dia pleno
+    dns.is_night = lambda now=None: False
+    objs = [{
+        "screen_x": 150, "screen_y": 150,
+        "light_source": (0, 0, 0, 0, 75, 3),
+    }]
+    try:
+        sys.render(world_objects=objs)
+    finally:
+        dns.day_night_color = orig_color
+        dns.is_night = orig_is_night
+
+    # dia pleno sem luz de jogador nenhuma -> render() nem desenha nada
+    # (early-return de economia) -> pixel permanece intocado.
+    assert sys.world_surf.get_at((150, 150))[:3] == (10, 10, 10)
+
+
+# ── ui/icon_atlas.py — variante "ativa" do ícone (23/09/2026) ─────────────────
+
+def test_get_active_variant_region_lampiao_real():
+    """item_lampiao está catalogado em (atlas_items.png, col=6, row=0) —
+    a variante ativa tem que vir do MESMO slot, só do arquivo
+    companheiro (atlas_items_change.png, confirmado mesma grade 512x512
+    antes de implementar)."""
+    from ui.icon_atlas import ICON_ATLAS_SHEETS
+    region = ICON_ATLAS_SHEETS.get_active_variant_region("item_lampiao")
+    assert region is not None
+    assert region.get_size() == (32, 32)
+
+
+def test_get_active_variant_region_sem_folha_companheira_devolve_none():
+    """Ícone catalogado (ex: skill) cujo atlas NÃO tem entrada em
+    ICON_CHANGE_SHEET_BY_FILE (só atlas_items.png tem hoje) devolve None
+    — chamador cai pro ícone normal, nunca quebra."""
+    from ui.icon_atlas import ICON_ATLAS_SHEETS, ICON_ATLAS
+    # Acha qualquer ícone catalogado num atlas DIFERENTE de atlas_items.png
+    _other = next((name for name, (fn, _c, _r) in ICON_ATLAS.items()
+                   if fn != "atlas_items.png"), None)
+    assert _other is not None, "esperava pelo menos 1 ícone fora de atlas_items.png pro teste"
+    assert ICON_ATLAS_SHEETS.get_active_variant_region(_other) is None
+
+
+def test_get_active_variant_region_icone_nao_catalogado_devolve_none():
+    from ui.icon_atlas import ICON_ATLAS_SHEETS
+    assert ICON_ATLAS_SHEETS.get_active_variant_region("item_isso_nao_existe_123") is None
+
+
+def test_icon_manager_get_active_cai_pro_normal_sem_variante():
+    """IconManager.get_active() nunca devolve None por falta de variante —
+    cai pro ícone normal (mesma Surface que get() devolveria)."""
+    from ui.icon_manager import ICONS, IconManager
+    from ui.icon_atlas import ICON_ATLAS
+    _other = next((name for name, (fn, _c, _r) in ICON_ATLAS.items()
+                   if fn != "atlas_items.png"), None)
+    assert _other is not None
+    normal = ICONS.get(_other, 32)
+    active = ICONS.get_active(_other, 32)
+    assert active is not None
+    assert normal is not None
+    assert active.get_size() == normal.get_size()
+
+
+def test_icon_manager_get_active_lampiao_usa_a_variante_nao_o_fallback():
+    """Prova que get_active() realmente leu atlas_items_change.png (não
+    caiu no fallback de get() normal) comparando os bytes crus dos 2 —
+    são arquivos DIFERENTES no disco, então .get_view() tem que divergir
+    em pelo menos 1 byte se a variante foi usada de verdade."""
+    from ui.icon_manager import ICONS
+    normal = ICONS.get("item_lampiao", 32)
+    active = ICONS.get_active("item_lampiao", 32)
+    assert normal is not None and active is not None
+    assert bytes(normal.get_view()) != bytes(active.get_view()), (
+        "get_active() devolveu bytes idênticos ao normal — indício de que "
+        "caiu no fallback em vez de ler a folha companheira de verdade"
+    )

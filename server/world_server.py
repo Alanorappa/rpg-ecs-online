@@ -598,6 +598,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._skill_position_corrections: list[dict] = []
         # HP updates de players para broadcast AOI (ex: auto-cura de skill)
         self._player_hp_broadcasts_this_tick: list[dict] = []
+        # Luz de item de bag acesa/apagada sob demanda (23/09/2026) — evento
+        # único por toggle, consumido em server/session.py::
+        # _dispatch_tick_deltas e transmitido via _sessions_in_aoi
+        # (alcança dono + jogadores próximos numa chamada só).
+        self._light_toggle_events_this_tick: list[dict] = []
         # Eventos de som posicionais (mob aggro, etc.) para broadcast AOI
         self._pending_sound_events: list[dict] = []
         # Eids cujo CombatState.is_visible mudou neste tick (ex: Camuflagem
@@ -2709,6 +2714,29 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         fac = self.world.get_component(eid, _FacField)
         return {"faction": fac.faction_id} if fac is not None else {}
 
+    def player_light_field(self, eid: int) -> dict:
+        """Campo opcional `{"light_active": True, "light_item_id": ...,
+        "light_intensity_pct": ..., "light_radius_tiles": ...}` pra incluir
+        em QUALQUER payload de ENTITY_SPAWN de player (23/09/2026) — mesmo
+        padrão de `player_faction_field` acima. Sem isso, um jogador que
+        ENTRA no campo de visão de outro já aceso só descobriria a luz no
+        próximo toggle alheio (o broadcast de evento, `PLAYER_LIGHT_UPDATE`,
+        só alcança quem já estava por perto NO MOMENTO do toggle) — mesma
+        classe de bug já documentada pra outros estados (ver
+        player_faction_field). `PlayerLightSource.active=False` (padrão,
+        ninguém acendeu nada) devolve `{}`, cliente cai no default de
+        RemoteControlled (sem luz)."""
+        from engine.components import PlayerLightSource as _PLSField
+        pls = self.world.get_component(eid, _PLSField)
+        if pls is None or not pls.active:
+            return {}
+        return {
+            "light_active":         True,
+            "light_item_id":        pls.item_id,
+            "light_intensity_pct":  pls.intensity_pct,
+            "light_radius_tiles":   pls.radius_tiles,
+        }
+
     def get_players_in_aoi(self, center_session: str, radius: int) -> list[dict]:
         """
         Retorna lista de EntitySpawn para todos os jogadores dentro do raio
@@ -3205,6 +3233,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """Retorna e limpa eventos de apresentação (som/VFX) do tick atual."""
         result = list(self._skill_effects_this_tick)
         self._skill_effects_this_tick.clear()
+        return result
+
+    def consume_light_toggle_events(self) -> list[dict]:
+        """Retorna e limpa eventos de luz de item (acender/apagar) do tick
+        atual — consumido por server/session.py::_dispatch_tick_deltas,
+        mesmo formato de consume_skill_effects()."""
+        result = list(self._light_toggle_events_this_tick)
+        self._light_toggle_events_this_tick.clear()
         return result
 
     # ── Corpse / Loot API ────────────────────────────────────────────────────
@@ -4392,6 +4428,70 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 interval=mana_hot["interval"],
                 ticks_total=mana_hot["ticks"],
             ))
+
+    def toggle_item_light(self, session_id: str, payload: dict) -> None:
+        """Acende/apaga sob demanda um item de bag com `Item.light_source`
+        (23/09/2026, pedido do usuário — lampião e qualquer item futuro do
+        mesmo tipo). Payload do cliente: só `{item_id}` — intensidade/raio
+        SEMPRE vêm do item de verdade no Inventory ao vivo, nunca do
+        payload (mesma disciplina de `apply_consumable`, ver docstring lá
+        e PROBLEMAS_ARQUITETURA.md §152).
+
+        Só 1 luz ativa por jogador (decisão do usuário): clicar num item
+        DIFERENTE do que já está aceso troca; clicar no MESMO item apaga
+        (toggle de verdade, não só "liga"). Nunca decrementa/remove o item
+        — diferente de consumível, o item não se gasta.
+
+        SEMPRE enfileira 1 evento em `_light_toggle_events_this_tick`
+        (aceito OU rejeitado seria supérfluo aqui — diferente de
+        consumível, não há "gasto" que o cliente precise desfazer em caso
+        de rejeição, então rejeição silenciosa — sem item/sem
+        light_source — só retorna sem enfileirar nada)."""
+        from engine.components import Inventory as _InvLight, PlayerLightSource, TileMovement as _TMLight
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return
+        item_id = payload.get("item_id", "")
+        if not item_id:
+            return
+
+        inv = self.world.get_component(eid, _InvLight)
+        if inv is None:
+            return
+        item = next((it for it in inv.items
+                     if it is not None and it.item_id == item_id and it.light_source), None)
+        if item is None:
+            return   # não tem o item, ou o item não é uma fonte de luz — rejeição silenciosa
+
+        pls = self.world.get_component(eid, PlayerLightSource)
+        if pls is None:
+            pls = PlayerLightSource()
+            self.world.add_component(eid, pls)
+
+        if pls.active and pls.item_id == item_id:
+            # Mesmo item já aceso → apaga (toggle de verdade)
+            pls.active = False
+            pls.item_id = ""
+            pls.intensity_pct = 0.0
+            pls.radius_tiles = 0
+        else:
+            # Item diferente (ou nada aceso ainda) → troca/liga — só 1 por vez
+            pls.active = True
+            pls.item_id = item_id
+            pls.intensity_pct = float(item.light_source.get("intensity_pct", 0))
+            pls.radius_tiles = int(item.light_source.get("radius_tiles", 0))
+
+        tm = self.world.get_component(eid, _TMLight)
+        self._light_toggle_events_this_tick.append({
+            "eid":            eid,
+            "tx":             tm.current_tile_x if tm else 0,
+            "ty":             tm.current_tile_y if tm else 0,
+            "map":            self.get_entity_map(eid),
+            "active":         pls.active,
+            "item_id":        pls.item_id,
+            "intensity_pct":  pls.intensity_pct,
+            "radius_tiles":   pls.radius_tiles,
+        })
 
     def get_entity_map(self, eid: int) -> "str | None":
         """Mapa (map_file) de qualquer entidade via MapLocation — fonte única

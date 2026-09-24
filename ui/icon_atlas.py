@@ -34,6 +34,16 @@ ATLAS_DIR = "assets/icons"
 CELL_SIZE = 32
 GRID_COLS = 16   # 512 / 32 — usado só pelo script de empacotamento
 
+# Variante "ativa" de um atlas inteiro (23/09/2026, pedido do usuário) —
+# mesmo mecanismo de engine/tileset.py::NIGHT_SHEET_BY_FILE (folha
+# companheira do MESMO grid, célula por célula, só troca o arquivo).
+# Genérico: qualquer item interativo futuro (não só luz) que precise de
+# um ícone "ligado"/"em uso" reaproveita isso, desde que o desenho esteja
+# na MESMA (col, row) do item normal, só noutro arquivo.
+ICON_CHANGE_SHEET_BY_FILE: dict[str, str] = {
+    "atlas_items.png": "atlas_items_change.png",
+}
+
 
 class _IconAtlasSheets:
     """Cache dos PNGs de atlas carregados — 1 Surface por arquivo,
@@ -65,6 +75,28 @@ class _IconAtlasSheets:
             return None
         filename, col, row = entry
         sheet = self._get_sheet(filename)
+        if sheet is None:
+            return None
+        sx, sy = col * CELL_SIZE, row * CELL_SIZE
+        region = pygame.Surface((CELL_SIZE, CELL_SIZE), pygame.SRCALPHA)
+        region.blit(sheet, (0, 0), (sx, sy, CELL_SIZE, CELL_SIZE))
+        return region
+
+    def get_active_variant_region(self, icon_name: str) -> "pygame.Surface | None":
+        """Sub-Surface da variante "ativa" do ícone (23/09/2026) — MESMO
+        (col, row) do ícone normal, só lida da folha companheira
+        (`ICON_CHANGE_SHEET_BY_FILE`). `None` se `icon_name` não está
+        catalogado, se o atlas dele não tem folha companheira registrada,
+        ou se o arquivo companheiro não existe/falhou — chamador cai pro
+        ícone normal nesses casos (nunca quebra por falta de variante)."""
+        entry = ICON_ATLAS.get(icon_name)
+        if entry is None:
+            return None
+        filename, col, row = entry
+        change_filename = ICON_CHANGE_SHEET_BY_FILE.get(filename)
+        if change_filename is None:
+            return None
+        sheet = self._get_sheet(change_filename)
         if sheet is None:
             return None
         sx, sy = col * CELL_SIZE, row * CELL_SIZE

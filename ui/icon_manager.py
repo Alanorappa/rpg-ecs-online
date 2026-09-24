@@ -46,6 +46,25 @@ class IconManager:
         self._cache[key] = surf
         return surf
 
+    def get_active(self, name: str, size: int) -> "pygame.Surface | None":
+        """Variante "ativa" do ícone (23/09/2026) — mesmo tamanho/escala de
+        `get()`, só troca a fonte pra `ICON_CHANGE_SHEET_BY_FILE`
+        (ui/icon_atlas.py). Cai pro ícone NORMAL (nunca None) se o item
+        não tiver variante ativa cadastrada — chamador não precisa de
+        fallback próprio."""
+        key = f"{name}@{size}@active"
+        if key in self._cache:
+            return self._cache[key]
+        from ui.icon_atlas import ICON_ATLAS_SHEETS
+        raw = ICON_ATLAS_SHEETS.get_active_variant_region(name)
+        if raw is None:
+            return self.get(name, size)   # sem variante cadastrada — ícone normal
+        surf = pygame.transform.scale(raw, (size, size))
+        if len(self._cache) >= self._CACHE_MAX:
+            self._cache.clear()
+        self._cache[key] = surf
+        return surf
+
     def _load_raw(self, name: str) -> "pygame.Surface | None":
         """Surface no tamanho NATURAL do ícone — atlas primeiro
         (`ui/icon_atlas.py`, 17/09/2026), arquivo individual como

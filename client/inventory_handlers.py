@@ -10,7 +10,8 @@ classe — eram as únicas usuárias quando ainda viviam em GameEngine.
 """
 import pygame
 
-from engine.components import CharacterStats, CombatStats, Equipment, Inventory, Position, Wallet
+from engine.components import (CharacterStats, CombatStats, Equipment, Inventory,
+                          PlayerLightSource, Position, Wallet)
 from ui.combat_log import LOG
 from ui.icon_manager import ICONS
 from ui.sound_manager import SOUNDS
@@ -233,6 +234,8 @@ class InventoryHandlers:
                             pass   # modal de quest consumiu o clique
                         elif getattr(item, "consumable", None):
                             self._use_consumable(item, i, inv)
+                        elif getattr(item, "light_source", None):
+                            self._toggle_item_light(item)
                         else:
                             self._equip_item(item)
                         self._selected_inv_idx = -1
@@ -354,6 +357,19 @@ class InventoryHandlers:
         item.stack -= 1
         if item.stack <= 0:
             inv.items.pop(idx)
+
+    def _toggle_item_light(self, item) -> None:
+        """Acende/apaga item de bag sob demanda (23/09/2026, ver
+        engine/components.py::PlayerLightSource). NUNCA muda estado local
+        na hora — servidor é quem decide de verdade (confirma posse real +
+        Item.light_source) e a confirmação chega via PLAYER_LIGHT_UPDATE
+        (client/network_handlers.py::_handle_msg_player_light_update),
+        mesmo espírito de `_use_consumable` (predição LOCAL só quando
+        offline; online sempre espera o servidor)."""
+        if not getattr(self, "_net", None):
+            return   # sem modo offline pra luz de item — feature 100% online
+        from shared.messages import MsgType as _MTLight
+        self._net.send(_MTLight.TOGGLE_ITEM_LIGHT, {"item_id": item.item_id})
 
     def _draw_inventory_panel(self):
         inv          = self.world.get_component(self.player_entity, Inventory)
@@ -491,7 +507,17 @@ class InventoryHandlers:
             if item:
                 ic        = inv_slot - self._u(8)
                 icon_r    = pygame.Rect(sx + self._u(4), sy + self._u(4), ic, ic)
-                icon_surf = ICONS.get(ICONS.item_key(item), ic)
+                # Item de luz ACESO (23/09/2026) — ícone "ativo" (atlas
+                # companheiro, ver ui/icon_atlas.py) enquanto for o MESMO
+                # item que PlayerLightSource.item_id aponta como aceso
+                # (estado confirmado pelo servidor, nunca predição local —
+                # ver _toggle_item_light).
+                _my_pls = self.world.get_component(self.player_entity, PlayerLightSource)
+                _lit_slot = (getattr(item, "light_source", None)
+                             and _my_pls is not None and _my_pls.active
+                             and _my_pls.item_id == item.item_id)
+                icon_surf = (ICONS.get_active(ICONS.item_key(item), ic) if _lit_slot
+                             else ICONS.get(ICONS.item_key(item), ic))
                 if icon_surf:
                     self.screen.blit(icon_surf, icon_r)
                 else:
