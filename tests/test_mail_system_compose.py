@@ -1,0 +1,156 @@
+"""
+tests/test_mail_system_compose.py — ui/mail_system.py, tela de compor
+correspondência (25/09/2026, pedidos do usuário após 1ª rodada de teste
+em jogo): clique direito (não esquerdo) devolve item do slot pra bolsa;
+Shift+clique direito num item empilhável abre modal de quantidade
+(mesmo padrão de ShopSystem/trade). Staging é 100% local (nenhuma
+mensagem de rede envolvida), então testável sem servidor/banco.
+"""
+import os, sys, unittest
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import pygame
+pygame.init()
+_screen = pygame.display.set_mode((1280, 720))
+
+from engine.world import World
+from engine.entity_factory import create_player, create_mailbox
+from engine.components import Inventory
+from ui.mail_system import MailSystem
+from content.item_table import ITEMS
+
+
+def _make_fixture():
+    world = World()
+    player = create_player(world, 10, 10)
+    create_mailbox(world, 11, 10, name="Caixa de Correio")
+    ms = MailSystem(world, player, _screen)
+    ui = ms._ui()
+    ui.screen = "compose"
+    return world, player, ms, ui
+
+
+def _give_item(world, player, item_key, stack=1):
+    item = ITEMS[item_key]()
+    item.stack = stack
+    world.get_component(player, Inventory).items.append(item)
+    return item
+
+
+def _click(ms, layout_key, button=3, shift=False):
+    L = ms._compose_layout()
+    r = L[layout_key]
+    center = r.center if hasattr(r, "center") else (r[0].centerx, r[0].centery)
+    event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=button, pos=center)
+    orig_mods = pygame.key.get_mods
+    if shift:
+        pygame.key.get_mods = lambda: pygame.KMOD_SHIFT
+    try:
+        ms._handle_compose_click(ms._ui(), event)
+    finally:
+        pygame.key.get_mods = orig_mods
+
+
+def _click_bag_row(ms, row_index, button=3, shift=False):
+    L = ms._compose_layout()
+    row_h = L["bag_row_h"]
+    pos = (L["bag"].x + 10, L["bag"].y + row_index * row_h + row_h // 2)
+    event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=button, pos=pos)
+    orig_mods = pygame.key.get_mods
+    if shift:
+        pygame.key.get_mods = lambda: pygame.KMOD_SHIFT
+    try:
+        ms._handle_compose_click(ms._ui(), event)
+    finally:
+        pygame.key.get_mods = orig_mods
+
+
+class TestMailComposeSlotRemoval(unittest.TestCase):
+
+    def test_clique_direito_no_slot_devolve_item_pra_bolsa(self):
+        world, player, ms, ui = _make_fixture()
+        _give_item(world, player, "hp_potion", 1)
+        ui.compose_items = [(0, 1)]
+
+        L = ms._compose_layout()
+        slot_center = L["slots"][0].center
+        event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=3, pos=slot_center)
+        ms._handle_compose_click(ui, event)
+
+        self.assertEqual(ui.compose_items, [])
+
+    def test_clique_esquerdo_no_slot_nao_remove_mais(self):
+        """Pedido do usuário: clique esquerdo deixou de remover — agora é
+        só clique direito."""
+        world, player, ms, ui = _make_fixture()
+        _give_item(world, player, "hp_potion", 1)
+        ui.compose_items = [(0, 1)]
+
+        L = ms._compose_layout()
+        slot_center = L["slots"][0].center
+        event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=slot_center)
+        ms._handle_compose_click(ui, event)
+
+        self.assertEqual(ui.compose_items, [(0, 1)],
+                         "clique esquerdo nao deveria mais remover o item do slot")
+
+
+class TestMailComposeQuantityModal(unittest.TestCase):
+
+    def test_shift_clique_direito_em_item_empilhavel_abre_modal_de_quantidade(self):
+        world, player, ms, ui = _make_fixture()
+        _give_item(world, player, "hp_potion", 5)
+
+        _click_bag_row(ms, 0, button=3, shift=True)
+
+        self.assertIsNotNone(ms._compose_qty_modal)
+        self.assertEqual(ms._compose_qty_modal["max_qty"], 5)
+        self.assertEqual(ui.compose_items, [], "nao deveria anexar direto, so abrir o modal")
+
+    def test_confirmar_modal_anexa_a_quantidade_escolhida(self):
+        world, player, ms, ui = _make_fixture()
+        _give_item(world, player, "hp_potion", 5)
+        _click_bag_row(ms, 0, button=3, shift=True)
+        ms._compose_qty_modal["qty"] = 3
+
+        ms._confirm_compose_qty_modal(ui, ms._compose_qty_modal)
+
+        self.assertEqual(ui.compose_items, [(0, 3)])
+        self.assertIsNone(ms._compose_qty_modal, "modal deveria fechar apos confirmar")
+
+    def test_clique_direito_sem_shift_anexa_a_pilha_inteira_direto(self):
+        world, player, ms, ui = _make_fixture()
+        _give_item(world, player, "hp_potion", 5)
+
+        _click_bag_row(ms, 0, button=3, shift=False)
+
+        self.assertEqual(ui.compose_items, [(0, 5)])
+        self.assertIsNone(ms._compose_qty_modal)
+
+    def test_item_com_stack_1_nao_abre_modal_mesmo_com_shift(self):
+        """Sem stack pra fatiar, Shift+clique direito se comporta igual
+        clique direito normal (mesma regra de ShopSystem)."""
+        world, player, ms, ui = _make_fixture()
+        _give_item(world, player, "hp_potion", 1)
+
+        _click_bag_row(ms, 0, button=3, shift=True)
+
+        self.assertIsNone(ms._compose_qty_modal)
+        self.assertEqual(ui.compose_items, [(0, 1)])
+
+
+class TestMailComposeFieldFocused(unittest.TestCase):
+
+    def test_compose_field_focused_reflete_o_campo_com_foco(self):
+        world, player, ms, ui = _make_fixture()
+        self.assertFalse(ms.compose_field_focused)
+        ui.compose_focus = "to"
+        self.assertTrue(ms.compose_field_focused)
+        ui.compose_focus = ""
+        self.assertFalse(ms.compose_field_focused)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

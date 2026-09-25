@@ -74,6 +74,9 @@ class MailSystem(UIScaleMixin, System):
         self._open_cooldown: float = 0.0
         self._inbox_scroll: int = 0
         self._bag_scroll:   int = 0
+        # Modal de quantidade (Shift+clique direito num item empilhável na
+        # bolsa) — mesmo padrão/campos de ShopSystem._qty_modal.
+        self._compose_qty_modal: "dict | None" = None
 
     # ------------------------------------------------------------------
     # Estado (via MailUIState — nunca dict solto, ver engine/components.py
@@ -88,6 +91,15 @@ class MailSystem(UIScaleMixin, System):
     def is_open(self) -> bool:
         ui = self._ui()
         return ui is not None and ui.is_open
+
+    @property
+    def compose_field_focused(self) -> bool:
+        """True enquanto um campo de texto da composição está com foco —
+        usado por game.py (atalhos de menu) e PlayerInputSystem (WASD)
+        pra parar de vazar digitação pro resto do jogo, mesmo padrão de
+        `self._chat_active`/`self._trade_gold_focus`."""
+        ui = self._ui()
+        return ui is not None and bool(ui.compose_focus)
 
     @property
     def mailbox_eid(self) -> int:
@@ -211,6 +223,12 @@ class MailSystem(UIScaleMixin, System):
         if ui is None or not ui.is_open:
             return
         for event in events:
+            if self._compose_qty_modal is not None:
+                # Modal de quantidade (Shift+clique direito num item
+                # empilhável) preempta o resto — mesmo padrão de
+                # ShopSystem._qty_modal/_handle_qty_modal_event.
+                self._handle_compose_qty_modal_event(event)
+                continue
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 if ui.sub_screen_open:
                     self._back_to_inbox()
@@ -392,6 +410,7 @@ class MailSystem(UIScaleMixin, System):
         ui.compose_gold_text = ""
         ui.compose_focus   = ""
         self._bag_scroll   = 0
+        self._compose_qty_modal = None
         ui.screen = "compose"
 
     # ------------------------------------------------------------------
@@ -430,26 +449,167 @@ class MailSystem(UIScaleMixin, System):
             ui.compose_focus = ""
             pygame.key.stop_text_input()
 
-        if event.button == 1:
+        if event.button == 3:
+            # Clique direito num slot já staged devolve o item pra bolsa
+            # (pedido do usuário 25/09/2026 — antes era clique esquerdo,
+            # inconsistente com "clique direito reclama/anexa" usado no
+            # resto do correio).
             for i, r in enumerate(L["slots"]):
                 if r.collidepoint(mx, my) and i < len(ui.compose_items):
                     ui.compose_items.pop(i)
                     return
 
-        if event.button == 3:
             inv = self.world.get_component(self.player_entity, Inventory)
             if inv is None:
                 return
             staged_indices = {idx for idx, _q in ui.compose_items}
             row_h = L["bag_row_h"]
+            mods  = pygame.key.get_mods()
+            shift = bool(mods & pygame.KMOD_SHIFT)
             for i, item in enumerate(inv.items):
                 vis_i = i - self._bag_scroll
                 r = pygame.Rect(L["bag"].x, L["bag"].y + vis_i * row_h, L["bag"].width, row_h - self._u(2))
                 if r.collidepoint(mx, my):
                     if i in staged_indices or len(ui.compose_items) >= 6:
                         return
+                    # Shift+clique direito num item empilhável abre o modal
+                    # de quantidade — mesmo padrão de ShopSystem/trade
+                    # (Shift+clique direito = escolher quanto).
+                    if shift and getattr(item, "max_stack", 1) > 1 and item.stack > 1:
+                        self._open_compose_qty_modal(i, item)
+                        return
                     ui.compose_items.append((i, item.stack))
                     return
+
+    # ── Modal de quantidade (Shift+clique direito num item empilhável) ──
+    # Mesmo padrão de ui/shop_system.py::_open_qty_modal/_close_qty_modal/
+    # _handle_qty_modal_event/_render_qty_modal — aqui não existe preço
+    # (não é compra), só "quantos dessa pilha vão pra este envio".
+
+    def _open_compose_qty_modal(self, inv_index: int, item) -> None:
+        self._compose_qty_modal = {
+            "inv_index": inv_index,
+            "item_name": item.name,
+            "max_qty":   item.stack,
+            "qty":       1,
+            "text":      "1",
+            "dragging":  False,
+        }
+
+    def _close_compose_qty_modal(self) -> None:
+        self._compose_qty_modal = None
+
+    def _compose_qty_modal_rect(self) -> pygame.Rect:
+        self._set_panel_scale(UI.SHOP_QTY_MODAL_W, UI.SHOP_QTY_MODAL_H)
+        SW, SH = self.hud_surf.get_size()
+        mw, mh = self._u(UI.SHOP_QTY_MODAL_W), self._u(UI.SHOP_QTY_MODAL_H)
+        mx0 = (SW - mw) // 2 + UI.SHOP_QTY_MODAL_OFFSET_X
+        my0 = (SH - mh) // 2 + UI.SHOP_QTY_MODAL_OFFSET_Y
+        return pygame.Rect(mx0, my0, mw, mh)
+
+    def _handle_compose_qty_modal_event(self, event) -> None:
+        m = self._compose_qty_modal
+        ui = self._ui()
+
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                self._close_compose_qty_modal()
+            elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self._confirm_compose_qty_modal(ui, m)
+            elif event.key == pygame.K_BACKSPACE:
+                m["text"] = m["text"][:-1] or "0"
+                try:
+                    m["qty"] = max(1, min(int(m["text"]), m["max_qty"]))
+                except ValueError:
+                    m["qty"] = 1
+            elif event.unicode.isdigit():
+                new_text = (m["text"] if m["text"] != "0" else "") + event.unicode
+                if len(new_text) <= 6:
+                    m["text"] = new_text
+                    try:
+                        m["qty"] = max(1, min(int(new_text), m["max_qty"]))
+                    except ValueError:
+                        pass
+            return
+
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            mx, my = event.pos
+            mrect  = self._compose_qty_modal_rect()
+            sl_x  = mrect.x + self._u(20)
+            sl_y  = mrect.y + self._u(130)
+            sl_w  = mrect.width - self._u(40)
+            sl_r  = pygame.Rect(sl_x, sl_y - self._u(10), sl_w, self._u(20))
+            if sl_r.collidepoint(mx, my):
+                ratio    = max(0.0, min(1.0, (mx - sl_x) / sl_w))
+                m["qty"] = max(1, round(ratio * m["max_qty"]))
+                m["text"] = str(m["qty"])
+                m["dragging"] = True
+                return
+            btn_cancel = pygame.Rect(mrect.x + self._u(20), mrect.bottom - self._u(54), self._u(190), self._u(38))
+            btn_ok     = pygame.Rect(mrect.right - self._u(210), mrect.bottom - self._u(54), self._u(190), self._u(38))
+            if btn_cancel.collidepoint(mx, my):
+                self._close_compose_qty_modal()
+                return
+            if btn_ok.collidepoint(mx, my):
+                self._confirm_compose_qty_modal(ui, m)
+                return
+            if not mrect.collidepoint(mx, my):
+                self._close_compose_qty_modal()
+
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            m["dragging"] = False
+
+        elif event.type == pygame.MOUSEMOTION and m.get("dragging"):
+            mrect = self._compose_qty_modal_rect()
+            sl_x, sl_w = mrect.x + self._u(20), mrect.width - self._u(40)
+            ratio = max(0.0, min(1.0, (event.pos[0] - sl_x) / sl_w))
+            m["qty"]  = max(1, round(ratio * m["max_qty"]))
+            m["text"] = str(m["qty"])
+
+    def _confirm_compose_qty_modal(self, ui, m: dict) -> None:
+        if len(ui.compose_items) < 6:
+            ui.compose_items.append((m["inv_index"], m["qty"]))
+        self._close_compose_qty_modal()
+
+    def _render_compose_qty_modal(self) -> None:
+        m = self._compose_qty_modal
+        mrect = self._compose_qty_modal_rect()
+        SW, SH = self.hud_surf.get_size()
+
+        self.hud_surf.blit(fill_surf((SW, SH), (0, 0, 0, 130)), (0, 0))
+        self.hud_surf.blit(fill_surf((mrect.width, mrect.height), (18, 14, 8, 245)), mrect.topleft)
+        pygame.draw.rect(self.hud_surf, (120, 160, 220), mrect, 2, border_radius=6)
+
+        title_s = self._font_md.render(m["item_name"], False, (200, 220, 250))
+        self.hud_surf.blit(title_s, (mrect.centerx - title_s.get_width() // 2, mrect.y + self._u(12)))
+
+        sl_x  = mrect.x + self._u(20)
+        sl_y  = mrect.y + self._u(130)
+        sl_w  = mrect.width - self._u(40)
+        ratio = (m["qty"] - 1) / max(1, m["max_qty"] - 1) if m["max_qty"] > 1 else 0.0
+        handle_x = sl_x + int(ratio * sl_w)
+
+        pygame.draw.rect(self.hud_surf, (50, 40, 25), (sl_x, sl_y - self._u(3), sl_w, self._u(6)), border_radius=3)
+        pygame.draw.rect(self.hud_surf, (100, 140, 220), (sl_x, sl_y - self._u(3), int(ratio * sl_w), self._u(6)), border_radius=3)
+        pygame.draw.circle(self.hud_surf, (140, 170, 220), (handle_x, sl_y), self._u(10))
+        pygame.draw.circle(self.hud_surf, (200, 220, 250), (handle_x, sl_y), self._u(10), 2)
+
+        self.hud_surf.blit(self._font_sm.render("1", False, (130, 145, 165)), (sl_x, sl_y + self._u(14)))
+        max_s = self._font_sm.render(str(m["max_qty"]), False, (130, 145, 165))
+        self.hud_surf.blit(max_s, (sl_x + sl_w - max_s.get_width(), sl_y + self._u(14)))
+
+        qty_s = self._font_lg.render(str(m["qty"]), False, (255, 255, 255))
+        self.hud_surf.blit(qty_s, (mrect.centerx - qty_s.get_width() // 2, mrect.y + self._u(76)))
+
+        btn_cancel = pygame.Rect(mrect.x + self._u(20), mrect.bottom - self._u(54), self._u(190), self._u(38))
+        btn_ok     = pygame.Rect(mrect.right - self._u(210), mrect.bottom - self._u(54), self._u(190), self._u(38))
+        mmx, mmy   = pygame.mouse.get_pos()
+        for btn, label in ((btn_cancel, "Cancelar"), (btn_ok, f"Anexar {m['qty']}")):
+            hov = btn.collidepoint(mmx, mmy)
+            pygame.draw.rect(self.hud_surf, (35, 55, 85) if hov else (24, 38, 60), btn, border_radius=4)
+            pygame.draw.rect(self.hud_surf, (120, 160, 220), btn, 1, border_radius=4)
+            lbl = self._font_sm.render(label, False, (200, 220, 250))
+            self.hud_surf.blit(lbl, (btn.centerx - lbl.get_width() // 2, btn.centery - lbl.get_height() // 2))
 
     def _send_compose(self, ui) -> None:
         if not self._net:
@@ -553,6 +713,9 @@ class MailSystem(UIScaleMixin, System):
             self._render_inbox(ui)
         elif ui.screen == "compose":
             self._render_compose(ui)
+            if self._compose_qty_modal is not None:
+                self.pending_tooltip = None  # modal suprime tooltip dos itens abaixo
+                self._render_compose_qty_modal()
         elif ui.screen == "detail":
             self._render_detail(ui)
 
@@ -670,11 +833,26 @@ class MailSystem(UIScaleMixin, System):
             rar_col = self._RARITY_COLORS.get(item.rarity, (100, 100, 100))
             name_col = (60, 65, 75) if dim else rar_col
             stack = getattr(item, "stack", 1)
+
+            icon_s  = row_h - self._u(6)
+            ic_r    = pygame.Rect(r.x + self._u(3), r.y + (row_h - self._u(2) - icon_s) // 2, icon_s, icon_s)
+            icon_surf = ICONS.get(ICONS.item_key(item), icon_s)
+            if icon_surf:
+                self.hud_surf.blit(icon_surf, ic_r)
+            else:
+                pygame.draw.rect(self.hud_surf, rar_col, ic_r, 1, border_radius=2)
+            if stack > 1:
+                draw_stack_count(self.hud_surf, item, ic_r, self._font_sm)
+
             label = item.name if stack <= 1 else f"{item.name} x{stack}"
-            self.hud_surf.blit(self._font_sm.render(label, False, name_col), (r.x + self._u(4), r.y + self._u(4)))
+            self.hud_surf.blit(self._font_sm.render(label, False, name_col),
+                               (ic_r.right + self._u(6), r.y + self._u(4)))
             if hov and not dim:
                 lines = item_tooltip_lines(item, None)
-                lines.append(("Clique direito p/ anexar", (150, 150, 150)))
+                if getattr(item, "max_stack", 1) > 1 and stack > 1:
+                    lines.append(("Clique dir. anexa tudo | Shift+dir. = qtd.", (150, 150, 150)))
+                else:
+                    lines.append(("Clique direito p/ anexar", (150, 150, 150)))
                 self.pending_tooltip = (mx, my, item.name, lines, rar_col, item, None)
 
         # Campos
@@ -703,7 +881,7 @@ class MailSystem(UIScaleMixin, System):
                 idx, _q = ui.compose_items[i]
                 if inv and 0 <= idx < len(inv.items):
                     item_obj = inv.items[idx]
-            self._draw_item_slot(r, item_obj, r.collidepoint(mx, my), "Clique p/ remover" if item_obj else "")
+            self._draw_item_slot(r, item_obj, r.collidepoint(mx, my), "Clique direito p/ remover" if item_obj else "")
 
         # Gold
         self._draw_text_field(L["gold"], ui.compose_gold_text, ui.compose_focus == "gold", "Moedas de ouro:")

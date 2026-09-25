@@ -2072,6 +2072,36 @@ def test_chase_suppressed_continua_true_depois_de_soltar_as_teclas():
         "sem chase_suppressed=False, nenhum auto-move de perseguição deveria iniciar"
 
 
+def test_campo_de_texto_do_correio_focado_bloqueia_wasd():
+    """Bug real relatado pelo usuário 25/09/2026: digitar o nome do
+    destinatário no campo "Para" da composição de correspondência
+    também movia o personagem, porque WASD é lido por
+    pygame.key.get_pressed() (polling), fora do alcance do filtro de
+    systems_events que já bloqueia eventos KEYDOWN com modal aberto —
+    mesma classe de bug que UIState.chat_active já resolve pro chat.
+    Mesma asserção (chase_suppressed nunca liga) prova que o branch de
+    movimento nem rodou."""
+    from ui.systems import PlayerInputSystem
+    from ui.ui_components import MailUIState
+
+    world, eid, tm, cs, target = _make_wasd_pursuit_fixture()
+    world.add_component(eid, MailUIState())
+    mail_ui = world.get_component(eid, MailUIState)
+    mail_ui.compose_focus = "to"
+    sys_input = PlayerInputSystem(world, screen=None)
+
+    orig_get_pressed = pygame.key.get_pressed
+    pygame.key.get_pressed = lambda: _FakeKeys({pygame.K_d})
+    try:
+        sys_input.update([], dt=0.1)
+    finally:
+        pygame.key.get_pressed = orig_get_pressed
+
+    assert cs.chase_suppressed is False, \
+        "campo de texto do correio focado deveria bloquear WASD (movimento nao devia ter rodado)"
+    assert tm.current_tile_x == 5, "personagem nao deveria ter se movido"
+
+
 def test_process_target_suprime_auto_move_step_com_chase_suppressed():
     """chase_suppressed=True bloqueia só o auto-move de perseguição
     (_auto_move_step, via find_path) — is_pursuing e o alvo nunca são

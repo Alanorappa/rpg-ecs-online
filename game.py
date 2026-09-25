@@ -1821,6 +1821,16 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         self._open_chat_input()
                     elif self._trade_gold_focus:
                         self._handle_trade_gold_key(event)
+                    elif self._mail_system.compose_field_focused:
+                        # Campo de texto do correio (Para/Assunto/Texto/
+                        # Ouro) focado — mesmo padrão de _trade_gold_focus
+                        # acima: consome o KEYDOWN aqui (só pra não vazar
+                        # pros atalhos de menu abaixo, ex: J abrindo o
+                        # diário de quests enquanto digita o nome do
+                        # destinatário); a digitação em si já é tratada
+                        # por MailSystem.handle_events (TEXTINPUT/KEYDOWN),
+                        # chamado separadamente mais abaixo neste frame.
+                        pass
                     elif self._show_hotbar_editor:
                         pass   # editor de hotbar aberto: bloqueia atalhos de menu
                     elif event.key == pygame.K_F1:

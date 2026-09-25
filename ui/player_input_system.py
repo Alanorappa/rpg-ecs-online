@@ -478,9 +478,18 @@ class PlayerInputSystem(System):
             # inteiro também travava clique-pra-andar/auto-move/perseguição
             # de combate enquanto o chat estivesse só ABERTO (sem digitar
             # nada), o que nunca foi a intenção original.
-            from ui.ui_components import UIState as _UIStateInp
+            from ui.ui_components import UIState as _UIStateInp, MailUIState as _MailUIStateInp
             _ui_inp = self.world.get_component(entity_id, _UIStateInp)
-            _chat_blocks_keyboard_move = _ui_inp is not None and _ui_inp.chat_active
+            _mail_ui_inp = self.world.get_component(entity_id, _MailUIStateInp)
+            # Mesmo bug do chat, achado 25/09/2026 no campo "Para" do
+            # correio: digitar "a"/"s"/"d" movia o personagem porque WASD
+            # é lido por pygame.key.get_pressed() aqui embaixo, não pelos
+            # eventos KEYDOWN que o filtro de systems_events já bloqueia
+            # com modal aberto.
+            _chat_blocks_keyboard_move = (
+                (_ui_inp is not None and _ui_inp.chat_active)
+                or (_mail_ui_inp is not None and bool(_mail_ui_inp.compose_focus))
+            )
 
             # --- Movimento por teclado ---
             if can_move and not _chat_blocks_keyboard_move and not tile_movement.is_moving:
