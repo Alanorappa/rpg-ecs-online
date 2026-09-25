@@ -120,6 +120,31 @@ class TestMailComposeQuantityModal(unittest.TestCase):
         self.assertEqual(ui.compose_items, [(0, 3)])
         self.assertIsNone(ms._compose_qty_modal, "modal deveria fechar apos confirmar")
 
+    def test_slot_de_envio_mostra_a_quantidade_escolhida_nao_a_pilha_cheia(self):
+        """Bug real relatado pelo usuário 25/09/2026 (2ª vez): escolher 2
+        de uma pilha de 4 no modal continuava mostrando "4" no slot de
+        envio — o dado ficava certo por baixo (compose_items guardava
+        (idx, 2)), só o DESENHO sempre lia o item AO VIVO da bolsa
+        (stack=4 real), ignorando a quantidade escolhida."""
+        world, player, ms, ui = _make_fixture()
+        _give_item(world, player, "hp_potion", 4)
+        ui.compose_items = [(0, 2)]
+
+        seen = []
+        orig = ms._draw_item_slot
+        def _spy(r, item, hovered, hint=""):
+            seen.append(item)
+            return orig(r, item, hovered, hint)
+        ms._draw_item_slot = _spy
+
+        ms._render_compose(ui)
+
+        self.assertEqual(seen[0].stack, 2,
+                         "slot deveria mostrar a quantidade ESCOLHIDA (2), nao a pilha real da bolsa (4)")
+        inv = world.get_component(player, Inventory)
+        self.assertEqual(inv.items[0].stack, 4,
+                         "item de verdade na bolsa nao pode ter sido alterado so por desenhar o slot")
+
     def test_clique_direito_sem_shift_anexa_a_pilha_inteira_direto(self):
         world, player, ms, ui = _make_fixture()
         _give_item(world, player, "hp_potion", 5)

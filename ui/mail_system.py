@@ -21,6 +21,7 @@ System só lê MailUIState pra desenhar, nunca materializa item/gold ele
 mesmo.
 """
 from __future__ import annotations
+import copy
 import pygame
 
 from ui.fonts import make as _font
@@ -895,13 +896,20 @@ class MailSystem(UIScaleMixin, System):
                                    (L["body"].x + self._u(6), y))
                 y += self._u(18)
 
-        # Slots de item
+        # Slots de item — mostra a QUANTIDADE ESCOLHIDA (2ª rodada de bug
+        # real relatado pelo usuário 25/09/2026: escolher 2 no modal de
+        # quantidade continuava mostrando a pilha CHEIA da bolsa, 4, no
+        # slot — o envio em si já ia certo, só a exibição estava errada).
+        # Cópia RASA só pra desenho, nunca muta o item de verdade da
+        # bolsa (`inv.items[idx]` continua intocado até "Enviar" de
+        # verdade confirmar no servidor).
         for i, r in enumerate(L["slots"]):
             item_obj = None
             if i < len(ui.compose_items):
-                idx, _q = ui.compose_items[i]
+                idx, qty = ui.compose_items[i]
                 if inv and 0 <= idx < len(inv.items):
-                    item_obj = inv.items[idx]
+                    item_obj = copy.copy(inv.items[idx])
+                    item_obj.stack = qty
             self._draw_item_slot(r, item_obj, r.collidepoint(mx, my), "Clique direito p/ remover" if item_obj else "")
 
         # Gold
