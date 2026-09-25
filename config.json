@@ -869,14 +869,14 @@
       "hotbar": {
         "slots": [
           "golpe_poderoso",
+          "impacto",
+          "vitoria_iminente",
           "golpe_debilitante",
           "fatiador_de_corpos",
-          "brado_provocativo",
-          "punho_no_queixo",
           "interceptar",
+          "punho_no_queixo",
+          "brado_provocativo",
           null,
-          "vitoria_iminente",
-          "impacto",
           "executar"
         ],
         "keybinds": [
@@ -910,14 +910,14 @@
       },
       "skill_slot_prefs": {
         "golpe_poderoso": 0,
-        "punho_no_queixo": 4,
+        "punho_no_queixo": 6,
         "interceptar": 5,
-        "impacto": 8,
-        "vitoria_iminente": 7,
+        "impacto": 1,
+        "vitoria_iminente": 2,
         "executar": 9,
-        "golpe_debilitante": 1,
-        "fatiador_de_corpos": 2,
-        "brado_provocativo": 3
+        "golpe_debilitante": 3,
+        "fatiador_de_corpos": 4,
+        "brado_provocativo": 7
       }
     },
     "Faelara": {
@@ -1200,7 +1200,7 @@
     }
   },
   "debug_mode": true,
-  "profile_frames": true,
+  "profile_frames": false,
   "ui_scale": 1.25,
   "consumable_bar": {
     "slots": [
@@ -1217,5 +1217,25 @@
       118,
       98
     ]
+  },
+  "daynight": {
+    "night_color": [
+      20,
+      20,
+      130
+    ],
+    "night_alpha": 0,
+    "dawn_color": [
+      190,
+      140,
+      130
+    ],
+    "dawn_alpha": 45,
+    "dusk_color": [
+      230,
+      110,
+      100
+    ],
+    "dusk_alpha": 15
   }
 }
