@@ -196,6 +196,30 @@ async def init_db() -> None:
         await conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS characters_name_lower_idx "
             "ON characters (LOWER(name))")
+        # Correio (25/09/2026) — primeira feature do projeto com entrega
+        # ASSÍNCRONA de verdade (destinatário pode estar offline). Anexo
+        # fica em CUSTÓDIA na própria linha (items_json/gold) até
+        # reclamado — mesmo princípio de custódia que trade_processor.py
+        # já usa, só que persistido em vez de em memória (trade nunca
+        # sobrevive a um restart do servidor, correio precisa). Sem
+        # coluna de expiração por decisão do usuário (25/09/2026) — fica
+        # até o player deletar manualmente.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS mail (
+                id                 SERIAL PRIMARY KEY,
+                recipient_char_id  INTEGER NOT NULL REFERENCES characters(id),
+                sender_name        TEXT NOT NULL,
+                subject            TEXT NOT NULL,
+                body               TEXT NOT NULL DEFAULT '',
+                items_json         TEXT NOT NULL DEFAULT '[]',
+                gold               INTEGER NOT NULL DEFAULT 0,
+                claimed_items_json TEXT NOT NULL DEFAULT '[]',
+                gold_claimed       BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mail_recipient ON mail (recipient_char_id)")
     log.info(f"[Auth] banco inicializado (PostgreSQL): schema={_SCHEMA}")
     await _seed_test_accounts()
 
@@ -439,3 +463,156 @@ async def save_character(char_id: int, data: dict) -> None:
     vals.append(char_id)
     pool = await _get_pool()
     await pool.execute(f"UPDATE characters SET {set_sql} WHERE id=${len(vals)}", *vals)
+
+
+# ── Correio (25/09/2026) ────────────────────────────────────────────────
+# `items`: lista de (item_key, stack) — MESMO formato de
+# `QuestReward.items`/entries de `WorldServer.grant_items_to_player`
+# (engine.quest_logic.normalize_reward_entry), nenhum catálogo paralelo.
+
+async def create_mail(recipient_char_id: int, sender_name: str, subject: str,
+                      body: str, items: list, gold: int) -> int:
+    """Cria uma correspondência. Retorna o id gerado."""
+    import json
+    pool = await _get_pool()
+    row = await pool.fetchrow(
+        "INSERT INTO mail (recipient_char_id, sender_name, subject, body, items_json, gold) "
+        "VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
+        recipient_char_id, sender_name, subject, body, json.dumps(items), gold)
+    return row["id"]
+
+
+async def get_character_id_by_name(name: str) -> "int | None":
+    """Resolve destinatário por nome (case-insensitive, mesma convenção de
+    unicidade de `characters_name_lower_idx`)."""
+    pool = await _get_pool()
+    row = await pool.fetchrow("SELECT id FROM characters WHERE LOWER(name)=LOWER($1)", name)
+    return row["id"] if row else None
+
+
+async def list_inbox(char_id: int) -> list:
+    """Resumo (sem body/items completos — banda menor pro inbox). Ordenado
+    do mais recente pro mais antigo."""
+    import json
+    pool = await _get_pool()
+    rows = await pool.fetch(
+        "SELECT id, sender_name, subject, items_json, gold, created_at "
+        "FROM mail WHERE recipient_char_id=$1 ORDER BY created_at DESC", char_id)
+    result = []
+    for r in rows:
+        items = json.loads(r["items_json"])
+        result.append({
+            "mail_id":         r["id"],
+            "sender_name":     r["sender_name"],
+            "subject":         r["subject"],
+            "has_attachment":  bool(items) or r["gold"] > 0,
+            "created_at":      r["created_at"].timestamp() if r["created_at"] else 0,
+        })
+    return result
+
+
+async def get_mail_detail(mail_id: int, char_id: int) -> "dict | None":
+    """Valida ownership pelo `char_id` — NUNCA confia só no `mail_id` vindo
+    do cliente (outro player não pode abrir mail alheio adivinhando o id)."""
+    import json
+    pool = await _get_pool()
+    row = await pool.fetchrow(
+        "SELECT * FROM mail WHERE id=$1 AND recipient_char_id=$2", mail_id, char_id)
+    if row is None:
+        return None
+    d = dict(row)
+    d["items_json"]         = json.loads(d["items_json"])
+    d["claimed_items_json"] = json.loads(d["claimed_items_json"])
+    return d
+
+
+async def claim_mail_item(mail_id: int, char_id: int, item_index: int) -> "dict | None":
+    """Marca o item como reclamado e retorna {item_key, stack} — None se
+    já reclamado, índice inválido, ou mail não pertence ao player
+    (idempotência: uma 2ª tentativa do mesmo claim é recusada, não
+    duplica a entrega). NÃO concede o item de verdade — isso é
+    responsabilidade do CHAMADOR via `WorldServer.grant_items_to_player`,
+    mesmo padrão de recompensa de quest. `FOR UPDATE` fecha a corrida de
+    2 claims simultâneos do mesmo slot."""
+    import json
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT items_json, claimed_items_json FROM mail "
+                "WHERE id=$1 AND recipient_char_id=$2 FOR UPDATE", mail_id, char_id)
+            if row is None:
+                return None
+            items   = json.loads(row["items_json"])
+            claimed = json.loads(row["claimed_items_json"])
+            if not (0 <= item_index < len(items)) or item_index in claimed:
+                return None
+            claimed.append(item_index)
+            await conn.execute(
+                "UPDATE mail SET claimed_items_json=$1 WHERE id=$2",
+                json.dumps(claimed), mail_id)
+            entry = items[item_index]
+            return {"item_key": entry[0], "stack": entry[1]}
+
+
+async def claim_mail_gold(mail_id: int, char_id: int) -> "int | None":
+    """Retorna o gold reclamado, ou None se já reclamado/sem gold/mail não
+    pertence ao player (mesma idempotência de `claim_mail_item`)."""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT gold, gold_claimed FROM mail "
+                "WHERE id=$1 AND recipient_char_id=$2 FOR UPDATE", mail_id, char_id)
+            if row is None or row["gold_claimed"] or row["gold"] <= 0:
+                return None
+            await conn.execute("UPDATE mail SET gold_claimed=TRUE WHERE id=$1", mail_id)
+            return row["gold"]
+
+
+async def unclaim_mail_item(mail_id: int, char_id: int, item_index: int) -> None:
+    """Desfaz `claim_mail_item` — usado só quando a concessão real (via
+    `WorldServer.grant_items_to_player`) falha DEPOIS de marcar reclamado
+    (ex: mochila cheia). Sem isso o item ficaria perdido pra sempre
+    (marcado como reclamado no banco, mas nunca entregue de verdade)."""
+    import json
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT claimed_items_json FROM mail "
+                "WHERE id=$1 AND recipient_char_id=$2 FOR UPDATE", mail_id, char_id)
+            if row is None:
+                return
+            claimed = json.loads(row["claimed_items_json"])
+            if item_index in claimed:
+                claimed.remove(item_index)
+                await conn.execute(
+                    "UPDATE mail SET claimed_items_json=$1 WHERE id=$2",
+                    json.dumps(claimed), mail_id)
+
+
+async def delete_mail(mail_id: int, char_id: int) -> bool:
+    """True se de fato deletou (existia e pertencia ao player)."""
+    pool = await _get_pool()
+    result = await pool.execute(
+        "DELETE FROM mail WHERE id=$1 AND recipient_char_id=$2", mail_id, char_id)
+    return result.split()[-1] == "1"
+
+
+async def count_unread_mail(char_id: int) -> int:
+    """"Não reclamada" = tem item OU gold ainda pendente de reclamar —
+    derivado, sem coluna de "lido" separada pra manter sincronizada à
+    parte. Usado só pro indicador visual sobre a caixa de correio."""
+    import json
+    pool = await _get_pool()
+    rows = await pool.fetch(
+        "SELECT items_json, claimed_items_json, gold, gold_claimed "
+        "FROM mail WHERE recipient_char_id=$1", char_id)
+    count = 0
+    for r in rows:
+        items   = json.loads(r["items_json"])
+        claimed = json.loads(r["claimed_items_json"])
+        if len(claimed) < len(items) or (r["gold"] > 0 and not r["gold_claimed"]):
+            count += 1
+    return count

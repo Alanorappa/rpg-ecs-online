@@ -1436,6 +1436,16 @@ class Trainer:
     class_id: str = "guerreiro"   # identificador da classe ensinada
 
 
+@dataclass
+class Mailbox:
+    """Capacidade de caixa de correio (25/09/2026) — marcador vazio, mesma
+    família de Merchant/QuestGiver/Blacksmith. Combine com NPC. Sem campos:
+    diferente de loja (shop_id) ou quest giver (quest_ids), não existe
+    catálogo por instância — toda caixa de correio dá acesso ao MESMO
+    inbox do player (por personagem, não por caixa física)."""
+    pass
+
+
 class LearnedRecipes:
     """Receitas que o jogador aprendeu ao consumir itens de receita."""
     def __init__(self):

@@ -86,6 +86,15 @@
       "profession": "Comerciante"
     }
   ],
+  "mailboxes": [
+    {
+      "x": 155,
+      "y": 307,
+      "name": "Caixa de Correio",
+      "level": 1,
+      "profession": "Correio"
+    }
+  ],
   "blacksmiths": [
     {
       "x": 149,

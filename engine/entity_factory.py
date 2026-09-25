@@ -10,10 +10,11 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        SkillLevels, \
                        SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, NpcSounds, FogOfWar, \
                        EnemyAbilities, EnemyAbilitySlot, QuestLog, QuestGiver, NPC, Blacksmith, \
-                       LearnedRecipes, Trainer, Faction, Combatant, Harvestable, Tower, Minion
+                       LearnedRecipes, Trainer, Faction, Combatant, Harvestable, Tower, Minion, \
+                       Mailbox
 from ui.ui_components import (
     UIState, ShopUIState, LootUIState, DragState, TradeUIState,
-    InstanceInventoryUIState,
+    InstanceInventoryUIState, MailUIState,
 )
 from engine.tileset import (TILE_MAPPING, OBJECT_MAPPING, TILE_SIZE, FLOOR_TILE,
                             get_collision_offsets, get_vision_offsets)
@@ -204,6 +205,7 @@ def create_player(world: World, tile_x: int, tile_y: int,
     world.add_component(player_entity, DragState())
     world.add_component(player_entity, TradeUIState())
     world.add_component(player_entity, InstanceInventoryUIState())
+    world.add_component(player_entity, MailUIState())
     world.add_component(player_entity, EntityIdentity(
         name="Aventureiro", race="Humano", entity_class="Guerreiro",
         level=1, tier="normal",
@@ -562,6 +564,23 @@ def create_merchant(world: World, tile_x: int, tile_y: int, shop_id: str = "gene
     world.add_component(eid, Renderable(color=color, width=PLAYER_SIZE, height=PLAYER_SIZE))
     world.add_component(eid, NPC(name=npc_name, level=level, profession=profession))
     world.add_component(eid, Merchant(shop_id=shop_id))
+    return eid
+
+
+def create_mailbox(world: World, tile_x: int, tile_y: int,
+                   name: str = "Correio", level: int = 1,
+                   profession: str = "Correio") -> int:
+    """NPC "Caixa de Correio" (25/09/2026) com combate genérico (Fase 1 —
+    ver create_merchant docstring pro racional completo). Sem catálogo por
+    instância (diferente de Merchant/shop_id) — só o componente marcador
+    `Mailbox`, o inbox é por PERSONAGEM, não por caixa física."""
+    eid = _build_combat_entity(
+        world, tile_x, tile_y, ENEMY_MELEE_ATTACK_RANGE, False, "normal",
+        _SERVICE_NPC_DEFAULT_RACE, "", level, _SERVICE_NPC_FACTION,
+        identity_name=name)
+    world.add_component(eid, Renderable(color=(100, 140, 200), width=PLAYER_SIZE, height=PLAYER_SIZE))
+    world.add_component(eid, NPC(name=name, level=level, profession=profession))
+    world.add_component(eid, Mailbox())
     return eid
 
 

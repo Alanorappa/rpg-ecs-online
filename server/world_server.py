@@ -45,6 +45,7 @@ from server.party_processor import PartyProcessorMixin
 from server.pvp_zone_processor import PvpZoneProcessorMixin
 from server.bush_zone_processor import BushZoneProcessorMixin
 from server.tile_los_processor import TileLosProcessorMixin
+from server.mail_processor import MailProcessorMixin
 from server.match_processor import MatchProcessorMixin
 from server.bg_queue_processor import BgQueueProcessorMixin
 from debug.mob_combat_debug import MCL
@@ -161,7 +162,7 @@ class _MapBundle:
 class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootProcessorMixin,
                    SpellCompletionMixin, TradeProcessorMixin, DuelProcessorMixin, PartyProcessorMixin,
                    PvpZoneProcessorMixin, MatchProcessorMixin, BgQueueProcessorMixin,
-                   BushZoneProcessorMixin, TileLosProcessorMixin):
+                   BushZoneProcessorMixin, TileLosProcessorMixin, MailProcessorMixin):
     # Rate-limit de CAST_SKILL por player, por tick (06/09/2026, ver
     # PROBLEMAS_ARQUITETURA.md) — folga bem acima de qualquer sequência
     # legítima real de auto-attack+skill+skill de um humano num tick de
@@ -1057,7 +1058,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         from engine.entity_factory import (
             create_merchant as _csn_merchant, create_blacksmith as _csn_blacksmith,
             create_quest_giver as _csn_qg, create_trainer as _csn_trainer,
+            create_mailbox as _csn_mailbox,
         )
+        for col, row, name, lvl, prof in spawn_points.get("mailboxes", []):
+            _csn_mailbox(self.world, col, row, name=name, level=lvl, profession=prof)
         for col, row, name, shop_id, lvl, prof in spawn_points.get("merchants", []):
             _csn_merchant(self.world, col, row, name=name, shop_id=shop_id,
                          level=lvl, profession=prof)

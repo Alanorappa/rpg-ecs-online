@@ -217,6 +217,26 @@ class MsgType(str, Enum):
     RECYCLE_REQUEST    = "recycle_request"   # C→S  {inv_index} — débito A4 (11/08/2026)
     RECYCLE_RESULT     = "recycle_result"    # S→C  {success, reason, materials, new_gold}
 
+    # ── Correio (25/09/2026, NPC "Caixa de Correio") ────────────────
+    # Entrega de anexo reaproveita canais JÁ existentes em vez de duplicar:
+    # item concedido → INVENTORY_UPDATE {items:[...]} (mesmo formato de
+    # recompensa de quest, via WorldServer.grant_items_to_player); gold
+    # concedido/debitado → STATS_UPDATE {gold} (mesmo canal de sempre).
+    # As mensagens abaixo só carregam o que esses canais NÃO sabem:
+    # listagem/detalhe de correspondência e confirmação de qual slot foi
+    # reclamado (pra UI atualizar o slot certo). Ver arquitetura/
+    # ARQUITETURA ONLINE.md, seção de decisões.
+    MAIL_OPEN_INBOX    = "mail_open_inbox"   # C→S  {} — abre o inbox no NPC de correio
+    MAIL_INBOX_LIST    = "mail_inbox_list"   # S→C  {mails: [{mail_id, sender_name, subject, has_attachment, created_at}]}
+    MAIL_OPEN_ITEM     = "mail_open_item"    # C→S  {mail_id}
+    MAIL_ITEM_DETAIL   = "mail_item_detail"  # S→C  {mail_id, sender_name, subject, body, items: [{item_index, item, claimed}], gold, gold_claimed}
+    MAIL_SEND          = "mail_send"         # C→S  {to_name, subject, body, items: [{inv_index, quantity}] (≤6), gold}
+    MAIL_SEND_RESULT   = "mail_send_result"  # S→C  {success, reason}
+    MAIL_CLAIM_ITEM    = "mail_claim_item"   # C→S  {mail_id, item_index}
+    MAIL_CLAIM_GOLD    = "mail_claim_gold"   # C→S  {mail_id}
+    MAIL_CLAIM_RESULT  = "mail_claim_result" # S→C  {mail_id, success, item_index, gold_claimed, reason} — valor real vem por INVENTORY_UPDATE/STATS_UPDATE junto, isto só confirma qual slot marcar
+    MAIL_DELETE        = "mail_delete"       # C→S  {mail_id} — resposta é um MAIL_INBOX_LIST atualizado (sem mensagem própria)
+
     # ── GM (menu de debug F12, 07/08/2026) ──────────────────────────
     # Só a conta com is_gm=True (server/grant_gm.py, sem UI/endpoint pra
     # conceder) tem efeito — sem is_gm, servidor ignora silenciosamente
@@ -350,6 +370,11 @@ C2S_REQUIRED: dict = {
     MsgType.SELL_REQUEST:       {"item_name": str},
     MsgType.CRAFT_REQUEST:      {"recipe_id": str},
     MsgType.RECYCLE_REQUEST:    {"inv_index": _NUM},
+    MsgType.MAIL_OPEN_ITEM:     {"mail_id": _NUM},
+    MsgType.MAIL_SEND:          {"to_name": str},
+    MsgType.MAIL_CLAIM_ITEM:    {"mail_id": _NUM, "item_index": _NUM},
+    MsgType.MAIL_CLAIM_GOLD:    {"mail_id": _NUM},
+    MsgType.MAIL_DELETE:        {"mail_id": _NUM},
     MsgType.GM_LEVELUP:         {"levels": _NUM},
     MsgType.GM_ADD_GOLD:        {"amount": _NUM},
     MsgType.GM_ADD_ITEM:        {"item_name": str},

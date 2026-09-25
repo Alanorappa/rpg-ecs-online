@@ -36,6 +36,44 @@ class LootUIState:
         self.open_corpse_id: int = -1   # -1 = fechado
 
 
+class MailUIState:
+    """Estado do sistema de correio (25/09/2026) — acessível por qualquer
+    sistema sem referência direta. `unread_count` é sincronizado só por
+    rede (campo "mail_unread" em STATS_UPDATE) — DIFERENTE do marcador de
+    quest, que o cliente calcula sozinho a partir de dado já local; "tem
+    correspondência não reclamada" só existe no banco, do lado do
+    servidor, então nunca é calculado aqui."""
+    def __init__(self):
+        self.screen: str = "closed"   # "closed" | "inbox" | "compose" | "detail"
+        self.mailbox_eid: int = -1
+        self.unread_count: int = 0
+        self.inbox: list = []         # [{mail_id, sender_name, subject, has_attachment, created_at}]
+        self.detail: "dict | None" = None  # {mail_id, sender_name, subject, body, items, gold, gold_claimed}
+        # Compor: staging 100% local — nada sai do Inventory real até "Enviar"
+        # (mesmo princípio client-mostra/server-confirma do trade, mas sem
+        # round-trip por item — só o envio final vira 1 mensagem).
+        self.compose_to: str = ""
+        # Sempre o texto DIGITADO de verdade (nunca o auto-preenchimento) —
+        # se vazio no "Enviar", o auto-preenchimento vale (mesma regra
+        # aplicada de novo no servidor, ver server/mail_processor.py). A UI
+        # mostra o auto-preenchimento como texto fantasma (placeholder)
+        # enquanto este campo estiver vazio, recalculado a cada frame a
+        # partir de compose_items/compose_gold_text — nunca escrito aqui.
+        self.compose_subject: str = ""
+        self.compose_body: str = ""
+        self.compose_items: list = []    # até 6 × (inv_index, quantidade) — sempre stack inteiro
+        self.compose_gold_text: str = ""
+        self.compose_focus: str = ""     # "" | "to" | "subject" | "body" | "gold"
+
+    @property
+    def is_open(self) -> bool:
+        return self.screen != "closed"
+
+    @property
+    def sub_screen_open(self) -> bool:
+        return self.screen in ("compose", "detail")
+
+
 class InstanceInventoryUIState:
     """True enquanto o player está em progressão normalizada de instância
     (01/08/2026, ver server/instance_progression.py) — flag "estou no

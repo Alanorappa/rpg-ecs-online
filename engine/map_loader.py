@@ -152,6 +152,7 @@ def load_map_csv(filepath: str) -> tuple[list[str], list[str], dict, list | None
         "quest_givers":      [],
         "blacksmiths":       [],
         "trainers":          [],
+        "mailboxes":         [],
         "spawn_zones":       [],
         "transitions":       [],
         "ambient_zones":     [],
@@ -347,6 +348,15 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
              t.get("level", 1),
              t.get("profession", "Treinador"))
             for t in data["trainers"]
+        ]
+
+    if "mailboxes" in data:
+        spawn_points["mailboxes"] = [
+            (mb["x"], mb["y"],
+             mb.get("name", "Correio"),
+             mb.get("level", 1),
+             mb.get("profession", "Correio"))
+            for mb in data["mailboxes"]
         ]
 
     if "combat_npcs" in data:

@@ -483,6 +483,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._char_stats_ui = CharStatsUI(self.screen)
         self._char_stats_ui.on_open = self._send_char_stats_request
         self._shop_system   = ShopSystem(self.world, self.player_entity, self.screen)
+        from ui.mail_system import MailSystem
+        self._mail_system   = MailSystem(self.world, self.player_entity, self.screen)
         from ui.day_night_system import DayNightSystem
         self._day_night_system = DayNightSystem(self.world, self.player_entity)
         from ui.day_night_clock_hud import DayNightClockHud
@@ -517,7 +519,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         for _sys in (self._talent_system, self._skill_level_ui, self._char_stats_ui, self._shop_system,
                      self._quest_system, self._quest_dialog, self._quest_journal,
                      self._crafting_system, self._trainer_system, self._buff_bar,
-                     self._day_night_clock_hud):
+                     self._day_night_clock_hud, self._mail_system):
             _sys.set_ui_scale(self._ui_scale)
         # Insere QuestSystem após xp_system (posição 13, depois do índice de xp_system)
         _xp_idx = next((i for i, s in enumerate(self.systems)
@@ -611,6 +613,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._quest_system._net = self._net
         # ShopSystem: envia BUY_REQUEST ao servidor (gold/inventário server-autoritativos)
         self._shop_system._net = self._net
+        # MailSystem: envia MAIL_* ao servidor (banco é a fonte de verdade
+        # do inbox, entrega assíncrona — ver server/mail_processor.py)
+        self._mail_system._net = self._net
         # BlacksmithSystem: envia CRAFT_REQUEST/RECYCLE_REQUEST ao servidor
         # (débito A4, 11/08/2026 — antes forjar/reciclar era 100% local,
         # servidor nunca descontava ouro/material de verdade)
@@ -1329,7 +1334,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                      self._quest_dialog, self._quest_journal,
                      self._crafting_system, self._trainer_system,
                      self._loot_system, self._map_overlay, self._minimap, self._buff_bar,
-                     self._day_night_clock_hud):
+                     self._day_night_clock_hud, self._mail_system):
             _sys.set_ui_scale(self._ui_scale)
         import config as _cfg
         _cfg.save({"ui_scale": self._ui_scale})
@@ -1359,6 +1364,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             (lambda: self._shop_system.is_open,
              lambda: self._shop_system.open_merchant_id,
              self._shop_system._close),
+            (lambda: self._mail_system.is_open,
+             self._mail_system_mailbox_eid,
+             self._mail_system._close),
             (lambda: self._crafting_system.is_open,
              lambda: self._crafting_system._bs_eid,
              self._crafting_system._close),
@@ -1369,6 +1377,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
              lambda: self._quest_dialog._dialog_npc_id,
              self._quest_dialog._close),
         )
+
+    def _mail_system_mailbox_eid(self) -> int:
+        ui = self._mail_system._ui()
+        return ui.mailbox_eid if ui is not None else -1
 
     def _close_modals_if_too_far(self) -> None:
         """Fecha modais de interação quando o player se afasta do elemento (NPC/corpo)."""
@@ -2031,7 +2043,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                                    or self._trainer_system.is_open
                                    or self._shop_system.is_open
                                    or self._quest_dialog.is_open
-                                   or self._trade_is_open)
+                                   or self._trade_is_open
+                                   or self._mail_system.is_open)
 
             def _strip_open_click(evs, _already_open: bool):
                 if not _any_npc_modal_open or _already_open:
@@ -2069,6 +2082,19 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 _strip_open_click(_craft_ev, self._shop_system.is_open), dt)
             if self._shop_system.is_open:
                 self._shop_system.handle_events(events)
+
+            # Filtra right-click de mail se algum sistema anterior já consumiu
+            _mail_ev = (
+                [e for e in events
+                 if not (e.type == pygame.MOUSEBUTTONDOWN and e.button == 3)]
+                if (self._crafting_system._right_click_consumed
+                    or self._trainer_system._right_click_consumed
+                    or self._shop_system._right_click_consumed) else events
+            )
+            self._mail_system.update(
+                _strip_open_click(_mail_ev, self._mail_system.is_open), dt)
+            if self._mail_system.is_open:
+                self._mail_system.handle_events(events)
 
             # Modal de quantidade do trade (fatiar stack, 11/08/2026) — full-pass
             # sobre TODOS os eventos do frame (não só o elif single-event chain),
@@ -2195,6 +2221,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     or self._trainer_system._right_click_consumed
                     or self._shop_system._right_click_consumed
                     or self._quest_dialog._right_click_consumed
+                    or self._mail_system._right_click_consumed
                     or _hotbar_click_consumed):
                 # Nenhum modal aberto ainda, mas um clique já foi consumido
                 # neste frame pra resolver prioridade entre NPCs adjacentes,
@@ -2496,6 +2523,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 self._render_system.render(cam_x, cam_y, world_objects=_world_objs,
                                            nameplate_mode=self._nameplate_mode)
             self._shop_system.render_world(cam_x, cam_y)
+            self._mail_system.render_world(cam_x, cam_y)
             self._quest_dialog.render_world(cam_x, cam_y, self._zoom)
             self._crafting_system.render_world(cam_x, cam_y)
             self._trainer_system.render_world(cam_x, cam_y)
@@ -2760,6 +2788,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if PROFILE_FRAMES:
                 self._prof_record("ui:shop_modal", _time.perf_counter() - _ts)
 
+            # Mail modal: por cima de tudo
+            self._mail_system.render(cam_x, cam_y)
+            if self._mail_system.pending_tooltip:
+                self._pending_tooltip = self._mail_system.pending_tooltip
+
             # Quest dialog e diário: por cima de tudo
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
@@ -2998,6 +3031,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._loot_system.pending_loot_corpse_id = -1
         self._death_handler.clear_pending()
         self._shop_system._close()
+        self._mail_system._close()
         self._quest_dialog._pending_npc_id = -1
         if self._quest_dialog.is_open:
             self._quest_dialog._close()

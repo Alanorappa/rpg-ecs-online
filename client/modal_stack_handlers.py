@@ -16,7 +16,8 @@ self._shop_system, self._show_hotbar_editor, self._show_debug,
 self._show_talents, self._show_skills, self._show_inventory, self._show_pause,
 self._pause_submenu, self._sound_drag, self._selected_inv_idx,
 self._close_hotbar_editor (já existe em hotbar_editor_handlers.py),
-self._trade_is_open/_close_trade (trade_handlers.py) e, desde 10/08/2026,
+self._trade_is_open/_close_trade (trade_handlers.py), self._mail_system
+(ui/mail_system.py, 25/09/2026) e, desde 10/08/2026,
 os modais de PvP: self._arena_pending_match/_bg_pending_match/_arena_result/
 _bg_result/_arena_modal_open (arena_handlers.py/bg_queue_handlers.py/
 battleground_handlers.py) + self._send_arena_forfeit/_send_bg_leave.
@@ -43,6 +44,8 @@ class ModalStackHandlers:
             ("quest_journal", lambda: self._quest_journal.is_open,             self._quest_journal.close),
             ("shop_qty",      lambda: self._shop_system.qty_modal_open,        self._shop_system._close_qty_modal),
             ("shop",          lambda: self._shop_system.is_open,               self._shop_system._close),
+            ("mail_sub",      lambda: self._mail_system.sub_screen_open,       self._mail_system._back_to_inbox),
+            ("mail",          lambda: self._mail_system.is_open,               self._mail_system._close),
             ("trade_qty",     lambda: self._trade_qty_modal is not None,       self._close_trade_qty_modal),
             ("trade",         lambda: self._trade_is_open,                     self._close_trade),
             # Fila/partida de PvP (Arena + Battleground, 10/08/2026 — achado

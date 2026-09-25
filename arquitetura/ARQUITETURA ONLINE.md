@@ -391,6 +391,96 @@ icon_atlas.py`, `ui/icon_manager.py`, `game.py`. Testes:
 `tests/test_item_light.py` (servidor) + `tests/test_client_ui.py`
 (render/ícone).
 
+### 17. Sistema de correio — NPC "Caixa de Correio" (25/09/2026)
+
+Pedido do usuário, com wireframes de referência pros 3 modais (inbox,
+compor, abrir correspondência). Design discutido e aprovado antes de
+codar (`AskUserQuestion`, 25/09/2026): NPC perto da loja/banco
+existente; sem expiração de correspondência (fica até o player deletar
+manualmente); COM indicador visual de correspondência nova sobre a
+caixa de correio.
+
+**Primeira feature do projeto com entrega ASSÍNCRONA de verdade**
+(destinatário pode estar offline) — confirmado por investigação prévia
+que não existia nenhum padrão parecido no código. Por isso é a única
+feature de gameplay com uma tabela de banco NOVA (`mail`,
+`server/auth.py::init_db()`) além de `accounts`/`characters` — anexo
+(item/gold) fica em CUSTÓDIA na própria linha da tabela (não em
+memória, diferente de `TradeSession`) até reclamado, sem coluna de
+"lido" separada (derivado de `claimed_items_json`/`gold_claimed`).
+
+**Entrega de anexo reaproveita canais JÁ existentes, decisão
+deliberada pra não duplicar canal** — item concedido vai por
+`WorldServer.grant_items_to_player` + `INVENTORY_UPDATE` (mesmo
+caminho de recompensa de quest); gold por mutação direta de
+`Wallet.gold` + `STATS_UPDATE` (mesmo canal de sempre). O indicador de
+correspondência nova (`unread_count`) TAMBÉM reaproveita `STATS_UPDATE`
+(campo extra `mail_unread`, servidor já encaminha qualquer campo extra
+do dict) — nenhum buffer `queue_X`/`consume_X`/`_flush_X` novo, nenhuma
+entrada nova em `has_pending` (`SessionManager._on_tick`) precisou ser
+adicionada, porque `_pending_stats_updates` já estava lá.
+
+**NPC**: `create_mailbox()` (`engine/entity_factory.py`, mesma receita
+de `create_merchant` — combate genérico via `_build_combat_entity`,
+facção `civis`) + componente marcador `Mailbox` (vazio — diferente de
+`Merchant`/`shop_id`, não existe catálogo por instância; toda caixa dá
+acesso ao MESMO inbox do personagem). Cadastro em `_entities.json` →
+chave `"mailboxes"` (`engine/map_loader.py`) → `WorldServer.
+_create_service_npcs`.
+
+**Protocolo** (`shared/messages.py`): `MAIL_OPEN_INBOX`/`MAIL_INBOX_LIST`,
+`MAIL_OPEN_ITEM`/`MAIL_ITEM_DETAIL`, `MAIL_SEND`/`MAIL_SEND_RESULT`,
+`MAIL_CLAIM_ITEM`/`MAIL_CLAIM_GOLD`/`MAIL_CLAIM_RESULT`, `MAIL_DELETE`
+(resposta é um `MAIL_INBOX_LIST` atualizado, sem mensagem própria).
+`MAIL_CLAIM_RESULT` só confirma QUAL slot marcar reclamado na UI — o
+valor real do item/gold chega pelos canais reaproveitados acima, no
+MESMO handler.
+
+**Servidor autoritativo** (`server/mail_processor.py::
+MailProcessorMixin`, mixed em `WorldServer`): `process_mail_send`
+valida posse REAL de item(ns)/gold no `Inventory`/`Wallet` AO VIVO do
+remetente (tudo-ou-nada — um índice inválido no meio da lista rejeita
+a correspondência INTEIRA, nada é removido), resolve destinatário por
+nome (`server/auth.py::get_character_id_by_name`), aplica o
+auto-preenchimento de assunto vazio (nome do 1º item, ou o valor de
+gold se só gold) **no servidor também** — não só client-side, pra não
+depender de um cliente modificado preencher certo.
+`process_mail_claim_item`/`process_mail_claim_gold` são idempotentes
+(2ª tentativa do mesmo slot é recusada — `claimed_items_json`/
+`gold_claimed` no banco, com `FOR UPDATE` fechando a corrida de 2
+claims simultâneos). Ownership sempre por `char_id` (nunca só
+`mail_id`) — outro player não pode abrir/reclamar/deletar
+correspondência alheia adivinhando o id.
+
+**Cliente** (`ui/mail_system.py::MailSystem`, mesmo padrão de
+`ShopSystem` — clique direito no NPC + `walk_to_npc`/`suppress_chase`
+se não-adjacente): 3 telas em `MailUIState.screen`
+(`ui/ui_components.py`) — inbox/compose/detail. Composição de nova
+correspondência é staging 100% LOCAL (diferente do trade, que manda 1
+mensagem por clique porque é negociação em tempo real com outro player
+online) — nada sai do Inventory real até "Enviar" (1 `MAIL_SEND` só).
+Indicador visual sobre a caixa de correio reusa o pipeline de
+`ui/world_labels.py`/`icon_manager` (mesmo de `quest_system.py`), mas a
+condição vem de `MailUIState.unread_count` SINCRONIZADO por rede — ao
+contrário do marcador de quest (calculado 100% local a partir de
+`QuestGiver`+`QuestLog`), "tem correspondência" só existe no banco.
+
+**Nenhuma restrição de item por tipo** (soulbound/quest item
+intocável) — confirmado por investigação que isso não existe em nenhum
+lugar do projeto (nem no trade); correio segue o mesmo precedente.
+
+Arquivos: `server/auth.py` (tabela `mail` + 8 funções + `unclaim_mail_item`
+de rollback), `server/mail_processor.py` (novo), `server/session.py`
+(handlers + trigger de login), `server/world_server.py` (mixin +
+`_create_service_npcs`), `engine/entity_factory.py`
+(`create_mailbox`), `engine/components.py` (`Mailbox`),
+`engine/map_loader.py` (`"mailboxes"`), `shared/messages.py`,
+`ui/mail_system.py` (novo), `ui/ui_components.py` (`MailUIState`),
+`ui/ui_sizes.py`, `client/network_handlers.py`, `client/
+modal_stack_handlers.py`, `game.py`, `maps/map_1_entities.json`.
+Testes: `tests/test_mail.py` (envio/claim/ownership/idempotência,
+servidor). Validação visual dos 3 modais em jogo pendente (usuário).
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```
@@ -581,6 +671,7 @@ barra de HP); ghost (`is_ghost`) desenhado semi-transparente (alpha ~120/255).
 | Migração do sistema de quests para server-autoritativo (QuestLog/progresso/entrega) | ✅ completo | `quest_logic.py` (lógica pura), `server/world_server.py::_process_quest_events`, hooks em `server_death_handler.py`/`spell_completion_processor.py`/`skill_processor.py`/`world_server.move_player`/`apply_consumable`/`update_player_equipment`, `server/session.py::_handle_quest_accept`/`_handle_quest_turn_in`, persistência `quests_json`, ver `PROBLEMAS_ARQUITETURA.md` |
 | Duelo (contexto PvP por convite, estilo WoW) | ✅ completo, validado em jogo | `server/duel_processor.py`, `client/duel_handlers.py` |
 | Party/Grupo + XP compartilhado (Fase E) | ✅ completo, validado em jogo | `server/party_processor.py`, `client/party_handlers.py` |
+| Correio (NPC "Caixa de Correio", entrega assíncrona) | ✅ completo, testado; validação visual em jogo pendente | `server/mail_processor.py`, `server/auth.py` (tabela `mail`), `ui/mail_system.py`, ver §17 |
 | Zona PvP (Fase F — "solo=hostil, grupo=exceção") | ✅ completo, validado em jogo (solo, mesmo grupo, e grupo vs grupo) | `server/pvp_zone_processor.py`, `client/pvp_zone_handlers.py` |
 | Arena 2x2 + instanciamento (Fase G leva 1) | ✅ completo, não validado em jogo | `server/match_processor.py`, `client/arena_handlers.py` |
 | Base compartilhada Arena/BG pro que é genuinamente idêntico no ciclo de vida de partida (janela de aceite, abertura de portão, timeout de resultado) — accept/propose/leave/fila continuam separados de propósito (semântica diverge de verdade) | ✅ completo (escopo parcial deliberado) | `server/instanced_match_processor.py::InstancedMatchMixin`, ver `PROBLEMAS_ARQUITETURA.md` §17 |

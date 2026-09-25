@@ -39,6 +39,10 @@
 | Trade (player↔player) — servidor | `server/trade_processor.py` | `TradeProcessorMixin`, `TradeSession` — request/aceite/oferta/gold/confirma/cancela |
 | Trade (player↔player) — handlers de rede | `server/session.py` | `_handle_trade_*` (8), hook de desconexão em `on_disconnect` |
 | Trade (player↔player) — cliente | `client/trade_handlers.py` | `TradeHandlers` — modal de interação (clique direito em player), convite, janela (5 slots+gold) |
+| Correio — servidor (persistência) | `server/auth.py` | tabela `mail` + `create_mail`/`get_character_id_by_name`/`list_inbox`/`get_mail_detail`/`claim_mail_item`/`unclaim_mail_item`/`claim_mail_gold`/`delete_mail`/`count_unread_mail` |
+| Correio — servidor (validação/gameplay) | `server/mail_processor.py` | `MailProcessorMixin` — `process_mail_send`/`process_mail_claim_item`/`process_mail_claim_gold`/`process_mail_delete`/`process_mail_open_inbox`/`process_mail_open_item` |
+| Correio — handlers de rede | `server/session.py` | `_handle_mail_*` (6), trigger de `mail_unread` em `_spawn_and_start` (login) |
+| Correio — cliente | `ui/mail_system.py` | `MailSystem` — NPC "Caixa de Correio" (clique direito), 3 telas (inbox/compor/abrir) |
 | Duelo — servidor | `server/duel_processor.py` | `DuelProcessorMixin` — `_duel_pairs`, convites, tick de distância, interceptor de golpe letal |
 | Duelo — cliente | `client/duel_handlers.py` | `DuelHandlers` — modal de convite, contexto PvP client-side, avisos, nameplate vermelho do oponente |
 | Party/Grupo — servidor | `server/party_processor.py` | `PartyProcessorMixin` — `_parties`/`_player_party_id` (N-ário), convites, líder, XP compartilhado (`_party_members_in_range`) |
@@ -249,6 +253,8 @@ rpg_ecs_online/
 │   │   FogSystem (shadowcasting/névoa de guerra) — caches irmãos
 │   │   (`FogOfWar.version` lido por `TileRenderSystem`, ver §53)
 │   ├── shop_system.py               ← ShopSystem (painel de loja NPC)
+│   ├── mail_system.py               ← MailSystem (NPC "Caixa de Correio",
+│   │                                  3 telas: inbox/compor/abrir, 25/09/2026)
 │   ├── consumable_system.py         ← ConsumableSystem (barra de consumíveis)
 │   ├── loot_system.py               ← LootSystem (painel de saque de cadáver)
 │   ├── skill_system.py              ← SkillSystem (hotbar de habilidades,
@@ -321,6 +327,8 @@ rpg_ecs_online/
 │   ├── auth.py                      ← autenticação PostgreSQL/asyncpg (salt por conta) + persistência
 │   ├── log.py                       ← logger do servidor (console + logs/server.log rotativo; RPG_LOG_LEVEL)
 │   ├── trade_processor.py           ← TradeProcessorMixin/TradeSession: trade player↔player
+│   ├── mail_processor.py            ← MailProcessorMixin: correio (25/09/2026, entrega
+│   │                                  assíncrona, único sistema com tabela de banco própria)
 │   ├── duel_processor.py            ← DuelProcessorMixin: duelo (contexto PvP, golpe letal → 1 HP)
 │   ├── party_processor.py           ← PartyProcessorMixin: grupo N-ário, convites, líder, XP compartilhado
 │   ├── pvp_zone_processor.py        ← PvpZoneProcessorMixin: zona PvP (Fase F), stateless, sem tick-check

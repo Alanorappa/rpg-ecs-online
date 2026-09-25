@@ -992,6 +992,110 @@ class SessionManager:
         result = self.world_server.recycle_item(session.session_id, inv_index)
         await session.send(MsgType.RECYCLE_RESULT, result)
 
+    # ── Correio (25/09/2026) ──────────────────────────────────────────
+    # Ver server/mail_processor.py::MailProcessorMixin — este bloco só
+    # decodifica payload/valida sessão e despacha, mesmo padrão fino de
+    # buy/sell/craft/recycle acima. `session.char_data["id"]` é o char_id
+    # (setado em `_spawn_and_start`) — usado em TODA query de banco pra
+    # nunca confiar em nada que o cliente possa forjar (mail_id sozinho
+    # nunca basta, sempre par com char_id dono).
+
+    async def _handle_mail_open_inbox(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        mails = await self.world_server.process_mail_open_inbox(session.char_data["id"])
+        await session.send(MsgType.MAIL_INBOX_LIST, {"mails": mails})
+
+    async def _handle_mail_open_item(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        mail_id = int(payload.get("mail_id", -1))
+        detail = await self.world_server.process_mail_open_item(mail_id, session.char_data["id"])
+        if detail is None:
+            return
+        # items_json guarda só (item_key, stack) — reconstrói uma instância
+        # de exibição via o mesmo catálogo de recompensa de quest
+        # (resolve_reward_item_factory), igual ao preview de loja/quest;
+        # item já reclamado ainda aparece (visualmente "cinza" no cliente),
+        # só não pode ser reclamado de novo.
+        from engine.quest_logic import resolve_reward_item_factory as _mail_resolve_factory
+        from server.server_death_handler import _serialize_item as _mail_serialize
+        items = []
+        for i, (item_key, stack) in enumerate(detail["items_json"]):
+            factory = _mail_resolve_factory(item_key)
+            item_disp = None
+            if factory is not None:
+                preview = factory()
+                preview.stack = stack
+                item_disp = _mail_serialize(preview)
+            items.append({
+                "item_index": i, "item": item_disp,
+                "claimed": i in detail["claimed_items_json"],
+            })
+        await session.send(MsgType.MAIL_ITEM_DETAIL, {
+            "mail_id":     detail["id"],
+            "sender_name": detail["sender_name"],
+            "subject":     detail["subject"],
+            "body":        detail["body"],
+            "items":       items,
+            "gold":        detail["gold"],
+            "gold_claimed": detail["gold_claimed"],
+        })
+
+    async def _handle_mail_send(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        player_eid = self.world_server._player_eids.get(session.session_id)
+        if player_eid is None:
+            return
+        result = await self.world_server.process_mail_send(
+            player_eid, session.char_data["id"], session.display_name,
+            str(payload.get("to_name", "")), str(payload.get("subject", "")),
+            str(payload.get("body", "")), list(payload.get("items", [])),
+            int(payload.get("gold", 0)))
+        await session.send(MsgType.MAIL_SEND_RESULT,
+                           {"success": result["success"], "reason": result.get("reason", "")})
+        if result["success"] and result.get("removed"):
+            await session.send(MsgType.INVENTORY_UPDATE, {"items": [], "removed": result["removed"]})
+
+    async def _handle_mail_claim_item(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        player_eid = self.world_server._player_eids.get(session.session_id)
+        if player_eid is None:
+            return
+        mail_id    = int(payload.get("mail_id", -1))
+        item_index = int(payload.get("item_index", -1))
+        result = await self.world_server.process_mail_claim_item(
+            player_eid, session.char_data["id"], mail_id, item_index)
+        await session.send(MsgType.MAIL_CLAIM_RESULT, {
+            "mail_id": mail_id, "success": result["success"],
+            "item_index": item_index, "reason": result.get("reason", ""),
+        })
+        if result["success"] and result.get("granted"):
+            await session.send(MsgType.INVENTORY_UPDATE, {"items": result["granted"], "removed": []})
+
+    async def _handle_mail_claim_gold(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        player_eid = self.world_server._player_eids.get(session.session_id)
+        if player_eid is None:
+            return
+        mail_id = int(payload.get("mail_id", -1))
+        result = await self.world_server.process_mail_claim_gold(
+            player_eid, session.char_data["id"], mail_id)
+        await session.send(MsgType.MAIL_CLAIM_RESULT, {
+            "mail_id": mail_id, "success": result["success"], "gold_claimed": result["success"],
+        })
+
+    async def _handle_mail_delete(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        mail_id = int(payload.get("mail_id", -1))
+        await self.world_server.process_mail_delete(session.char_data["id"], mail_id)
+        mails = await self.world_server.process_mail_open_inbox(session.char_data["id"])
+        await session.send(MsgType.MAIL_INBOX_LIST, {"mails": mails})
+
     # ── GM (menu de debug F12) — só `session.is_gm` tem efeito ────────────
     # Mesmo padrão de bypass negado silenciosamente já usado em
     # skill_processor.py pra taunt/stun: sem is_gm, a mensagem é ignorada,
@@ -1921,6 +2025,18 @@ class SessionManager:
             "is_gm":     session.is_gm,
         })
 
+        # Correio (25/09/2026) — indicador de correspondência não reclamada,
+        # calculado 1x no login (gatilho (a) dos 3 documentados em
+        # ARQUITETURA ONLINE.md; os outros 2 são MailProcessorMixin.
+        # process_mail_send/process_mail_claim_gold/process_mail_claim_item
+        # em tempo real). Reaproveita STATS_UPDATE (campo extra) em vez de
+        # um canal novo — SessionManager._flush_stats_updates já encaminha
+        # qualquer campo extra do dict pro cliente.
+        from server import auth as _mail_auth_login
+        _mail_unread = await _mail_auth_login.count_unread_mail(char_data["id"])
+        if _mail_unread > 0:
+            self.world_server.queue_stats_update({"player_eid": eid, "mail_unread": _mail_unread})
+
         near_players = self.world_server.get_players_in_aoi(session.session_id, AOI_RADIUS)
         for p in near_players:
             s2 = self._sessions.get(p.get("session_id", ""))
@@ -2542,6 +2658,12 @@ class SessionManager:
         MsgType.SELL_REQUEST:      _handle_sell_request,
         MsgType.CRAFT_REQUEST:      _handle_craft_request,
         MsgType.RECYCLE_REQUEST:    _handle_recycle_request,
+        MsgType.MAIL_OPEN_INBOX:    _handle_mail_open_inbox,
+        MsgType.MAIL_OPEN_ITEM:     _handle_mail_open_item,
+        MsgType.MAIL_SEND:          _handle_mail_send,
+        MsgType.MAIL_CLAIM_ITEM:    _handle_mail_claim_item,
+        MsgType.MAIL_CLAIM_GOLD:    _handle_mail_claim_gold,
+        MsgType.MAIL_DELETE:        _handle_mail_delete,
         MsgType.GM_LEVELUP:        _handle_gm_levelup,
         MsgType.GM_ADD_GOLD:       _handle_gm_add_gold,
         MsgType.GM_ADD_ITEM:       _handle_gm_add_item,

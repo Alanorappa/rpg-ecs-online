@@ -1497,6 +1497,17 @@ class NetworkHandlers:
                 _wallet_gold = self.world.get_component(self.player_entity, _WalletGold)
                 if _wallet_gold:
                     _wallet_gold.gold = payload["gold"]
+            # Correio (25/09/2026) — indicador de correspondência não
+            # reclamada. DIFERENTE do marcador de quest (que o cliente
+            # calcula sozinho a partir de dado local): "tem correspondência"
+            # só existe no banco, do lado do servidor, então chega só por
+            # aqui (login, nova correspondência recebida online, claim/delete
+            # — ver server/session.py/mail_processor.py).
+            if "mail_unread" in payload:
+                from ui.ui_components import MailUIState as _MailUIStateStats
+                _mail_ui_stats = self.world.get_component(self.player_entity, _MailUIStateStats)
+                if _mail_ui_stats:
+                    _mail_ui_stats.unread_count = payload["mail_unread"]
             # "instance_gold_gained" (13/08/2026, pedido do usuário — loot
             # automático dentro da instância não tinha NENHUM feedback
             # visual de gold subindo). Só emitido por server/
@@ -2712,6 +2723,76 @@ class NetworkHandlers:
             from ui.floating_text import WARN as _WARN_SR
             _WARN_SR.add(payload.get("reason", "Venda recusada"))
 
+    # ── Correio (25/09/2026) ──────────────────────────────────────────
+    # Entrega de item/gold chega por INVENTORY_UPDATE/STATS_UPDATE (canais
+    # já existentes, tratados pelos handlers de sempre) — estes 4 só
+    # atualizam o estado da UI de correio em si (MailUIState).
+
+    def _handle_msg_mail_inbox_list(self, payload: dict) -> None:
+        from ui.ui_components import MailUIState as _MailUIStateInbox
+        mail_ui = self.world.get_component(self.player_entity, _MailUIStateInbox)
+        if mail_ui is None:
+            return
+        mail_ui.inbox = list(payload.get("mails", []))
+        if mail_ui.screen == "closed":
+            mail_ui.screen = "inbox"
+
+    def _handle_msg_mail_item_detail(self, payload: dict) -> None:
+        from ui.ui_components import MailUIState as _MailUIStateDetail
+        mail_ui = self.world.get_component(self.player_entity, _MailUIStateDetail)
+        if mail_ui is None:
+            return
+        items = []
+        for entry in payload.get("items", []):
+            item_obj = self._item_from_data(entry.get("item")) if entry.get("item") else None
+            items.append({"item_index": entry.get("item_index", 0), "item": item_obj,
+                          "claimed": entry.get("claimed", False)})
+        mail_ui.detail = {
+            "mail_id":      payload.get("mail_id", -1),
+            "sender_name":  payload.get("sender_name", ""),
+            "subject":      payload.get("subject", ""),
+            "body":         payload.get("body", ""),
+            "items":        items,
+            "gold":         payload.get("gold", 0),
+            "gold_claimed": payload.get("gold_claimed", False),
+        }
+        mail_ui.screen = "detail"
+
+    def _handle_msg_mail_send_result(self, payload: dict) -> None:
+        from ui.combat_log import LOG as _LOG_MAIL
+        from ui.floating_text import WARN as _WARN_MAIL
+        from ui.ui_components import MailUIState as _MailUIStateSend
+        mail_ui = self.world.get_component(self.player_entity, _MailUIStateSend)
+        if payload.get("success"):
+            _LOG_MAIL.add("Correspondencia enviada!", (180, 220, 100))
+            if mail_ui is not None:
+                mail_ui.compose_to = ""
+                mail_ui.compose_subject = ""
+                mail_ui.compose_subject_touched = False
+                mail_ui.compose_body = ""
+                mail_ui.compose_items = []
+                mail_ui.compose_gold_text = ""
+                mail_ui.screen = "inbox"
+            self._send_save_state(include_fog=False)  # sem relacao com exploracao de mapa, ver #141/#142
+        else:
+            _WARN_MAIL.add(payload.get("reason", "Envio recusado"))
+
+    def _handle_msg_mail_claim_result(self, payload: dict) -> None:
+        from ui.ui_components import MailUIState as _MailUIStateClaim
+        mail_ui = self.world.get_component(self.player_entity, _MailUIStateClaim)
+        if not payload.get("success") or mail_ui is None or mail_ui.detail is None:
+            return
+        if mail_ui.detail.get("mail_id") != payload.get("mail_id"):
+            return
+        if "item_index" in payload and payload.get("item_index", -1) >= 0:
+            for it in mail_ui.detail["items"]:
+                if it["item_index"] == payload["item_index"]:
+                    it["claimed"] = True
+                    break
+        if payload.get("gold_claimed"):
+            mail_ui.detail["gold_claimed"] = True
+        self._send_save_state(include_fog=False)  # sem relacao com exploracao de mapa, ver #141/#142
+
     def _handle_msg_craft_result(self, payload: dict) -> None:
         """Confirmação de CRAFT_REQUEST — débito A4 (11/08/2026, ver
         PROBLEMAS_ARQUITETURA.md). Servidor já descontou ouro/materiais e
@@ -3099,6 +3180,10 @@ NetworkHandlers._NET_DISPATCH_NAMES = {
     MsgType.SKILL_GRANTED: "_handle_msg_skill_granted",
     MsgType.BUY_RESULT: "_handle_msg_buy_result",
     MsgType.SELL_RESULT: "_handle_msg_sell_result",
+    MsgType.MAIL_INBOX_LIST: "_handle_msg_mail_inbox_list",
+    MsgType.MAIL_ITEM_DETAIL: "_handle_msg_mail_item_detail",
+    MsgType.MAIL_SEND_RESULT: "_handle_msg_mail_send_result",
+    MsgType.MAIL_CLAIM_RESULT: "_handle_msg_mail_claim_result",
     MsgType.CRAFT_RESULT: "_handle_msg_craft_result",
     MsgType.RECYCLE_RESULT: "_handle_msg_recycle_result",
     MsgType.PONG: "_handle_msg_pong",

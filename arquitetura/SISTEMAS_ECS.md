@@ -572,6 +572,32 @@ Fluxo de morte/espírito (ghost) + cemitério` para o fluxo completo.
   por perspectiva; serialização de item via `WorldServer._item_data_from_obj`
   (mesmo formato do `BUY_RESULT`).
 
+### MailProcessorMixin — correio (25/09/2026)
+
+`server/mail_processor.py` — mixin de `WorldServer`. Ver `ARQUITETURA
+ONLINE.md` §17 pro desenho completo. Diferente de todo outro processor
+mixin, persiste em BANCO (tabela `mail`, `server/auth.py`), não em
+memória — primeira feature do projeto com entrega assíncrona
+(destinatário pode estar offline).
+
+- `process_mail_send(player_eid, char_id, sender_name, to_name, subject,
+  body, items, gold)` — valida posse real no `Inventory`/`Wallet` AO VIVO
+  do remetente (tudo-ou-nada), resolve destinatário por nome, aplica
+  fallback de assunto vazio no servidor também, remove os itens/debita o
+  gold só DEPOIS de tudo validado, persiste via `auth.create_mail`.
+- `process_mail_claim_item`/`process_mail_claim_gold` — idempotentes
+  (banco marca reclamado com `FOR UPDATE`); item concedido via
+  `WorldServer.grant_items_to_player` (com `auth.unclaim_mail_item` de
+  rollback se não coube na mochila); gold via mutação direta de
+  `Wallet.gold`.
+- `process_mail_open_inbox`/`process_mail_open_item`/`process_mail_delete`
+  — leitura/exclusão, sempre com ownership por `char_id` validado em
+  `server/auth.py` (nunca só `mail_id`).
+- `_find_online_player_eid_by_name(name)` — busca player online por nome
+  (case-insensitive), só pra notificar `mail_unread` em tempo real; se
+  offline, a correspondência já foi persistida de qualquer forma (visto
+  no próximo login via `count_unread_mail` em `_spawn_and_start`).
+
 ### PLAYER_STAT_SYNC — OBSOLETO (handler é no-op)
 
 `_handle_player_stat_sync` em `session.py` **não faz mais nada** — o mecanismo
