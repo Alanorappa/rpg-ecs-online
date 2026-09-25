@@ -19,7 +19,7 @@ import unittest
 from tests.helpers import make_world_server, spawn_player, run_ticks, set_entity_tile
 from engine.components import (
     Combatant, CombatStats, AIControlled, Faction, NPC, Merchant, Blacksmith,
-    Trainer, QuestGiver, Mailbox, TileMovement, CombatState,
+    Trainer, QuestGiver, Mailbox, TileMovement, CombatState, Renderable,
 )
 from engine.entity_factory import (
     create_merchant, create_blacksmith, create_quest_giver, create_trainer,
@@ -196,6 +196,21 @@ class TestServiceNpcCombateGenerico(unittest.TestCase):
         self.assertIsNotNone(self.ws.world.get_component(eid, Mailbox))
         fac = self.ws.world.get_component(eid, Faction)
         self.assertEqual(fac.faction_id, "civis")
+
+    def test_mailbox_area_clicavel_e_tile_inteiro(self):
+        """Bug real relatado pelo usuário 25/09/2026: área clicável de
+        24px (PLAYER_SIZE, padrão dos outros NPCs de serviço) quase
+        sempre errava o clique — menor que 1 tile inteiro (32px), o
+        clique caía fora e sobrava pro alvo genérico de combate
+        (ui/player_input_system.py::_enemy_at_world_pos), que só
+        SELECIONA o NPC amigável (fica amarelo) em vez de abrir o
+        inbox. TILE_SIZE (32px) cobre o tile inteiro sem sobrepor os
+        vizinhos (2 tiles = 64px de distância)."""
+        from engine.tileset import TILE_SIZE
+        eid = create_mailbox(self.ws.world, 149, 374, name="Caixa de Correio")
+        ren = self.ws.world.get_component(eid, Renderable)
+        self.assertEqual(ren.width, TILE_SIZE)
+        self.assertEqual(ren.height, TILE_SIZE)
 
     def test_payload_de_mailbox_marca_is_mailbox(self):
         """Bug real relatado pelo usuário 25/09/2026: clique direito na
