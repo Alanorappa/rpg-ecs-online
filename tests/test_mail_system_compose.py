@@ -151,6 +151,68 @@ class TestMailComposeFieldFocused(unittest.TestCase):
         ui.compose_focus = ""
         self.assertFalse(ms.compose_field_focused)
 
+    def test_fechar_o_correio_com_campo_focado_limpa_o_foco(self):
+        """Bug real relatado pelo usuário 25/09/2026: fechar o modal do
+        correio com um campo de texto ainda focado deixava
+        compose_focus preso, bloqueando WASD pra sempre (o personagem
+        ficava incontrolável mesmo com o correio já fechado)."""
+        world, player, ms, ui = _make_fixture()
+        ui.compose_focus = "to"
+
+        ms._close()
+
+        self.assertEqual(ui.compose_focus, "")
+        self.assertFalse(ms.compose_field_focused)
+
+    def test_voltar_pro_inbox_com_campo_focado_tambem_limpa_o_foco(self):
+        world, player, ms, ui = _make_fixture()
+        ui.compose_focus = "subject"
+
+        ms._back_to_inbox()
+
+        self.assertEqual(ui.compose_focus, "")
+        self.assertFalse(ms.compose_field_focused)
+
+    def test_compose_field_focused_e_false_fora_da_tela_de_compor(self):
+        """Defesa extra: mesmo se compose_focus ficasse preso por algum
+        caminho não previsto, sair da tela "compose" já basta pra
+        destravar o teclado."""
+        world, player, ms, ui = _make_fixture()
+        ui.compose_focus = "to"
+        ui.screen = "inbox"
+
+        self.assertFalse(ms.compose_field_focused)
+
+
+class TestMailDetailClaimedItemDisappears(unittest.TestCase):
+
+    def test_item_reclamado_nao_e_mais_desenhado(self):
+        """Pedido do usuário 25/09/2026: item reclamado deveria SUMIR do
+        slot, não só ficar escurecido. Chama _render_detail DE VERDADE
+        (não uma reprodução da lógica) e espiona o que _draw_item_slot
+        recebe como `item` pra cada slot."""
+        world, player, ms, ui = _make_fixture()
+        ui.screen = "detail"
+        fake_item = ITEMS["hp_potion"]()
+        ui.detail = {
+            "mail_id": 1, "sender_name": "Fulano", "subject": "oi", "body": "",
+            "items": [{"item_index": 0, "item": fake_item, "claimed": True},
+                     {"item_index": 1, "item": fake_item, "claimed": False}],
+            "gold": 0, "gold_claimed": False,
+        }
+        seen = []
+        orig = ms._draw_item_slot
+        def _spy(r, item, hovered, hint=""):
+            seen.append(item)
+            return orig(r, item, hovered, hint)
+        ms._draw_item_slot = _spy
+
+        ms._render_detail(ui)
+
+        self.assertEqual(len(seen), 2)
+        self.assertIsNone(seen[0], "item reclamado (item_index=0) nao deveria ser desenhado")
+        self.assertIs(seen[1], fake_item, "item nao reclamado (item_index=1) continua visivel")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -58,7 +58,51 @@ class TestMailSend(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(inv_s.items), 0, "item nao saiu do inventory REAL do remetente")
 
         removed = get_msgs_of_type(fw_s, MsgType.INVENTORY_UPDATE)
-        self.assertEqual(removed[0]["removed"], [{"name": item.name, "stack": 1}])
+        self.assertEqual(removed[0]["removed"],
+                         [{"name": item.name, "item_id": item.item_id, "stack": 1}])
+
+    async def test_envia_quantidade_parcial_de_uma_pilha_deixa_o_resto_na_bag(self):
+        """Bug real relatado pelo usuário 25/09/2026: escolher 2 de uma
+        pilha de 4 no modal de quantidade (Shift+clique direito) mandava
+        os 4 mesmo assim — client nunca incluía "quantity" no payload E
+        o servidor sempre usava o stack INTEIRO, ignorando qualquer
+        quantidade pedida. Mesma lógica de fatiar stack que trade já usa
+        (trade_processor.py::add_trade_item)."""
+        sender, fw_s, recip, _fw_r = await self._two_sessions("q")
+        item = _give_item(self.ws, sender.entity_id, "hp_potion", 4)
+        recip_name = recip.char_data["name"]
+
+        await self.mgr._handle_mail_send(sender, {
+            "to_name": recip_name, "subject": "", "body": "",
+            "items": [{"inv_index": 0, "quantity": 2}], "gold": 0,
+        }, 0)
+
+        self.assertTrue(get_msgs_of_type(fw_s, MsgType.MAIL_SEND_RESULT)[0]["success"])
+        inv_s = self.ws.world.get_component(sender.entity_id, Inventory)
+        self.assertEqual(len(inv_s.items), 1, "item nao deveria ter sumido da bag, so a pilha diminuido")
+        self.assertEqual(inv_s.items[0].stack, 2, "deveriam sobrar 2 na bag do remetente")
+
+        from server import auth
+        inbox = await auth.list_inbox(recip.char_data["id"])
+        detail = await auth.get_mail_detail(inbox[0]["mail_id"], recip.char_data["id"])
+        self.assertEqual(detail["items_json"], [[item.item_id, 2]],
+                         "a correspondencia deveria carregar so os 2 escolhidos, nao os 4")
+
+    async def test_quantity_maior_que_o_stack_real_e_clampada(self):
+        """Cliente adulterado/dessincronizado pedindo mais do que existe
+        de verdade — servidor nunca confia, clampa pro stack real."""
+        sender, fw_s, recip, _fw_r = await self._two_sessions("r")
+        _give_item(self.ws, sender.entity_id, "hp_potion", 3)
+        recip_name = recip.char_data["name"]
+
+        await self.mgr._handle_mail_send(sender, {
+            "to_name": recip_name, "subject": "", "body": "",
+            "items": [{"inv_index": 0, "quantity": 999}], "gold": 0,
+        }, 0)
+
+        self.assertTrue(get_msgs_of_type(fw_s, MsgType.MAIL_SEND_RESULT)[0]["success"])
+        inv_s = self.ws.world.get_component(sender.entity_id, Inventory)
+        self.assertEqual(len(inv_s.items), 0, "pediu 999 mas so tinha 3 - manda os 3 e some da bag")
 
     async def test_envia_gold_real_debita_da_wallet_do_remetente(self):
         sender, fw_s, recip, _fw_r = await self._two_sessions("b")

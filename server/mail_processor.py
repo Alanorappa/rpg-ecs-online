@@ -72,18 +72,32 @@ class MailProcessorMixin:
         if gold == 0 and not items:
             return {"success": False, "reason": "correspondencia_vazia"}
 
-        # Valida TODOS os slots antes de remover qualquer um.
+        # Valida TODOS os slots antes de remover qualquer um. `quantity`
+        # (25/09/2026, pedido do usuário — Shift+clique direito fatia a
+        # pilha, mesmo padrão de trade_processor.py::add_trade_item)
+        # nunca é confiada cegamente: clampada contra o stack REAL do
+        # item nesse índice, no Inventory AO VIVO.
         seen_indices: set = set()
-        ordered_indices: list = []
+        ordered: list = []   # [(idx, qty), ...] em ordem de chegada
         for it in items:
             idx = int(it.get("inv_index", -1))
             if idx in seen_indices or not (0 <= idx < len(inv.items)):
                 return {"success": False, "reason": "item_invalido"}
             seen_indices.add(idx)
-            ordered_indices.append(idx)
+            real_stack = inv.items[idx].stack
+            qty = int(it.get("quantity", real_stack))
+            qty = max(1, min(qty, real_stack))
+            ordered.append((idx, qty))
 
-        entries         = [(inv.items[i].item_id, inv.items[i].stack) for i in ordered_indices]
-        removed_display = [{"name": inv.items[i].name, "stack": inv.items[i].stack} for i in ordered_indices]
+        entries         = [(inv.items[i].item_id, q) for i, q in ordered]
+        # "item_id" (não "name") — client/network_handlers.py::
+        # _remove_items_from_inventory espera esse campo (migrado
+        # 10/08/2026, débito C2); usar "name" faria o item nunca sumir
+        # de verdade da bag LOCAL do remetente (a remoção real no
+        # Inventory do SERVIDOR, acima, já está correta de qualquer
+        # forma — isso só afeta o espelho client-side).
+        removed_display = [{"name": inv.items[i].name, "item_id": inv.items[i].item_id, "stack": q}
+                           for i, q in ordered]
 
         subject_final = str(subject).strip()
         if not subject_final:
@@ -95,10 +109,16 @@ class MailProcessorMixin:
             elif gold > 0:
                 subject_final = str(gold)
 
-        # Remove de verdade só AGORA que tudo validou — índices em ordem
-        # DECRESCENTE pra popar sem bagunçar os índices anteriores da lista.
-        for idx in sorted(seen_indices, reverse=True):
-            inv.items.pop(idx)
+        # Remove/fatia de verdade só AGORA que tudo validou — índices em
+        # ordem DECRESCENTE pra popar (quando qty == stack inteiro) sem
+        # bagunçar os índices anteriores da lista; fatiar (qty < stack)
+        # só decrementa in-place, não desloca nenhum índice.
+        for idx, qty in sorted(ordered, key=lambda p: p[0], reverse=True):
+            item = inv.items[idx]
+            if qty >= item.stack:
+                inv.items.pop(idx)
+            else:
+                item.stack -= qty
         wallet.gold -= gold
 
         await auth.create_mail(recipient_char_id, sender_name, subject_final,

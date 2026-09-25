@@ -99,7 +99,13 @@ class MailSystem(UIScaleMixin, System):
         pra parar de vazar digitação pro resto do jogo, mesmo padrão de
         `self._chat_active`/`self._trade_gold_focus`."""
         ui = self._ui()
-        return ui is not None and bool(ui.compose_focus)
+        # `ui.screen == "compose"` é checado de propósito (não só
+        # `compose_focus` truthy) — defesa extra contra o mesmo campo
+        # ficar "preso" caso algum caminho futuro feche o modal sem
+        # limpar o foco (ver `_close`/`_back_to_inbox`, que já limpam,
+        # mas nunca custa a segunda trava pra um bug que já travou o
+        # personagem uma vez).
+        return ui is not None and ui.screen == "compose" and bool(ui.compose_focus)
 
     @property
     def mailbox_eid(self) -> int:
@@ -131,15 +137,30 @@ class MailSystem(UIScaleMixin, System):
     def _close(self) -> None:
         ui = self._ui()
         if ui is not None:
+            # Bug real relatado pelo usuário 25/09/2026: fechar o correio
+            # com um campo de texto ainda focado (ex: "Para") deixava
+            # `compose_focus` preso num valor truthy pra sempre —
+            # `compose_field_focused` continuava True mesmo com o modal
+            # fechado, bloqueando WASD indefinidamente (ver
+            # ui/player_input_system.py). Limpa o foco em QUALQUER
+            # fechamento, não só quando o usuário desfoca manualmente.
+            if ui.compose_focus:
+                pygame.key.stop_text_input()
+            ui.compose_focus = ""
             ui.screen  = "closed"
             ui.detail  = None
+        self._compose_qty_modal = None
         self._pending_mailbox_id = -1
 
     def _back_to_inbox(self) -> None:
         ui = self._ui()
         if ui is not None and ui.sub_screen_open:
+            if ui.compose_focus:
+                pygame.key.stop_text_input()
+            ui.compose_focus = ""
             ui.screen = "inbox"
             ui.detail = None
+            self._compose_qty_modal = None
 
     # ------------------------------------------------------------------
     # Update — detecção de clique no mundo (mesmo padrão de ShopSystem)
@@ -631,7 +652,7 @@ class MailSystem(UIScaleMixin, System):
             "to_name": to_name,
             "subject": subject,
             "body":    ui.compose_body,
-            "items":   [{"inv_index": idx} for idx, _q in ui.compose_items],
+            "items":   [{"inv_index": idx, "quantity": q} for idx, q in ui.compose_items],
             "gold":    gold,
         })
 
@@ -928,11 +949,14 @@ class MailSystem(UIScaleMixin, System):
             if not (0 <= idx < len(L["slots"])):
                 continue
             r = L["slots"][idx]
-            self._draw_item_slot(r, it["item"], r.collidepoint(mx, my) and not it["claimed"],
-                                 "Ja reclamado" if it["claimed"] else "Clique direito p/ reclamar")
-            if it["claimed"]:
-                overlay = fill_surf((r.width, r.height), (0, 0, 0, 150))
-                self.hud_surf.blit(overlay, r.topleft)
+            # Item reclamado SOME do slot (pedido do usuário 25/09/2026 —
+            # antes só escurecia, mas o item continuava visível/tentador
+            # de clicar de novo). O slot vazio ainda mostra o contorno
+            # (mesmo _draw_item_slot com item=None), só não desenha mais
+            # o ícone nem responde a hover/clique.
+            item_to_draw = None if it["claimed"] else it["item"]
+            self._draw_item_slot(r, item_to_draw, r.collidepoint(mx, my) and not it["claimed"],
+                                 "Clique direito p/ reclamar")
 
         if ui.detail["gold"] > 0:
             r = L["gold"]
