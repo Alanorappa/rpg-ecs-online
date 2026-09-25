@@ -19,11 +19,11 @@ import unittest
 from tests.helpers import make_world_server, spawn_player, run_ticks, set_entity_tile
 from engine.components import (
     Combatant, CombatStats, AIControlled, Faction, NPC, Merchant, Blacksmith,
-    Trainer, QuestGiver, TileMovement, CombatState,
+    Trainer, QuestGiver, Mailbox, TileMovement, CombatState,
 )
 from engine.entity_factory import (
     create_merchant, create_blacksmith, create_quest_giver, create_trainer,
-    create_enemy, create_combat_npc,
+    create_mailbox, create_enemy, create_combat_npc,
 )
 from engine.world_systems import deal_damage
 
@@ -190,6 +190,24 @@ class TestServiceNpcCombateGenerico(unittest.TestCase):
         self.assertTrue(payload.get("is_blacksmith"))
         self.assertIn("shop_id", payload)
 
+    def test_mailbox_tem_combate_e_mailbox(self):
+        eid = create_mailbox(self.ws.world, 147, 374, name="Caixa de Correio")
+        self.assertIsNotNone(self.ws.world.get_component(eid, Combatant))
+        self.assertIsNotNone(self.ws.world.get_component(eid, Mailbox))
+        fac = self.ws.world.get_component(eid, Faction)
+        self.assertEqual(fac.faction_id, "civis")
+
+    def test_payload_de_mailbox_marca_is_mailbox(self):
+        """Bug real relatado pelo usuário 25/09/2026: clique direito na
+        caixa de correio não abria nada — causa raiz era este campo nunca
+        entrar no payload de sincronização (ver também
+        test_client_ui.py::test_spawn_remote_mob_de_mailbox_anexa_mailbox,
+        contraparte do lado do cliente)."""
+        eid = create_mailbox(self.ws.world, 148, 374, name="Caixa de Correio")
+        tm = self.ws.world.get_component(eid, TileMovement)
+        payload = self.ws._build_mob_spawn_payload(eid, tm)
+        self.assertTrue(payload.get("is_mailbox"))
+
     def test_mob_normal_e_guarda_real_continuam_sem_campos_de_npc_servico(self):
         """Regressão — payload de um mob comum ou do Guarda Real (sem
         Merchant/Trainer/QuestGiver) não deve ganhar nenhum campo novo."""
@@ -203,6 +221,7 @@ class TestServiceNpcCombateGenerico(unittest.TestCase):
             self.assertNotIn("class_id", payload)
             self.assertNotIn("quest_ids", payload)
             self.assertNotIn("is_blacksmith", payload)
+            self.assertNotIn("is_mailbox", payload)
         # Guarda Real tem NPC (profession) mas nenhuma capacidade — profession
         # aparece (é condicionado só a NPC, não a Merchant/Trainer/etc.)
         guard_tm = self.ws.world.get_component(guard, TileMovement)

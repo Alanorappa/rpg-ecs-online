@@ -2677,6 +2677,25 @@ def test_spawn_remote_mob_de_mercador_anexa_npc_e_merchant():
     assert merch is not None and merch.shop_id == "general"
 
 
+def test_spawn_remote_mob_de_mailbox_anexa_mailbox():
+    """Correio (25/09/2026) — mesmo padrão do mercador/ferreiro acima:
+    campo condicional `is_mailbox` no payload precisa anexar o componente
+    `Mailbox` na entidade remota reconstruída, senão
+    ui/mail_system.py::MailSystem nunca encontra a caixa de correio no
+    mundo local do cliente (bug real relatado pelo usuário: clique direito
+    na caixa de correio não fazia nada)."""
+    from engine.components import Mailbox
+    fx = _make_net_fixture()
+    fx._handle_msg_entity_spawn({
+        "eid": 97, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "Guerreiro (NPC)", "entity_class": "Warrior",
+        "hp": 60, "hp_max": 60, "level": 1, "faction": "civis",
+        "name": "Caixa de Correio", "profession": "Correio", "is_mailbox": True,
+    })
+    local_eid = fx._remote_mobs[97]
+    assert fx.world.get_component(local_eid, Mailbox) is not None
+
+
 def test_spawn_remote_mob_de_trainer_anexa_trainer_com_class_id():
     from engine.components import Trainer
     fx = _make_net_fixture()
@@ -3585,6 +3604,7 @@ def _make_modal_stack_fixture(quest_dialog_open=False, show_inventory=False,
             self._quest_dialog     = _StubClosable(is_open=quest_dialog_open)
             self._quest_journal    = _StubClosable(is_open=False)
             self._shop_system      = _StubClosable(qty_modal_open=False, is_open=False)
+            self._mail_system      = _StubClosable(is_open=False, sub_screen_open=False)
             self._trade_is_open    = False
             self._trade_qty_modal  = None   # modal de fatiar stack no trade (11/08/2026)
             # Modais de PvP (10/08/2026 — antes ausentes do registro, ESC

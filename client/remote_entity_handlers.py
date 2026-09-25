@@ -941,6 +941,9 @@ class RemoteEntityHandlers:
         if data.get("is_blacksmith"):
             from engine.components import Blacksmith as _BlackSpawn
             self.world.add_component(local_eid, _BlackSpawn(shop_id=_shop_id or "blacksmith"))
+        if data.get("is_mailbox"):
+            from engine.components import Mailbox as _MailSpawn
+            self.world.add_component(local_eid, _MailSpawn())
         _class_id = data.get("class_id")
         if _class_id is not None:
             from engine.components import Trainer as _TrainSpawn

@@ -2910,7 +2910,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                                 SpawnZone, EntityIdentity, TrainingDummy as _TDpay, Faction as _FacPay,
                                 NPC as _NPCpay, Merchant as _Merchpay, Blacksmith as _Blackpay,
                                 Trainer as _Trainpay, QuestGiver as _QGpay, Tower as _TowerPay,
-                                Minion as _MinionPay)
+                                Minion as _MinionPay, Mailbox as _Mailpay)
         cs    = self.world.get_component(eid, CombatStats)
         ai    = self.world.get_component(eid, AIControlled)
         ren   = self.world.get_component(eid, Renderable)
@@ -3022,6 +3022,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             payload["shop_id"] = _merch.shop_id
         if self.world.get_component(eid, _Blackpay) is not None:
             payload["is_blacksmith"] = True
+        if self.world.get_component(eid, _Mailpay) is not None:
+            payload["is_mailbox"] = True
         _train = self.world.get_component(eid, _Trainpay)
         if _train is not None:
             payload["class_id"] = _train.class_id
