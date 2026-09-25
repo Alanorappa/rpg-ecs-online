@@ -49,6 +49,18 @@ class MailSystem(UIScaleMixin, System):
     _FONT_BASES = {"_font_sm": 20, "_font_md": 26, "_font_lg": 32}
     _RARITY_COLORS = _SHARED_RARITY_COLORS
 
+    # Tolerância de clique EXTRA além do tamanho visual da caixa
+    # (25/09/2026, 2ª rodada do bug real relatado pelo usuário — a 1ª
+    # rodada só igualou o tamanho de PLAYER_SIZE=24 pra TILE_SIZE=32,
+    # insuficiente: diagnóstico ao vivo mediu cliques reais errando por
+    # até 227px). Só afeta a DETECÇÃO de clique, nunca o visual
+    # (Renderable continua TILE_SIZE) — teto de 16px por lado é o
+    # MÁXIMO seguro sem alcançar o NPC vizinho mais próximo (mercador/
+    # ferreiro/missiveiro ficam a 2 tiles = 64px de distância; 16px de
+    # folga de cada lado = 32px de raio total, exatamente a metade
+    # dessa distância, sem sobrepor).
+    _CLICK_PAD_PX = 16
+
     def __init__(self, world: World, player_entity: int, screen):
         super().__init__()
         self.world         = world
@@ -76,6 +88,14 @@ class MailSystem(UIScaleMixin, System):
     def is_open(self) -> bool:
         ui = self._ui()
         return ui is not None and ui.is_open
+
+    @property
+    def mailbox_eid(self) -> int:
+        """Mesma convenção de `ShopSystem.open_merchant_id` — usado por
+        `game.py::_npc_proximity_panels` pra fechar o painel quando o
+        player se afasta demais da caixa de correio."""
+        ui = self._ui()
+        return ui.mailbox_eid if ui is not None else -1
 
     @property
     def sub_screen_open(self) -> bool:
@@ -147,8 +167,8 @@ class MailSystem(UIScaleMixin, System):
                 _sc = self.world_surf.get_width() / max(1, self.hud_surf.get_width())
                 wx, wy = mx * _sc + cam_x, my * _sc + cam_y
                 for eid, pos, rend, _ in self.world.get_entities_with(Position, Renderable, Mailbox):
-                    hw = rend.width  / 2
-                    hh = rend.height / 2
+                    hw = rend.width  / 2 + self._CLICK_PAD_PX
+                    hh = rend.height / 2 + self._CLICK_PAD_PX
                     if abs(wx - pos.x) <= hw and abs(wy - pos.y) <= hh:
                         pt = self._player_tile()
                         mt = self._mailbox_tile(eid)

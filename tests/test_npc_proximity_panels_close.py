@@ -75,6 +75,7 @@ class _ProximityPanelsFixture:
         self._crafting_system = _StubPanel("_bs_eid")
         self._trainer_system  = _StubPanel("_tr_eid")
         self._quest_dialog    = _StubPanel("_dialog_npc_id")
+        self._mail_system     = _StubPanel("mailbox_eid")
         self._quest_journal   = _StubPanel("_dummy_id")
         self._map_overlay     = _StubPanel("_dummy_id2")
         self._map_overlay.is_open = False

@@ -1365,7 +1365,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
              lambda: self._shop_system.open_merchant_id,
              self._shop_system._close),
             (lambda: self._mail_system.is_open,
-             self._mail_system_mailbox_eid,
+             lambda: self._mail_system.mailbox_eid,
              self._mail_system._close),
             (lambda: self._crafting_system.is_open,
              lambda: self._crafting_system._bs_eid,
@@ -1377,10 +1377,6 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
              lambda: self._quest_dialog._dialog_npc_id,
              self._quest_dialog._close),
         )
-
-    def _mail_system_mailbox_eid(self) -> int:
-        ui = self._mail_system._ui()
-        return ui.mailbox_eid if ui is not None else -1
 
     def _close_modals_if_too_far(self) -> None:
         """Fecha modais de interação quando o player se afasta do elemento (NPC/corpo)."""
@@ -1448,7 +1444,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         "_channeling_system",  "_aoe_targeting_system",
         "_spell_cast_system",  "_shop_system",
         "_quest_dialog",       "_crafting_system", "_trainer_system",
-        "_day_night_system",
+        "_day_night_system",   "_mail_system",
     )
 
     def _assign_world_surf(self, surf: "pygame.Surface") -> None:
@@ -3454,7 +3450,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                      "_talent_system", "_skill_level_ui", "_char_stats_ui",
                      "_shop_system", "_quest_dialog", "_quest_journal",
                      "_blacksmith_system", "_crafting_system", "_trainer_system",
-                     "_day_night_system"):
+                     "_day_night_system", "_mail_system"):
             _refresh(getattr(self, attr, None))
         # Overlays e UI (MapOverlay/Minimap — não são System, só .screen)
         self._map_overlay.screen = new_screen
