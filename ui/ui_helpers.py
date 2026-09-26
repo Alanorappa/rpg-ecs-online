@@ -304,37 +304,6 @@ def draw_dashed_rect(surface, color, rect, dash_len=6, gap_len=4, width=2) -> No
     _dashed_line(rect.bottomleft, rect.topleft)
 
 
-def draw_dashed_polygon(surface, color, points, dash_len=6, gap_len=4, width=2, closed=True) -> None:
-    """Contorno tracejado ao longo de uma sequência arbitrária de pontos
-    (25/09/2026, pedido do usuário — tracejado de seleção acompanhando a
-    SILHUETA real do sprite via `pygame.mask.Mask.outline()`, não mais um
-    retângulo). Diferente de `draw_dashed_rect`/`draw_dashed_circle`
-    (fase do tracejado reinicia em cada trecho): aqui a fase é CONTÍNUA
-    ao longo de todos os pontos — necessário porque `Mask.outline()`
-    devolve pontos bem próximos entre si (poucos px de distância), então
-    reiniciar a fase por segmento faria cada trechinho virar "on" ou
-    "off" quase aleatoriamente em vez de um tracejado visualmente
-    coerente contornando a forma inteira."""
-    import math
-    import pygame
-
-    pts = list(points)
-    if len(pts) < 2:
-        return
-    if closed:
-        pts.append(pts[0])
-
-    period = dash_len + gap_len
-    dist_accum = 0.0
-    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
-        seg_len = math.hypot(x1 - x0, y1 - y0)
-        if seg_len == 0:
-            continue
-        if (dist_accum % period) < dash_len:
-            pygame.draw.line(surface, color, (x0, y0), (x1, y1), width)
-        dist_accum += seg_len
-
-
 def draw_box_tooltip(screen, font_title, font_body, x: int, y: int,
                      title: str, lines: list) -> None:
     """Caixa de tooltip genérica — MESMO estilo visual do tooltip de skill/

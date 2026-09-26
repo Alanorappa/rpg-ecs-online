@@ -40,7 +40,7 @@ from engine.tileset import TILE_SIZE
 from engine.entity_disguise import get_active_appearance_override, get_animated_disguise_frame
 from engine.character_animation import (get_character_frame, resolve_display_state,
                                         character_anchor_offset)
-from ui.ui_helpers import fill_surf, draw_dashed_rect, draw_dashed_polygon
+from ui.ui_helpers import fill_surf
 from ui.tile_sprite_manager import TILE_SPRITES
 from ui.day_night_system import is_night
 from content.status_effects_data import EFFECT_DEFS
@@ -804,28 +804,30 @@ class RenderSystem(System):
                 _sel_tier = get_relationship_between(self.world, entity_id, _local_player_eid_draw)
                 _sel_color = DISPOSITION_HP_COLORS.get(_sel_tier, DISPOSITION_HP_COLORS["hostil"])
                 if _sel_outline_surf is not None:
-                    # Tracejado acompanhando a SILHUETA real do sprite —
+                    # Contorno acompanhando a SILHUETA real do sprite (não
+                    # tracejado — contínuo, pedido do usuário 26/09/2026) —
                     # Mask.outline() traça o contorno já EXCLUINDO a sombra
                     # (sombra vem com alpha ~89 nas folhas "with Shadow",
                     # objeto vem com alpha 255; o threshold padrão de
                     # pygame.mask.from_surface, 127, já separa os dois sem
                     # ajuste nenhum — confirmado pixel a pixel antes de
                     # implementar). `every=3` decima os pontos do contorno
-                    # (retorno bruto tem ~1px entre pontos) pra um tracejado
-                    # mais leve sem perder a forma geral.
+                    # (retorno bruto tem ~1px entre pontos) pra um contorno
+                    # mais leve sem perder a forma geral. pygame.draw.polygon
+                    # já desenha fechado (liga o último ponto ao primeiro).
                     _sel_mask = self._get_mask(_sel_outline_surf)
                     _sel_pts_local = _sel_mask.outline(3)
                     if _sel_pts_local:
                         _ox, _oy = _sel_outline_offset
                         _sel_pts = [(px + _ox, py + _oy) for px, py in _sel_pts_local]
-                        draw_dashed_polygon(self.world_surf, _sel_color, _sel_pts, width=2)
+                        pygame.draw.polygon(self.world_surf, _sel_color, _sel_pts, 2)
                     else:
-                        draw_dashed_rect(self.world_surf, _sel_color, rect, width=2)
+                        pygame.draw.rect(self.world_surf, _sel_color, rect, 2)
                 else:
                     # Sem sprite/frame (mob simples de retângulo) — cai no
-                    # tracejado reto de sempre, só que colorido por
-                    # disposição em vez do amarelo fixo.
-                    draw_dashed_rect(self.world_surf, _sel_color, rect, width=2)
+                    # retângulo de sempre, só que colorido por disposição em
+                    # vez do amarelo fixo.
+                    pygame.draw.rect(self.world_surf, _sel_color, rect, 2)
 
             # ── HUD de barras: mobs/player LOCAIS (CombatStats) ──────────────
             # Player remoto (PvP) tem seu próprio passe completo em
