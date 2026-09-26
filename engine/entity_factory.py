@@ -662,7 +662,12 @@ def create_training_dummy(world: World, tile_x: int, tile_y: int) -> int:
 
     eid = world.create_entity()
     world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
-    world.add_component(eid, Renderable(color=(255, 215, 0), width=28, height=28))
+    # Sprite real (25/09/2026, pedido do usuário — cadastrado por ele em
+    # engine/tileset.py, grupo "decoracao_vila" da folha "TX Village
+    # Props with Shadow", tile "184" → tile_id "vp_184"). Mesmo padrão de
+    # create_mailbox: width/height ficam só como fallback.
+    world.add_component(eid, Renderable(color=(255, 215, 0), width=28, height=28,
+                                        sprite_id="vp_184"))
     world.add_component(eid, Collider(width=28, height=28))
     world.add_component(eid, Enemy())
     # Combatant: gate de registro em _mob_eids/sync agora é este componente,
