@@ -239,5 +239,63 @@ class TestMailDetailClaimedItemDisappears(unittest.TestCase):
         self.assertIs(seen[1], fake_item, "item nao reclamado (item_index=1) continua visivel")
 
 
+class _FakeNet:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, msg_type, payload):
+        self.sent.append((msg_type, payload))
+
+
+class TestMailDetailClaimEitherButton(unittest.TestCase):
+    """Pedido do usuário 25/09/2026: antes item só reclamava com clique
+    direito e gold só com esquerdo — inconsistente. Agora qualquer um
+    dos 2 botões reclama os dois."""
+
+    def _make_detail_fixture(self, item=None, gold=50):
+        world, player, ms, ui = _make_fixture()
+        ms._net = _FakeNet()
+        ui.screen = "detail"
+        ui.detail = {
+            "mail_id": 7, "sender_name": "Fulano", "subject": "oi", "body": "",
+            "items": ([{"item_index": 0, "item": item, "claimed": False}] if item else []),
+            "gold": gold, "gold_claimed": False,
+        }
+        return world, player, ms, ui
+
+    def _click_detail(self, ms, layout_key, button, index=None):
+        from shared.messages import MsgType
+        L = ms._detail_layout()
+        r = L[layout_key][index] if index is not None else L[layout_key]
+        event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=button, pos=r.center)
+        ms._handle_detail_click(ms._ui(), event)
+
+    def test_gold_reclama_com_botao_esquerdo(self):
+        from shared.messages import MsgType
+        _world, _player, ms, ui = self._make_detail_fixture(gold=50)
+        self._click_detail(ms, "gold", button=1)
+        self.assertEqual(ms._net.sent, [(MsgType.MAIL_CLAIM_GOLD, {"mail_id": 7})])
+
+    def test_gold_reclama_com_botao_direito(self):
+        from shared.messages import MsgType
+        _world, _player, ms, ui = self._make_detail_fixture(gold=50)
+        self._click_detail(ms, "gold", button=3)
+        self.assertEqual(ms._net.sent, [(MsgType.MAIL_CLAIM_GOLD, {"mail_id": 7})])
+
+    def test_item_reclama_com_botao_direito(self):
+        from shared.messages import MsgType
+        item = ITEMS["hp_potion"]()
+        _world, _player, ms, ui = self._make_detail_fixture(item=item)
+        self._click_detail(ms, "slots", button=3, index=0)
+        self.assertEqual(ms._net.sent, [(MsgType.MAIL_CLAIM_ITEM, {"mail_id": 7, "item_index": 0})])
+
+    def test_item_reclama_com_botao_esquerdo(self):
+        from shared.messages import MsgType
+        item = ITEMS["hp_potion"]()
+        _world, _player, ms, ui = self._make_detail_fixture(item=item)
+        self._click_detail(ms, "slots", button=1, index=0)
+        self.assertEqual(ms._net.sent, [(MsgType.MAIL_CLAIM_ITEM, {"mail_id": 7, "item_index": 0})])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

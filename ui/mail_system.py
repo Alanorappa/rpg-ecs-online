@@ -676,12 +676,15 @@ class MailSystem(UIScaleMixin, System):
         if event.button == 1 and L["close2"].collidepoint(mx, my):
             self._back_to_inbox()
             return
-        if (event.button == 1 and not ui.detail["gold_claimed"] and ui.detail["gold"] > 0
+        if (event.button in (1, 3) and not ui.detail["gold_claimed"] and ui.detail["gold"] > 0
                 and L["gold"].collidepoint(mx, my)):
+            # Qualquer um dos 2 botões reclama (pedido do usuário
+            # 25/09/2026 — antes só o esquerdo, inconsistente com item,
+            # que já aceitava só o direito).
             from shared.messages import MsgType
             self._net.send(MsgType.MAIL_CLAIM_GOLD, {"mail_id": ui.detail["mail_id"]})
             return
-        if event.button == 3:
+        if event.button in (1, 3):
             for it in ui.detail["items"]:
                 if it["claimed"] or it["item"] is None:
                     continue
@@ -964,7 +967,7 @@ class MailSystem(UIScaleMixin, System):
             # o ícone nem responde a hover/clique.
             item_to_draw = None if it["claimed"] else it["item"]
             self._draw_item_slot(r, item_to_draw, r.collidepoint(mx, my) and not it["claimed"],
-                                 "Clique direito p/ reclamar")
+                                 "Clique p/ reclamar")
 
         if ui.detail["gold"] > 0:
             r = L["gold"]
