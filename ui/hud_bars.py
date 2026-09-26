@@ -129,18 +129,29 @@ EFFECTS_GAP_PX = 4
 # nunca duplicar o número em cada call site.
 #
 # Sprite de objeto (estático — torre/correio/boneco de treino): sobe
-# NAMEPLATE_SPRITE_TOP_GAP_PX px a partir do pixel opaco mais alto de
-# verdade (via TileSpriteManager.get_top_opaque_y, ignora sombra/
-# padding transparente do recorte).
-NAMEPLATE_SPRITE_TOP_GAP_PX = 10
+# a partir do pixel opaco mais alto de verdade (via TileSpriteManager.
+# get_top_opaque_y, ignora sombra/padding transparente do recorte). O
+# valor final de 10px de respiro visual JÁ CONTA o HUD_GAP_PX (4px)
+# que o próprio WORLD_LABELS insere entre o "chão" passado e a base do
+# ícone empilhado (`_queue()`, ui/world_labels.py) — por isso este
+# valor é 6, não 10: `badge_bottom = floor - HUD_GAP_PX` e
+# `floor = topo_real - NAMEPLATE_SPRITE_TOP_GAP_PX`, então
+# `badge_bottom = topo_real - (NAMEPLATE_SPRITE_TOP_GAP_PX + HUD_GAP_PX)`
+# — precisa somar os dois pra bater com os 10px de verdade na tela
+# (confirmado renderizando e medindo pixel a pixel antes de ajustar —
+# com valor 10 aqui o respiro real saía 14px, não 10).
+NAMEPLATE_SPRITE_TOP_GAP_PX = 6
 
 # Personagem animado (jogador/player remoto): NÃO usa pixel real (a
 # pose muda por frame/direção — perseguir o pixel real faria o
 # nameplate "balançar" seguindo a animação, decisão explícita do
 # usuário 26/09/2026). Em vez disso, desce um valor FIXO a partir do
 # topo do FRAME (não da arte) — permanece estável entre todos os
-# frames/direções de qualquer classe.
-NAMEPLATE_CHAR_FRAME_TOP_INSET_PX = 10
+# frames/direções de qualquer classe. Valor derivado da referência
+# visual do usuário (frame idle do guerreiro, 96×80 — pixel opaco real
+# mais alto na linha 24) mais o mesmo ajuste de HUD_GAP_PX do caso
+# acima: 48 (anchor_dy) - 24 (linha da cabeça) - 4 (HUD_GAP_PX) = 20.
+NAMEPLATE_CHAR_FRAME_TOP_INSET_PX = 20
 
 _player_art: "pygame.Surface | None" = None
 _mob_art:    "pygame.Surface | None" = None
