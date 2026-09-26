@@ -17,7 +17,8 @@ from ui.fonts import make as _font
 from ui.ui_sizes import UI
 from ui.world_labels import WORLD_LABELS
 from ui.hud_bars import (build_player_hud, build_mob_hud, build_npc_badge, build_simple_hp_bar,
-                       RESOURCE_COLORS, HUD_GAP_PX, effects_row_offset)
+                       RESOURCE_COLORS, HUD_GAP_PX, effects_row_offset, DISPOSITION_HP_COLORS)
+from engine.faction_system import get_relationship_between
 
 # Re-exporta apply_effect de core_systems para compatibilidade com todo o código
 # que já faz `from systems import apply_effect`.
@@ -39,7 +40,7 @@ from engine.tileset import TILE_SIZE
 from engine.entity_disguise import get_active_appearance_override, get_animated_disguise_frame
 from engine.character_animation import (get_character_frame, resolve_display_state,
                                         character_anchor_offset)
-from ui.ui_helpers import fill_surf
+from ui.ui_helpers import fill_surf, draw_dashed_rect, draw_dashed_polygon
 from ui.tile_sprite_manager import TILE_SPRITES
 from ui.day_night_system import is_night
 from content.status_effects_data import EFFECT_DEFS
@@ -314,9 +315,11 @@ class RenderSystem(System):
         """
         # Descobre qual entidade o jogador tem como alvo
         target_id = -1
+        _local_player_eid_draw = -1
         _cs_first = self.world.get_first(CombatState, PlayerControlled)
         if _cs_first is not None:
             target_id = _cs_first[1].target_entity_id
+            _local_player_eid_draw = _cs_first[0]
 
         # ── Fog of War: conjunto de tiles visíveis neste frame ────────────────
         _fog_visible:   set | None = None
@@ -594,6 +597,15 @@ class RenderSystem(System):
             # branch de objeto mais acima neste método).
             _char_frame = None
             _char_frame_for_mask = None
+            # Contorno de seleção (25/09/2026, pedido do usuário — tracejado
+            # seguindo a SILHUETA real do sprite, não mais um retângulo).
+            # Setado pelos branches de desenho abaixo (sprite de objeto OU
+            # frame de personagem); None = cai no fallback de retângulo
+            # tracejado. Reset aqui pelo MESMO motivo de _char_frame acima
+            # — sem isso uma entidade sem sprite herdaria o contorno da
+            # entidade anterior do loop.
+            _sel_outline_surf = None
+            _sel_outline_offset = (0, 0)
 
             draw_x = position.x - camera_offset_x
             draw_y = position.y - camera_offset_y
@@ -656,6 +668,13 @@ class RenderSystem(System):
                     # sprite grande (12/08/2026, bug real relatado pelo
                     # usuário, torre).
                     rect = pygame.Rect(int(_blit_x_rnd), int(_blit_y_rnd), _sw_rnd, _sh_rnd)
+                    # Silhueta real pro tracejado de seleção (25/09/2026) —
+                    # _sprite_rnd é a MESMA Surface cacheada pra sempre em
+                    # TILE_SPRITES (id() nunca muda), então self._get_mask()
+                    # cacheia a máscara 1x por sprite_id, nunca recalcula
+                    # por frame.
+                    _sel_outline_surf = _sprite_rnd
+                    _sel_outline_offset = (int(_blit_x_rnd), int(_blit_y_rnd))
                 elif _is_corpse_draw:
                     # Corpo morto: dessatura pra cinza (pose "morto", sem barra de HP)
                     _gray = sum(renderable.color[:3]) // 3
@@ -727,6 +746,14 @@ class RenderSystem(System):
                         _cblit_y = int(draw_y - _anchor_dy)
                         self.world_surf.blit(_char_frame, (_cblit_x, _cblit_y))
                         _char_anchor_dy_for_hud = _anchor_dy
+                        # Silhueta real pro tracejado de seleção (25/09/2026)
+                        # — usa _char_frame_for_mask (referência ESTÁVEL,
+                        # capturada antes do possível .copy()+set_alpha()
+                        # do bush stealth acima) pra self._get_mask() cachear
+                        # certo por frame de personagem, nunca por uma copy
+                        # nova a cada chamada.
+                        _sel_outline_surf = _char_frame_for_mask
+                        _sel_outline_offset = (_cblit_x, _cblit_y)
                     elif _bush_hidden_draw:
                         # Sem sprite animada disponível (classe sem asset
                         # ainda) — mesmo fallback translúcido de sempre.
@@ -770,7 +797,35 @@ class RenderSystem(System):
                         self.world_surf.blit(_root_surf, (_rx, _ry))
 
             if entity_id == target_id:
-                pygame.draw.rect(self.world_surf, (255, 220, 0), rect, 2)
+                # Cor por disposição (25/09/2026, pedido do usuário) — mesmo
+                # esquema/fonte única já usado na barra de HP de mob remoto
+                # (client/remote_entity_handlers.py::_draw_mob_hp_bars):
+                # hostil=vermelho, amigável=verde, neutro=amarelo.
+                _sel_tier = get_relationship_between(self.world, entity_id, _local_player_eid_draw)
+                _sel_color = DISPOSITION_HP_COLORS.get(_sel_tier, DISPOSITION_HP_COLORS["hostil"])
+                if _sel_outline_surf is not None:
+                    # Tracejado acompanhando a SILHUETA real do sprite —
+                    # Mask.outline() traça o contorno já EXCLUINDO a sombra
+                    # (sombra vem com alpha ~89 nas folhas "with Shadow",
+                    # objeto vem com alpha 255; o threshold padrão de
+                    # pygame.mask.from_surface, 127, já separa os dois sem
+                    # ajuste nenhum — confirmado pixel a pixel antes de
+                    # implementar). `every=3` decima os pontos do contorno
+                    # (retorno bruto tem ~1px entre pontos) pra um tracejado
+                    # mais leve sem perder a forma geral.
+                    _sel_mask = self._get_mask(_sel_outline_surf)
+                    _sel_pts_local = _sel_mask.outline(3)
+                    if _sel_pts_local:
+                        _ox, _oy = _sel_outline_offset
+                        _sel_pts = [(px + _ox, py + _oy) for px, py in _sel_pts_local]
+                        draw_dashed_polygon(self.world_surf, _sel_color, _sel_pts, width=2)
+                    else:
+                        draw_dashed_rect(self.world_surf, _sel_color, rect, width=2)
+                else:
+                    # Sem sprite/frame (mob simples de retângulo) — cai no
+                    # tracejado reto de sempre, só que colorido por
+                    # disposição em vez do amarelo fixo.
+                    draw_dashed_rect(self.world_surf, _sel_color, rect, width=2)
 
             # ── HUD de barras: mobs/player LOCAIS (CombatStats) ──────────────
             # Player remoto (PvP) tem seu próprio passe completo em
