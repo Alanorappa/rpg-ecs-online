@@ -2707,6 +2707,44 @@ def test_spawn_remote_mob_de_mercador_anexa_npc_e_merchant():
     assert merch is not None and merch.shop_id == "general"
 
 
+def test_mailbox_nameplate_mostra_so_o_nome_mesmo_no_modo_completo():
+    """Pedido do usuário 25/09/2026: caixa de correio nunca deveria
+    mostrar badge de nível/barra de HP, só o nome — mesmo com o ciclo
+    Shift+V (self._nameplate_mode) no modo completo (0), que é o modo
+    que TODO outro mob/NPC usaria pra mostrar badge+barra."""
+    from engine.components import Position, Renderable, RemoteEntityMeta, EntityIdentity, Mailbox
+    import ui.world_labels as world_labels_mod
+
+    fx = _make_net_fixture()
+    fx._zoom_surf = pygame.Surface((200, 200))
+    fx._nameplate_mode = 0   # modo completo — badge+barra pra qualquer OUTRO mob
+    fx.font_sm = pygame.font.Font(None, 16)
+
+    eid = fx.world.create_entity()
+    fx.world.add_component(eid, Position(x=100, y=100))
+    fx.world.add_component(eid, Renderable(color=(100, 140, 200), width=32, height=32))
+    fx.world.add_component(eid, RemoteEntityMeta(server_eid=eid, hp=60, hp_max=60))
+    fx.world.add_component(eid, EntityIdentity(name="Caixa de Correio", race="humano",
+                                                entity_class="npc", level=1))
+    fx.world.add_component(eid, Mailbox())
+    fx._remote_mobs[eid] = eid   # _draw_mob_hp_bars retorna cedo se vazio
+
+    icon_calls = []
+    text_calls = []
+    orig_icon = world_labels_mod.WORLD_LABELS.add_icon
+    orig_text = world_labels_mod.WORLD_LABELS.add_text
+    world_labels_mod.WORLD_LABELS.add_icon = lambda *a, **k: icon_calls.append((a, k))
+    world_labels_mod.WORLD_LABELS.add_text = lambda *a, **k: text_calls.append((a, k))
+    try:
+        fx._draw_mob_hp_bars(0, 0)
+    finally:
+        world_labels_mod.WORLD_LABELS.add_icon = orig_icon
+        world_labels_mod.WORLD_LABELS.add_text = orig_text
+
+    assert icon_calls == [], "caixa de correio nao deveria ganhar badge/barra de HP nenhuma"
+    assert len(text_calls) == 1 and text_calls[0][0][2] == "Caixa de Correio"
+
+
 def test_spawn_remote_mob_de_mailbox_anexa_mailbox():
     """Correio (25/09/2026) — mesmo padrão do mercador/ferreiro acima:
     campo condicional `is_mailbox` no payload precisa anexar o componente

@@ -1551,7 +1551,15 @@ class RemoteEntityHandlers:
                                         HUD_GAP_PX as _HGP_hb, effects_row_offset as _ero_hb)
                 from ui.world_labels import WORLD_LABELS as _WL_hb
                 ratio = max(0.0, hp / hp_max)
-                _nm_mode_hb = self._nameplate_mode
+                # Caixa de Correio (25/09/2026, pedido do usuário): nunca
+                # mostra badge de nível nem barra de HP, só o nome — igual
+                # ao modo 1 do ciclo Shift+V, mas fixo pra ESTE NPC
+                # específico, independente da preferência global do
+                # jogador (o resto dos mobs/NPCs continua obedecendo
+                # self._nameplate_mode normalmente).
+                from engine.components import Mailbox as _MailboxHb
+                _is_mailbox_hb = self.world.get_component(local_eid, _MailboxHb) is not None
+                _nm_mode_hb = 1 if _is_mailbox_hb else self._nameplate_mode
 
                 from engine.components import EntityIdentity as _EIdHb
                 _mob_id_hb = self.world.get_component(local_eid, _EIdHb)

@@ -578,15 +578,16 @@ def create_mailbox(world: World, tile_x: int, tile_y: int,
         world, tile_x, tile_y, ENEMY_MELEE_ATTACK_RANGE, False, "normal",
         _SERVICE_NPC_DEFAULT_RACE, "", level, _SERVICE_NPC_FACTION,
         identity_name=name)
-    # Área clicável = TILE_SIZE (32px), não PLAYER_SIZE (24px) como os
-    # outros NPCs de serviço (25/09/2026, bug real relatado pelo usuário:
-    # clique direito quase sempre caía fora da caixa de 24px — menor que
-    # 1 tile inteiro — e sobrava pro alvo genérico de combate
-    # (`_enemy_at_world_pos`, `ui/player_input_system.py`), que só
-    # SELECIONA um NPC amigável (fica amarelo), nunca abre nada. 32px
-    # ainda cabe sem sobrepor os vizinhos (mercador/ferreiro/missiveiro),
-    # que ficam a 2 tiles = 64px de distância.
-    world.add_component(eid, Renderable(color=(100, 140, 200), width=TILE_SIZE, height=TILE_SIZE))
+    # Sprite real (25/09/2026, pedido do usuário — cadastrado por ele em
+    # engine/tileset.py, grupo "moveis" da folha "TX Village Props with
+    # Shadow", tile "180" → tile_id "vp_180"). `sprite_id` faz
+    # RenderSystem/`_draw_mob_hp_bars` desenharem o sprite de verdade
+    # (ancorado pela base, mesmo padrão de torre/harvestable) E faz
+    # `_entity_click_rect` (ui/click_rect_helpers.py, ponto único de
+    # verdade de área clicável) usar o tamanho REAL do sprite em vez do
+    # retângulo — width/height aqui viram só fallback (sprite ausente).
+    world.add_component(eid, Renderable(color=(100, 140, 200), width=TILE_SIZE, height=TILE_SIZE,
+                                        sprite_id="vp_180"))
     world.add_component(eid, NPC(name=name, level=level, profession=profession))
     world.add_component(eid, Mailbox())
     return eid
