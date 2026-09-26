@@ -247,6 +247,59 @@ class TestMailClaimAndOwnership(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTe
         inv_update = get_msgs_of_type(fw_r, MsgType.INVENTORY_UPDATE)[0]
         self.assertEqual(len(inv_update["items"]), 1)
 
+    async def test_claim_item_atualiza_o_indicador_de_correspondencia_nao_lida(self):
+        """Bug real relatado pelo usuário 25/09/2026: a exclamação sobre
+        a caixa de correio só sumia relogando — reclamar item nunca
+        recalculava o indicador (só o login fazia isso). `mail_unread`
+        chega via STATS_UPDATE (buffer, drenado por
+        WorldServer.consume_stats_updates — mesmo canal do gold).
+
+        Compara ANTES/DEPOIS (nunca um valor absoluto) — a conta de
+        teste é reusada entre execuções da suíte (banco dev real
+        compartilhado), então pode ter correspondência residual de
+        rodadas anteriores contando pro total."""
+        from server import auth
+        _sender, recip, _fw_r, mail_id = await self._mail_from_a_to_b("iu", gold=0)
+        before = await auth.count_unread_mail(recip.char_data["id"])
+
+        await self.mgr._handle_mail_claim_item(recip, {"mail_id": mail_id, "item_index": 0}, 0)
+
+        updates = [u for u in self.ws.consume_stats_updates()
+                  if u.get("player_eid") == recip.entity_id and "mail_unread" in u]
+        self.assertTrue(updates, "deveria ter recalculado mail_unread apos reclamar o item")
+        self.assertEqual(updates[-1]["mail_unread"], before - 1,
+                         "reclamar o unico anexo (sem gold) deveria reduzir o indicador em 1")
+
+    async def test_claim_gold_atualiza_o_indicador_de_correspondencia_nao_lida(self):
+        from server import auth
+        _sender, recip, _fw_r, mail_id = await self._mail_from_a_to_b("gu")
+        await self.mgr._handle_mail_claim_item(recip, {"mail_id": mail_id, "item_index": 0}, 0)
+        self.ws.consume_stats_updates()   # limpa o que o claim de item ja gerou
+        before = await auth.count_unread_mail(recip.char_data["id"])
+
+        await self.mgr._handle_mail_claim_gold(recip, {"mail_id": mail_id}, 0)
+
+        updates = [u for u in self.ws.consume_stats_updates()
+                  if u.get("player_eid") == recip.entity_id and "mail_unread" in u]
+        self.assertTrue(updates, "deveria ter recalculado mail_unread apos reclamar o gold")
+        self.assertEqual(updates[-1]["mail_unread"], before - 1,
+                         "item ja reclamado, reclamar o gold tambem deveria reduzir o indicador em 1")
+
+    async def test_deletar_mail_atualiza_o_indicador_de_correspondencia_nao_lida(self):
+        """Deletar uma correspondência AINDA não reclamada também precisa
+        recalcular — some da inbox, então não pode continuar contando."""
+        from server import auth
+        _sender, recip, _fw_r, mail_id = await self._mail_from_a_to_b("du")
+        before = await auth.count_unread_mail(recip.char_data["id"])
+
+        await self.mgr._handle_mail_delete(recip, {"mail_id": mail_id}, 0)
+
+        updates = [u for u in self.ws.consume_stats_updates()
+                  if u.get("player_eid") == recip.entity_id and "mail_unread" in u]
+        self.assertTrue(updates, "deveria ter recalculado mail_unread apos deletar")
+        self.assertEqual(updates[-1]["mail_unread"], before - 1,
+                         "deletar a unica correspondencia nao-reclamada deveria reduzir o indicador em 1")
+
     async def test_claim_item_duas_vezes_a_segunda_e_recusada_idempotente(self):
         _sender, recip, fw_r, mail_id = await self._mail_from_a_to_b("j")
 

@@ -1091,8 +1091,11 @@ class SessionManager:
     async def _handle_mail_delete(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
             return
+        player_eid = self.world_server._player_eids.get(session.session_id)
+        if player_eid is None:
+            return
         mail_id = int(payload.get("mail_id", -1))
-        await self.world_server.process_mail_delete(session.char_data["id"], mail_id)
+        await self.world_server.process_mail_delete(player_eid, session.char_data["id"], mail_id)
         mails = await self.world_server.process_mail_open_inbox(session.char_data["id"])
         await session.send(MsgType.MAIL_INBOX_LIST, {"mails": mails})
 

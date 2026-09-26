@@ -129,8 +129,7 @@ class MailProcessorMixin:
 
         recipient_eid = self._find_online_player_eid_by_name(to_name)
         if recipient_eid is not None:
-            count = await auth.count_unread_mail(recipient_char_id)
-            self.queue_stats_update({"player_eid": recipient_eid, "mail_unread": count})
+            await self._push_mail_unread(recipient_eid, recipient_char_id)
 
         return {"success": True, "removed": removed_display}
 
@@ -147,6 +146,7 @@ class MailProcessorMixin:
             # (idempotência: jogador tenta de novo depois de abrir espaço).
             await auth.unclaim_mail_item(mail_id, char_id, item_index)
             return {"success": False, "reason": "mochila_cheia"}
+        await self._push_mail_unread(player_eid, char_id)
         return {"success": True, "granted": granted}
 
     async def process_mail_claim_gold(self, player_eid: int, char_id: int,
@@ -161,8 +161,24 @@ class MailProcessorMixin:
             return {"success": False}
         wallet.gold += amount
         self.queue_stats_update({"player_eid": player_eid, "gold": wallet.gold})
+        await self._push_mail_unread(player_eid, char_id)
         return {"success": True}
 
-    async def process_mail_delete(self, char_id: int, mail_id: int) -> bool:
+    async def process_mail_delete(self, player_eid: int, char_id: int, mail_id: int) -> bool:
         from server import auth
-        return await auth.delete_mail(mail_id, char_id)
+        deleted = await auth.delete_mail(mail_id, char_id)
+        if deleted:
+            await self._push_mail_unread(player_eid, char_id)
+        return deleted
+
+    async def _push_mail_unread(self, player_eid: int, char_id: int) -> None:
+        """Recalcula e avisa o indicador de correspondência não reclamada
+        — bug real relatado pelo usuário 25/09/2026: a exclamação sobre a
+        caixa de correio só sumia relogando (só existia o gatilho de
+        login, `_spawn_and_start`); reclamar item/gold ou deletar uma
+        correspondência nunca recalculava. Reaproveita STATS_UPDATE
+        (campo `mail_unread`), mesmo canal do login — nenhum buffer/
+        mensagem nova."""
+        from server import auth
+        count = await auth.count_unread_mail(char_id)
+        self.queue_stats_update({"player_eid": player_eid, "mail_unread": count})
