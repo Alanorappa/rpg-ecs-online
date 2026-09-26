@@ -121,6 +121,27 @@ M_HP_Y = (5, 6)
 HUD_GAP_PX     = 4
 EFFECTS_GAP_PX = 4
 
+# Âncora vertical do topo do nameplate (26/09/2026, pedido do usuário —
+# antes usava a altura crua do recorte/frame, deixando espaço vazio
+# entre o nameplate e o desenho de verdade em sprites com padding
+# transparente). Fonte única — usado por ui/render_system.py (entidade
+# local) E client/remote_entity_handlers.py (mob/NPC e player remotos),
+# nunca duplicar o número em cada call site.
+#
+# Sprite de objeto (estático — torre/correio/boneco de treino): sobe
+# NAMEPLATE_SPRITE_TOP_GAP_PX px a partir do pixel opaco mais alto de
+# verdade (via TileSpriteManager.get_top_opaque_y, ignora sombra/
+# padding transparente do recorte).
+NAMEPLATE_SPRITE_TOP_GAP_PX = 10
+
+# Personagem animado (jogador/player remoto): NÃO usa pixel real (a
+# pose muda por frame/direção — perseguir o pixel real faria o
+# nameplate "balançar" seguindo a animação, decisão explícita do
+# usuário 26/09/2026). Em vez disso, desce um valor FIXO a partir do
+# topo do FRAME (não da arte) — permanece estável entre todos os
+# frames/direções de qualquer classe.
+NAMEPLATE_CHAR_FRAME_TOP_INSET_PX = 10
+
 _player_art: "pygame.Surface | None" = None
 _mob_art:    "pygame.Surface | None" = None
 

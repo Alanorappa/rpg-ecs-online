@@ -31,6 +31,12 @@ class TileSpriteManager:
     def __init__(self) -> None:
         self._raw:    dict[str, pygame.Surface | None] = {}    # imagem bruta por filename
         self._scaled: dict[tuple, pygame.Surface | None] = {}  # escalada por (filename, w, h)
+        # Linha (relativa ao topo do recorte) do 1º pixel opaco de cima
+        # pra baixo, por sprite_id (26/09/2026, pedido do usuário —
+        # nameplate de sprite de objeto ancora no pixel VISÍVEL de
+        # verdade, não no topo do recorte cru, que pode ter padding
+        # transparente/sombra por cima do desenho).
+        self._top_opaque_y: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Internos
@@ -147,10 +153,35 @@ class TileSpriteManager:
         self._scaled[key] = region
         return region
 
+    def get_top_opaque_y(self, name: str) -> int:
+        """Linha (0 = topo do recorte) do 1º pixel opaco de cima pra
+        baixo do sprite `name` — ignora padding transparente/sombra
+        acima do desenho de verdade (26/09/2026, pedido do usuário).
+        Usa o mesmo threshold padrão de `pygame.mask.from_surface`
+        (127) que já separa sombra "assada" (alpha ~89 nas folhas
+        "with Shadow") de objeto opaco (alpha 255), sem ajuste
+        nenhum — confirmado pixel a pixel na implementação do contorno
+        de seleção (ver ui/render_system.py). Cacheado por sprite_id —
+        computado 1x, nunca por frame (sprite estático de objeto nunca
+        muda)."""
+        cached = self._top_opaque_y.get(name)
+        if cached is not None:
+            return cached
+        surf = self.get_raw_sprite(name)
+        if surf is None:
+            self._top_opaque_y[name] = 0
+            return 0
+        mask = pygame.mask.from_surface(surf)
+        rects = mask.get_bounding_rects()
+        top = min((r.top for r in rects), default=0)
+        self._top_opaque_y[name] = top
+        return top
+
     def invalidate(self) -> None:
         """Limpa o cache (use ao trocar de resolução ou recarregar assets)."""
         self._raw.clear()
         self._scaled.clear()
+        self._top_opaque_y.clear()
 
 
 # Singleton global

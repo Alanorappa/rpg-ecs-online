@@ -20,7 +20,13 @@ import unittest
 import pygame
 
 pygame.init()
-pygame.display.set_mode((1, 1))
+# 320x240 (não 1x1) — pygame.display.set_mode() é global pro processo:
+# um tamanho minúsculo aqui sobrescreveria a tela de QUALQUER outro
+# arquivo de teste que rode depois deste na mesma sessão do pytest
+# (bug real achado 26/09/2026 rodando a suíte cheia — testes de nameplate/
+# tab-target de outro arquivo quebravam só quando este arquivo entrava
+# na mesma execução). Mesmo tamanho já usado por tests/test_client_ui.py.
+pygame.display.set_mode((320, 240))
 
 
 def _make_local_player(world, target_eid, x=100, y=100):

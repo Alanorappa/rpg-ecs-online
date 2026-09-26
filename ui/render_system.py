@@ -17,7 +17,8 @@ from ui.fonts import make as _font
 from ui.ui_sizes import UI
 from ui.world_labels import WORLD_LABELS
 from ui.hud_bars import (build_player_hud, build_mob_hud, build_npc_badge, build_simple_hp_bar,
-                       RESOURCE_COLORS, HUD_GAP_PX, effects_row_offset, DISPOSITION_HP_COLORS)
+                       RESOURCE_COLORS, HUD_GAP_PX, effects_row_offset, DISPOSITION_HP_COLORS,
+                       NAMEPLATE_SPRITE_TOP_GAP_PX, NAMEPLATE_CHAR_FRAME_TOP_INSET_PX)
 from engine.faction_system import get_relationship_between
 
 # Re-exporta apply_effect de core_systems para compatibilidade com todo o código
@@ -857,20 +858,29 @@ class RenderSystem(System):
                 # branch `_sprite_rnd` do loop de desenho abaixo) — só sobe
                 # até o TOPO do sprite em vez do rodapé.
                 if renderable.sprite_id:
+                    # Ancora no pixel OPACO mais alto de verdade (26/09/2026,
+                    # pedido do usuário), não no topo do recorte cru — sprite
+                    # com padding transparente por cima do desenho deixava um
+                    # vão vazio entre nameplate e objeto. get_top_opaque_y é
+                    # cacheado por sprite_id (sprite estático nunca muda).
                     _spr_hud = TILE_SPRITES.get_raw_sprite(renderable.sprite_id)
                     _spr_h_hud = _spr_hud.get_height() if _spr_hud else renderable.height
-                    _hud_top_world_y = position.y + TILE_SIZE / 2 - _spr_h_hud
+                    _sprite_top_hud = position.y + TILE_SIZE / 2 - _spr_h_hud
+                    _top_opaque_hud = TILE_SPRITES.get_top_opaque_y(renderable.sprite_id)
+                    _hud_top_world_y = (_sprite_top_hud + _top_opaque_hud
+                                       - NAMEPLATE_SPRITE_TOP_GAP_PX)
                 elif _char_anchor_dy_for_hud is not None:
-                    # Animação de personagem (09-10/09/2026) — topo do
-                    # sprite em coordenadas de MUNDO é `position.y -
-                    # anchor_dy` (mesma âncora usada pra desenhar o
-                    # sprite, ver `character_anchor_offset` — centro do
-                    # tile de colisão de 32×32 alinhado com `position.y`,
-                    # não a base/centro do frame inteiro de 96×H). Sem
-                    # isso, o nameplate cobria parte do sprite (achado
-                    # real: primeiro com a altura crua do frame, depois
-                    # de novo quando a âncora do tile de colisão mudou).
-                    _hud_top_world_y = position.y - _char_anchor_dy_for_hud
+                    # Animação de personagem (09-10/09/2026, ajustado
+                    # 26/09/2026) — topo do FRAME em coordenadas de MUNDO é
+                    # `position.y - anchor_dy` (mesma âncora usada pra
+                    # desenhar o sprite, ver `character_anchor_offset`).
+                    # NUNCA usar o pixel opaco real aqui (decisão explícita
+                    # do usuário): a pose muda por frame/direção, então
+                    # perseguir o pixel real faria o nameplate "balançar"
+                    # junto da animação — em vez disso desce um valor FIXO
+                    # a partir do topo do frame, estável em qualquer pose.
+                    _hud_top_world_y = (position.y - _char_anchor_dy_for_hud
+                                       + NAMEPLATE_CHAR_FRAME_TOP_INSET_PX)
                 else:
                     _hud_top_world_y = position.y - renderable.height / 2
                 _hud_surf = None

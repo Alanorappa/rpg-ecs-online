@@ -429,6 +429,7 @@ class TestRenderSystemNameplateTopFollowsSpriteHeight(unittest.TestCase):
         from ui.systems import RenderSystem
         from ui.world_labels import WORLD_LABELS
         from engine.character_animation import character_anchor_offset
+        from ui.hud_bars import NAMEPLATE_CHAR_FRAME_TOP_INSET_PX
 
         world = World()
         eid = self._make_player(world)
@@ -446,10 +447,14 @@ class TestRenderSystemNameplateTopFollowsSpriteHeight(unittest.TestCase):
         hud_top_world_y = entries[0][1]
 
         # Âncora não depende mais da altura do sprite (10/09/2026) — é
-        # sempre `position.y - anchor_dy` (tile de colisão de 32×32
-        # dentro do frame, ver `character_anchor_offset`).
+        # `position.y - anchor_dy` (tile de colisão de 32×32 dentro do
+        # frame, ver `character_anchor_offset`), MAIS um inset fixo pra
+        # baixo (26/09/2026, pedido do usuário — nameplate fica DENTRO
+        # do frame da animação, não flutuando acima dele; valor fixo
+        # pra não "balançar" seguindo pose/direção).
         _, anchor_dy = character_anchor_offset()
-        self.assertAlmostEqual(hud_top_world_y, 100 - anchor_dy)
+        self.assertAlmostEqual(hud_top_world_y,
+                               100 - anchor_dy + NAMEPLATE_CHAR_FRAME_TOP_INSET_PX)
         # Regressão: NÃO pode ser o cálculo antigo (baseado em
         # renderable.height=24), que ficaria bem mais baixo — dentro do
         # próprio sprite.

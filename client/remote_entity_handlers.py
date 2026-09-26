@@ -1541,9 +1541,16 @@ class RemoteEntityHandlers:
             # local, passa só por esta função, nunca pela outra).
             _ren_hb = self.world.get_component(local_eid, _RenHb)
             if _ren_hb and _ren_hb.sprite_id:
+                # Ancora no pixel OPACO mais alto de verdade (26/09/2026,
+                # pedido do usuário, mesma fonte única de
+                # ui/render_system.py — ver NAMEPLATE_SPRITE_TOP_GAP_PX),
+                # não no topo do recorte cru.
+                from ui.hud_bars import NAMEPLATE_SPRITE_TOP_GAP_PX as _NSTG_hb
                 _spr_hb = _TS_hb.get_raw_sprite(_ren_hb.sprite_id)
                 _spr_h_hb = _spr_hb.get_height() if _spr_hb else W
-                _world_y_top = pos.y + _TS / 2 - _spr_h_hb
+                _sprite_top_hb = pos.y + _TS / 2 - _spr_h_hb
+                _top_opaque_hb = _TS_hb.get_top_opaque_y(_ren_hb.sprite_id)
+                _world_y_top = _sprite_top_hb + _top_opaque_hb - _NSTG_hb
             else:
                 _world_y_top = pos.y - W / 2
             if hp_max > 0:
@@ -1747,8 +1754,16 @@ class RemoteEntityHandlers:
             from ui.hud_bars import LEVEL_FONT_SIZE as _LFS_rp
             self._player_level_font = _make_name_rp2(_LFS_rp * 2)
 
-        from engine.tileset import TILE_SIZE as _TS_rp
-        _sprite_h = _TS_rp - 4   # mesma convenção de altura já usada aqui (W = H = TILE_SIZE-4)
+        # Âncora de personagem animado (26/09/2026, pedido do usuário —
+        # mesma fonte única de ui/render_system.py: valor FIXO a partir
+        # do topo do FRAME, nunca do pixel real da arte, pra não
+        # "balançar" seguindo a pose/direção). Player remoto SEMPRE
+        # resolve um class_id real (RemoteControlled.class_id nunca é
+        # vazio) — nunca cai no retângulo antigo de TILE_SIZE-4, que
+        # ignorava a altura real do personagem.
+        from engine.character_animation import character_anchor_offset as _cao_rp
+        from ui.hud_bars import NAMEPLATE_CHAR_FRAME_TOP_INSET_PX as _NCFI_rp
+        _, _anchor_dy_rp = _cao_rp()
 
         from ui.hud_bars import DISPOSITION_HP_COLORS as _DISP_rp, HP_COLOR as _HPC_rp
         for server_eid, local_eid in self._remote_players.items():
@@ -1756,7 +1771,7 @@ class RemoteEntityHandlers:
             rc  = self.world.get_component(local_eid, RemoteControlled)
             if not pos or not rc:
                 continue
-            _world_y_top = pos.y - _sprite_h / 2
+            _world_y_top = pos.y - _anchor_dy_rp + _NCFI_rp
             # Morto (qualquer contexto, não só arena — bug real relatado
             # pelo usuário 22/07/2026: nameplate completo continuava
             # aparecendo em corpo morto fora de arena) — só o NOME, sem
