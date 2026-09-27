@@ -22914,3 +22914,47 @@ passando; correção 4 (rótulos) não tem teste automatizado — é só
 renomeação/instrumentação, verificado por leitura cuidadosa do diff +
 `ast.parse` (sem cobertura de teste pro mecanismo de profiling no
 projeto todo).
+
+## 210. Fecha o plano de ação de performance do §209 — itens de prioridade baixa (27/09/2026)
+
+Continuação do §209, mesma sessão. Os 3 itens de prioridade baixa do
+documento do plano:
+
+- **`display_flip`**: label antigo somava a cópia de framebuffer (custo
+  de app) com a espera de vsync do driver/SO dentro de
+  `pygame.display.flip()` (custo de plataforma, não otimizável em
+  código) — impossível distinguir pico de vsync vs. pico de blit real.
+  Separado em `present:blit`/`present:vsync_flip` — só instrumentação.
+- **`ui:perf_overlay`**: alocava Surface SRCALPHA nova todo frame com
+  F11 aberto, ignorando a lição que o próprio projeto já documentou
+  (`fill_surf`, `client/chat_handlers.py`). Como o conteúdo (números de
+  FPS/ms) muda todo frame, não dá pra cachear por conteúdo — a Surface
+  agora cresce e é reaproveitada (nunca encolhe), blit final limitado à
+  área real do conteúdo atual. `hasattr(render_to)` resolvido 1x por
+  instância em vez de por linha por frame. Confirmado por script de
+  verificação pixel a pixel (0 diferenças) antes de escrever teste.
+- **`input_dispatch`**: SEM AÇÃO isolada, por decisão explícita — custo
+  medido é irrelevante (0.148ms médio) e o valor real do achado
+  (quebrar em sub-labels pra diagnosticar picos raros) está atado ao
+  mesmo refactor maior do monólito de input/orquestração (item "B1" já
+  catalogado). Revisitar junto de B1 se esse refactor acontecer.
+
+`transform_scale` e `hud:draw_hud` (os 2 "sem ação" do plano) também
+não tiveram nenhuma mudança — os 3 agentes da revisão confirmaram que
+já estão corretos.
+
+**Testes**: `tests/test_client_ui.py` —
+`test_draw_perf_overlay_reusa_surface_cacheada_entre_frames`,
+`test_draw_perf_overlay_hasattr_render_to_resolvido_1_vez_por_instancia`,
+`test_draw_perf_overlay_conteudo_menor_nao_deixa_pixel_fantasma`.
+Revert-to-confirm feito — os 3 falham sem o fix (AttributeError,
+atributo de cache nunca existiria). `display_flip` não tem teste
+automatizado (só instrumentação/renomeação, mesmo critério do §209).
+Suíte `test_client_ui.py` completa passando (230 testes).
+
+Com isso, os 10 itens do documento do plano de ação
+(`https://claude.ai/artifact/RQ1MppYS9a5AAfb1FozRBF`) estão todos
+decididos: 2 de prioridade alta + 3 de prioridade média + 3 de baixa
+corrigidos (1 sub-item da média — mesclar as 2 varreduras do
+TileRenderSystem — deferido de propósito, ver §209), 2 "sem ação"
+confirmados como já corretos.
