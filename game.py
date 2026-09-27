@@ -2651,6 +2651,17 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # scale acima — nascem no tamanho final de tela, nunca são
             # reamostrados pelo zoom da câmera (fix 11/07/2026: fonte
             # pixel-perfect borrava quando desenhada dentro do world_surf).
+            #
+            # 27/09/2026 (achado da revisão de performance, documento do
+            # plano de ação): este bloco inteiro (WORLD_LABELS + FLT, os
+            # 2 que ESCALAM com nº de entidades visíveis — nameplate/
+            # barra de HP/texto flutuante de dano por entidade) rodava
+            # SEM NENHUM profiling — qualquer regressão aqui era invisível
+            # em qualquer relatório/spike do F11. Rótulo novo, nunca
+            # existiu antes (não é rótulo mentiroso sendo corrigido, é
+            # buraco cego sendo fechado).
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             from ui.world_labels import WORLD_LABELS
             WORLD_LABELS.render(self.screen, cam_x, cam_y, z)
             # Floating text em screen-space, DEPOIS do WORLD_LABELS (nameplates)
@@ -2659,6 +2670,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # flatten+scale. FLT.render() agora recebe `z` (zoom) e converte
             # coordenadas de mundo pra tela internamente.
             FLT.render(self.screen, cam_x, cam_y, z)
+            if PROFILE_FRAMES:
+                self._prof_record("rnd:world_labels", _time.perf_counter() - _ts)
+                _ts = _time.perf_counter()
             # Notificações de proc: screen-space, abaixo do player, acima dos avisos
             PROC.render(self.screen)
             # Avisos de ação bloqueada: posição fixa, abaixo do centro
@@ -2669,6 +2683,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._draw_online_hud()
             # Chat: log (canto inferior esquerdo) + campo de digitação quando focado
             self._draw_chat_log()
+            if PROFILE_FRAMES:
+                self._prof_record("hud:chat_and_notices", _time.perf_counter() - _ts)
 
             self._pending_tooltip       = None
             self._pending_skill_tooltip = None
@@ -2690,7 +2706,19 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if PROFILE_FRAMES:
                 self._prof_record("hud:tooltip", _time.perf_counter() - _ts)
                 _ts = _time.perf_counter()
-            # Minimapa (canto superior direito) — oculto enquanto mapa grande estiver aberto
+            # Minimapa (canto superior direito) — oculto enquanto mapa grande estiver aberto.
+            #
+            # 27/09/2026 (achado da revisão de performance): separado num
+            # label PRÓPRIO ("rnd:minimap") — antes vinha junto do rótulo
+            # mentiroso "hud:combat_log" (media minimapa+quest HUD+buff
+            # bar+relógio dia/noite, NUNCA o chat de verdade). Confirmado
+            # por profiling isolado: render_fullmap() (modo BG/Arena) tinha
+            # um bug real de performance (corrigido no mesmo commit desta
+            # sessão) que sozinho já explicava o pico de 22.7ms medido
+            # neste rótulo — por isso o minimapa merece medição própria,
+            # não diluída junto de widgets pequenos.
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             if not self._map_overlay.is_open:
                 _fog_mm      = self.world.get_component(self.player_entity, FogOfWar)
                 _player_tm_m = self.world.get_component(self.player_entity, TileMovement)
@@ -2727,6 +2755,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                             collect_quest_circles(self.world, self.player_entity, self._quest_system,
                                                   self._current_map_file, self._spawn_points),
                         )
+                if PROFILE_FRAMES:
+                    self._prof_record("rnd:minimap", _time.perf_counter() - _ts)
+                    _ts = _time.perf_counter()
                 # HUD de quests — abaixo do minimap
                 self._quest_system.render_hud(self.screen)
                 # Buff bar — à esquerda do minimap (só jogador local)
@@ -2744,7 +2775,14 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 if _bb_hover:
                     self._pending_tooltip = (_bb_mx, _bb_my, _bb_hover[0], _bb_hover[1])
             if PROFILE_FRAMES:
-                self._prof_record("hud:combat_log", _time.perf_counter() - _ts)
+                # Nome corrigido 27/09/2026 (era "hud:combat_log", rótulo
+                # mentiroso — nunca mediu o chat de verdade, ver
+                # PROBLEMAS_ARQUITETURA.md §146/§147 e o documento do
+                # plano de ação de performance). Mede quest HUD + buff bar
+                # + relógio dia/noite + hover da buff bar — minimapa agora
+                # tem rótulo próprio ("rnd:minimap") acima, chat tem o dele
+                # ("hud:chat_and_notices") mais acima no frame.
+                self._prof_record("hud:side_widgets", _time.perf_counter() - _ts)
                 _ts = _time.perf_counter()
             if self._show_inventory:
                 self._draw_inventory_panel()

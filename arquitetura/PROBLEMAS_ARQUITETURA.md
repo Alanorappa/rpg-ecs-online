@@ -22821,3 +22821,96 @@ relatado. Rodados só os testes relacionados (day/night + map_loader +
 wiring), 22 passed — suíte completa E validação manual em jogo ainda
 pendentes por decisão do usuário (novo fluxo combinado 23/09/2026: só
 teste direcionado + validação manual antes de rodar a suíte inteira).
+
+## 209. Revisão de performance do cliente (3 agentes) + 4 correções reais — DayNightSystem, RenderSystem, minimap da BG, rótulos de profiler (27/09/2026)
+
+Usuário pediu investigação do log de profiling do cliente
+(`logs/client_prof.log`) pra achar os 10 sistemas mais consumidores, e
+depois uma revisão formal desses 10 por 3 agentes independentes
+(arquitetura, qualidade de código, práticas de mercado) pra decidir um
+plano de ação. Documento completo do plano (tabela dos 10, achados de
+cada agente, decisão por sistema) publicado como Artifact
+(`https://claude.ai/artifact/RQ1MppYS9a5AAfb1FozRBF`) — este item
+registra só as correções REAIS já aplicadas a partir dele, não repete
+o levantamento inteiro.
+
+**Achado de processo, antes das correções**: 2 dos 3 agentes
+recomendaram "adicionar cache por câmera ao minimapa" pro item
+`hud:combat_log` — só que o minimapa normal (`Minimap.render()`) **já
+tinha** exatamente esse cache desde 14/07/2026 (`_cache_key =
+(player_tx, player_ty, len(explored))`), inclusive com um comentário
+no código já documentando o MESMO label mentiroso que os agentes
+"descobriram" de novo. Confirma a regra do CLAUDE.md de nunca aceitar
+recomendação de terceiro sem verificar contra o código atual — a
+recomendação literal estava errada, mas apontava pra área certa: o bug
+de verdade era um MÉTODO IRMÃO (`render_fullmap`, modo tela cheia da
+BG) que nunca recebeu a mesma correção.
+
+**Correção 1 — `ui/day_night_system.py` (clusters de luz estática, já
+commitada antes deste item, `02d4cbf`)**: vilarejo com 20+ lampiões
+agrupados custava ~5.6-8ms/frame porque cada luz era desenhada
+separada TODO frame, mesmo sendo posição ESTÁTICA (só a câmera se
+move). `build_static_light_clusters(tilemap)` agora varre o mapa 1x no
+load, agrupa lampiões por alcance (union-find) e pré-compõe 1 Surface
+por cluster — `render()` faz 1 blit por cluster VISÍVEL, não 1 por
+luz. Custo deixou de escalar com nº de lampiões no mapa; ~4.7ms medido
+no pior caso real (era ~5.6-8ms). Luz de item de jogador (dinâmica)
+continua individual, fora do mecanismo.
+
+**Correção 2 — `ui/hud_bars.py` (cache de Surface de HP/nameplate,
+`84750aa`)**: `build_player_hud`/`build_mob_hud` alocavam Surface
+SRCALPHA + `transform.scale` novos TODO frame por entidade visível com
+barra de HP — achado convergente dos 3 agentes, apesar do MESMO
+arquivo já ter esse padrão de cache pro número do nível
+(`_level_surf_cache`, 14/07/2026). Fix: cache por chave quantizada
+(~1.6%/bucket nos ratios de HP/XP/recurso — bem abaixo de 1px de
+diferença visual). Surface devolvida nunca é mutada pelos callers
+(confirmado antes de cachear — só blitada por `WORLD_LABELS`).
+
+**Correção 3 — `ui/minimap.py` (`_rebuild_fullmap`, `2268fea`)**: bug
+irmão do já corrigido em `_rebuild_numpy` (14/07/2026) — nunca
+propagado pra cá. `_rebuild_fullmap()` (modo tela cheia dentro de
+BG/Arena) reconvertia `explored` INTEIRO pra numpy
+(`np.array(list(explored))`) toda vez que o cache externo invalidava —
+e isso invalida quase todo tick numa BG ativa, porque `visible` (visão
+compartilhada de time) muda constantemente mesmo com `explored` já
+estável. Medido antes do fix: 22.744ms/chamada com `explored` de 40k
+tiles — bate quase exato com o pico real de 22.721ms do label
+`hud:combat_log`. Fix: cache da conversão por `len(explored)`
+(monotonicamente crescente, mesmo invariante já usado em
+`_rebuild_numpy`), separado da conversão de `visible`. Medido depois:
+7.333ms — redução de ~3x no cenário que mais importa (visible mudando,
+explored estável). Invalidado também em `on_map_load()` (mapa novo =
+`explored` novo, nunca pode reusar o array do mapa anterior mesmo que
+por coincidência tenha o mesmo `len()`).
+
+**Correção 4 — `game.py` (rótulos de profiler, mesma sessão)**: label
+`hud:combat_log` nunca mediu o chat de verdade (achado já catalogado
+em §146/§147, nunca corrigido até agora) — na prática media
+minimapa+quest HUD+buff bar+relógio dia/noite. Além disso, um bloco
+inteiro (`WORLD_LABELS.render`+`FLT.render`+`PROC.render`+
+`WARN.render`+`_draw_low_hp_vignette`+`_draw_online_hud`+
+`_draw_chat_log`) rodava sem NENHUM `_prof_record` — qualquer
+regressão nele era invisível em qualquer relatório/spike do F11.
+Fix: minimapa ganhou rótulo próprio (`rnd:minimap` — o mais provável
+de gerar pico, ver Correção 3); o resto do bloco antigo virou
+`hud:side_widgets` (nome que reflete o que mede de verdade); o bloco
+antes invisível virou 2 rótulos novos — `rnd:world_labels`
+(WORLD_LABELS+FLT, os 2 que escalam com nº de entidades) e
+`hud:chat_and_notices` (o resto, custo fixo pequeno). Mudança é só de
+instrumentação (dentro de `if PROFILE_FRAMES:`) — zero efeito em quem
+joga sem o F12/F11 aberto.
+
+**Testes**: `tests/test_client_ui.py` — `test_build_player_hud_cacheia_por_ratio_quantizado`,
+`test_build_mob_hud_cacheia_por_ratio_quantizado`,
+`test_rebuild_fullmap_reusa_array_de_explored_quando_so_visible_muda`,
+`test_rebuild_fullmap_reconverte_quando_explored_cresce`,
+`test_on_map_load_invalida_cache_de_explored_do_fullmap` (+ os já
+existentes de `tests/test_day_night_light_clusters.py` pra Correção
+1). Revert-to-confirm feito em todas as 4 correções antes de fechar —
+todos os testes novos falham sem o respectivo fix. Suíte relacionada
+(`test_client_ui.py` completo + `test_day_night_light_clusters.py`)
+passando; correção 4 (rótulos) não tem teste automatizado — é só
+renomeação/instrumentação, verificado por leitura cuidadosa do diff +
+`ast.parse` (sem cobertura de teste pro mecanismo de profiling no
+projeto todo).
