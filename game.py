@@ -1563,7 +1563,19 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         """Overlay de performance (F11): FPS + seções mais lentas do último frame.
         `_perf_font` já vem pronto do __init__ (ver comentário lá) — nunca
         lazy-load aqui, senão o custo de SysFont() volta a aparecer como
-        engasgo no primeiro F11 em vez de durante o carregamento."""
+        engasgo no primeiro F11 em vez de durante o carregamento.
+
+        27/09/2026 (achado de arquitetura/qualidade de código da revisão
+        de performance, documento do plano de ação): alocava
+        `pygame.Surface(SRCALPHA)` nova TODO frame com F11 aberto,
+        ignorando a lição que o PRÓPRIO projeto já documentou em
+        `client/chat_handlers.py` (Surface cacheada evita exatamente esse
+        tipo de spike). Como o CONTEÚDO muda todo frame (números de
+        FPS/ms), não dá pra cachear a Surface por conteúdo like
+        `fill_surf` — em vez disso, a Surface cresce e é REAPROVEITADA
+        (nunca encolhe, nunca realoca se o conteúdo do frame atual couber
+        na já existente); `hasattr(..., "render_to")` também sai do loop
+        por linha (o tipo de `_perf_font` não muda em runtime)."""
         fps      = self.clock.get_fps()
         frame_ms = (1000.0 / fps) if fps > 0 else 0.0
         budget   = 1000.0 / FPS
@@ -1579,15 +1591,25 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             col = (255, 100, 60) if ms > budget * 0.5 else (200, 220, 255)
             lines.append((f"  {lbl:<32} {ms:>6.2f}ms", col))
 
+        if not hasattr(self, '_perf_overlay_has_render_to'):
+            self._perf_overlay_has_render_to = hasattr(self._perf_font, "render_to")
+
         pad  = 6
         lh   = self._perf_font.get_linesize()
         w    = max(self._perf_font.size(l)[0] for l, _ in lines) + pad * 2
         h    = lh * len(lines) + pad * 2
-        surf = pygame.Surface((w, h), pygame.SRCALPHA)
-        surf.fill((0, 0, 0, 180))
+        _cached_surf = getattr(self, '_perf_overlay_surf', None)
+        if (_cached_surf is None or _cached_surf.get_width() < w
+                or _cached_surf.get_height() < h):
+            new_w = max(w, _cached_surf.get_width()  if _cached_surf is not None else 0)
+            new_h = max(h, _cached_surf.get_height() if _cached_surf is not None else 0)
+            _cached_surf = pygame.Surface((new_w, new_h), pygame.SRCALPHA)
+            self._perf_overlay_surf = _cached_surf
+        surf = _cached_surf
+        pygame.draw.rect(surf, (0, 0, 0, 180), (0, 0, w, h))
         for i, (txt, col) in enumerate(lines):
             self._perf_font.render_to(surf, (pad, pad + i * lh), txt, col) \
-                if hasattr(self._perf_font, "render_to") \
+                if self._perf_overlay_has_render_to \
                 else surf.blit(self._perf_font.render(txt, False, col), (pad, pad + i * lh))
         # y=110: abaixo do HUD de texto (nome+HP+recurso de classe+aljava,
         # ~90px de altura em client/hud_handlers.py::_draw_hud), ambos
@@ -1599,7 +1621,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # regen de Concentração/"(+Xs)" só é != 0 e mostrada nessas
         # condições, mas a causa raiz é a MESMA sobreposição, com ou sem
         # arqueiro).
-        self.screen.blit(surf, (4, 110))
+        #
+        # area=(0,0,w,h): `surf` pode ser MAIOR que o conteúdo deste
+        # frame específico (cresceu num frame anterior com mais linhas/
+        # texto mais largo e nunca encolhe) — sem isso, um frame com
+        # MENOS conteúdo mostraria pixels "fantasma" de um frame anterior
+        # sobrando fora da área redesenhada acima.
+        self.screen.blit(surf, (4, 110), area=pygame.Rect(0, 0, w, h))
 
     # Cores por time do minimapa em tela cheia da BG (13/08/2026, pedido do
     # usuário) — mesma convenção de faction_id já usada em todo o resto do
@@ -3000,13 +3028,24 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if PROFILE_FRAMES:
                 self._prof_record("ui:perf_overlay", _time.perf_counter() - _ts)
 
-            # Copia surface interna → janela (resolução nativa, sem escala)
+            # Copia surface interna → janela (resolução nativa, sem escala).
+            #
+            # 27/09/2026 (achado da revisão de performance, documento do
+            # plano de ação): o label antigo ("display_flip") somava a
+            # cópia de framebuffer (custo de app, real) COM a espera de
+            # vsync do driver/SO dentro de `pygame.display.flip()` (custo
+            # de plataforma, não otimizável em código) — um pico aqui
+            # podia ser 100% vsync (nada a fazer) ou 100% blit (aí sim
+            # investigar), sem como distinguir. Separado em 2 labels.
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
             self._display.blit(self.screen, (0, 0))
+            if PROFILE_FRAMES:
+                self._prof_record("present:blit", _time.perf_counter() - _ts)
+                _ts = _time.perf_counter()
             pygame.display.flip()
             if PROFILE_FRAMES:
-                self._prof_record("display_flip", _time.perf_counter() - _ts)
+                self._prof_record("present:vsync_flip", _time.perf_counter() - _ts)
                 # Detecção de spike: imprime breakdown imediato se o frame demorou
                 # mais que _SPIKE_THRESHOLD_S — reduzido de 50ms pra 22ms (budget
                 # é 16.7ms a 60 FPS; 50ms só pegava travadas grandes, não os

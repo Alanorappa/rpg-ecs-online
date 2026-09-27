@@ -5562,6 +5562,69 @@ def test_day_night_clock_hud_nao_desenha_em_mapa_fechado():
     )
 
 
+def _make_perf_overlay_fixture():
+    class _Clock:
+        def get_fps(self):
+            return 60.0
+
+    class _Stub:
+        pass
+
+    obj = _Stub()
+    obj.clock = _Clock()
+    obj._prof_frame_accum = {"rnd:RenderSystem": 0.001109, "rnd:DayNightSystem": 0.000412}
+    obj._perf_font = pygame.font.Font(None, 13)
+    obj.screen = pygame.Surface((400, 300))
+    return obj
+
+
+def test_draw_perf_overlay_reusa_surface_cacheada_entre_frames():
+    """27/09/2026, achado da revisão de performance (documento do plano
+    de ação): _draw_perf_overlay alocava Surface SRCALPHA nova todo
+    frame com F11 aberto — ignorava a lição que o próprio projeto já
+    documentou (`client/chat_handlers.py::fill_surf`). Como o conteúdo
+    (números de FPS/ms) muda todo frame, não dá pra cachear por
+    conteúdo — em vez disso, a Surface cresce e é REAPROVEITADA."""
+    import game
+    fx = _make_perf_overlay_fixture()
+    game.GameEngine._draw_perf_overlay(fx)
+    surf_first = fx._perf_overlay_surf
+    assert surf_first is not None
+
+    game.GameEngine._draw_perf_overlay(fx)
+    assert fx._perf_overlay_surf is surf_first, \
+        "deveria reusar a MESMA Surface entre frames com conteúdo de tamanho parecido"
+
+
+def test_draw_perf_overlay_hasattr_render_to_resolvido_1_vez_por_instancia():
+    import game
+    fx = _make_perf_overlay_fixture()
+    game.GameEngine._draw_perf_overlay(fx)
+    assert hasattr(fx, "_perf_overlay_has_render_to")
+
+
+def test_draw_perf_overlay_conteudo_menor_nao_deixa_pixel_fantasma():
+    """Frame com muitas seções seguido de um frame com poucas não pode
+    deixar sobrar texto/fundo do frame anterior visível na tela — a
+    Surface cacheada nunca encolhe, mas o BLIT final tem que se limitar
+    à área real do conteúdo atual."""
+    import game
+    fx = _make_perf_overlay_fixture()
+    fx._prof_frame_accum = {f"sistema_{i}": 0.001 for i in range(12)}
+    game.GameEngine._draw_perf_overlay(fx)
+    big_w, big_h = fx._perf_overlay_surf.get_size()
+
+    fx.screen.fill((10, 10, 10))
+    fx._prof_frame_accum = {}
+    game.GameEngine._draw_perf_overlay(fx)
+
+    assert fx._perf_overlay_surf.get_size() == (big_w, big_h), \
+        "Surface cacheada nao deveria encolher"
+    px = fx.screen.get_at((4 + big_w - 1, 110 + big_h - 1))
+    assert tuple(px)[:3] == (10, 10, 10), \
+        "pixel fora da area real do frame menor nao deveria ter sido tocado"
+
+
 def test_load_ambient_zones_nao_crasha_antes_dos_sistemas_de_dia_noite_existirem():
     """Bug real relatado pelo usuário 23/09/2026 (ver PROBLEMAS_ARQUITETURA.md
     §207): AttributeError ao abrir o cliente — GameEngine::__init__() chama
