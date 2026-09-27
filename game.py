@@ -496,6 +496,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # _load_ambient_zones, PROBLEMAS_ARQUITETURA.md §207).
         self._day_night_system.map_affected    = self._day_night_affected
         self._day_night_clock_hud.map_affected = self._day_night_affected
+        # Pré-aquece o gradiente de luz de ITEM (lanterna/lampião) 1x no
+        # carregamento (27/09/2026, achado de playtest) — independe de
+        # mapa/tilemap (é dado do catálogo de itens), por isso roda aqui
+        # 1x só, nunca em _load_ambient_zones()/troca de mapa como os
+        # clusters de luz ESTÁTICA abaixo.
+        self._day_night_system.warm_player_light_gradients()
         # Mesmo racional acima, agora pros clusters de luz estática
         # (27/09/2026) — _load_ambient_zones() não tinha _day_night_system
         # ainda pro mapa inicial, cobre aqui.

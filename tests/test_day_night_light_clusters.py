@@ -265,5 +265,71 @@ class TestGradientesVetorizadosBatemComOLoopOriginal(unittest.TestCase):
             surf_numpy, surf_loop, radius_px * 2)
 
 
+class TestWarmPlayerLightGradients(unittest.TestCase):
+    """27/09/2026, achado de playtest pós-plano-de-performance: mesmo
+    vetorizado com numpy, o cache-miss do gradiente de luz de ITEM
+    (lanterna/lampião) ainda custa ~12-18ms na PRIMEIRA vez que um
+    raio/intensidade aparece — porque é um array grande (ex: 448×448
+    pro raio real do lampião), pago no momento em que o jogador liga a
+    luz. warm_player_light_gradients() pré-preenche esse cache no
+    carregamento, lendo o catálogo real de itens (nunca hardcoding
+    "lampiao")."""
+
+    def test_warm_preenche_cache_pro_raio_intensidade_real_do_lampiao(self):
+        from content.item_table import ITEMS
+        lampiao = ITEMS["lampiao"]()
+        radius_px = round(lampiao.light_source["radius_tiles"] * TILE_SIZE)
+        intensity_pct = round(lampiao.light_source["intensity_pct"])
+
+        dns = DayNightSystem(World(), -1)
+        self.assertEqual(dns._light_gradient_cache, {})
+        self.assertEqual(dns._warm_glow_cache, {})
+
+        dns.warm_player_light_gradients()
+
+        self.assertIn((radius_px, intensity_pct), dns._light_gradient_cache)
+        self.assertIn(radius_px, dns._warm_glow_cache)
+
+    def test_warm_evita_o_cache_miss_na_hora_de_ligar_a_luz(self):
+        """Prova que o pré-aquecimento é USADO de fato: depois de
+        warm_player_light_gradients(), pedir o MESMO gradiente de novo
+        (como o render() faz quando a luz é ligada) tem que devolver o
+        objeto JÁ CACHEADO, sem gerar um novo — não só "existir uma
+        chave parecida"."""
+        from content.item_table import ITEMS
+        lampiao = ITEMS["lampiao"]()
+        radius_px = round(lampiao.light_source["radius_tiles"] * TILE_SIZE)
+        intensity_pct = round(lampiao.light_source["intensity_pct"])
+
+        dns = DayNightSystem(World(), -1)
+        dns.warm_player_light_gradients()
+        cached_add = dns._light_gradient_cache[(radius_px, intensity_pct)]
+        cached_glow = dns._warm_glow_cache[radius_px]
+
+        # mesma chamada que o render() faz quando a luz do jogador está
+        # ligada (ver bloco "player_light" de DayNightSystem.render())
+        self.assertIs(dns._get_light_add_gradient(radius_px, intensity_pct), cached_add)
+        self.assertIs(dns._get_warm_glow_gradient(radius_px), cached_glow)
+
+    def test_warm_nao_duplica_trabalho_pra_itens_com_o_mesmo_raio_intensidade(self):
+        """Catálogo pode crescer com mais itens de luz no futuro — se 2
+        tiverem o mesmo (raio, intensidade), o pré-aquecimento não deve
+        gerar o gradiente 2x (desperdício silencioso, mesmo raciocínio
+        do cluster de luz de mapa)."""
+        dns = DayNightSystem(World(), -1)
+        calls = []
+        orig = dns._get_light_add_gradient
+
+        def _spy(radius_px, intensity_pct):
+            calls.append((radius_px, intensity_pct))
+            return orig(radius_px, intensity_pct)
+
+        dns._get_light_add_gradient = _spy
+        dns.warm_player_light_gradients()
+
+        self.assertEqual(len(calls), len(set(calls)),
+            f"gradiente pedido mais de 1x pra mesma (raio, intensidade): {calls}")
+
+
 if __name__ == "__main__":
     unittest.main()

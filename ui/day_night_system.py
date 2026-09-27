@@ -540,6 +540,41 @@ class DayNightSystem(System):
                 "rect": rect, "add_surf": add_surf, "glow_surf": glow_surf,
             })
 
+    def warm_player_light_gradients(self) -> None:
+        """Pré-aquece o cache de gradiente (27/09/2026, achado de
+        playtest pós-plano-de-performance) pra toda combinação
+        (raio, intensidade) de luz de ITEM já definida no catálogo —
+        hoje só `lampiao` (`content/item_table.py`), mas cobre qualquer
+        item de luz futuro automaticamente, sem precisar tocar este
+        método de novo.
+
+        Luz de item é DINÂMICA (não passa por build_static_light_clusters,
+        que só resolve luz de MAPA) — sem pré-aquecer, o cache-miss do
+        gradiente só acontece na hora em que o jogador liga a luz de
+        verdade (`_get_light_add_gradient`/`_get_warm_glow_gradient`),
+        e mesmo vetorizado com numpy isso ainda custa ~12-18ms pra um
+        raio como o do lampião (7 tiles → array 448×448) — confirmado
+        por medição direta. Chamado 1x no carregamento do jogo (mesmo
+        lugar/momento de `build_static_light_clusters`), nunca por
+        frame — o custo é o mesmo, só que pago onde não é sentido."""
+        from content.item_table import ITEMS
+        seen_radius_intensity: set[tuple[int, int]] = set()
+        for factory in ITEMS.values():
+            item = factory()
+            light = getattr(item, "light_source", None)
+            if not light:
+                continue
+            radius_px = round(light["radius_tiles"] * TILE_SIZE)
+            intensity_pct = round(light["intensity_pct"])
+            if radius_px <= 0:
+                continue
+            key = (radius_px, intensity_pct)
+            if key in seen_radius_intensity:
+                continue
+            seen_radius_intensity.add(key)
+            self._get_light_add_gradient(radius_px, intensity_pct)
+            self._get_warm_glow_gradient(radius_px)
+
     def render(self, world_objects: list | None = None,
               camera_offset_x: float = 0, camera_offset_y: float = 0) -> None:
         if self.world_surf is None:
