@@ -22958,3 +22958,50 @@ decididos: 2 de prioridade alta + 3 de prioridade média + 3 de baixa
 corrigidos (1 sub-item da média — mesclar as 2 varreduras do
 TileRenderSystem — deferido de propósito, ver §209), 2 "sem ação"
 confirmados como já corretos.
+
+## 211. Playtest pós-§209/§210 revela achado novo — cache-miss do gradiente de luz de item ainda custa ~12-18ms na 1ª vez (27/09/2026)
+
+Depois de fechar o plano do §209/§210, o usuário jogou uma sessão real
+(~7-8min, `PROFILE_FRAMES` ativo) e comparou o log novo contra o
+baseline do documento publicado. 8 dos 10 sistemas confirmaram a
+previsão dos 3 agentes (picos caindo 54-89% nos itens de cache
+aplicados); 2 anomalias isoladas em `transform_scale`/`hud:hotbar`
+foram rastreadas pelo `[SPIKE]` breakdown do próprio log até um
+engasgo externo de vsync/driver no mesmo frame — não regressão dos
+fixes. Comparativo completo publicado no mesmo documento do §209.
+
+**Achado real, reportado pelo usuário**: "ao ligar a lanterna do
+personagem o consumo do sistema de iluminação sobe". Medição direta
+confirmou — a vetorização numpy do §209 (item 2 do plano) deixou o
+CÁLCULO do gradiente rápido, mas o cache-miss da PRIMEIRA vez que um
+(raio, intensidade) aparece ainda tem um piso: pro raio real do
+lampião (7 tiles → array 448×448), `_get_light_add_gradient` +
+`_get_warm_glow_gradient` custam ~12-18ms medidos isoladamente — bate
+com o `13.5ms` de `rnd:DayNightSystem` no exato frame do
+`PLAYER_LIGHT_UPDATE`, visto no log. Luz de MAPA (estática) nunca sofre
+disso — já é toda pré-computada em `build_static_light_clusters()`
+(§209) no carregamento; só luz de ITEM (dinâmica) paga esse custo, e
+paga exatamente no momento em que o jogador aperta o botão.
+
+**Fix**: `DayNightSystem.warm_player_light_gradients()`
+(`ui/day_night_system.py`) — varre `content/item_table.py::ITEMS`,
+acha todo item com `light_source` definido (hoje só `lampiao`) e
+pré-chama `_get_light_add_gradient`/`_get_warm_glow_gradient` pra cada
+combinação (raio, intensidade) única do catálogo. Chamado 1x em
+`game.py::__init__`, no mesmo lugar/momento da chamada inicial de
+`build_static_light_clusters` — **nunca** em `_load_ambient_zones()`
+(troca de mapa), porque a luz de item não depende de mapa, é dado
+puro do catálogo. Item de luz futuro entra na cobertura automaticamente,
+sem precisar tocar este método de novo (mesmo princípio de "ponto único
+de verdade" já usado pro resto do sistema de luz).
+
+**Testes** (`tests/test_day_night_light_clusters.py::
+TestWarmPlayerLightGradients`): cache populado com o (raio,
+intensidade) real do lampião lido do catálogo; a chamada seguinte de
+`_get_light_add_gradient`/`_get_warm_glow_gradient` (a mesma que
+`render()` faz ao ligar a luz) devolve o objeto JÁ CACHEADO (`assertIs`,
+não só "existe uma entrada parecida"); nenhuma combinação repetida gera
+trabalho duplicado. Revert-to-confirm: 2 dos 3 testes falham sem a
+chamada (o 3º, sobre não-duplicação, não é sensível a essa reversão
+por natureza). Suíte `test_day_night_light_clusters.py` +
+`test_client_ui.py` completas passando (243 testes).
