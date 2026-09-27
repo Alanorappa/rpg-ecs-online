@@ -25,6 +25,28 @@ from ui.ui_sizes import UI
 # independentemente, com shapes diferentes).
 from engine.world_systems import _TALENT_SKILL_REQS
 
+# Forma (4 retângulos de borda) da vinheta de HP baixo — cacheada por
+# (largura, altura, espessura da borda), SEMPRE opaca (alpha=255 nos
+# pixels desenhados); a intensidade real é aplicada via
+# `Surface.set_alpha()` no momento do blit, não recriando a Surface
+# (27/09/2026, ver docstring de HotbarHandlers._draw_low_hp_vignette).
+_LOW_HP_VIGNETTE_CACHE: dict = {}
+
+
+def _low_hp_vignette_shape(sw: int, sh: int, bw: int) -> "pygame.Surface":
+    key = (sw, sh, bw)
+    cached = _LOW_HP_VIGNETTE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
+    col = (200, 20, 20, 255)
+    pygame.draw.rect(surf, col, (0,       0,       sw, bw))
+    pygame.draw.rect(surf, col, (0,       sh - bw, sw, bw))
+    pygame.draw.rect(surf, col, (0,       0,       bw, sh))
+    pygame.draw.rect(surf, col, (sw - bw, 0,       bw, sh))
+    _LOW_HP_VIGNETTE_CACHE[key] = surf
+    return surf
+
 
 class HotbarHandlers:
 
@@ -164,7 +186,19 @@ class HotbarHandlers:
     # rage_cost e proc_attr são agora lidos diretamente do objeto Skill (via skill_config.py)
 
     def _draw_low_hp_vignette(self) -> None:
-        """Vinheta vermelha pulsante na borda da tela quando HP < 30%."""
+        """Vinheta vermelha pulsante na borda da tela quando HP < 30%.
+
+        27/09/2026 (achado de qualidade de código da revisão de
+        performance, documento do plano de ação): alocava
+        `pygame.Surface(SRCALPHA)` do TAMANHO DA TELA INTEIRA todo
+        frame com HP baixo, diferente do resto deste mesmo arquivo, que
+        já usa `fill_surf` (cache) em todo outro overlay. Como o alpha
+        muda a cada frame (pulso senoidal), `fill_surf` (cache por RGBA
+        exato) não serve direto — a FORMA (4 retângulos de borda) é
+        cacheada à parte, opaca, e a intensidade é aplicada via
+        `Surface.set_alpha()` no blit (blend NORMAL, ponderado por
+        alpha de superfície de verdade — mesma técnica já documentada
+        em `ui/day_night_system.py::_get_warm_glow_gradient`)."""
         from engine.components import CombatStats as _CS_V
         cs = self.world.get_component(self.player_entity, _CS_V)
         if not cs or cs.max_hp <= 0:
@@ -184,12 +218,8 @@ class HotbarHandlers:
             return
         sw, sh = self.screen.get_width(), self.screen.get_height()
         bw = 28
-        surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
-        col = (200, 20, 20, alpha)
-        pygame.draw.rect(surf, col, (0,       0,       sw, bw))
-        pygame.draw.rect(surf, col, (0,       sh - bw, sw, bw))
-        pygame.draw.rect(surf, col, (0,       0,       bw, sh))
-        pygame.draw.rect(surf, col, (sw - bw, 0,       bw, sh))
+        surf = _low_hp_vignette_shape(sw, sh, bw)
+        surf.set_alpha(alpha)
         self.screen.blit(surf, (0, 0))
 
     def _draw_hotbar(self):

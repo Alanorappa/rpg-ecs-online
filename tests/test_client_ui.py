@@ -4163,6 +4163,102 @@ def _make_hotbar_click_fixture(skill_id="skill_teste_generico"):
     return _Fixture()
 
 
+def _make_low_hp_vignette_fixture(hp_ratio: float, screen_size=(200, 150)):
+    from engine.world import World
+    from engine.components import CombatStats
+    from client.hotbar_handlers import HotbarHandlers
+
+    world = World()
+    player = world.create_entity()
+    cs = CombatStats()
+    cs.max_hp = 100
+    cs.current_hp = max(0.0, hp_ratio) * 100
+    world.add_component(player, cs)
+
+    class _Fixture(HotbarHandlers):
+        def __init__(self):
+            self.world = world
+            self.player_entity = player
+            self.screen = pygame.Surface(screen_size, pygame.SRCALPHA)
+
+    return _Fixture()
+
+
+def test_low_hp_vignette_reusa_forma_cacheada_entre_intensidades_diferentes():
+    """27/09/2026, achado de qualidade de código da revisão de
+    performance: _draw_low_hp_vignette alocava Surface do TAMANHO DA
+    TELA todo frame com HP baixo. Agora a FORMA (4 retângulos opacos) é
+    cacheada por (largura, altura, espessura) — só a intensidade
+    (alpha, que pulsa a cada frame) muda via set_alpha(), sem realocar."""
+    import client.hotbar_handlers as hb_mod
+    hb_mod._LOW_HP_VIGNETTE_CACHE.clear()
+
+    shape_a = hb_mod._low_hp_vignette_shape(200, 150, 28)
+    shape_b = hb_mod._low_hp_vignette_shape(200, 150, 28)
+    assert shape_a is shape_b, "mesmo tamanho de tela deveria reusar a MESMA forma cacheada"
+    assert len(hb_mod._LOW_HP_VIGNETTE_CACHE) == 1
+
+
+def test_draw_low_hp_vignette_usa_de_fato_a_forma_cacheada():
+    """Diferente do teste acima (só testa o helper isolado): este chama
+    o MÉTODO real (_draw_low_hp_vignette) e confirma que ele de fato
+    passa pelo cache — pega regressão se alguém reintroduzir a alocação
+    direta de Surface (que produz pixel idêntico, então um teste só de
+    pixel não pegaria essa regressão)."""
+    import client.hotbar_handlers as hb_mod
+    hb_mod._LOW_HP_VIGNETTE_CACHE.clear()
+
+    fx = _make_low_hp_vignette_fixture(hp_ratio=0.10, screen_size=(200, 150))
+    fx._draw_low_hp_vignette()
+    assert len(hb_mod._LOW_HP_VIGNETTE_CACHE) == 1, \
+        "_draw_low_hp_vignette deveria ter passado pelo cache de forma"
+
+    fx._draw_low_hp_vignette()
+    assert len(hb_mod._LOW_HP_VIGNETTE_CACHE) == 1, \
+        "2ª chamada com o mesmo tamanho de tela nao deveria criar entrada nova"
+
+
+def test_low_hp_vignette_pixel_identico_ao_preenchimento_direto_antigo():
+    """Confirma que a técnica nova (forma opaca cacheada + set_alpha no
+    blit) produz o MESMO resultado, pixel a pixel, do preenchimento
+    direto antigo (alpha já no pixel) — nenhuma diferença visual."""
+    import client.hotbar_handlers as hb_mod
+    hb_mod._LOW_HP_VIGNETTE_CACHE.clear()
+
+    sw, sh, bw = 200, 150, 28
+    fx = _make_low_hp_vignette_fixture(hp_ratio=0.10, screen_size=(sw, sh))
+    base_color = (50, 60, 70)
+    fx.screen.fill(base_color)
+
+    import pygame as _pg
+    orig_ticks = _pg.time.get_ticks
+    _pg.time.get_ticks = lambda: 0   # pulso determinístico (sin(0)+1)*0.5 = 0.5
+    try:
+        fx._draw_low_hp_vignette()
+    finally:
+        _pg.time.get_ticks = orig_ticks
+
+    # reconstrói o resultado ESPERADO com o preenchimento direto antigo,
+    # usando a MESMA fórmula de alpha do método (ratio=0.10 -> intensity
+    # = 1 - 0.10/0.30, pulse fixo em 0.5 via ticks mockado acima).
+    ratio = 0.10
+    intensity = 1.0 - (ratio / 0.30)
+    alpha = int(0.5 * intensity * 190)
+    expected = pygame.Surface((sw, sh)); expected.fill(base_color)
+    overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
+    col = (200, 20, 20, alpha)
+    pygame.draw.rect(overlay, col, (0, 0, sw, bw))
+    pygame.draw.rect(overlay, col, (0, sh - bw, sw, bw))
+    pygame.draw.rect(overlay, col, (0, 0, bw, sh))
+    pygame.draw.rect(overlay, col, (sw - bw, 0, bw, sh))
+    expected.blit(overlay, (0, 0))
+
+    for y in range(sh):
+        for x in range(sw):
+            assert fx.screen.get_at((x, y)) == expected.get_at((x, y)), \
+                f"pixel ({x},{y}) diferente do esperado"
+
+
 def _slot0_center(fx) -> tuple:
     """Centro do rect do slot 0 — mesma geometria de _handle_hotbar_click
     (1 skill ocupada: n_occ=1)."""
