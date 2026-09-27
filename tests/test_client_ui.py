@@ -4883,6 +4883,43 @@ def _make_day_night_world(instance_active: bool = False):
     return world, player, sys
 
 
+def _build_single_static_light_cluster(sys, light_source, tile_size=32):
+    """Registra 1 tile luminoso sintético num object_matrix mínimo e
+    chama build_static_light_clusters() de verdade (27/09/2026 — luz de
+    objeto de MAPA agora vem sempre de cluster pré-composto, não mais de
+    world_objects "avulso" — ver DayNightSystem.build_static_light_clusters).
+    Devolve (camera_offset_x, camera_offset_y) escolhido de propósito
+    pra fazer o centro da luz cair EXATAMENTE em screen (150, 150) + off —
+    mesmos pontos de checagem de pixel já usados antes desta mudança."""
+    from engine.tileset import TileType
+    from engine.entity_factory import create_tilemap
+    from engine.components import Tilemap
+    import engine.tileset as tileset_mod
+
+    rx, ry = 10, 10
+    fake_char = "\x01"   # char de teste, nunca usado por catálogo real
+    fake_tile = TileType(name="TesteLuz", color=(0, 0, 0), light_source=light_source)
+    orig_mapping = dict(tileset_mod.OBJECT_MAPPING)
+    tileset_mod.OBJECT_MAPPING[fake_char] = fake_tile
+    try:
+        objects = [["."] * (rx + 2) for _ in range(ry + 2)]
+        objects[ry][rx] = fake_char
+        terrain = ["." * (rx + 2) for _ in range(ry + 2)]
+        create_tilemap(sys.world, terrain, objects, None)
+        _, tilemap_comp = sys.world.get_first(Tilemap)
+        sys.build_static_light_clusters(tilemap_comp)
+    finally:
+        tileset_mod.OBJECT_MAPPING.clear()
+        tileset_mod.OBJECT_MAPPING.update(orig_mapping)
+
+    # world_x = rx*tile_size ; world_y = (ry+1)*tile_size - total_h (total_h=tile_size, overlay_height=0)
+    world_x = rx * tile_size
+    world_y = (ry + 1) * tile_size - tile_size
+    cam_x = world_x - 150
+    cam_y = world_y - 150
+    return cam_x, cam_y
+
+
 def test_day_night_anchors_editaveis_afetam_a_cor():
     """Editor de âncoras do F12 (21/09/2026) — mudar a âncora da noite
     muda o que day_night_color() devolve na meia-noite, sem precisar
@@ -5020,16 +5057,13 @@ def test_day_night_render_mapa_fechado_lampiao_acende_mesmo_fora_da_noite_real()
     world, player, sys = _make_day_night_world(instance_active=False)
     sys.map_affected = False
     sys.world_surf.fill((10, 10, 10))
+    cam_x, cam_y = _build_single_static_light_cluster(sys, (44, 41, 5, 6, 75, 3))
     orig_color = dns.day_night_color
     orig_is_night = dns.is_night
     dns.day_night_color = lambda now=None: (255, 255, 255, 0)   # dia pleno
     dns.is_night = lambda now=None: False                       # dia pleno, não é noite de verdade
-    objs = [{
-        "screen_x": 150, "screen_y": 150,
-        "light_source": (44, 41, 5, 6, 75, 3),
-    }]
     try:
-        sys.render(world_objects=objs)
+        sys.render(world_objects=[], camera_offset_x=cam_x, camera_offset_y=cam_y)
     finally:
         dns.day_night_color = orig_color
         dns.is_night = orig_is_night
@@ -5232,16 +5266,13 @@ def test_day_night_luz_de_lampiao_fura_o_escurecimento():
     world, player, sys = _make_day_night_world(instance_active=False)
     base_color = (200, 180, 160)
     sys.world_surf.fill(base_color)
+    cam_x, cam_y = _build_single_static_light_cluster(sys, (44, 41, 5, 6, 75, 3))
     orig_color = dns.day_night_color
     orig_is_night = dns.is_night
     dns.day_night_color = lambda now=None: (20, 25, 60, 150)
     dns.is_night = lambda now=None: True   # luz de objeto é binária (22/09/2026) — só liga na fase Noite
-    objs = [{
-        "screen_x": 150, "screen_y": 150,
-        "light_source": (44, 41, 5, 6, 75, 3),   # off_x,off_y,w,h,intensidade%,raio_tiles
-    }]
     try:
-        sys.render(world_objects=objs)
+        sys.render(world_objects=[], camera_offset_x=cam_x, camera_offset_y=cam_y)
     finally:
         dns.day_night_color = orig_color
         dns.is_night = orig_is_night
@@ -5355,26 +5386,42 @@ def test_load_ambient_zones_nao_crasha_antes_dos_sistemas_de_dia_noite_existirem
     ORDEM EXATA da chamada real (unbound method numa Stub sem os 2
     atributos) — não um cenário sintético inventado."""
     import game
+    from engine.world import World
+    from engine.entity_factory import create_tilemap
 
     class _Stub:
         pass
 
     obj = _Stub()
     # 1ª chamada real: dentro de _load_map_and_entities(), antes dos 2
-    # sistemas existirem — não pode levantar AttributeError.
+    # sistemas existirem — não pode levantar AttributeError. self.world/
+    # self.tilemap_entity TAMBÉM ainda não existiriam neste ponto real
+    # (só nascem quando create_tilemap roda, LOGO ANTES desta chamada no
+    # fluxo de verdade — ver game.py:709/714) — omitidos de propósito
+    # aqui pra provar que o guard `if _dns is not None` (27/09/2026,
+    # clusters de luz estática) já cobre esse caso sem nunca tocar
+    # self.world/self.tilemap_entity.
     game.GameEngine._load_ambient_zones(obj, {"day_night_affected": False})
     assert obj._day_night_affected is False
 
     # Simula a construção dos 2 sistemas logo depois (__init__ real reaplica
     # o valor já calculado nesse ponto — ver comentário ao lado da
-    # construção em GameEngine.__init__).
+    # construção em GameEngine.__init__). A partir daqui self.world/
+    # self.tilemap_entity JÁ existiriam de verdade (create_tilemap sempre
+    # roda antes) — precisa deles pro cluster de luz estática (27/09/2026).
     class _FakeSys:
         map_affected = True
+        def build_static_light_clusters(self, tilemap):
+            pass
 
     obj._day_night_system    = _FakeSys()
     obj._day_night_clock_hud = _FakeSys()
     obj._day_night_system.map_affected    = obj._day_night_affected
     obj._day_night_clock_hud.map_affected = obj._day_night_affected
+    obj.world = World()
+    terrain = ["." * 5 for _ in range(5)]
+    objects = [["."] * 5 for _ in range(5)]
+    obj.tilemap_entity = create_tilemap(obj.world, terrain, objects, None)
     assert obj._day_night_system.map_affected is False
     assert obj._day_night_clock_hud.map_affected is False
 

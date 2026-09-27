@@ -496,6 +496,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # _load_ambient_zones, PROBLEMAS_ARQUITETURA.md §207).
         self._day_night_system.map_affected    = self._day_night_affected
         self._day_night_clock_hud.map_affected = self._day_night_affected
+        # Mesmo racional acima, agora pros clusters de luz estática
+        # (27/09/2026) — _load_ambient_zones() não tinha _day_night_system
+        # ainda pro mapa inicial, cobre aqui.
+        _tilemap_comp_init = self.world.get_component(self.tilemap_entity, Tilemap)
+        if _tilemap_comp_init is not None:
+            self._day_night_system.build_static_light_clusters(_tilemap_comp_init)
         self._quest_system  = QuestSystem(self.world, self.player_entity)
         from ui.buff_bar import BuffBar
         self._buff_bar = BuffBar(self.world, self.player_entity)
@@ -825,6 +831,17 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         _dnc = getattr(self, "_day_night_clock_hud", None)
         if _dnc is not None:
             _dnc.map_affected = self._day_night_affected
+
+        # Clusters de luz estática (27/09/2026) — 1x por troca de mapa,
+        # nunca por frame (ver DayNightSystem.build_static_light_clusters).
+        # Mesmo getattr-guard do bloco acima: a 1ª chamada (dentro de
+        # __init__, antes de _day_night_system existir) não tem nada pra
+        # construir ainda — __init__ chama de novo depois de construir o
+        # sistema, cobrindo o mapa inicial.
+        if _dns is not None:
+            _tilemap_comp = self.world.get_component(self.tilemap_entity, Tilemap)
+            if _tilemap_comp is not None:
+                _dns.build_static_light_clusters(_tilemap_comp)
 
         # Pré-carrega todos os sons das zonas para evitar freeze na primeira entrada
         all_stingers: list[str] = []
@@ -2596,11 +2613,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     _lit_world_objs = _world_objs + _extra_lights
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
-                self._day_night_system.render(world_objects=_lit_world_objs)
+                self._day_night_system.render(world_objects=_lit_world_objs,
+                                              camera_offset_x=cam_x, camera_offset_y=cam_y)
                 self._prof_record(f"rnd:{type(self._day_night_system).__name__}",
                                   _time.perf_counter() - _ts)
             else:
-                self._day_night_system.render(world_objects=_lit_world_objs)
+                self._day_night_system.render(world_objects=_lit_world_objs,
+                                              camera_offset_x=cam_x, camera_offset_y=cam_y)
 
             # Morto/espírito: grayscale no zoom_surf menor (pré-scale) — ~44% menos
             # pixels a zoom=1.5 vs aplicar na tela cheia (853×480 vs 1280×720).

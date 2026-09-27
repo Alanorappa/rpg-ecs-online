@@ -33,7 +33,7 @@ from __future__ import annotations
 import time
 import pygame
 
-from engine.tileset import TILE_SIZE
+from engine.tileset import TILE_SIZE, OBJECT_MAPPING
 from engine.world_systems import System
 from ui.ui_components import InstanceInventoryUIState
 
@@ -314,6 +314,13 @@ class DayNightSystem(System):
         # gradiente aditivo acima, dá pra escalar a intensidade no BLIT,
         # sem precisar assar ela nos pixels no momento de gerar.
         self._warm_glow_cache: dict[int, "pygame.Surface"] = {}
+        # Clusters de luz ESTÁTICA do mapa (lampião/tocha etc.) — 1 Surface
+        # pré-composta por cluster inteiro, construída 1x em
+        # build_static_light_clusters() (chamado por game.py a cada troca
+        # de mapa), nunca recalculada por frame. Ver docstring do método
+        # (27/09/2026 — vilarejo com 20+ lampiões agrupados custava
+        # ~6-8ms/frame desenhando cada luz separada TODO frame).
+        self._static_clusters: list[dict] = []
 
     def _get_light_add_gradient(self, radius_px: int, intensity_pct: int) -> "pygame.Surface":
         """Gradiente radial ADITIVO cacheado por (raio, intensidade) —
@@ -370,7 +377,125 @@ class DayNightSystem(System):
         self._warm_glow_cache[radius_px] = surf
         return surf
 
-    def render(self, world_objects: list | None = None) -> None:
+    def build_static_light_clusters(self, tilemap) -> None:
+        """Varre o `object_matrix` INTEIRO do mapa (1x por troca de mapa,
+        chamado por game.py::_load_ambient_zones — nunca no hot path por
+        frame) procurando tiles com `TileType.light_source`, agrupa os que
+        se alcançam num mesmo cluster e PRÉ-COMPÕE uma única Surface por
+        cluster com a soma de todas as luzes daquele grupo (27/09/2026,
+        pedido do usuário).
+
+        Motivo: um vilarejo com 20+ lampiões agrupados custava ~6-8ms de
+        frame (medido com profiling antes de mexer aqui) porque
+        `render()` desenhava cada luz separada TODO frame — o custo de
+        somar N luzes sobrepostas (N blits com blend aditivo, cada um
+        proporcional à própria área) é o mesmo esteja a câmera parada ou
+        andando, já que as posições nunca mudam. Como a posição de um
+        lampião é ESTÁTICA (só a câmera se move), esse custo só precisa
+        ser pago 1 VEZ — aqui, no carregamento do mapa — e não mais a
+        cada frame: `render()` passa a fazer só 1 blit por cluster
+        VISÍVEL (não 1 por luz).
+
+        Luz de ITEM DE JOGADOR (dinâmica — se move com quem carrega)
+        fica de fora deste mecanismo de propósito, resolvida por luz em
+        `render()` como sempre foi — nunca mais que 1-2 simultâneas,
+        nunca foi o gargalo medido."""
+        self._static_clusters = []
+        tile_size = tilemap.tile_size
+        lights: list[tuple[float, float, int, float]] = []   # (cx, cy, radius_px, intensity_pct)
+        for ry, row in enumerate(tilemap.object_matrix):
+            for rx, obj_char in enumerate(row):
+                if not obj_char or obj_char == ".":
+                    continue
+                tile_type = OBJECT_MAPPING.get(obj_char)
+                if tile_type is None or tile_type.light_source is None:
+                    continue
+                # Mesma fórmula de âncora/altura de
+                # ui/tile_render_system.py::get_world_objects() (linhas
+                # ~508-534), só que em coordenadas de MUNDO (sem câmera) —
+                # manter em sincronia se aquele cálculo mudar.
+                spr_px_h = tile_type.sprite_px_h
+                total_h = spr_px_h if spr_px_h > 0 else tile_size + tile_type.overlay_height
+                anchor_y = (ry + 1) * tile_size
+                world_x = rx * tile_size
+                world_y = anchor_y - total_h
+                off_x, off_y, lw, lh, intensity_pct, radius_tiles = tile_type.light_source
+                cx = world_x + off_x + lw / 2
+                cy = world_y + off_y + lh / 2
+                radius_px = radius_tiles * tile_size
+                if radius_px <= 0:
+                    continue
+                lights.append((cx, cy, radius_px, intensity_pct))
+
+        if not lights:
+            return
+
+        # União por alcance (union-find) — 2 luzes cujos círculos se
+        # tocam (+ folga de 1 tile) entram no mesmo cluster. O(n²) aqui é
+        # desprezível: catálogo de luzes por mapa é dezenas, não milhares,
+        # e isto roda 1x só por troca de mapa.
+        n = len(lights)
+        parent = list(range(n))
+
+        def find(i: int) -> int:
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def union(i: int, j: int) -> None:
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[ri] = rj
+
+        merge_padding_px = tile_size
+        for i in range(n):
+            xi, yi, ri_, _ = lights[i]
+            for j in range(i + 1, n):
+                xj, yj, rj_, _ = lights[j]
+                dist = ((xi - xj) ** 2 + (yi - yj) ** 2) ** 0.5
+                if dist <= ri_ + rj_ + merge_padding_px:
+                    union(i, j)
+
+        groups: dict[int, list[int]] = {}
+        for idx in range(n):
+            groups.setdefault(find(idx), []).append(idx)
+
+        for member_idxs in groups.values():
+            members = [lights[i] for i in member_idxs]
+            x0 = min(cx - r for cx, cy, r, _i in members)
+            y0 = min(cy - r for cx, cy, r, _i in members)
+            x1 = max(cx + r for cx, cy, r, _i in members)
+            y1 = max(cy + r for cx, cy, r, _i in members)
+            rect = pygame.Rect(int(x0), int(y0), int(x1 - x0), int(y1 - y0))
+            if rect.width <= 0 or rect.height <= 0:
+                continue
+
+            # Camada ADITIVA (mesma técnica de sempre, ver
+            # _get_light_add_gradient) — composta 1x, nunca mais.
+            add_surf = pygame.Surface((rect.width, rect.height))
+            add_surf.fill((0, 0, 0))
+            # Camada de brilho quente — alpha real (SRCALPHA), também
+            # composta 1x. Cada luz aplica set_alpha NUMA CÓPIA da
+            # gradiente cacheada (nunca muta o cache compartilhado, mesma
+            # disciplina de bush stealth/corpo — ver comentário em
+            # RenderSystem sobre nunca mutar Surface cacheada sem copy()).
+            glow_surf = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            for cx, cy, radius_px, intensity_pct in members:
+                local_x = cx - radius_px - rect.x
+                local_y = cy - radius_px - rect.y
+                gradient = self._get_light_add_gradient(radius_px, round(intensity_pct))
+                add_surf.blit(gradient, (local_x, local_y), special_flags=pygame.BLEND_RGBA_ADD)
+                glow = self._get_warm_glow_gradient(radius_px).copy()
+                glow.set_alpha(round(255 * max(0.0, min(1.0, intensity_pct / 100.0))))
+                glow_surf.blit(glow, (local_x, local_y))
+
+            self._static_clusters.append({
+                "rect": rect, "add_surf": add_surf, "glow_surf": glow_surf,
+            })
+
+    def render(self, world_objects: list | None = None,
+              camera_offset_x: float = 0, camera_offset_y: float = 0) -> None:
         if self.world_surf is None:
             return
         # Só mundo aberto — BG/Arena ficam sempre num horário fixo
@@ -417,20 +542,38 @@ class DayNightSystem(System):
         # fechado conta como "sempre noite" pra esse corte — se um dia
         # houver lampião numa dungeon, ele acende o tempo todo (nenhum
         # objeto desse tipo existe nas cavernas atuais, mas o corte já
-        # nasce certo). Luz de ITEM DE JOGADOR (23/09/2026, marcada
-        # `"player_light": True` no dict — ver game.py) tem um PROPÓSITO
-        # diferente: sob demanda, sempre funciona (dia, noite, mapa aberto
-        # ou fechado) — é a ferramenta pra enxergar numa caverna sempre
-        # escura, não faria sentido gateá-la igual ao poste automático.
+        # nasce certo).
+        #
+        # 27/09/2026: luz de mapa (ESTÁTICA) não é mais processada luz-a-
+        # luz aqui — já vem pré-composta por CLUSTER inteiro (ver
+        # build_static_light_clusters()), 1 blit por cluster VISÍVEL. Só
+        # a luz de ITEM DE JOGADOR (23/09/2026, `"player_light": True`,
+        # DINÂMICA — se move com quem carrega) continua resolvida
+        # individualmente aqui, sempre funciona (dia/noite/mapa aberto ou
+        # fechado — ferramenta pra enxergar numa caverna sempre escura,
+        # não faria sentido gateá-la igual ao poste automático).
         _ambient_night = is_night() or not self.map_affected
-        _lit_positions: list[tuple[float, float, int, float]] = []
+        _lit_glow_blits: list[tuple[float, float, "pygame.Surface"]] = []
+        _lit_single_positions: list[tuple[float, float, int, float]] = []
+
+        if _ambient_night and self._static_clusters:
+            _screen_rect = pygame.Rect(int(camera_offset_x), int(camera_offset_y), surf_w, surf_h)
+            for cluster in self._static_clusters:
+                if not cluster["rect"].colliderect(_screen_rect):
+                    continue   # cluster inteiro fora da tela — nem olha pro conteúdo
+                sx = cluster["rect"].x - camera_offset_x
+                sy = cluster["rect"].y - camera_offset_y
+                self._overlay_surf.blit(cluster["add_surf"], (sx, sy),
+                                        special_flags=pygame.BLEND_RGBA_ADD)
+                _lit_glow_blits.append((sx, sy, cluster["glow_surf"]))
+
         if world_objects:
             for obj in world_objects:
+                if not obj.get("player_light"):
+                    continue   # luz de mapa (estática) já resolvida acima via cluster
                 light = obj.get("light_source")
                 if not light:
                     continue
-                if not obj.get("player_light") and not _ambient_night:
-                    continue   # objeto de mapa (poste) só acende à noite/mapa fechado
                 off_x, off_y, lw, lh, intensity_pct, radius_tiles = light
                 cx = obj["screen_x"] + off_x + lw / 2
                 cy = obj["screen_y"] + off_y + lh / 2
@@ -444,14 +587,20 @@ class DayNightSystem(System):
                 self._overlay_surf.blit(
                     gradient, (cx - radius_px, cy - radius_px),
                     special_flags=pygame.BLEND_RGBA_ADD)
-                _lit_positions.append((cx, cy, radius_px, intensity_pct))
+                _lit_single_positions.append((cx, cy, radius_px, intensity_pct))
 
         self.world_surf.blit(self._overlay_surf, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
 
         # Brilho quente — DEPOIS da multiplicação, direto no mundo (ver
         # docstring de _get_warm_glow_gradient). Reusa as posições já
-        # resolvidas no loop acima, sem recalcular offset/tela à parte.
-        for cx, cy, radius_px, intensity_pct in _lit_positions:
+        # resolvidas nos 2 loops acima, sem recalcular offset/tela à
+        # parte. Cluster já vem com o brilho quente de TODOS os membros
+        # pré-composto (glow_surf) — 1 blit só, alpha já embutido nos
+        # pixels desde build_static_light_clusters() (nunca set_alpha
+        # aqui pra cluster — só a luz individual/dinâmica precisa disso).
+        for sx, sy, glow_surf in _lit_glow_blits:
+            self.world_surf.blit(glow_surf, (sx, sy))
+        for cx, cy, radius_px, intensity_pct in _lit_single_positions:
             warm = self._get_warm_glow_gradient(radius_px)
             warm.set_alpha(round(255 * max(0.0, min(1.0, intensity_pct / 100.0))))
             self.world_surf.blit(warm, (cx - radius_px, cy - radius_px))
