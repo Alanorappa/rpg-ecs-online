@@ -2531,10 +2531,26 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                                   _time.perf_counter() - _ts)
             else:
                 self._loot_system.render_world(cam_x, cam_y)
-            # Objetos no_ysort (ex: escadas) renderizam aqui, abaixo das entidades
+            # Objetos no_ysort (ex: escadas) renderizam aqui, abaixo das entidades.
+            #
+            # 27/09/2026 (achado da revisão de performance, documento do
+            # plano de ação): TileRenderSystem tem 4 pontos de entrada
+            # (render/render_static_objects/get_world_objects/render_fog),
+            # mas só `.render()` (chamado pelo loop genérico acima) tinha
+            # profiling — os outros 3 rodavam SEM NENHUM `_prof_record`,
+            # qualquer regressão neles era invisível em qualquer
+            # relatório/spike do F11. Rótulos novos, nunca existiram antes.
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             self._tile_render_system.render_static_objects(cam_x, cam_y)
+            if PROFILE_FRAMES:
+                self._prof_record("rnd:tile_static_objects", _time.perf_counter() - _ts)
             DASH_TRAIL.render(self._zoom_surf, cam_x, cam_y)
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             _world_objs = self._tile_render_system.get_world_objects(cam_x, cam_y)
+            if PROFILE_FRAMES:
+                self._prof_record("rnd:get_world_objects", _time.perf_counter() - _ts)
             self._draw_remote_corpses(cam_x, cam_y)
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
@@ -2552,7 +2568,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._trainer_system.render_world(cam_x, cam_y)
             self._draw_remote_players(cam_x, cam_y)
             self._draw_mob_hp_bars(cam_x, cam_y)
+            if PROFILE_FRAMES:
+                _ts = _time.perf_counter()
             self._tile_render_system.render_fog()
+            if PROFILE_FRAMES:
+                self._prof_record("rnd:tile_fog", _time.perf_counter() - _ts)
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
                 self._projectile_system.render(cam_x, cam_y)
