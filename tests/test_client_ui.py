@@ -4734,6 +4734,52 @@ def test_render_fullmap_tile_nao_explorado_fica_preto():
     assert (px.r, px.g, px.b) == (0, 0, 0), "tile nunca explorado deveria ficar preto"
 
 
+def test_rebuild_fullmap_reusa_array_de_explored_quando_so_visible_muda():
+    """27/09/2026, achado da revisão de performance (documento do plano
+    de ação, item hud:combat_log): _rebuild_fullmap reconvertia
+    `explored` INTEIRO pra numpy toda vez que QUALQUER coisa mudava,
+    mesmo só `visible` (que muda quase todo tick numa BG ativa por visão
+    compartilhada de time). `explored` só cresce — cachear por
+    len(explored) evita a reconversão cara quando ele não mudou."""
+    mm, screen = _make_minimap_fixture(cols=20, rows=20)
+    explored = {(x, y) for x in range(20) for y in range(20)}
+
+    mm._rebuild_fullmap(20, 20, explored, {(1, 1)})
+    arr_first = mm._fullmap_exp_arr
+    assert arr_first is not None
+
+    # visible muda, explored NÃO — array cacheado deve ser o MESMO objeto
+    mm._rebuild_fullmap(20, 20, explored, {(5, 5)})
+    assert mm._fullmap_exp_arr is arr_first, \
+        "explored nao mudou (mesmo len) — nao deveria reconverter"
+
+
+def test_rebuild_fullmap_reconverte_quando_explored_cresce():
+    mm, screen = _make_minimap_fixture(cols=20, rows=20)
+    explored = {(x, y) for x in range(10) for y in range(10)}
+    mm._rebuild_fullmap(20, 20, explored, set())
+    arr_first = mm._fullmap_exp_arr
+
+    explored = explored | {(15, 15)}   # cresceu — len mudou
+    mm._rebuild_fullmap(20, 20, explored, set())
+    assert mm._fullmap_exp_arr is not arr_first, \
+        "explored cresceu — precisa reconverter (senão o tile novo nunca aparece)"
+
+
+def test_on_map_load_invalida_cache_de_explored_do_fullmap():
+    """Troca de mapa nunca pode deixar o array do mapa ANTERIOR vazar pro
+    novo, mesmo que por coincidência o novo explored tenha o MESMO
+    len() (ex: os dois ainda em 0 logo após trocar de mapa)."""
+    mm, screen = _make_minimap_fixture(cols=20, rows=20)
+    explored = {(x, y) for x in range(10) for y in range(10)}
+    mm._rebuild_fullmap(20, 20, explored, set())
+    assert mm._fullmap_exp_arr is not None
+
+    mm.on_map_load()
+    assert mm._fullmap_exp_cache_len is None
+    assert mm._fullmap_exp_arr is None
+
+
 # ── GameEngine._collect_bg_minimap_dots ──────────────────────────────────────
 
 from game import GameEngine as _GE_mm

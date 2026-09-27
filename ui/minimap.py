@@ -55,6 +55,21 @@ class Minimap(UIScaleMixin):
         self._map_arr: "np.ndarray | None" = None   # (cols, rows, 3) uint8
         self._cached_surf: "pygame.Surface | None" = None
         self._cache_key:   "tuple | None"           = None
+        # Cache da conversão de `explored` (numpy, já filtrada pelos
+        # limites do mapa) usada só por _rebuild_fullmap — 27/09/2026,
+        # achado da revisão de performance (documento do plano de ação,
+        # item hud:combat_log): `_rebuild_fullmap` reconvertia `explored`
+        # INTEIRO (`np.array(list(explored))`) toda vez que o cache
+        # externo invalidava — e isso invalida quase todo tick numa BG
+        # ativa, porque `visible` (visão compartilhada de time) muda
+        # constantemente, mesmo com `explored` já estável. `explored` só
+        # CRESCE (nunca encolhe, mesmo invariante já documentado em
+        # `_rebuild_numpy`) — cachear por `len(explored)` evita repetir a
+        # conversão cara quando só `visible` mudou. Medido: ~22.7ms por
+        # chamada numa sessão bem explorada (bate com o pico real de
+        # 22.721ms do label `hud:combat_log` no log de profiling).
+        self._fullmap_exp_cache_len: "int | None" = None
+        self._fullmap_exp_arr: "np.ndarray | None" = None
 
         # set_ui_scale(1.0) é chamado por super().__init__() (UIScaleMixin) e
         # calcula _tile_px/_content_size/_map_ox/_map_oy abaixo, a partir do
@@ -97,6 +112,13 @@ class Minimap(UIScaleMixin):
         self._load_map_arr()
         self._cached_surf = None
         self._cache_key   = None
+        # Novo mapa = novo `explored` (FogOfWar é por-mapa, ver
+        # engine/components.py::FogOfWar._explored_maps) — o array
+        # cacheado do mapa anterior nunca pode vazar pra cá, mesmo que
+        # por coincidência tenha o MESMO len() do explored novo (ex: os
+        # dois ainda em 0 logo após trocar de mapa).
+        self._fullmap_exp_cache_len = None
+        self._fullmap_exp_arr = None
 
     # ── Renderização principal ───────────────────────────────────────────────
 
@@ -305,12 +327,23 @@ class Minimap(UIScaleMixin):
         if _NUMPY_OK and self._map_arr is not None:
             arr = self._map_arr.copy()
             fog = np.full((cols, rows), 2, dtype=np.uint8)
-            if explored:
-                exp = np.array(list(explored), dtype=np.int32)
-                m = (exp[:, 0] >= 0) & (exp[:, 0] < cols) & (exp[:, 1] >= 0) & (exp[:, 1] < rows)
-                exp = exp[m]
-                if len(exp):
-                    fog[exp[:, 0], exp[:, 1]] = 1
+            # `explored` só CRESCE (nunca encolhe) — cacheado por
+            # len(explored), separado de `visible` (que muda quase todo
+            # tick numa BG ativa por visão compartilhada de time). Sem
+            # isso, cada mudança de `visible` reconvertia `explored`
+            # INTEIRO de novo, mesmo sem nenhuma mudança nele (ver
+            # comentário no __init__/on_map_load — achado real, pico
+            # medido bate com o do log de profiling).
+            if len(explored) != self._fullmap_exp_cache_len:
+                if explored:
+                    exp = np.array(list(explored), dtype=np.int32)
+                    m = (exp[:, 0] >= 0) & (exp[:, 0] < cols) & (exp[:, 1] >= 0) & (exp[:, 1] < rows)
+                    self._fullmap_exp_arr = exp[m]
+                else:
+                    self._fullmap_exp_arr = None
+                self._fullmap_exp_cache_len = len(explored)
+            if self._fullmap_exp_arr is not None and len(self._fullmap_exp_arr):
+                fog[self._fullmap_exp_arr[:, 0], self._fullmap_exp_arr[:, 1]] = 1
             if visible:
                 vis = np.array(list(visible), dtype=np.int32)
                 m = (vis[:, 0] >= 0) & (vis[:, 0] < cols) & (vis[:, 1] >= 0) & (vis[:, 1] < rows)
