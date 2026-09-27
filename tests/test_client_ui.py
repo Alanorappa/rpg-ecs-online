@@ -365,6 +365,50 @@ def test_build_hud_tamanhos_e_cache_de_nivel():
     assert len(hb._level_surf_cache) == n_after_first == 1
 
 
+def test_build_player_hud_cacheia_por_ratio_quantizado():
+    """27/09/2026, achado convergente da revisão de performance (3
+    agentes): build_player_hud/build_mob_hud alocavam Surface+
+    transform.scale novos TODO frame por entidade, mesmo quando o
+    resultado seria idêntico ao do frame anterior. Cache por ratio
+    quantizado (~1.6%/bucket, bem abaixo de 1px de diferença visual)."""
+    import ui.hud_bars as hb
+    from ui.fonts import make_pixel
+    font = make_pixel(hb.LEVEL_FONT_SIZE)
+    hb._player_hud_cache.clear()
+
+    a = hb.build_player_hud(0.50, 0.30, 0.80, hb.RESOURCE_COLORS["arqueiro"], 12, font)
+    b = hb.build_player_hud(0.50, 0.30, 0.80, hb.RESOURCE_COLORS["arqueiro"], 12, font)
+    assert a is b, "mesma chamada exata deveria devolver o MESMO objeto (cache hit)"
+
+    # ratio bem perto (mesmo bucket de 1/64) — ainda cache hit, diferença
+    # é sub-pixel na barra (46px nativo de largura).
+    c = hb.build_player_hud(0.501, 0.30, 0.80, hb.RESOURCE_COLORS["arqueiro"], 12, font)
+    assert c is a, "ratio dentro do mesmo bucket deveria reusar o cache"
+
+    # ratio bem diferente — cache MISS, Surface nova.
+    d = hb.build_player_hud(0.10, 0.30, 0.80, hb.RESOURCE_COLORS["arqueiro"], 12, font)
+    assert d is not a, "ratio de HP bem diferente nao deveria reusar o cache de outro ratio"
+
+
+def test_build_mob_hud_cacheia_por_ratio_quantizado():
+    import ui.hud_bars as hb
+    from ui.fonts import make_pixel
+    font = make_pixel(hb.LEVEL_FONT_SIZE)
+    hb._mob_hud_cache.clear()
+
+    a = hb.build_mob_hud(0.9, 7, font)
+    b = hb.build_mob_hud(0.9, 7, font)
+    assert a is b
+
+    c = hb.build_mob_hud(0.2, 7, font)
+    assert c is not a
+
+    # disposição diferente (cor de HP diferente) não pode compartilhar
+    # cache mesmo com ratio/level iguais.
+    e = hb.build_mob_hud(0.9, 7, font, hp_color=hb.DISPOSITION_HP_COLORS["hostil"])
+    assert e is not a
+
+
 def test_effects_row_offset_meia_largura():
     """Bug real 11/07: usava largura INTEIRA pra ir do centro à borda direita
     — sobrava um vão do tamanho da HUD entre ela e os ícones de efeito."""

@@ -244,6 +244,32 @@ def _blit_level_number(dest_surf, level: int, font, cx: float, cy: float) -> Non
     dest_surf.blit(surf, (cx - ink_cx, cy - ink_cy))
 
 
+# Cache da Surface final (fundo+barras+número) por chave quantizada —
+# 27/09/2026, achado convergente dos 3 agentes da revisão de performance
+# (ver documento do plano de ação): build_player_hud/build_mob_hud
+# rodavam TODO FRAME pra CADA entidade visível com barra de HP (aloca
+# Surface SRCALPHA nova + transform.scale novo, sempre), mesmo quando o
+# resultado seria byte-a-byte idêntico ao do frame anterior — igual ao
+# padrão que este MESMO arquivo já usa 40 linhas acima pro número do
+# nível (_level_surf_cache), só que nunca tinha sido aplicado à Surface
+# INTEIRA. Ratios são float contínuo (nunca dão cache-hit exato de frame
+# pra frame) — quantizados em _HUD_RATIO_BUCKETS níveis (~1.6% cada),
+# bem abaixo de 1px de diferença visual na barra (P_BAR_X1-P_BAR_X0=46px
+# nativo, M_HP_X1-M_HP_X0=34px — 1/64 é sub-pixel nos dois). Surface
+# devolvida NUNCA é mutada pelos callers (só blitada por WORLD_LABELS),
+# confirmado antes de cachear — compartilhar a mesma instância entre
+# entidades com o mesmo estado visual é seguro.
+_HUD_RATIO_BUCKETS = 64
+_player_hud_cache: dict = {}
+_mob_hud_cache: dict = {}
+_HUD_CACHE_MAX = 512
+
+
+def _quantize_ratio(ratio: float) -> int:
+    return max(0, min(_HUD_RATIO_BUCKETS,
+                      round(max(0.0, min(1.0, ratio)) * _HUD_RATIO_BUCKETS)))
+
+
 def build_player_hud(hp_ratio: float, xp_ratio: float, resource_ratio: float,
                      resource_color: tuple, level: int, level_font,
                      hp_color: tuple = HP_COLOR) -> "pygame.Surface":
@@ -255,6 +281,13 @@ def build_player_hud(hp_ratio: float, xp_ratio: float, resource_ratio: float,
     parte, é só ler da Surface. `hp_color` (default verde de sempre):
     disposição de player remoto — oponente de duelo fica vermelho
     (DISPOSITION_HP_COLORS["hostil"]), mesmo esquema do mob."""
+    key = (_quantize_ratio(hp_ratio), _quantize_ratio(xp_ratio),
+          _quantize_ratio(resource_ratio), resource_color, hp_color,
+          level, id(level_font))
+    cached = _player_hud_cache.get(key)
+    if cached is not None:
+        return cached
+
     _load()
     w, h = P_SIZE
     base = pygame.Surface((w, h), pygame.SRCALPHA)
@@ -266,6 +299,10 @@ def build_player_hud(hp_ratio: float, xp_ratio: float, resource_ratio: float,
     big = pygame.transform.scale(base, (w * SCALE, h * SCALE))
     lcx, lcy = _level_center_px(P_LEVEL_BOX)
     _blit_level_number(big, level, level_font, lcx, lcy)
+
+    if len(_player_hud_cache) >= _HUD_CACHE_MAX:
+        _player_hud_cache.clear()
+    _player_hud_cache[key] = big
     return big
 
 
@@ -276,6 +313,11 @@ def build_mob_hud(hp_ratio: float, level: int, level_font,
     level somente"). `hp_color` default mantém compatibilidade com quem
     não resolve disposição (ex: boneco de treino) — caller com facção
     disponível deve passar `DISPOSITION_HP_COLORS[tier]`."""
+    key = (_quantize_ratio(hp_ratio), hp_color, level, id(level_font))
+    cached = _mob_hud_cache.get(key)
+    if cached is not None:
+        return cached
+
     _load()
     w, h = M_SIZE
     base = pygame.Surface((w, h), pygame.SRCALPHA)
@@ -285,6 +327,10 @@ def build_mob_hud(hp_ratio: float, level: int, level_font,
     big = pygame.transform.scale(base, (w * SCALE, h * SCALE))
     lcx, lcy = _level_center_px(M_LEVEL_BOX)
     _blit_level_number(big, level, level_font, lcx, lcy)
+
+    if len(_mob_hud_cache) >= _HUD_CACHE_MAX:
+        _mob_hud_cache.clear()
+    _mob_hud_cache[key] = big
     return big
 
 
