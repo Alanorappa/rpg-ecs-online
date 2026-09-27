@@ -70,9 +70,13 @@ from engine.world_systems import System, EnemyAISystem
 # alto) pelo tamanho do maior sprite do catálogo -- NUNCA um número fixo
 # hardcoded, pra não ficar errado se um asset maior for adicionado depois
 # (ponto único de verdade, mesmo racional de qualquer "maior X do catálogo"
-# já usado no projeto). Topo/direita não precisam de margem: o sprite só
-# cresce pra longe da tela nesses casos. Ver PROBLEMAS_ARQUITETURA.md §102.
-_OBJECT_SCAN_MARGIN_CACHE: "tuple[int, int] | None" = None
+# já usado no projeto). Topo/direita não precisavam de margem PELO SPRITE
+# (que só cresce pra longe da tela nesses casos) -- mas um objeto com
+# `TileType.light_source` (lampião/tocha, 21/09/2026) PRECISA dos 4 lados:
+# luz se espalha em círculo, não "cresce numa direção só" como sprite (bug
+# real relatado pelo usuário 27/09/2026, luz só aparecia com o objeto já
+# em tela). Ver PROBLEMAS_ARQUITETURA.md §102.
+_OBJECT_SCAN_MARGIN_CACHE: "tuple[int, int, int, int] | None" = None
 
 
 def _tile_effective_size_px(tile_type) -> tuple[int, int]:
@@ -90,24 +94,46 @@ def _tile_effective_size_px(tile_type) -> tuple[int, int]:
     return TILE_SIZE * tiles_wide, TILE_SIZE + getattr(tile_type, "overlay_height", 0)
 
 
-def _object_scan_margin_tiles() -> tuple[int, int]:
-    """(colunas extras à esquerda, linhas extras abaixo) que a varredura
-    de object_matrix precisa somar à janela ingênua de tela-em-tiles.
-    Calculada 1x (catálogo é estático depois do startup) a partir do
-    maior sprite_px_w/sprite_px_h de OBJECT_MAPPING inteiro."""
+def _object_scan_margin_tiles() -> tuple[int, int, int, int]:
+    """(esquerda, baixo, cima, direita) — colunas/linhas extras que a
+    varredura de object_matrix precisa somar à janela ingênua de
+    tela-em-tiles. Calculada 1x (catálogo é estático depois do
+    startup) a partir do maior sprite_px_w/sprite_px_h de
+    OBJECT_MAPPING inteiro (cima/direita ficam 0 nesta parte — sprite
+    só cresce pra longe da tela nesses 2 lados, ver comentário acima).
+
+    Objeto com `TileType.light_source` (27/09/2026, bug real relatado
+    pelo usuário: luz só aparecia quando o objeto entrava na tela)
+    quebra essa premissa — a luz se espalha em CÍRCULO ao redor do
+    ponto da chama, alcançando a tela em QUALQUER direção mesmo com a
+    âncora do objeto ainda longe fora dela. Margem de luz = maior
+    `radius_tiles` do catálogo inteiro (+1 tile de folga, já que o
+    raio é medido a partir do ponto da chama — `light_source[0:2]` —
+    não da borda do tile-âncora), aplicada nos 4 lados (une com a
+    margem de sprite via `max()`, nunca substitui — um objeto grande
+    E luminoso precisa da maior das duas)."""
     global _OBJECT_SCAN_MARGIN_CACHE
     if _OBJECT_SCAN_MARGIN_CACHE is None:
         max_w = 0
         max_h = 0
+        max_light_radius_tiles = 0
         for tile_type in OBJECT_MAPPING.values():
             w, h = _tile_effective_size_px(tile_type)
             max_w = max(max_w, w)
             max_h = max(max_h, h)
+            if tile_type.light_source is not None:
+                max_light_radius_tiles = max(max_light_radius_tiles, tile_type.light_source[5])
         # -(-x//n) = ceil(x/n); -1 porque a margem fixa "+2" já cobre 1 tile
         # de sobra em cada direção.
-        margin_left = max(0, -(-max_w // TILE_SIZE) - 1)
-        margin_down = max(0, -(-max_h // TILE_SIZE) - 1)
-        _OBJECT_SCAN_MARGIN_CACHE = (margin_left, margin_down)
+        margin_left_sprite = max(0, -(-max_w // TILE_SIZE) - 1)
+        margin_down_sprite = max(0, -(-max_h // TILE_SIZE) - 1)
+        light_margin = max_light_radius_tiles + 1 if max_light_radius_tiles > 0 else 0
+        _OBJECT_SCAN_MARGIN_CACHE = (
+            max(margin_left_sprite, light_margin),
+            max(margin_down_sprite, light_margin),
+            light_margin,
+            light_margin,
+        )
     return _OBJECT_SCAN_MARGIN_CACHE
 
 
@@ -170,15 +196,16 @@ class TileRenderSystem(System):
         """(tile_ox, tile_oy, tiles_w, tiles_h) pra varredura de
         object_matrix -- mesma janela "tela em tiles + 2" que
         TileRenderSystem.render() usa pro terreno (1×1, sem margem),
-        estendida pra ESQUERDA/BAIXO pelo maior sprite do catálogo (ver
-        _object_scan_margin_tiles, PROBLEMAS_ARQUITETURA.md §102).
-        Ponto único de verdade pra get_world_objects()/
+        estendida pelo maior sprite do catálogo (ESQUERDA/BAIXO) E pelo
+        maior raio de luz do catálogo (os 4 lados — ver
+        _object_scan_margin_tiles, PROBLEMAS_ARQUITETURA.md §102 e
+        §27/09/2026). Ponto único de verdade pra get_world_objects()/
         render_static_objects() -- os 2 duplicavam esse cálculo antes."""
-        margin_left, margin_down = _object_scan_margin_tiles()
+        margin_left, margin_down, margin_top, margin_right = _object_scan_margin_tiles()
         tile_ox = int(camera_offset_x // tile_size) - margin_left
-        tile_oy = int(camera_offset_y // tile_size)
-        tiles_w = self.world_surf.get_width()  // tile_size + 2 + margin_left
-        tiles_h = self.world_surf.get_height() // tile_size + 2 + margin_down
+        tile_oy = int(camera_offset_y // tile_size) - margin_top
+        tiles_w = self.world_surf.get_width()  // tile_size + 2 + margin_left + margin_right
+        tiles_h = self.world_surf.get_height() // tile_size + 2 + margin_down + margin_top
         return tile_ox, tile_oy, tiles_w, tiles_h
 
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0) -> None:

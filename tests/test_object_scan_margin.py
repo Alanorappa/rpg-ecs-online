@@ -50,7 +50,7 @@ class TestObjectScanMarginFromCatalog(unittest.TestCase):
         t = OBJECT_MAPPING[_TALL_WIDE_OBJ]
         self.assertEqual(t.sprite_px_w, 256)
         self.assertEqual(t.sprite_px_h, 352)
-        margin_left, margin_down = _object_scan_margin_tiles()
+        margin_left, margin_down, _margin_top, _margin_right = _object_scan_margin_tiles()
         # maior objeto real do catálogo pode ser >= vb044 (ex: torres
         # maiores cadastradas depois) — a margem só pode ficar >= o
         # necessário pra este objeto, nunca menor.
@@ -107,6 +107,58 @@ class TestWideObjectAnchoredLeftOfScreenStillRenders(unittest.TestCase):
         matched = [o for o in objs if o["tile_x"] == 0 and o["tile_y"] == 2]
         self.assertEqual(len(matched), 0,
             "objeto genuinamente fora de alcance à esquerda não devia aparecer")
+
+
+_LIGHT_OBJ = "vp_143"   # maior raio de luz do catálogo hoje (6 tiles)
+
+
+class TestObjectScanMarginConsideraRaioDeLuz(unittest.TestCase):
+    """Bug real relatado pelo usuário (27/09/2026): a luz de um objeto
+    luminoso (lampião/tocha) só aparecia quando o objeto em si entrava
+    na tela — a varredura de object_matrix só estendia margem pra
+    ESQUERDA/BAIXO (tamanho do sprite), nunca pra CIMA/DIREITA, e nunca
+    considerava o RAIO da luz (que se espalha em círculo, alcançando a
+    tela em qualquer direção mesmo com a âncora do objeto ainda fora
+    dela). Fix: `_object_scan_margin_tiles()` também soma o maior
+    `radius_tiles` do catálogo, nos 4 lados."""
+
+    def test_margem_de_cima_e_direita_nao_e_mais_zero_com_objeto_luminoso(self):
+        margin_left, margin_down, margin_top, margin_right = _object_scan_margin_tiles()
+        light = OBJECT_MAPPING[_LIGHT_OBJ].light_source
+        radius_tiles = light[5]
+        self.assertGreaterEqual(margin_top, radius_tiles)
+        self.assertGreaterEqual(margin_right, radius_tiles)
+
+    def test_objeto_luminoso_ancorado_acima_da_tela_ainda_aparece(self):
+        # Câmera em tile_oy=20. Objeto 5 linhas acima (tile_oy=15) —
+        # antes do fix, margem de cima era sempre 0 (excluído); raio de
+        # luz (6) alcança de sobra essa distância.
+        sys_ = _make_world_with_object(width=20, height=30, obj_x=2, obj_y=15,
+                                       obj_char=_LIGHT_OBJ)
+        objs = sys_.get_world_objects(camera_offset_x=0, camera_offset_y=20 * TILE_SIZE)
+        matched = [o for o in objs if o["tile_x"] == 2 and o["tile_y"] == 15]
+        self.assertEqual(len(matched), 1,
+            "objeto luminoso acima da tela, dentro do raio de luz, nao deveria ser cortado")
+
+    def test_objeto_luminoso_realmente_fora_do_raio_continua_cortado(self):
+        # 25 linhas acima — nem a margem de luz (raio 6 + 1 de folga) alcança.
+        sys_ = _make_world_with_object(width=20, height=40, obj_x=2, obj_y=5,
+                                       obj_char=_LIGHT_OBJ)
+        objs = sys_.get_world_objects(camera_offset_x=0, camera_offset_y=30 * TILE_SIZE)
+        matched = [o for o in objs if o["tile_x"] == 2 and o["tile_y"] == 5]
+        self.assertEqual(len(matched), 0,
+            "objeto genuinamente fora do raio de luz nao devia aparecer")
+
+    def test_objeto_luminoso_ancorado_a_direita_da_tela_ainda_aparece(self):
+        # Tela de 320px = 10 tiles. Câmera em tile_ox=0 (janela ingênua
+        # cobre colunas 0..11). Objeto na coluna 15 (4 além da janela
+        # ingênua) — antes do fix, margem de direita era sempre 0.
+        sys_ = _make_world_with_object(width=30, height=20, obj_x=15, obj_y=2,
+                                       obj_char=_LIGHT_OBJ)
+        objs = sys_.get_world_objects(camera_offset_x=0, camera_offset_y=0)
+        matched = [o for o in objs if o["tile_x"] == 15 and o["tile_y"] == 2]
+        self.assertEqual(len(matched), 1,
+            "objeto luminoso a direita da tela, dentro do raio de luz, nao deveria ser cortado")
 
 
 class TestRenderStaticObjectsUsesSameRange(unittest.TestCase):
