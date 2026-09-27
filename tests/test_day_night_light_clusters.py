@@ -199,5 +199,71 @@ class TestRenderUsaClusterEmVezDeLuzPorLuz(unittest.TestCase):
         self.assertEqual(len(spy.add_blit_calls), 0, "de dia/amanhecer nenhum lampiao deveria acender")
 
 
+class TestGradientesVetorizadosBatemComOLoopOriginal(unittest.TestCase):
+    """27/09/2026, achado de qualidade de código da revisão de
+    performance (documento do plano de ação): _get_light_add_gradient/
+    _get_warm_glow_gradient usavam um loop Python pixel a pixel
+    (`set_at`) em cache-miss — vetorizado com numpy. Esses testes
+    provam que a saída é IDÊNTICA (pixel a pixel) ao loop antigo, que
+    fica como fallback se numpy não estiver disponível."""
+
+    def _make_dns_pair(self):
+        # _NUMPY_OK só importa no momento da CHAMADA do gerador de
+        # gradiente (não na construção) — os testes alternam a flag em
+        # volta de cada chamada, não aqui.
+        import ui.day_night_system as dnsmod
+        dns_numpy = DayNightSystem(World(), -1)
+        dns_loop = DayNightSystem(World(), -1)
+        return dns_numpy, dns_loop, dnsmod
+
+    def _assert_pixels_iguais_ou_ambos_transparentes(self, surf_a, surf_b, d):
+        for y in range(d):
+            for x in range(d):
+                pa = surf_a.get_at((x, y))
+                pb = surf_b.get_at((x, y))
+                if pa == pb:
+                    continue
+                # única diferença tolerada: RGB "morto" sob alpha=0 nos
+                # dois (pixel totalmente transparente, invisível em
+                # qualquer blend — mesmo tolerância documentada na
+                # implementação vetorizada).
+                self.assertEqual(pa[3], pb[3],
+                    f"alpha diferente em ({x},{y}): {tuple(pa)} vs {tuple(pb)}")
+                self.assertEqual(pa[3], 0,
+                    f"RGB diferente com alpha != 0 em ({x},{y}): {tuple(pa)} vs {tuple(pb)}")
+
+    def test_light_add_gradient_numpy_bate_com_loop_pixel_a_pixel(self):
+        dns_numpy, dns_loop, dnsmod = self._make_dns_pair()
+        radius_px, intensity_pct = 96, 75
+        orig = dnsmod._NUMPY_OK
+        dnsmod._NUMPY_OK = True
+        try:
+            surf_numpy = dns_numpy._get_light_add_gradient(radius_px, intensity_pct)
+            dnsmod._NUMPY_OK = False
+            surf_loop = dns_loop._get_light_add_gradient(radius_px, intensity_pct)
+        finally:
+            dnsmod._NUMPY_OK = orig
+
+        self.assertEqual(surf_numpy.get_size(), surf_loop.get_size())
+        self._assert_pixels_iguais_ou_ambos_transparentes(
+            surf_numpy, surf_loop, radius_px * 2)
+
+    def test_warm_glow_gradient_numpy_bate_com_loop_pixel_a_pixel(self):
+        dns_numpy, dns_loop, dnsmod = self._make_dns_pair()
+        radius_px = 96
+        orig = dnsmod._NUMPY_OK
+        dnsmod._NUMPY_OK = True
+        try:
+            surf_numpy = dns_numpy._get_warm_glow_gradient(radius_px)
+            dnsmod._NUMPY_OK = False
+            surf_loop = dns_loop._get_warm_glow_gradient(radius_px)
+        finally:
+            dnsmod._NUMPY_OK = orig
+
+        self.assertEqual(surf_numpy.get_size(), surf_loop.get_size())
+        self._assert_pixels_iguais_ou_ambos_transparentes(
+            surf_numpy, surf_loop, radius_px * 2)
+
+
 if __name__ == "__main__":
     unittest.main()

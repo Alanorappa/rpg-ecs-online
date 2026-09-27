@@ -33,6 +33,12 @@ from __future__ import annotations
 import time
 import pygame
 
+try:
+    import numpy as np
+    _NUMPY_OK = True
+except ImportError:
+    _NUMPY_OK = False   # fallback: loop Python (mesmo padrão de ui/minimap.py)
+
 from engine.tileset import TILE_SIZE, OBJECT_MAPPING
 from engine.world_systems import System
 from ui.ui_components import InstanceInventoryUIState
@@ -331,21 +337,43 @@ class DayNightSystem(System):
         branco — a borda soma (0,0,0), no-op, then o centro soma o
         máximo permitido pela intensidade. NUNCA usar `set_alpha()` pra
         modular a força — ver comentário do cache acima, não tem efeito
-        nenhum nesse blend flag."""
+        nenhum nesse blend flag.
+
+        27/09/2026 (achado da revisão de performance, documento do plano
+        de ação): o cache já evita recalcular pra um (raio, intensidade)
+        já visto, mas o cache-miss em si usava um loop Python pixel a
+        pixel (`set_at`) — O(raio²), ~102 mil chamadas pra um raio de 5
+        tiles. Como luz de MAPA (estática) é toda pré-computada 1x no
+        load (`build_static_light_clusters`), esse custo só sobra pra luz
+        de ITEM DE JOGADOR (dinâmica) na primeira vez que um raio/
+        intensidade novo aparece — vetorizado com numpy (fallback pro
+        loop antigo se numpy não estiver disponível, mesmo padrão de
+        `ui/minimap.py`)."""
         key = (radius_px, intensity_pct)
         cached = self._light_gradient_cache.get(key)
         if cached is not None:
             return cached
         strength = max(0.0, min(1.0, intensity_pct / 100.0))
         d = radius_px * 2
-        surf = pygame.Surface((d, d))
-        surf.fill((0, 0, 0))
-        for y in range(d):
-            for x in range(d):
-                dist = ((x - radius_px) ** 2 + (y - radius_px) ** 2) ** 0.5
-                if dist <= radius_px:
-                    v = round(255 * (1.0 - dist / radius_px) * strength)
-                    surf.set_at((x, y), (v, v, v))
+        if _NUMPY_OK:
+            xs = np.arange(d)[:, None]
+            ys = np.arange(d)[None, :]
+            dist = np.sqrt((xs - radius_px) ** 2 + (ys - radius_px) ** 2)
+            v = np.zeros((d, d), dtype=np.float64)
+            mask = dist <= radius_px
+            v[mask] = 255 * (1.0 - dist[mask] / radius_px) * strength
+            v = np.round(v).astype(np.uint8)
+            arr = np.repeat(v[:, :, None], 3, axis=2)
+            surf = pygame.surfarray.make_surface(arr)
+        else:
+            surf = pygame.Surface((d, d))
+            surf.fill((0, 0, 0))
+            for y in range(d):
+                for x in range(d):
+                    dist_ = ((x - radius_px) ** 2 + (y - radius_px) ** 2) ** 0.5
+                    if dist_ <= radius_px:
+                        v_ = round(255 * (1.0 - dist_ / radius_px) * strength)
+                        surf.set_at((x, y), (v_, v_, v_))
         self._light_gradient_cache[key] = surf
         return surf
 
@@ -361,13 +389,31 @@ class DayNightSystem(System):
         intensidade no momento do blit (blend normal É ponderado por
         alpha de superfície; ADD/SUB/MULT não são, ver os outros
         métodos) — por isso cacheado só por raio, sem precisar da
-        intensidade na chave."""
+        intensidade na chave.
+
+        27/09/2026 — mesmo achado/mesma vetorização de
+        `_get_light_add_gradient` (ver docstring lá), aplicado aqui."""
         cached = self._warm_glow_cache.get(radius_px)
         if cached is not None:
             return cached
         d = radius_px * 2
         surf = pygame.Surface((d, d), pygame.SRCALPHA)
         peak_alpha = 90   # opacidade BAIXA de propósito (pedido do usuário)
+        if _NUMPY_OK:
+            xs = np.arange(d)[:, None]
+            ys = np.arange(d)[None, :]
+            dist = np.sqrt((xs - radius_px) ** 2 + (ys - radius_px) ** 2)
+            mask = dist <= radius_px
+            alpha = np.zeros((d, d), dtype=np.uint8)
+            alpha[mask] = np.round(peak_alpha * (1.0 - dist[mask] / radius_px)).astype(np.uint8)
+            rgb = np.zeros((d, d, 3), dtype=np.uint8)
+            rgb[..., 0] = 255
+            rgb[..., 1] = 200
+            rgb[..., 2] = 100
+            pygame.surfarray.pixels3d(surf)[:] = rgb
+            pygame.surfarray.pixels_alpha(surf)[:] = alpha
+            self._warm_glow_cache[radius_px] = surf
+            return surf
         for y in range(d):
             for x in range(d):
                 dist = ((x - radius_px) ** 2 + (y - radius_px) ** 2) ** 0.5
