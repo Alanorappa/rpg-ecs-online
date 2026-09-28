@@ -23005,3 +23005,78 @@ trabalho duplicado. Revert-to-confirm: 2 dos 3 testes falham sem a
 chamada (o 3º, sobre não-duplicação, não é sensível a essa reversão
 por natureza). Suíte `test_day_night_light_clusters.py` +
 `test_client_ui.py` completas passando (243 testes).
+
+## 212. Mob perseguindo atravessa o mapa inteiro depois que o player teleporta pra outro ponto do MESMO mapa (27/09/2026)
+
+Bug real relatado pelo usuário: agroou os zumbis do cemitério
+(`map_1`, spawn_zone em `(130,374)`) e, ainda sendo perseguido, entrou
+num portal que teleporta pra outro canto do MESMO mapa (`(138,370)` →
+`(210,480)`, `maps/map_1_entities.json::transitions`). Ao voltar pro
+cemitério, os mobs estavam "numa área diferente do mapa" — não no
+lugar de onde saíram, nem no spawn — e só quando o usuário se
+aproximou do respawn deles é que "corrigiram" a posição, como se o
+servidor os tivesse puxado de volta.
+
+**Causa raiz**: `WorldServer.transfer_player()` só reescreve a posição
+do player (`snap_to_tile`) — nenhum mob que o perseguia é avisado. O
+mob continua com `AIControlled.target_eid` válido e, no próximo tick,
+tenta pathfindar até a posição NOVA do alvo, por mais longe que
+esteja — porque o "leash" (`EnemyAISystem.update()`, linha ~3853) só
+mede a distância do MOB até o PRÓPRIO spawn, nunca até o alvo
+perseguido. Resultado real: o mob percorre boa parte do mapa
+perseguindo antes que essa distância-do-spawn-dele finalmente passe
+de `MAX_LEASH_RADIUS` (20 tiles) e dispare o retorno — o "puxão de
+volta" que o usuário viu é só o leash disparando tarde, depois de um
+trajeto real e visível.
+
+**Achado relacionado, fora de escopo desta correção**: se o portal
+levasse pra um mapa DIFERENTE (não o caso confirmado aqui), existe um
+2º problema: quando nenhum player está presente num mapa,
+`EnemyAISystem.update()` (linha ~3174) força TODO mob daquele mapa
+pro estado `IDLE` na posição atual, pulando o corpo do loop onde o
+leash é calculado — o mob fica congelado longe do spawn, sem chance
+de se auto-corrigir, até um player aparecer de novo naquele mapa. A
+correção abaixo (hook em `transfer_player`) já cobre esse caso também,
+de graça, porque limpa o alvo do mob ANTES dele ter chance de ficar
+congelado em CHASING/ATTACKING.
+
+**Fix**: `engine.core_systems.force_mob_give_up_target(world, mob_eid,
+target_eid)` — extrai a transição CHASING/ATTACKING→RETURNING que o
+leash normal já fazia inline (5 campos: `state`, `aggroed_by_damage`,
+`path_recalc_timer`, `target_eid`, `tile_movement.path`) pra 1 dono
+só; no-op se o mob não estiver perseguindo ESTE alvo específico.
+`EnemyAISystem.update()` (leash por distância acumulada) e
+`WorldServer.transfer_player()` (perda ABRUPTA de alvo, na hora do
+teleporte) chamam a MESMA função agora. `transfer_player()` captura o
+mapa de ORIGEM do player (antes de sobrescrever `MapLocation.map_file`)
+e varre mobs desse mapa com `target_eid` igual ao player que teleportou
+— evento raro (1 por teleporte), sem necessidade de índice espacial.
+Cobre teleporte pro MESMO mapa (portal, caso confirmado) e pra outro
+mapa (ZONE_CHANGE) igual, já que os dois passam pelo mesmo ponto único.
+
+**Testes** (`tests/test_teleport_breaks_mob_chase.py`): unitário direto
+de `force_mob_give_up_target` (transição real + 3 casos de no-op:
+alvo errado, mob já IDLE, e — cobertura de simetria — funciona em
+ATTACKING também) + integração real com `WorldServer.transfer_player`
+(objeto de produção real, não fixture com o método colado): mob
+perseguindo desiste tanto no teleporte pro mesmo mapa quanto pra outro
+mapa; mob perseguindo OUTRO alvo não é afetado; mob em mapa diferente
+do player não é afetado; mob IDLE não é afetado. Revert-to-confirm: os
+2 testes de integração que exercitam o caminho novo falham sem a
+chamada (mob continua `CHASING` em vez de `RETURNING`).
+
+**Achado de processo, registrado por transparência**: a 1ª rodada de
+verificação (suíte completa de `tests/test_session.py`, banco Postgres
+real) mostrou 79 testes falhando — muito além do esperado, incluindo
+classes sem relação nenhuma com o fix (`TestRateLimit`,
+`TestAllyVisionSharing`, `TestItemGrantsQuestM4`). Antes de aceitar
+isso como regressão real do fix, isolei a variável: rodei a MESMA
+suíte, sozinha, sem nenhum outro processo `pytest` concorrente — 108/108
+passando, no mesmo tempo do baseline sem o fix. A causa real foi eu
+mesmo ter disparado várias suítes pesadas de Postgres EM PARALELO
+(várias chamadas em background quase simultâneas durante a
+investigação), esgotando `max_connections` do banco — nada a ver com o
+código do fix. Repetido 2x limpo pra confirmar antes de comitar. Lição:
+nunca correr para declarar "regressão" a partir de uma suíte que
+compartilha um recurso finito (conexão de banco) com outros processos
+rodando ao mesmo tempo — isolar antes de concluir.
