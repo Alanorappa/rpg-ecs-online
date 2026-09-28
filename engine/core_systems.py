@@ -348,6 +348,36 @@ def _pull_nearby_packmates(world, source_eid: int, target_eid: int) -> None:
                           delay=0.5, _propagate=False)
 
 
+def force_mob_give_up_target(world, mob_eid: int, target_eid: int) -> None:
+    """Ponto ÚNICO de transição CHASING/ATTACKING→RETURNING por perda
+    ABRUPTA de alvo (27/09/2026) — mesmos 5 campos que o leash normal
+    (`EnemyAISystem.update()`, distância mob→próprio spawn) já escreve
+    quando dispara, extraídos aqui pra ter 1 dono só. Usado por
+    `WorldServer.transfer_player()` quando o alvo teleporta (portal
+    dentro do mesmo mapa, ZONE_CHANGE pra outro mapa, respawn, etc.):
+    sem isso, o mob continua com `target_eid` válido e tenta alcançar a
+    nova posição do alvo por qualquer distância, só desistindo quando a
+    distância ATÉ O PRÓPRIO SPAWN (não até o alvo) passar do raio de
+    leash — o que pode levar o mob a atravessar boa parte do mapa antes
+    de "desistir" (bug real relatado pelo usuário: zumbi perseguindo
+    através de um teleporte pro mesmo mapa, ver
+    PROBLEMAS_ARQUITETURA.md §212).
+
+    No-op se o mob não estiver perseguindo ESTE alvo específico (mob já
+    IDLE/RETURNING, ou perseguindo um alvo diferente, não é afetado)."""
+    from engine.components import AIControlled, TileMovement
+    ai = world.get_component(mob_eid, AIControlled)
+    if ai is None or ai.state not in ("CHASING", "ATTACKING") or ai.target_eid != target_eid:
+        return
+    tile_movement = world.get_component(mob_eid, TileMovement)
+    ai.state             = "RETURNING"
+    ai.aggroed_by_damage = False
+    ai.path_recalc_timer = 0.0
+    ai.target_eid        = -1
+    if tile_movement is not None:
+        tile_movement.path = []
+
+
 # ── apply_effect ──────────────────────────────────────────────────────────────
 
 def apply_effect(

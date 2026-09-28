@@ -2360,12 +2360,30 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._player_maps[session_id] = to_map
         from engine.components import TileMovement, Position, MapLocation as _MLtp
         ml = self.world.get_component(player_eid, _MLtp)
+        _from_map = ml.map_file if ml is not None else None
         if ml is not None:
             ml.map_file = to_map
         # snap_to_tile: mesmo conjunto de escritas que o bloco manual antigo
         # fazia aqui — agora centralizado (única forma correta de teleportar).
         from engine.utils import snap_to_tile as _snap_xfer
         _snap_xfer(self.world, player_eid, target_x, target_y, carry_prev=False)
+        # Mob que perseguia este player no mapa de ORIGEM (27/09/2026,
+        # PROBLEMAS_ARQUITETURA.md §212) — sem isso, o mob continua com
+        # `target_eid` válido e tenta alcançar a posição NOVA do player,
+        # por mais longe que esteja (o leash normal só olha a distância
+        # do mob até o PRÓPRIO spawn, nunca até o alvo — reação real só
+        # viria muitos tiles depois, atravessando boa parte do mapa).
+        # Cobre teleporte pro MESMO mapa (portal) e pra outro mapa
+        # (ZONE_CHANGE) igual — ambos passam por aqui, único ponto que
+        # já sabe o mapa de origem antes de sobrescrevê-lo. Evento raro
+        # (1 por teleporte), sem necessidade de índice espacial.
+        if _from_map is not None:
+            from engine.components import AIControlled
+            from engine.core_systems import force_mob_give_up_target
+            for _mob_eid, _mob_ai, _mob_ml in self.world.get_entities_with(
+                    AIControlled, _MLtp):
+                if _mob_ml.map_file == _from_map and _mob_ai.target_eid == player_eid:
+                    force_mob_give_up_target(self.world, _mob_eid, player_eid)
 
     def get_player_save_data(self, session_id: str) -> dict:
         """Coleta estado ECS completo do jogador para persistência."""

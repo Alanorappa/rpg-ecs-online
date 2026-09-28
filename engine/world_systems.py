@@ -3856,11 +3856,8 @@ class EnemyAISystem(System):
                                   dist_spawn=f"{_dist_from_spawn}t",
                                   leash_r=_leash_radius,
                                   prev=_dbg_prev_state)
-                ai_control.state              = "RETURNING"
-                ai_control.aggroed_by_damage  = False
-                ai_control.path_recalc_timer  = 0.0
-                ai_control.target_eid         = -1
-                tile_movement.path            = []
+                from engine.core_systems import force_mob_give_up_target
+                force_mob_give_up_target(self.world, enemy_id, target_eid)
 
             # Quando o mob aggroed_by_damage chega perto do player (range normal),
             # transiciona para aggro de proximidade normal
