@@ -317,6 +317,25 @@ class Minimap(UIScaleMixin):
         pygame.draw.rect(self.screen, self.BORDER_COL,
                          (fx - 1, fy - 1, sz + 2, sz + 2), 1)
 
+    def _get_explored_arr(self, explored: set, cols: int, rows: int) -> "np.ndarray | None":
+        """Converte `explored` pra array numpy, filtrado pelos limites do
+        mapa, cacheado por `len(explored)` (só CRESCE, nunca encolhe —
+        mesmo invariante de `on_map_load`). Ponto único reaproveitado por
+        `_rebuild_fullmap` (mapa inteiro) E `_rebuild_numpy` (minimapa
+        pequeno, 28/09/2026, achado de investigação de performance) — os
+        dois precisam do MESMO dado convertido, só recortam a janela de
+        forma diferente depois (mapa inteiro vs. RADIUS tiles ao redor do
+        player)."""
+        if len(explored) != self._fullmap_exp_cache_len:
+            if explored:
+                exp = np.array(list(explored), dtype=np.int32)
+                m = (exp[:, 0] >= 0) & (exp[:, 0] < cols) & (exp[:, 1] >= 0) & (exp[:, 1] < rows)
+                self._fullmap_exp_arr = exp[m]
+            else:
+                self._fullmap_exp_arr = None
+            self._fullmap_exp_cache_len = len(explored)
+        return self._fullmap_exp_arr
+
     def _rebuild_fullmap(self, cols: int, rows: int,
                          explored: set, visible: set) -> pygame.Surface:
         """Aplica névoa no mapa INTEIRO (sem recorte de janela — diferente
@@ -333,17 +352,13 @@ class Minimap(UIScaleMixin):
             # isso, cada mudança de `visible` reconvertia `explored`
             # INTEIRO de novo, mesmo sem nenhuma mudança nele (ver
             # comentário no __init__/on_map_load — achado real, pico
-            # medido bate com o do log de profiling).
-            if len(explored) != self._fullmap_exp_cache_len:
-                if explored:
-                    exp = np.array(list(explored), dtype=np.int32)
-                    m = (exp[:, 0] >= 0) & (exp[:, 0] < cols) & (exp[:, 1] >= 0) & (exp[:, 1] < rows)
-                    self._fullmap_exp_arr = exp[m]
-                else:
-                    self._fullmap_exp_arr = None
-                self._fullmap_exp_cache_len = len(explored)
-            if self._fullmap_exp_arr is not None and len(self._fullmap_exp_arr):
-                fog[self._fullmap_exp_arr[:, 0], self._fullmap_exp_arr[:, 1]] = 1
+            # medido bate com o do log de profiling). 28/09/2026:
+            # extraído pra `_get_explored_arr` — o minimapa PEQUENO
+            # (`_rebuild_numpy`) precisa do MESMO array, só recortado
+            # pela janela de RADIUS tiles em vez do mapa inteiro.
+            exp_arr = self._get_explored_arr(explored, cols, rows)
+            if exp_arr is not None and len(exp_arr):
+                fog[exp_arr[:, 0], exp_arr[:, 1]] = 1
             if visible:
                 vis = np.array(list(visible), dtype=np.int32)
                 m = (vis[:, 0] >= 0) & (vis[:, 0] < cols) & (vis[:, 1] >= 0) & (vis[:, 1] < rows)
@@ -481,30 +496,36 @@ class Minimap(UIScaleMixin):
         # 2=unexplored(preto), 1=explored-not-visible(escuro), 0=visible
         fog = np.full((win, win), 2, dtype=np.uint8)
 
-        # Interseção com o conjunto de tiles da JANELA (bounded, win*win ~2601)
-        # ANTES de converter pra numpy — `explored` só CRESCE ao longo da
-        # sessão (nunca encolhe, ver engine/components.py::FogOfWar), então
-        # `np.array(list(explored))` reprocessava o set INTEIRO toda vez que
-        # o player mudava de tile (= toda vez que o cache do minimap invalida,
-        # linha ~108) — custo crescendo sem limite conforme mais mapa é
-        # explorado (medido: ~10-13ms por rebuild numa sessão já explorada,
-        # rótulo enganoso "hud:combat_log" no profiler — na verdade cronometra
-        # o render do minimapa). `set & set` em CPython sempre itera o MENOR
-        # dos dois operandos — com window_tiles bounded, o custo fica
-        # O(win²) CONSTANTE, nunca O(len(explored)). Bug relatado pelo
-        # usuário 14/07/2026 (spike de frame ao andar com o arqueiro, achado
-        # via log de profiler — ver ARQUITETURA_ONLINE.md).
-        window_tiles = {(x0 + wx, y0 + wy) for wx in range(win) for wy in range(win)}
+        # 28/09/2026 (achado de investigação de performance, playtest pós-
+        # dia/noite): a versão anterior construía um SET Python de ~2601
+        # tuplas (`window_tiles`) e cruzava com `explored` TODA VEZ que o
+        # player mudava de tile — mesmo já bounded (O(win²) constante, fix
+        # de 14/07/2026, ver histórico), montar/hashear milhares de tuplas
+        # por tile andado ainda pesava de verdade. `explored` só CRESCE
+        # (nunca encolhe) — reaproveita `_get_explored_arr` (MESMO cache
+        # por `len(explored)` que `_rebuild_fullmap` já usa), filtrando pra
+        # janela com máscara numpy em vez de interseção de set. Medido:
+        # ~4x mais rápido numa sessão bem explorada (~0.55ms → ~0.13ms por
+        # chamada, benchmark isolado).
+        exp_arr = self._get_explored_arr(explored, cols, rows)
+        if exp_arr is not None and len(exp_arr):
+            m = ((exp_arr[:, 0] >= x0) & (exp_arr[:, 0] < x0 + win) &
+                 (exp_arr[:, 1] >= y0) & (exp_arr[:, 1] < y0 + win))
+            exp_win = exp_arr[m]
+            if len(exp_win):
+                fog[exp_win[:, 0] - x0, exp_win[:, 1] - y0] = 1
 
-        exp_in_window = explored & window_tiles
-        if exp_in_window:
-            exp = np.array(list(exp_in_window), dtype=np.int32)
-            fog[exp[:, 0] - x0, exp[:, 1] - y0] = 1
-
-        vis_in_window = visible & window_tiles
-        if vis_in_window:
-            vis = np.array(list(vis_in_window), dtype=np.int32)
-            fog[vis[:, 0] - x0, vis[:, 1] - y0] = 0
+        # `visible` não tem cache por tamanho (muda quase todo tick, ex:
+        # visão compartilhada de time numa BG) — mas é sempre pequeno
+        # (bounded pelo raio de AOI), então não precisa do mesmo tratamento;
+        # só deixou de depender de `window_tiles` (removido acima).
+        if visible:
+            vis = np.array(list(visible), dtype=np.int32)
+            m = ((vis[:, 0] >= x0) & (vis[:, 0] < x0 + win) &
+                 (vis[:, 1] >= y0) & (vis[:, 1] < y0 + win))
+            vis = vis[m]
+            if len(vis):
+                fog[vis[:, 0] - x0, vis[:, 1] - y0] = 0
 
         # ── Aplica fog (C-level) ─────────────────────────────────────────────
         win_arr[fog == 2] = 0

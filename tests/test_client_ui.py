@@ -4876,6 +4876,96 @@ def test_on_map_load_invalida_cache_de_explored_do_fullmap():
     assert mm._fullmap_exp_arr is None
 
 
+def test_rebuild_numpy_chama_de_fato_o_get_explored_arr_compartilhado():
+    """28/09/2026, achado de investigação de performance (playtest pós-
+    instrumentação do dia/noite): o minimapa PEQUENO (`render()`/
+    `_rebuild_numpy`) reconvertia `explored` do zero (via um set Python
+    de ~2601 tuplas + interseção) toda vez que o player mudava de tile —
+    em vez de chamar o MESMO `_get_explored_arr` que `_rebuild_fullmap`
+    já usa. Spy real na chamada (não só comparar o resultado, que bateria
+    mesmo se `_rebuild_numpy` nunca chamasse o método — ver lição já
+    registrada nesta sessão sobre teste que passa mesmo revertido)."""
+    mm, screen = _make_minimap_fixture(cols=60, rows=60)
+    explored = {(x, y) for x in range(60) for y in range(60)}
+
+    calls = []
+    orig = mm._get_explored_arr
+
+    def _spy(explored_arg, cols, rows):
+        calls.append((len(explored_arg), cols, rows))
+        return orig(explored_arg, cols, rows)
+
+    mm._get_explored_arr = _spy
+    mm._rebuild_numpy(30, 30, explored, set())
+
+    assert len(calls) == 1, \
+        "_rebuild_numpy deveria chamar _get_explored_arr (cache compartilhado), nao reimplementar a conversao"
+    assert calls[0] == (len(explored), 60, 60)
+
+
+def test_rebuild_numpy_pixel_identico_ao_comportamento_antigo_de_set():
+    """Cross-check pixel a pixel: o novo caminho (array cacheado + máscara
+    numpy da janela) tem que produzir EXATAMENTE o mesmo fog que a versão
+    antiga (set Python de window_tiles + interseção) produzia — mudou só
+    COMO chega lá, nunca o resultado visual."""
+    mm, screen = _make_minimap_fixture(cols=60, rows=60)
+    explored = {(x, y) for x in range(10, 45) for y in range(10, 45)}
+    visible  = {(x, y) for x in range(28, 33) for y in range(28, 33)}
+    player_tx, player_ty = 30, 30
+
+    surf_new = mm._rebuild_numpy(player_tx, player_ty, explored, visible)
+
+    # Reimplementação da versão ANTIGA (window_tiles + set intersection),
+    # isolada aqui só pra comparar — não é o código de produção.
+    import numpy as _np_old
+    win, tp = mm._win, mm._tile_px
+    x0, y0 = player_tx - mm.RADIUS, player_ty - mm.RADIUS
+    cols, rows = 60, 60
+    mx0, my0 = max(0, x0), max(0, y0)
+    mx1, my1 = min(cols, x0 + win), min(rows, y0 + win)
+    wx0, wy0 = mx0 - x0, my0 - y0
+    wx1, wy1 = wx0 + (mx1 - mx0), wy0 + (my1 - my0)
+    win_arr = _np_old.zeros((win, win, 3), dtype=_np_old.uint8)
+    if mx0 < mx1 and my0 < my1:
+        win_arr[wx0:wx1, wy0:wy1] = mm._map_arr[mx0:mx1, my0:my1]
+    fog_old = _np_old.full((win, win), 2, dtype=_np_old.uint8)
+    window_tiles = {(x0 + wx, y0 + wy) for wx in range(win) for wy in range(win)}
+    exp_in_window = explored & window_tiles
+    if exp_in_window:
+        exp = _np_old.array(list(exp_in_window), dtype=_np_old.int32)
+        fog_old[exp[:, 0] - x0, exp[:, 1] - y0] = 1
+    vis_in_window = visible & window_tiles
+    if vis_in_window:
+        vis = _np_old.array(list(vis_in_window), dtype=_np_old.int32)
+        fog_old[vis[:, 0] - x0, vis[:, 1] - y0] = 0
+    win_arr[fog_old == 2] = 0
+    dark = fog_old == 1
+    win_arr[dark] = (win_arr[dark].astype(_np_old.uint16) * 45 // 100).astype(_np_old.uint8)
+    if tp > 1:
+        content_arr = _np_old.repeat(_np_old.repeat(win_arr, tp, axis=0), tp, axis=1)
+    else:
+        content_arr = win_arr
+    content_old = pygame.surfarray.make_surface(content_arr)
+    surf_old = pygame.Surface((mm._u(mm.SIZE), mm._u(mm.SIZE)))
+    surf_old.fill((0, 0, 0))
+    surf_old.blit(content_old, (mm._map_ox, mm._map_oy))
+
+    assert pygame.image.tobytes(surf_new, "RGB") == pygame.image.tobytes(surf_old, "RGB"), \
+        "resultado visual do novo caminho difere do comportamento antigo (set-based)"
+
+
+def test_rebuild_numpy_reconverte_quando_explored_cresce():
+    mm, screen = _make_minimap_fixture(cols=60, rows=60)
+    explored = {(x, y) for x in range(10, 20) for y in range(10, 20)}
+    mm._rebuild_numpy(15, 15, explored, set())
+    arr_first = mm._fullmap_exp_arr
+
+    explored = explored | {(50, 50)}
+    mm._rebuild_numpy(15, 15, explored, set())
+    assert mm._fullmap_exp_arr is not arr_first, \
+        "explored cresceu — precisa reconverter (senão tile novo nunca aparece na janela)"
+
+
 # ── GameEngine._collect_bg_minimap_dots ──────────────────────────────────────
 
 from game import GameEngine as _GE_mm
