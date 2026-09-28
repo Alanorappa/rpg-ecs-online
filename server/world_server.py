@@ -2355,18 +2355,54 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         return self._player_maps.get(session_id, self._map_file)
 
     def transfer_player(self, session_id: str, player_eid: int,
-                        to_map: str, target_x: int, target_y: int) -> None:
-        """Teleporta player para novo mapa + tile. Atualiza _player_maps e MapLocation."""
+                        to_map: str, target_x: int, target_y: int,
+                        emit_moved_delta: bool = False) -> None:
+        """Teleporta player para novo mapa + tile. Atualiza _player_maps e MapLocation.
+
+        `emit_moved_delta` (28/09/2026, PROBLEMAS_ARQUITETURA.md §213,
+        default False = comportamento de sempre): quando True, registra
+        este teleporte em `_moved_this_tick` — mesmo mecanismo que todo
+        MOVE normal já usa pra disparar `SessionManager.
+        _build_update_for_session()`'s revalidação de "o que EU ainda
+        vejo depois de me mexer" (bloco `if any(m["eid"] ==
+        session.entity_id ...)`). SEM isso, um teleporte nunca conta
+        como "o player se moveu" pra esse mecanismo — mob que o player
+        já conhecia (ex: perseguindo antes do teleporte) nunca recebe
+        ENTITY_DESPAWN se ele parar de se mexer depois (ex: já
+        retornou ao spawn E ficou parado) — o cliente continua
+        renderizando ele congelado na última posição válida até
+        QUALQUER evento novo forçar a resync (bug real relatado pelo
+        usuário: zumbis "presos" na tela depois de atravessar um
+        portal, só "corrigindo" quando o player chegava perto o
+        bastante do respawn deles de novo).
+
+        Default False PRESERVA o comportamento de todo outro chamador
+        (respawn/ghost, arena/BG match start, debug) — `respawn_system.
+        py` já documentou de propósito que NÃO quer esse sinal pro
+        caso de ghost (faria outros players verem o "espírito" se
+        mover antes de ficar invisível). Só `_handle_zone_change_req`
+        (`server/session.py`, o pedido real de portal/transição de
+        mundo aberto) passa `True` — é o único chamador onde "o
+        player realmente se moveu, de propósito, e outros verem isso
+        é o comportamento correto" é verdade."""
         self._player_maps[session_id] = to_map
         from engine.components import TileMovement, Position, MapLocation as _MLtp
         ml = self.world.get_component(player_eid, _MLtp)
         _from_map = ml.map_file if ml is not None else None
         if ml is not None:
             ml.map_file = to_map
+        _tm_xfer = self.world.get_component(player_eid, TileMovement)
+        _from_tx = _tm_xfer.current_tile_x if _tm_xfer is not None else target_x
+        _from_ty = _tm_xfer.current_tile_y if _tm_xfer is not None else target_y
         # snap_to_tile: mesmo conjunto de escritas que o bloco manual antigo
         # fazia aqui — agora centralizado (única forma correta de teleportar).
         from engine.utils import snap_to_tile as _snap_xfer
         _snap_xfer(self.world, player_eid, target_x, target_y, carry_prev=False)
+        if emit_moved_delta:
+            self._moved_this_tick.append({
+                "eid": player_eid, "tx": target_x, "ty": target_y,
+                "from_tx": _from_tx, "from_ty": _from_ty,
+            })
         # Mob que perseguia este player no mapa de ORIGEM (27/09/2026,
         # PROBLEMAS_ARQUITETURA.md §212) — sem isso, o mob continua com
         # `target_eid` válido e tenta alcançar a posição NOVA do player,

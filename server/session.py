@@ -2223,10 +2223,17 @@ class SessionManager:
                 log.warning(f"[ZoneChangeReq] falha ao carregar mapa sob demanda {to_map}: {_e_zcr}")
                 return
 
-        # Executa a troca de mapa no servidor
+        # Executa a troca de mapa no servidor. emit_moved_delta=True
+        # (28/09/2026, §213) — só aqui: é o único chamador onde o
+        # teleporte é o próprio player usando um portal de mundo
+        # aberto de propósito, então outros players/o próprio AOI
+        # verem isso como "o player se moveu" é o comportamento
+        # correto (ver docstring de transfer_player pro porquê os
+        # outros chamadores continuam com o default False).
         self.world_server.transfer_player(
             session.session_id, session.entity_id,
             to_map, target_x, target_y,
+            emit_moved_delta=True,
         )
 
         # Notifica o cliente para carregar o novo mapa
@@ -2235,8 +2242,25 @@ class SessionManager:
             "target_x": target_x,
             "target_y": target_y,
         })
-        # Invalida known_eids — entidades do mapa antigo não são mais visíveis
-        session.known_eids.clear()
+        # 28/09/2026 (§213, bug real relatado pelo usuário): NÃO limpa
+        # `known_eids` na mão aqui — fazia isso silenciosamente (sem
+        # nunca mandar ENTITY_DESPAWN pro cliente), contando com o
+        # cliente reconstruir tudo sozinho via `_do_transition`. Isso só
+        # é verdade numa troca de mapa DE VERDADE (o cliente descarta e
+        # recarrega tudo) — num teleporte pro MESMO arquivo de mapa
+        # (portal de mundo aberto), `_do_transition` usa um atalho que só
+        # reposiciona o player, nunca limpa entidades remotas, então
+        # elas ficavam "congeladas" na tela pra sempre (o servidor tinha
+        # esquecido delas, mas nunca avisou o cliente pra esquecer
+        # também). `transfer_player(..., emit_moved_delta=True)` acima já
+        # registra este teleporte como um movimento normal — a
+        # revalidação de "o que eu ainda vejo" de
+        # `_build_update_for_session` (mesmo bloco que já existia pro
+        # caso de bush/visibilidade, agora também checando DISTÂNCIA)
+        # cuida de mandar ENTITY_DESPAWN explícito pra cada entidade que
+        # ficou pra trás, no tick seguinte — cross-map E same-map iguais
+        # (entidade de um mapa diferente já falha o check de mapa em
+        # `in_aoi`/`in_aoi_exit` sozinha).
 
     # ── Trade (player↔player) — ver server/trade_processor.py ────────────────
 
@@ -3665,9 +3689,27 @@ class SessionManager:
         # quando o player andava de novo (novo delta de "moved" acidental).
         # Iterado DEPOIS do loop acima pra não duplicar quem já foi removido
         # por lá (já não está mais em known_eids nesse ponto).
+        #
+        # 28/09/2026 (§213) — achado real ao investigar bug de teleporte:
+        # este bloco SÓ checava `_can_see` (visibilidade/stealth), nunca
+        # DISTÂNCIA. Um mob PARADO (sem gerar o próprio delta de "moved")
+        # nunca é revalidado pelo loop principal acima (que só reage a
+        # quem SE MOVEU) — ou seja, se EU me afasto de um mob parado (por
+        # teleporte OU, em tese, por qualquer movimento meu), ele nunca
+        # sai de `known_eids`/nunca recebe ENTITY_DESPAWN até ele mesmo
+        # se mexer de novo. Normalmente invisível (mob costuma andar/
+        # perseguir/voltar de tempos em tempos), mas fica bem visível num
+        # teleporte instantâneo pra longe de um mob que acabou de assentar
+        # (ex: voltou pro spawn e ficou IDLE) — o cliente continua
+        # renderizando ele "congelado" na última posição conhecida.
         if any(m["eid"] == session.entity_id for m in deltas.get("moved", [])):
+            from engine.components import TileMovement as _TMrv
             for eid in list(session.known_eids):
-                if not _can_see(self.world_server, session.entity_id, eid, ally_centers=ally_centers):
+                _tm_rv = self.world_server.world.get_component(eid, _TMrv)
+                _out_of_range = (_tm_rv is not None and not in_aoi_exit(
+                    _tm_rv.current_tile_x, _tm_rv.current_tile_y, eid))
+                if _out_of_range or not _can_see(
+                        self.world_server, session.entity_id, eid, ally_centers=ally_centers):
                     aoi_exits.append(eid)
                     session.known_eids.discard(eid)
 

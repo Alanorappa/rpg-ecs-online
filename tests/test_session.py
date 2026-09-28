@@ -2515,6 +2515,88 @@ class TestZoneChangeReq(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(get_msgs_of_type(fw, MsgType.ZONE_CHANGE)), 0)
 
 
+class TestTransferPlayerEmitMovedDelta(unittest.TestCase):
+    """28/09/2026, PROBLEMAS_ARQUITETURA.md §213 — `emit_moved_delta`
+    novo em `transfer_player`, default False preserva o comportamento
+    de sempre pros outros chamadores (respawn/ghost, match start,
+    debug)."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        from tests.helpers import spawn_player
+        spawn_player(self.ws, "s1", 130, 374)
+        self.peid = self.ws._player_eids["s1"]
+
+    def test_default_nao_registra_movimento(self):
+        self.ws._moved_this_tick.clear()
+        self.ws.transfer_player("s1", self.peid, self.ws._map_file, 210, 480)
+        self.assertEqual(self.ws._moved_this_tick, [])
+
+    def test_emit_moved_delta_true_registra_movimento(self):
+        self.ws._moved_this_tick.clear()
+        self.ws.transfer_player("s1", self.peid, self.ws._map_file, 210, 480,
+                                emit_moved_delta=True)
+        matching = [m for m in self.ws._moved_this_tick if m["eid"] == self.peid]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual((matching[0]["tx"], matching[0]["ty"]), (210, 480))
+        self.assertEqual((matching[0]["from_tx"], matching[0]["from_ty"]), (130, 374))
+
+
+class TestTeleportDespawnaMobJaConhecido(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
+    """Bug real relatado pelo usuário (27-28/09/2026, §212/§213): depois
+    de atravessar um portal pra outro canto do MESMO mapa, mobs que o
+    player já conhecia (perseguindo antes) continuavam aparecendo
+    "congelados" na última posição — o cliente nunca recebia
+    ENTITY_DESPAWN porque o servidor só reavalia "o que este player
+    ainda vê" quando ELE PRÓPRIO gera um delta de movimento, e
+    teleporte não contava como isso. Ver ZONE_CHANGE_REQ→
+    transfer_player(emit_moved_delta=True)."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+        # Seed: mobs só populam _mob_eids de verdade depois de ticks reais
+        # com um player na zona (respawn zone-based, §170) — mesmo padrão
+        # de TestAOIUpdate.asyncSetUp, sem isso first_mob() pode devolver
+        # None e o teste pula silenciosamente.
+        await fake_login(self.mgr, "seed", "seed_tp_despawn", 130, 374)
+        await asyncio.get_event_loop().run_in_executor(
+            None, lambda: run_ticks(self.ws_server, 50))
+        await self.mgr.on_disconnect("seed")
+
+    async def _run_ticks_async(self, n: int):
+        for _ in range(n):
+            self.ws_server._tick(0.05)
+            await asyncio.sleep(0)
+
+    async def test_mob_conhecido_recebe_despawn_apos_teleporte_pro_mesmo_mapa(self):
+        session, fw = await fake_login(self.mgr, "s1", "tp_despawn_a", 130, 374)
+        peid = session.entity_id
+
+        mob_eid = first_mob(self.ws_server)
+        if not mob_eid:
+            self.skipTest("Sem mobs")
+        set_entity_tile(self.ws_server, mob_eid, 131, 375)
+
+        await self._run_ticks_async(3)
+        self.assertIn(mob_eid, session.known_eids,
+                      "setup: mob deveria estar em known_eids antes do teleporte")
+        fw.sent.clear()
+
+        # Teleporte pro MESMO mapa, bem longe do mob (portal de mundo
+        # aberto — mesmo caminho real do bug relatado).
+        await self.mgr._handle_zone_change_req(session, {
+            "to_map": self.ws_server._map_file, "target_x": 300, "target_y": 374,
+        }, 0)
+        await self._run_ticks_async(3)
+
+        despawns = [eid for mt, p, _, _ in get_messages(fw)
+                   if mt == MsgType.AOI_UPDATE
+                   for eid in p.get("despawned", [])]
+        self.assertIn(mob_eid, despawns,
+                      "Player não recebeu despawn do mob deixado pra trás no teleporte")
+        self.assertNotIn(mob_eid, session.known_eids)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Visão compartilhada de time (30/07/2026, pedido do usuário)
 # ─────────────────────────────────────────────────────────────────────────────
