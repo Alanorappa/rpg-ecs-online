@@ -2668,7 +2668,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
                 self._day_night_system.render(world_objects=_lit_world_objs,
-                                              camera_offset_x=cam_x, camera_offset_y=cam_y)
+                                              camera_offset_x=cam_x, camera_offset_y=cam_y,
+                                              _prof_record=self._prof_record)
                 self._prof_record(f"rnd:{type(self._day_night_system).__name__}",
                                   _time.perf_counter() - _ts)
             else:

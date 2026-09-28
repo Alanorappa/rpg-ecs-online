@@ -576,9 +576,24 @@ class DayNightSystem(System):
             self._get_warm_glow_gradient(radius_px)
 
     def render(self, world_objects: list | None = None,
-              camera_offset_x: float = 0, camera_offset_y: float = 0) -> None:
+              camera_offset_x: float = 0, camera_offset_y: float = 0,
+              _prof_record=None) -> None:
+        """`_prof_record` (28/09/2026, achado de investigação de
+        performance) — callback opcional `(label, elapsed_seconds)`,
+        mesma assinatura de `GameEngine._prof_record`, passado só
+        quando `PROFILE_FRAMES` está ativo (ver game.py). Divide o
+        label único `rnd:DayNightSystem` (que já mede a função inteira
+        de fora) em 5 pedaços internos — sem isso, não dava pra saber
+        SE o custo por tick ainda restante vem do escurecimento
+        (`BLEND_RGBA_MULT` da tela inteira, inerente ao efeito) ou de
+        outra parte, pra decidir se vale otimizar mais. Nenhuma lógica
+        muda — só instrumentação, opt-in via parâmetro (nunca `if
+        PROFILE_FRAMES` direto aqui, esse módulo não conhece o global
+        de game.py)."""
+        import time as _time_dns
         if self.world_surf is None:
             return
+        _t0_dns = _time_dns.perf_counter() if _prof_record else 0.0
         # Só mundo aberto — BG/Arena ficam sempre num horário fixo
         # (decisão do usuário: luz não deve mudar no meio de uma partida).
         iius = self.world.get_component(self.player_entity, InstanceInventoryUIState)
@@ -615,6 +630,9 @@ class DayNightSystem(System):
             self._overlay_surf = pygame.Surface((surf_w, surf_h))
             self._overlay_size = (surf_w, surf_h)
         self._overlay_surf.fill((r, g, b))
+        if _prof_record:
+            _prof_record("rnd:DayNightSystem:setup", _time_dns.perf_counter() - _t0_dns)
+            _t0_dns = _time_dns.perf_counter()
 
         # Luz de objeto de MAPA (lampião etc.) é BINÁRIA — só na fase
         # Noite, não segue o gradual do multiplicador ambiente (22/09/2026,
@@ -647,6 +665,9 @@ class DayNightSystem(System):
                 self._overlay_surf.blit(cluster["add_surf"], (sx, sy),
                                         special_flags=pygame.BLEND_RGBA_ADD)
                 _lit_glow_blits.append((sx, sy, cluster["glow_surf"]))
+        if _prof_record:
+            _prof_record("rnd:DayNightSystem:static_clusters", _time_dns.perf_counter() - _t0_dns)
+            _t0_dns = _time_dns.perf_counter()
 
         if world_objects:
             for obj in world_objects:
@@ -669,8 +690,14 @@ class DayNightSystem(System):
                     gradient, (cx - radius_px, cy - radius_px),
                     special_flags=pygame.BLEND_RGBA_ADD)
                 _lit_single_positions.append((cx, cy, radius_px, intensity_pct))
+        if _prof_record:
+            _prof_record("rnd:DayNightSystem:player_light", _time_dns.perf_counter() - _t0_dns)
+            _t0_dns = _time_dns.perf_counter()
 
         self.world_surf.blit(self._overlay_surf, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        if _prof_record:
+            _prof_record("rnd:DayNightSystem:multiply_blit", _time_dns.perf_counter() - _t0_dns)
+            _t0_dns = _time_dns.perf_counter()
 
         # Brilho quente — DEPOIS da multiplicação, direto no mundo (ver
         # docstring de _get_warm_glow_gradient). Reusa as posições já
@@ -685,3 +712,5 @@ class DayNightSystem(System):
             warm = self._get_warm_glow_gradient(radius_px)
             warm.set_alpha(round(255 * max(0.0, min(1.0, intensity_pct / 100.0))))
             self.world_surf.blit(warm, (cx - radius_px, cy - radius_px))
+        if _prof_record:
+            _prof_record("rnd:DayNightSystem:warm_glow", _time_dns.perf_counter() - _t0_dns)
