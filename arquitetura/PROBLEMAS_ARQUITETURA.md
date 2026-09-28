@@ -23080,3 +23080,82 @@ código do fix. Repetido 2x limpo pra confirmar antes de comitar. Lição:
 nunca correr para declarar "regressão" a partir de uma suíte que
 compartilha um recurso finito (conexão de banco) com outros processos
 rodando ao mesmo tempo — isolar antes de concluir.
+
+## 213. Correção do §212 não resolveu de verdade — mob "congelado" na tela era um bug de sincronização AOI, não de IA (28/09/2026)
+
+Usuário testou o fix do §212 (mob desiste de perseguir quando o alvo
+teleporta) e relatou: "não resolveu, ainda acontece exatamente a mesma
+coisa" — com uma teoria própria e correta na direção: o cliente
+guardava a última posição conhecida dos mobs, e parecia que o
+servidor "corrigia" a posição só quando o player se aproximava do
+respawn de novo.
+
+**Por que o §212 não bastava**: aquele fix arruma o COMPORTAMENTO do
+mob no servidor (ele realmente volta pro spawn mais rápido), mas
+nunca tocava em COMO o cliente fica sabendo disso. Investigação (com
+teste de integração real, que FALHOU antes de eu entender o problema —
+nunca confiar só na teoria) achou 2 causas reais, que se combinavam:
+
+1. **Cliente**: `game.py::_do_transition()` tem um atalho pra "morte no
+   mesmo mapa: apenas reposiciona o player, mobs continuam vivos" —
+   ativado sempre que `target_file == self._current_map_file`, o que
+   cobre TANTO respawn de morte (curto, mobs ainda relevantes, atalho
+   correto) QUANTO um portal de mundo aberto que teleporta pra outro
+   canto do MESMO arquivo de mapa (nosso caso — nunca limpa/atualiza
+   `_remote_mobs` nem nenhuma entidade remota).
+2. **Servidor**: `_handle_zone_change_req` (`server/session.py`) fazia
+   `session.known_eids.clear()` depois de mandar `ZONE_CHANGE` —
+   apagava o registro do SERVIDOR sobre "o que este player via", mas
+   NUNCA mandava `ENTITY_DESPAWN`/despawn explícito pro cliente. Só
+   "funciona" numa troca de mapa DE VERDADE porque aí o item 1 acima
+   reconstrói tudo do cliente sozinho — pra teleporte no MESMO mapa,
+   os dois lados ficavam mudos um pro outro: cliente nunca limpa
+   (atalho), servidor nunca avisa (clear silencioso).
+   Além disso, achei que o ÚNICO mecanismo que reavalia "o que eu
+   ainda vejo" quando EU me movo (bloco de revalidação em
+   `_build_update_for_session`, criado em §56 pra bush/stealth) só
+   chamava `_can_see` (visibilidade — parede/bush/invisibilidade),
+   NUNCA distância — um mob PARADO nunca é revalidado pelo loop
+   principal (que só reage a quem SE MOVEU), então mesmo removendo o
+   `clear()` acima, nada despawnava um mob simplesmente deixado muito
+   longe. Esse buraco é mais geral que só teleporte (existe pra
+   qualquer "eu me afasto de um mob parado"), só que invisível no dia
+   a dia porque a maioria dos mobs anda/persegue/volta de tempos em
+   tempos, gerando o próprio delta de "moved" que dispara a OUTRA
+   checagem (a do loop principal, essa sim já olhava distância).
+
+**Fix**: (a) `WorldServer.transfer_player()` ganhou
+`emit_moved_delta: bool = False` (default preserva TODO outro
+chamador — respawn/ghost documentou de propósito que não queria isso,
+match start, debug) — só `_handle_zone_change_req` passa `True`,
+registrando o teleporte em `_moved_this_tick` como um movimento normal
+do próprio player. (b) Removido o `session.known_eids.clear()` cego —
+a revalidação real (item seguinte) já cobre cross-map E same-map
+igual, sem precisar de atalho manual. (c) O bloco de revalidação em
+`_build_update_for_session` agora TAMBÉM checa `in_aoi_exit` (mesma
+métrica de distância que o loop principal já usa), não só `_can_see` —
+mob que ficou fora do raio manda despawn de verdade, mesmo parado.
+
+**Testes** (`tests/test_session.py`):
+`TestTransferPlayerEmitMovedDelta` (unitário, confirma o novo
+parâmetro default False preserva comportamento antigo, True registra
+o movimento certo) + `TestTeleportDespawnaMobJaConhecido` (integração
+real — login, mob conhecido, teleporte pro MESMO mapa bem longe,
+confirma despawn de verdade chega + `known_eids` perde o mob).
+Revert-to-confirm feito em 2 PARTES separadas (cada metade da correção
+tem seu próprio teste que falha isolado sem ela) — a 1ª tentativa de
+revert-to-confirm já tinha pego que a checagem de distância sozinha
+não bastava (o `clear()` antigo mascarava completamente, known_eids
+já vinha vazio antes da revalidação nova rodar), o que levou a achar a
+2ª causa. Suíte completa `test_session.py` (111 testes, rodada sozinha
+— ver §209 sobre não rodar Postgres em paralelo) + suíte de IA de mob
+(§212, 111 testes) passando.
+
+**Lição de processo**: a 1ª correção (§212) resolvia uma causa real e
+válida, mas não era a causa DOMINANTE do sintoma relatado — só fechar
+o "1º achado plausível" sem testar contra o cenário exato relatado
+(mesmo mapa, mob parado, distância grande) deixou passar 2 bugs
+adicionais que juntos explicavam o comportamento por completo. O
+usuário insistir em "ainda acontece exatamente a mesma coisa" em vez
+de aceitar a explicação da 1ª rodada foi o que abriu a investigação
+certa.
