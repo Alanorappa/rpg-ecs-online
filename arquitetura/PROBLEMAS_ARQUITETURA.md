@@ -23159,3 +23159,47 @@ adicionais que juntos explicavam o comportamento por completo. O
 usuário insistir em "ainda acontece exatamente a mesma coisa" em vez
 de aceitar a explicação da 1ª rodada foi o que abriu a investigação
 certa.
+
+## 214. Minimapa pequeno reconvertia `explored` do zero a cada tile andado — cache existente só cobria o mapa grande (28/09/2026)
+
+Pergunta do usuário sobre o sistema de dia/noite (§209-§211) levou a
+instrumentar `DayNightSystem.render()` em 5 sub-labels — e os dados
+reais mostraram que o maior custo não era o escurecimento de tela
+(hipótese inicial), e sim o blit dos clusters de luz estática. Ao
+pedir a lista de picos do log, o usuário notou que `rnd:minimap`
+ainda era a maior causa recorrente (36 de 200 picos), mesmo já tendo
+recebido um fix de cache nesta sessão (§209, item "hud:combat_log").
+
+**Causa raiz**: aquele fix anterior só tocou `_rebuild_fullmap`
+(mapa cheio, tela de instância). O minimapa PEQUENO (HUD, sempre
+visível, `render()`/`_rebuild_numpy`) é um caminho de código
+SEPARADO — ele reconvertia `explored` (set→numpy) do zero toda vez
+que o player mudava de tile, via um set Python de ~2601 tuplas
+(`window_tiles = {(x0+wx, y0+wy) for wx in range(win) for wy in
+range(win)}`) + interseção com `explored`. Já era bounded (fix de
+14/07/2026, O(win²) em vez de O(len(explored))), mas montar/hashear
+milhares de tuplas por tile andado (quase todo frame, andando) ainda
+pesava de verdade — confirmado por benchmark isolado: ~0.55ms/chamada
+numa sessão bem explorada (20k tiles).
+
+**Fix**: `_get_explored_arr(explored, cols, rows)` — extrai a
+conversão explored→numpy (cacheada por `len(explored)`, que só
+CRESCE) que já existia dentro de `_rebuild_fullmap` pra 1 método
+compartilhado. `_rebuild_numpy` passa a chamar esse MESMO método em
+vez de reimplementar via set, filtrando pra janela de RADIUS tiles
+com máscara numpy (`x0<=x<x0+win` etc) em vez de set intersection.
+`visible` (pequeno, muda quase todo tick) também parou de depender do
+`window_tiles` removido — mesmo sem cache dedicado, ganhou de graça
+por não precisar mais daquele set gigante. Benchmark: ~0.55ms →
+~0.13ms por chamada (4x). Nenhuma mudança visual — mesmo fog, mesma
+geometria.
+
+**Testes** (`tests/test_client_ui.py`): spy real confirmando que
+`_rebuild_numpy` CHAMA `_get_explored_arr` (não só compara o
+resultado final, que bateria mesmo sem a chamada — mesma lição já
+registrada em §209 sobre teste que passa mesmo com o fix revertido);
+reconversão quando `explored` cresce; cross-check pixel a pixel
+contra uma reimplementação isolada do comportamento antigo (set-
+based), só pra provar equivalência visual. Revert-to-confirm: 2 dos 3
+falham sem a chamada. Suíte completa `test_client_ui.py` (233 testes)
+passando. 100% client-side, sem deploy no servidor.
