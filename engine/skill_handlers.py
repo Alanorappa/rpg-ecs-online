@@ -172,6 +172,17 @@ class SkillHandlers:
             return in_range(ax, ay, bx, by, _max_range)
 
         current = combat_state.target_entity_id
+        # 29/09/2026 — investigação do bot de BG falhando Interceptar
+        # repetidamente ("Nenhum alvo") mesmo com target_entity_id já
+        # setado pelo tid do request (server/skill_processor.py). Leitura
+        # estática + 2 repros sintéticos (bot vs bot parado, bot vs bot em
+        # movimento) não reproduziram — precisa do valor real capturado no
+        # instante exato em que este "current" (já selecionado) falha a
+        # validação e cai pro fallback de auto-seleção abaixo. Só loga
+        # quando HAVIA um alvo pré-selecionado que não validou (nunca pro
+        # caso comum de "nenhum alvo selecionado ainda", current == -1
+        # desde o início — isso não é o cenário investigado).
+        _dbg_fallback_reason = None
         if current != -1:
             # Alvo já selecionado também precisa estar dentro de _max_range —
             # sem isso, um target_entity_id setado a partir do "tid" que o
@@ -196,6 +207,28 @@ class SkillHandlers:
                     _rc_tgt = self.world.get_component(current, _RCtgt)
                     if _rc_tgt is not None and _rc_tgt.hp > 0:
                         return current
+                    _dbg_fallback_reason = "remote_sem_hp_ou_ausente"
+                else:
+                    _dbg_fallback_reason = "cs_presente_mas_hp<=0"
+            else:
+                _dbg_fallback_reason = "fora_de_max_range"
+
+        if current != -1 and _dbg_fallback_reason:
+            from debug.aoi_debug import AOI_DBG as _AOI_DBG_rt
+            _cur_tm_dbg = self.world.get_component(current, TileMovement)
+            _cur_cs_dbg = self.world.get_component(current, CombatStats)
+            _AOI_DBG_rt.log(
+                "RESOLVE_TARGET_FALLBACK",
+                caster=self.player_entity_id, current=current, max_range=_max_range,
+                reason=_dbg_fallback_reason,
+                caster_tile=(tile_move.current_tile_x, tile_move.current_tile_y),
+                caster_is_moving=tile_move.is_moving,
+                target_tile=((_cur_tm_dbg.current_tile_x, _cur_tm_dbg.current_tile_y)
+                             if _cur_tm_dbg else None),
+                target_is_moving=(_cur_tm_dbg.is_moving if _cur_tm_dbg else None),
+                target_hp=(_cur_cs_dbg.current_hp if _cur_cs_dbg else None),
+            )
+
         # Auto-seleciona o inimigo HOSTIL em range com menor HP (desempate
         # por distância) — B6. `is_hostile` (01/08/2026, bug real relatado
         # pelo usuário: "as teclas de atalho das habilidades ainda
