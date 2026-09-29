@@ -359,7 +359,16 @@ class SkillHandlers:
     # movimento/dash inteiros, ambos pareceram corretos na leitura
     # estática). Log da posição/estado reais no instante da rejeição —
     # ver debug/aoi_debug.py.
-    _WARN_DEBUG_REASONS = frozenset({"Fora de alcance", "Alvo inválido", "Nenhum alvo"})
+    _WARN_DEBUG_REASONS = frozenset({
+        "Fora de alcance", "Alvo inválido", "Nenhum alvo",
+        # 29/09/2026, bug real relatado pelo usuário: Interceptar
+        # "difícilmente funcionava" contra bot de BG — estas 4 razões
+        # são específicas do Interceptar (engine/skill_handlers.py::
+        # _skill_interceptar) e nunca tinham log nenhum, mesmo com o
+        # mecanismo genérico de debug já existindo pras 3 de cima.
+        "Alvo muito próximo", "Alvo muito longe",
+        "Sem espaço ao redor do alvo", "Caminho bloqueado",
+    })
 
     def _warn(self, text: str) -> None:
         """Exibe aviso de ação bloqueada em posição fixa na tela (não vai para o log)."""
@@ -370,6 +379,7 @@ class SkillHandlers:
 
     def _log_skill_warn_debug(self, text: str) -> None:
         from debug.aoi_debug import AOI_DBG as _AOI_DBG_skw
+        from engine.components import BotControlled as _BotCtrlSkw
         cs  = self.world.get_component(self.player_entity_id, CombatState)
         tm  = self.world.get_component(self.player_entity_id, TileMovement)
         pos = self.world.get_component(self.player_entity_id, Position)
@@ -392,6 +402,12 @@ class SkillHandlers:
             # atordoado (deveria estar imóvel) no instante da rejeição.
             target_stunned=(tgt_sfx.has("stun") if tgt_sfx else None),
             target_is_moving=(tgt_tm.is_moving if tgt_tm else None),
+            # 29/09/2026 — usuário suspeita que o problema é específico
+            # de usar Interceptar contra BOT de BG (vs mob/player real).
+            # Confirma isso direto no log em vez de inferir pela ausência
+            # de outros campos.
+            target_is_bot=(self.world.get_component(tgt, _BotCtrlSkw) is not None
+                          if tgt != -1 else None),
         )
 
     _last_warn: str = ""  # último motivo de rejeição — enviado em failed SKILL_RESULT
@@ -726,11 +742,15 @@ class SkillHandlers:
         # o alvo entre o cast e a skill seguinte) — SKILL_WARN/DASH_COMPLETE
         # já existentes só mostram o RESULTADO, não esta leitura interna.
         from debug.aoi_debug import AOI_DBG as _AOI_DBG_int
+        from engine.components import BotControlled as _BotCtrlInt
         _sfx_int_dbg = self.world.get_component(target_id, StatusEffects)
         _AOI_DBG_int.log(
             "INTERCEPTAR_CAST", caster=self.player_entity_id, target=target_id,
             target_tile_read=(tx, ty), caster_tile=(px, py), dest=(dest_x, dest_y),
             target_already_stunned=(_sfx_int_dbg.has("stun") if _sfx_int_dbg else None),
+            # 29/09/2026 — usuário suspeita que Interceptar contra BOT de
+            # BG falha mais/não dasheia até o alvo — confirma direto aqui.
+            target_is_bot=(self.world.get_component(target_id, _BotCtrlInt) is not None),
         )
 
         if not self._dash_path_clear(px, py, dest_x, dest_y):
