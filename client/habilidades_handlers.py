@@ -269,6 +269,36 @@ class HabilidadesHandlers:
                 f"Sem resposta do servidor — continuando em {self._loading_timeout:.0f}s...", False, (120, 80, 60))
             self.screen.blit(_hint, _hint.get_rect(centerx=sw // 2, centery=sh // 2 + 55))
 
+    def _draw_map_transition_screen(self, status: str) -> None:
+        """Tela de transição (28/09/2026, pedido do usuário — ver
+        PROBLEMAS_ARQUITETURA.md §215) — mostrada por 1 frame estático
+        antes de `_do_transition()` rodar de verdade (troca de mapa OU
+        entrada/saída de instância — BG, arena). Sem isso, o jogador
+        via a tela CONGELADA na última cena do mapa antigo por até ~2s
+        (bug real medido: carregamento de mapa/tilemap novo é síncrono,
+        sem yield pro loop de render) — pesquisa de mercado confirmou
+        que até MMOs AAA (WoW) mostram tela dedicada pra teletransporte/
+        instância, nunca deixam a tela "congelada" sem feedback.
+
+        Mesmo estilo visual de `_draw_loading_screen`, mas SEM barra de
+        progresso (a troca de mapa não é um loop com contagem própria,
+        diferente do preload de assets) — só título + status."""
+        sw, sh = self.screen.get_width(), self.screen.get_height()
+        self.screen.fill((8, 6, 4))
+        _grad = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        _grad.fill((0, 0, 0, 0))
+        for _r in range(min(sw, sh) // 2, 0, -20):
+            _alpha = max(0, 40 - _r // 8)
+            pygame.draw.circle(_grad, (30, 20, 10, _alpha), (sw // 2, sh // 2), _r)
+        self.screen.blit(_grad, (0, 0))
+        _title = self.font_lg.render("RPG Online", False, (220, 185, 80))
+        self.screen.blit(_title, _title.get_rect(centerx=sw // 2, centery=sh // 2 - 60))
+        pygame.draw.line(self.screen, (80, 62, 30),
+                         (sw // 2 - 120, sh // 2 - 32),
+                         (sw // 2 + 120, sh // 2 - 32), 1)
+        _status = self.font_sm.render(status, False, (150, 130, 70))
+        self.screen.blit(_status, _status.get_rect(centerx=sw // 2, centery=sh // 2 + 10))
+
     def _draw_hab_drag_ghost(self) -> None:
         """Renderiza o ícone fantasma que segue o mouse durante o drag do painel H.
         Chamado APÓS _draw_hotbar() para ficar sempre na frente dos slots."""

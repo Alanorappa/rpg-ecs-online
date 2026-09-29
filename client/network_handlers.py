@@ -2941,11 +2941,29 @@ class NetworkHandlers:
         self._bg_in_match_val         = False
         self._bg_opponents_server_val = set()
         if map_file:
+            # Tela de transição (28/09/2026, §215) — só quando é troca
+            # de mapa DE VERDADE (_do_transition faz o mesmo check
+            # internamente pro atalho de "morte no mesmo mapa"): sem
+            # isso, um teleporte pro MESMO arquivo (portal de mundo
+            # aberto) mostraria a tela por 1 frame sem necessidade —
+            # esse caminho já é rápido (só reposiciona, não recarrega
+            # nada) e nunca teve o engajo que motivou esta tela.
+            _map_file_norm = map_file.replace("\\", "/")
+            _is_real_change = _map_file_norm != self._current_map_file
+            if _is_real_change:
+                self._draw_map_transition_screen("Entrando em nova área...")
+                self._display.blit(self.screen, (0, 0))
+                import pygame as _pg_zc
+                _pg_zc.display.flip()
+                _pg_zc.event.pump()
+                SOUNDS.set_game_ready(False)
             self._do_transition({
                 "target_map": map_file,
                 "target_x":   target_x,
                 "target_y":   target_y,
             })
+            if _is_real_change:
+                SOUNDS.set_game_ready(True)
 
     # ── Trade (player↔player) — ver server/trade_processor.py ────────────────
 
