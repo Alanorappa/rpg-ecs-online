@@ -3247,6 +3247,37 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         LOG.add(f"Entrando: {zone_name}", (200, 160, 0))
         self._autosave()
 
+        # 29/09/2026 — investigação de bug real relatado pelo usuário:
+        # mundo fica todo preto (HUD normal) especificamente ao SAIR de
+        # uma BG. Log temporário de diagnóstico (RPG_DEBUG_AOI=1, local no
+        # PRÓPRIO cliente — nunca chega no servidor) capturando estado
+        # relevante pro render logo após a transição, pra comparar entre
+        # uma troca "normal" (funciona) e a saída de BG (não funciona)
+        # sem precisar adivinhar qual sistema é o culpado.
+        from debug.aoi_debug import AOI_DBG as _AOI_DBG_trans
+        from ui.ui_components import InstanceInventoryUIState as _IIUS_trans
+        from engine.components import Camera as _Camera_trans
+        _iius_trans = self.world.get_component(self.player_entity, _IIUS_trans)
+        AOI_DBG_TRANS_extra = {}
+        try:
+            _cam_trans = self.world.get_first(_Camera_trans, Position)
+            AOI_DBG_TRANS_extra["camera_pos"] = (
+                (round(_cam_trans[2].x, 1), round(_cam_trans[2].y, 1))
+                if _cam_trans else None)
+        except Exception as _e_trans:
+            AOI_DBG_TRANS_extra["camera_err"] = repr(_e_trans)
+        _AOI_DBG_trans.log(
+            "CLIENT_TRANSITION_DONE",
+            target_file=target_file,
+            map_width_tiles=tilemap_comp.map_width_tiles,
+            map_height_tiles=tilemap_comp.map_height_tiles,
+            tile_matrix_rows=len(tilemap_comp.tile_matrix),
+            zoom_surf_sz=self._zoom_surf_sz,
+            instance_ui_active=(_iius_trans.active if _iius_trans else None),
+            day_night_map_affected=getattr(self._day_night_system, "map_affected", None),
+            **AOI_DBG_TRANS_extra,
+        )
+
     def _reposition_player(self, tile_x: int, tile_y: int):
         new_x = tile_x * TILE_SIZE + TILE_SIZE / 2
         new_y = tile_y * TILE_SIZE + TILE_SIZE / 2
