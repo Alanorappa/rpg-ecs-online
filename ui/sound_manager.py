@@ -324,28 +324,19 @@ class SoundManager:
             print(f"[SoundManager] Mixer indisponível: {exc}")
             return
 
+        from ui.asset_cache import get_sound
         for name, rel_path in _REGISTRY.items():
             full = resource_path(rel_path)
-            if os.path.isfile(full):
-                try:
-                    self._cache[name] = pygame.mixer.Sound(full)
-                except Exception as exc:
-                    print(f"[SoundManager] Erro ao carregar '{name}': {exc}")
-                    self._cache[name] = None
-            else:
-                self._cache[name] = None
+            self._cache[name] = get_sound(full) if os.path.isfile(full) else None
 
         # Carrega versões de caverna — mesmo nome, pasta sfx/cave/
         cave_loaded = 0
         for name in list(_REGISTRY.keys()):
             cave_path = resource_path(_sfx_cave(name))
             if os.path.isfile(cave_path):
-                try:
-                    self._cache_cave[name] = pygame.mixer.Sound(cave_path)
+                self._cache_cave[name] = get_sound(cave_path)
+                if self._cache_cave[name] is not None:
                     cave_loaded += 1
-                except Exception as exc:
-                    print(f"[SoundManager] Erro ao carregar cave '{name}': {exc}")
-                    self._cache_cave[name] = None
             else:
                 self._cache_cave[name] = None
 
@@ -360,12 +351,7 @@ class SoundManager:
                     continue
                 key = fname[:-4]
                 if key not in self._cache:
-                    full = os.path.join(sfx_dir, fname)
-                    try:
-                        self._cache[key] = pygame.mixer.Sound(full)
-                    except Exception as exc:
-                        print(f"[SoundManager] Erro ao pré-carregar '{key}': {exc}")
-                        self._cache[key] = None
+                    self._cache[key] = get_sound(os.path.join(sfx_dir, fname))
 
         self._ready = True
         loaded = sum(1 for v in self._cache.values() if v is not None)
@@ -422,11 +408,9 @@ class SoundManager:
     def _lazy_load(self, key: str) -> "pygame.mixer.Sound | None":
         """Carrega um som pelo nome da chave se ainda não estiver em cache."""
         if key not in self._cache:
+            from ui.asset_cache import get_sound
             path = resource_path(_sfx(key))
-            try:
-                self._cache[key] = pygame.mixer.Sound(path) if os.path.isfile(path) else None
-            except Exception:
-                self._cache[key] = None
+            self._cache[key] = get_sound(path) if os.path.isfile(path) else None
         return self._cache[key]
 
     def play_mob_sounds(self, mob_sounds_comp, event: str,
@@ -520,13 +504,11 @@ class SoundManager:
         precisar ser registrado manualmente no _REGISTRY.
         """
         variants = [name] + [f"{name}_{n}" for n in (1, 2, 3, 4)]
+        from ui.asset_cache import get_sound
         for v in variants:
             if v not in self._cache:
                 path = resource_path(_sfx(v))
-                try:
-                    self._cache[v] = pygame.mixer.Sound(path) if os.path.isfile(path) else None
-                except Exception:
-                    self._cache[v] = None
+                self._cache[v] = get_sound(path) if os.path.isfile(path) else None
         self.play_random(variants, volume, _CH_SKILLS, pan=pan)
 
     def play_footstep(self, volume: float = 0.6) -> None:
@@ -634,33 +616,21 @@ class SoundManager:
         """Pré-carrega stingers de sfx/ sem ativá-los. Chamado na carga do mapa."""
         if not self._ready:
             return
+        from ui.asset_cache import get_sound
         for fname in filenames:
             if fname not in self._stinger_cache:
                 path = resource_path(f"assets/sounds/sfx/{fname}")
-                if os.path.isfile(path):
-                    try:
-                        self._stinger_cache[fname] = pygame.mixer.Sound(path)
-                    except Exception as exc:
-                        print(f"[SoundManager] Erro ao pré-carregar stinger '{fname}': {exc}")
-                        self._stinger_cache[fname] = None
-                else:
-                    self._stinger_cache[fname] = None
+                self._stinger_cache[fname] = get_sound(path) if os.path.isfile(path) else None
 
     def preload_music(self, filenames: list[str]) -> None:
         """Pré-carrega faixas de music/ sem iniciá-las. Chamado na carga do mapa."""
         if not self._ready:
             return
+        from ui.asset_cache import get_sound
         for fname in filenames:
             if fname not in self._music_cache:
                 path = resource_path(f"assets/sounds/music/{fname}")
-                if os.path.isfile(path):
-                    try:
-                        self._music_cache[fname] = pygame.mixer.Sound(path)
-                    except Exception as exc:
-                        print(f"[SoundManager] Erro ao pré-carregar música '{fname}': {exc}")
-                        self._music_cache[fname] = None
-                else:
-                    self._music_cache[fname] = None
+                self._music_cache[fname] = get_sound(path) if os.path.isfile(path) else None
 
     def start_ambient_stingers(self, filenames: list[str]) -> None:
         """

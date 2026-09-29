@@ -107,7 +107,10 @@ def get_animated_disguise_frame(base_name: str, variant_suffix: str, moving: boo
         frames: list = []
         if os.path.exists(sheet_path):
             try:
-                sheet = pygame.image.load(sheet_path).convert_alpha()
+                from ui.asset_cache import get_image
+                sheet = get_image(sheet_path)
+                if sheet is None:
+                    raise ValueError("sheet nao carregou")
                 if moving:
                     frame_w = TILE_SIZE  # frames sempre 1 tile de largura
                     frame_h = sheet.get_height()

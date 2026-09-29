@@ -584,10 +584,9 @@ class SpellCastSystem(System):
 
         # Lazy-load sem escala — tamanho real do arquivo
         if self._tiro_aim_img is None:
-            try:
-                self._tiro_aim_img = pygame.image.load(
-                    "assets/effects/skill_tiro_multiplo.png").convert_alpha()
-            except Exception:
+            from ui.asset_cache import get_image
+            self._tiro_aim_img = get_image("assets/effects/skill_tiro_multiplo.png")
+            if self._tiro_aim_img is None:
                 return
 
         img = self._tiro_aim_img
@@ -790,8 +789,8 @@ class PlayerProjectileSystem(System):
     def _load_fireball_frames(self) -> None:
         """Carrega e fatia o spritesheet da Bola de Fogo (lazy, uma vez)."""
         try:
-            raw = pygame.image.load(
-                "assets/effects/skill_bola_de_fogo.png").convert_alpha()
+            from ui.asset_cache import get_image
+            raw = get_image("assets/effects/skill_bola_de_fogo.png")
             n  = self.FIREBALL_FRAMES
             fw = raw.get_width() // n
             fh = raw.get_height()

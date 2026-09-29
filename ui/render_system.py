@@ -177,11 +177,9 @@ def _get_ground_effect_sprite(effect_type: str) -> "pygame.Surface | None":
     rel_path = _PATH_MAP.get(effect_type)
     surf = None
     if rel_path:
-        try:
-            from paths import resource_path as _rp
-            surf = pygame.image.load(_rp(rel_path)).convert_alpha()
-        except Exception:
-            surf = None
+        from paths import resource_path as _rp
+        from ui.asset_cache import get_image
+        surf = get_image(_rp(rel_path))
     _GROUND_EFFECT_SPRITES[effect_type] = surf
     return surf
 

@@ -87,10 +87,8 @@ class IconManager:
             return raw
         path = resource_path(os.path.join(self.ICON_DIR, f"{name}.png"))
         if os.path.isfile(path):
-            try:
-                return pygame.image.load(path).convert_alpha()
-            except Exception:
-                return None
+            from ui.asset_cache import get_image
+            return get_image(path)
         return None
 
     # ------------------------------------------------------------------

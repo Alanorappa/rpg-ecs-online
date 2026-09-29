@@ -177,12 +177,11 @@ def effects_row_offset(hud_surf: "pygame.Surface") -> tuple:
 
 def _load() -> None:
     global _player_art, _mob_art
+    from ui.asset_cache import get_image
     if _player_art is None:
-        _player_art = pygame.image.load(
-            resource_path("assets/hud/player_hud_bar.png")).convert_alpha()
+        _player_art = get_image(resource_path("assets/hud/player_hud_bar.png"))
     if _mob_art is None:
-        _mob_art = pygame.image.load(
-            resource_path("assets/hud/mob_hud_bar.png")).convert_alpha()
+        _mob_art = get_image(resource_path("assets/hud/mob_hud_bar.png"))
 
 
 def _fill_row(surf, x_range: tuple, y_range: tuple, ratio: float, color: tuple) -> None:

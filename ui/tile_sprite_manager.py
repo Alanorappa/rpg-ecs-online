@@ -52,11 +52,10 @@ class TileSpriteManager:
             self._raw[filename] = None
             return None
 
-        try:
-            self._raw[filename] = pygame.image.load(path).convert_alpha()
-        except Exception as e:
-            print(f"[TileSprites] Erro ao carregar '{path}': {e}")
-            self._raw[filename] = None
+        from ui.asset_cache import get_image
+        self._raw[filename] = get_image(path)
+        if self._raw[filename] is None:
+            print(f"[TileSprites] Erro ao carregar '{path}'")
 
         return self._raw[filename]
 

@@ -58,10 +58,8 @@ class _IconAtlasSheets:
         path = os.path.join(ATLAS_DIR, filename)
         surf = None
         if os.path.isfile(path):
-            try:
-                surf = pygame.image.load(path).convert_alpha()
-            except Exception:
-                surf = None
+            from ui.asset_cache import get_image
+            surf = get_image(path)
         self._sheets[filename] = surf
         return surf
 

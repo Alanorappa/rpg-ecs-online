@@ -100,9 +100,9 @@ def _load_sheet_frames(class_id: str, state: str, direction: str) -> list:
     path  = resource_path(os.path.join("assets", "sprites", fname))
     if not os.path.exists(path):
         return []
-    try:
-        sheet = pygame.image.load(path).convert_alpha()
-    except Exception:
+    from ui.asset_cache import get_image
+    sheet = get_image(path)
+    if sheet is None:
         return []
     frame_h = sheet.get_height()
     frames  = [

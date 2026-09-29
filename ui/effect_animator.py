@@ -36,13 +36,11 @@ def _load(effect_type: str) -> pygame.Surface | None:
     path = resource_path(f"assets/effects/{effect_type}.png")
 
     if os.path.isfile(path):
-        try:
-            icon = pygame.image.load(path).convert_alpha()
-            if icon.get_width() != ICON_W or icon.get_height() != ICON_H:
-                icon = pygame.transform.scale(icon, (ICON_W, ICON_H))
-            _icons[effect_type] = icon
-        except Exception:
-            _icons[effect_type] = None
+        from ui.asset_cache import get_image
+        icon = get_image(path)
+        if icon is not None and (icon.get_width() != ICON_W or icon.get_height() != ICON_H):
+            icon = pygame.transform.scale(icon, (ICON_W, ICON_H))
+        _icons[effect_type] = icon
     else:
         _icons[effect_type] = None
 
