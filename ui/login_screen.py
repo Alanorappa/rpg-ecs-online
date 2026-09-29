@@ -6,6 +6,15 @@ run(screen, host, port) -> (username, password, net_client, char_list) | None
   Retorna ao receber AUTH_OK do servidor (autenticado, ainda sem entrar no mundo).
   O chamador usa net_client e char_list para a tela de seleção de personagem.
   Retorna None se o usuário fechou a janela.
+
+  prefill_user/initial_status (29/09/2026): usados por main.py quando a
+  reconexão automática após "Deslogar" falha/expira (ver
+  PROBLEMAS_ARQUITETURA.md — bug real: tela de seleção de personagem
+  aparecia vazia, sem erro nenhum, quando o servidor não respondia a
+  tempo) — cai aqui em vez de seguir direto pra seleção de personagem
+  com uma lista vazia (indistinguível de "conta sem personagem
+  nenhum"). Usuário já vê o campo de usuário preenchido + o motivo da
+  queda, só precisa digitar a senha de novo.
 """
 from __future__ import annotations
 import time
@@ -101,7 +110,8 @@ def _safe_disconnect(net):
     except Exception: pass
 
 
-def run(screen: pygame.Surface, host: str = "localhost", port: int = 8765):
+def run(screen: pygame.Surface, host: str = "localhost", port: int = 8765,
+        prefill_user: str = "", initial_status: str = ""):
     """
     Loop de login/cadastro.
     Retorna (username, password, net_client, char_list) ou None (quit).
@@ -117,7 +127,7 @@ def run(screen: pygame.Surface, host: str = "localhost", port: int = 8765):
 
     st = {
         "tab":          "login",
-        "status_msg":   "",
+        "status_msg":   initial_status,
         "status_ok":    False,
         "net":          None,
         "pending":      "",        # "login" | "register" | ""
@@ -129,6 +139,8 @@ def run(screen: pygame.Surface, host: str = "localhost", port: int = 8765):
     py = H // 2 - PH // 2
 
     f_user_l = _TextInput(pygame.Rect(px + 20, py + 118, PW - 40, 36), "Usuário")
+    if prefill_user:
+        f_user_l.text = prefill_user
     f_pass_l = _TextInput(pygame.Rect(px + 20, py + 178, PW - 40, 36),
                           "Senha", password=True)
     f_user_r  = _TextInput(pygame.Rect(px + 20, py + 118, PW - 40, 36),

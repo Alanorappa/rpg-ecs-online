@@ -68,7 +68,14 @@ def _connect_and_login(host: str, port: int, username: str, password: str):
     em memória, sem pedir de novo — mesmo mecanismo de re-login automático
     que client/network.py::NetworkClient já usa pra reconexão por queda de
     conexão, só que aqui é um NetworkClient novo, não uma retomada do
-    antigo). Retorna (net, char_list)."""
+    antigo). Retorna (net, char_list) em sucesso, ou (None, []) se a
+    conexão/login não confirmar dentro do timeout (nunca silenciosamente
+    "sem personagem" — ver _reconnect_or_login_screen, que trata esse
+    caso; distinguir isso de uma conta legitimamente vazia é o que faltava
+    aqui antes, 29/09/2026, bug real relatado pelo usuário: tela de
+    seleção de personagem aparecia vazia — sem erro nenhum — quando o
+    servidor não respondia a tempo pra reconectar depois de "Deslogar",
+    coincidindo com um restart do servidor no meio do teste)."""
     from client.network import NetworkClient
     from shared.messages import MsgType as _MT
     import time as _t
@@ -78,21 +85,54 @@ def _connect_and_login(host: str, port: int, username: str, password: str):
     _deadline = _t.time() + 10.0
     while not net.connected and _t.time() < _deadline:
         _t.sleep(0.05)
+    if not net.connected:
+        try: net.disconnect()
+        except Exception: pass
+        return None, []
     net.login(username, password)
 
-    char_list = []
+    char_list = None
+    _got_response = False
     _deadline2 = _t.time() + 10.0
     while _t.time() < _deadline2:
-        got_auth = False
         for mt, payload, _s, _ts in net.poll():
             if mt == _MT.AUTH_OK:
                 char_list = payload.get("characters", [])
-                got_auth = True
+                _got_response = True
                 break
-        if got_auth:
+            if mt == _MT.LOGIN_ERROR:
+                _got_response = True
+                break
+        if _got_response:
             break
         _t.sleep(0.02)
+    if not _got_response or char_list is None:
+        try: net.disconnect()
+        except Exception: pass
+        return None, []
     return net, char_list
+
+
+def _reconnect_or_login_screen(screen, host: str, port: int, username: str, password: str):
+    """Wrapper de `_connect_and_login` pros 2 pontos que reconectam sem
+    passar pela tela de login normal (fast-path --user/--password e
+    "Deslogar") — se a reconexão falhar/expirar, cai na tela de login de
+    verdade (`ui.login_screen.run`, mesma UI que já trata erro/timeout de
+    login do zero) em vez de seguir com uma lista de personagens vazia.
+    Usuário/senha ficam pré-preenchidos, só precisa confirmar. Retorna
+    (username, password, net, char_list) — mesmo shape de
+    `ui.login_screen.run` — ou None se o usuário fechar a janela na tela
+    de fallback."""
+    net, char_list = _connect_and_login(host, port, username, password)
+    if net is not None:
+        return username, password, net, char_list
+
+    from ui.login_screen import run as _login_run
+    result = _login_run(
+        screen, host, port, prefill_user=username,
+        initial_status="Conexão perdida ao reconectar — faça login de novo.",
+    )
+    return result
 
 
 if __name__ == "__main__":
@@ -137,8 +177,11 @@ if __name__ == "__main__":
         # ── Etapa 1: Login / Cadastro ─────────────────────────────────────────────
         if use_dev_login:
             use_dev_login = False
-            net, char_list = _connect_and_login(host, port, args.user, args.password)
-            net_user, net_pass = args.user, args.password
+            result = _reconnect_or_login_screen(screen, host, port, args.user, args.password)
+            if result is None:
+                pygame.quit()
+                raise SystemExit(0)
+            net_user, net_pass, net, char_list = result
         else:
             from ui.login_screen import run as _login_run
             result = _login_run(screen, host, port)
@@ -184,17 +227,25 @@ if __name__ == "__main__":
             # display (GameEngine deixou seu próprio modo/legenda) e
             # reconecta com a mesma conta antes de voltar à seleção.
             net.disconnect()
-            net, char_list = _connect_and_login(host, port, net_user, net_pass)
             # quit()+init() ANTES de set_mode() de novo — GameEngine pode
             # ter deixado o display em qualquer modo (inclusive FULLSCREEN,
             # ver game.py::_apply_window_mode/§34.48-49); chamar set_mode()
             # direto em cima de um display já inicializado segfaulta nesta
             # stack (pygame-ce 2.5.7 + SDL 2.32.10 — mesma causa do crash
             # real reportado pelo usuário 24/07/2026, ver ARQUITETURA_ONLINE.md).
+            # Feito ANTES da reconexão (não depois) porque o fallback de
+            # falha (_reconnect_or_login_screen) também precisa de um
+            # `screen` válido pra desenhar a tela de login.
             pygame.display.quit()
             pygame.display.init()
             screen = pygame.display.set_mode((W, H), win_flags, vsync=1)
             pygame.display.set_caption("RPG ECS [ONLINE]")
+
+            result = _reconnect_or_login_screen(screen, host, port, net_user, net_pass)
+            if result is None:
+                pygame.quit()
+                raise SystemExit(0)
+            net_user, net_pass, net, char_list = result
 
         if back_to_login:
             continue
