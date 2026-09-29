@@ -9,6 +9,27 @@ import sys
 if getattr(sys, "frozen", False):
     os.chdir(os.path.dirname(sys.executable))
 
+# TEMPORÁRIO (29/09/2026) — investigações em aberto do Interceptar (§217)
+# e do mundo preto ao sair da BG (§219): promove flags de config.json pra
+# env var ANTES de qualquer módulo debug.* ser importado (todos leem a env
+# var 1x, no import — precisa vir antes até de pygame.init()). Existe só
+# pra o usuário não precisar digitar `$env:RPG_DEBUG_...` toda vez que for
+# testar — REMOVER este bloco (e as 2 chaves de config.json) quando as 2
+# investigações fecharem; nunca deixar um debug fixo esquecido no código
+# pra sempre (mesma razão de RPG_DEBUG_* ser env var e não constante,
+# ver debug/aoi_debug.py e item D3/seção 11 de PROBLEMAS_ARQUITETURA.md).
+try:
+    import json as _json_dbg_boot
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json"),
+              encoding="utf-8") as _f_dbg_boot:
+        _cfg_dbg_boot = _json_dbg_boot.load(_f_dbg_boot)
+    if _cfg_dbg_boot.get("debug_rpg_aoi"):
+        os.environ["RPG_DEBUG_AOI"] = "1"
+    if _cfg_dbg_boot.get("debug_rpg_interceptar"):
+        os.environ["RPG_DEBUG_INTERCEPTAR"] = "1"
+except Exception:
+    pass
+
 
 def _make_dpi_aware() -> None:
     """Windows: um processo "DPI-unaware" (padrão sem manifesto) faz o
