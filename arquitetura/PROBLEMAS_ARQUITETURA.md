@@ -23415,3 +23415,96 @@ causa de verdade. Confirma a regra do projeto: preferir reprodução ao
 vivo a leitura estática quando a simulação não bate com o sintoma
 relatado — insistir em mais teorias sem dado real teria sido só
 adivinhação.
+
+---
+
+## 217. Interceptar contra bot de BG — logging de diagnóstico adicionado, investigação EM ABERTO (29/09/2026)
+
+Usuário relatou, testando a BG: "a skill interceptar, ainda é uma
+skill problemática, como ela lida com mobilidade tanto do player
+quanto com a do alvo... quando eu tentava usar a skill no bot
+dificilmente funcionavam e quando funcionava o personagem não dava
+dash até o alvo". Pedido explícito: log primeiro, ele reproduz, eu
+investigo depois — mesma disciplina que resolveu o §216.
+
+**Contexto que já existia**: Interceptar já teve 3 investigações
+anteriores (§126/§127/§128), todas fechadas como "não validado:
+reprodução manual em jogo" — nenhuma delas foi de fato confirmada
+contra um sintoma relatado pelo usuário depois do fix. Isso já era
+um sinal de alerta antes mesmo desta 4ª rodada começar.
+
+**O que foi encontrado só de mapear o código (sem ainda ter log
+real)**: das 6 razões de rejeição de `_skill_interceptar`
+(`engine/skill_handlers.py`) — "Nenhum alvo", "Alvo inválido", "Alvo
+muito próximo", "Alvo muito longe", "Sem espaço ao redor do alvo",
+"Caminho bloqueado" — só as 2 primeiras tinham log via o mecanismo
+genérico já existente (`_WARN_DEBUG_REASONS`/`_log_skill_warn_debug`,
+`debug/aoi_debug.py`, §84/§87). As 4 específicas da skill, que são
+justamente as mais prováveis de capturar rejeição contra um alvo que
+se move sozinho (bot com IA própria, `server/bot_ai_system.py`),
+nunca geravam log nenhum.
+
+**Fix de diagnóstico aplicado** (`engine/skill_handlers.py`, commit
+"debug(interceptar): loga target_is_bot..."):
+- `_WARN_DEBUG_REASONS` ganha as 4 razões que faltavam.
+- `_log_skill_warn_debug` (evento `SKILL_WARN`) e o log de sucesso
+  `INTERCEPTAR_CAST` ganham o campo `target_is_bot` (via
+  `engine.components.BotControlled`), pra confirmar direto no log se
+  o alvo era um bot de verdade, sem precisar inferir pela ausência de
+  outros campos.
+
+**Verificação feita (smoke-test manual, script descartável, não
+commitado)**: simulando um caster e um bot em times opostos (mesma
+relação hostil que a BG real usa entre times, `Faction("arena_time_a"
+/"arena_time_b")`, `content/faction_data.py`), as 4 razões novas e o
+path de sucesso dispararam corretamente no log com `target_is_bot=
+True`. Armadilha encontrada montando esse cenário: sem colocar caster
+e bot em facções realmente hostis (times opostos), o gate genérico de
+"Alvo amigável" rejeita a skill ANTES de chegar em
+`_skill_interceptar` — nenhum log dispara, porque essa razão de
+rejeição não é gerada por esta função nem está em
+`_WARN_DEBUG_REASONS`. Se uma investigação futura usar esse mesmo
+smoke-test como ponto de partida, lembrar de montar o cenário com
+facções opostas de verdade, não só `spawn_player` genérico.
+
+**Achado lateral relevante pro sintoma relatado (ainda não é a causa
+raiz confirmada, só uma hipótese fortalecida)**: no smoke-test, o bot
+(com `BotControlled` real) se moveu sozinho via `BotAISystem` entre a
+seleção do alvo e o cast — a mesma sequência de tiles processada em
+runs separados do script produziu resultados DIFERENTES (ora "Alvo
+muito próximo", ora "Caminho bloqueado", ora nenhuma rejeição — só
+porque o bot andou pra um lugar diferente antes do cast, decisão de
+IA não-determinística entre execuções). Isso é consistente com a
+suspeita do usuário: um bot de BG se movendo ativamente entre o
+momento em que o player mira/clica e o momento em que o servidor
+processa o cast pode fazer a mesma skill, no mesmo alvo, cair em
+razões de rejeição diferentes a cada tentativa — o que bateria com
+"dificilmente funciona". Isso NÃO está confirmado ainda contra o
+sintoma real (é só um comportamento observado numa simulação
+sintética) — precisa do log real do usuário pra virar causa raiz.
+
+**Segunda metade do sintoma** ("quando funciona, o personagem não dá
+dash até o alvo") já tem um mecanismo de log dedicado e pré-existente,
+não tocado nesta sessão: `debug/interceptar_debug.py`
+(`RPG_DEBUG_INTERCEPTAR`), eventos `DASH_OK`/`DASH_REJECTED`/
+`DASH_START`/`DASH_FORCED`/`DESYNC_CORR` — cobre exatamente a classe
+de bug "dash confirma no servidor mas o cliente desfaz/não anima"
+(§126). Ainda não sabemos se o sintoma novo é a MESMA causa do §126
+reaparecendo (que ficou "não validado", pode nunca ter sido corrigido
+de fato) ou algo novo.
+
+**Suíte relacionada** (23 testes, `tests/test_interceptar_*.py` +
+`tests/test_move_grace_dash_guard.py` + `tests/test_move_player_debug.py`)
+passando sem regressão. 100% client+server compartilhado
+(`engine/skill_handlers.py` roda dos dois lados) — deploy pro servidor
+de dev feito via `deploy_server.ps1` (regra padrão: sempre depois de
+commit de fix/debug, sem precisar de confirmação, servidor de dev sem
+jogador real).
+
+**Não validado**: reprodução manual em jogo. Próximo passo é o
+usuário testar Interceptar contra bot de BG com `RPG_DEBUG_AOI=1` E
+`RPG_DEBUG_INTERCEPTAR=1` ativos (PowerShell:
+`$env:RPG_DEBUG_AOI=1; $env:RPG_DEBUG_INTERCEPTAR=1; python server/main.py`
+— ou setar as 2 antes de subir o server de dev) e trazer os 2 arquivos
+de log (`debug/logs/aoi_debug.log` + `debug/logs/interceptar_debug.log`)
+depois de tentar a skill contra um bot repetidas vezes.
