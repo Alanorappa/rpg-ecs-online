@@ -1880,6 +1880,7 @@ class NetworkHandlers:
                     from ui.ui_components import InstanceInventoryUIState as _IIUSHb
                     _iius_hb = self.world.get_component(self.player_entity, _IIUSHb)
                     _in_instance_hb = payload.get("in_instance")
+                    _in_instance_src_dbg = "payload" if payload.get("in_instance") is not None else "component"
                     if _in_instance_hb is None and _iius_hb is not None:
                         _in_instance_hb = _iius_hb.active
                     if _in_instance_hb:
@@ -1888,8 +1889,20 @@ class NetworkHandlers:
                         _char_hb = self.world.get_component(self.player_entity, _CSHbFilter)
                         _allowed_hb = set(_ISUOHb.get(_char_hb.class_id, [])) if _char_hb else set()
                         _payload_ids_hb &= _allowed_hb
+                    from debug.hotbar_slot_debug import HSD, DBG_ENABLED as _HSD_ON
+                    if _HSD_ON:
+                        from ui.skill_slot_prefs import _char_name as _hsd_char_name
+                        import config as _hsd_cfg
+                        _hsd_prefs = (_hsd_cfg.load().get("characters", {})
+                                              .get(_hsd_char_name(self.world, self.player_entity), {})
+                                              .get("skill_slot_prefs", {}))
+                        HSD.log("STATS_UPDATE_RAW",
+                                raw=payload["skills_hotbar"], in_instance=_in_instance_hb,
+                                in_instance_src=_in_instance_src_dbg, prefs=_hsd_prefs)
                     for _i_rm, _s_rm in enumerate(_ps_hb.skills):
                         if _s_rm is not None and _s_rm.skill_id not in _payload_ids_hb:
+                            if _HSD_ON:
+                                HSD.log("REMOVED", skill_id=_s_rm.skill_id, old_slot=_i_rm)
                             _ps_hb.skills[_i_rm] = None
                     _known_hb = {s.skill_id for s in _ps_hb.skills if s}
                     for sid in payload["skills_hotbar"]:  # preserva a ORDEM original
@@ -1902,6 +1915,11 @@ class NetworkHandlers:
                         _idx_hb = _psfs_hb(self.world, self.player_entity, _ps_hb, sid)
                         if _idx_hb is not None:
                             _ps_hb.skills[_idx_hb] = _new_sk_hb
+                            if _HSD_ON:
+                                HSD.log("PLACED", skill_id=sid, slot=_idx_hb,
+                                        saved_pref=_hsd_prefs.get(sid) if _HSD_ON else None)
+                        elif _HSD_ON:
+                            HSD.log("SKIPPED_NO_SLOT", skill_id=sid)
                         _known_hb.add(sid)
             if "learned_skill_ids" in payload:
                 _ps_learned = self.world.get_component(self.player_entity, PlayerSkills)
