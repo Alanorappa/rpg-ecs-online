@@ -189,6 +189,27 @@ class TalentSystem(UIScaleMixin):
         if not tt or not cs or not skills:
             return
 
+        # Dentro da BG, revelar skill na hotbar é responsabilidade EXCLUSIVA
+        # do bloco `skills_hotbar` (client/network_handlers.py — curado por
+        # INSTANCE_SKILL_UNLOCK_ORDER + preferência salva do jogador, ver
+        # ui/skill_slot_prefs.py). Esta função roda de novo em TODO ganho de
+        # XP dentro da BG (`talent_allocated` chega a cada level-up, não só
+        # entrada/saída — ver server/instance_progression.py::
+        # _push_stats_update), porque a árvore inteira já vem pré-alocada no
+        # máximo desde o início — sem este gate, ela tentava conceder TODA
+        # skill de talento (ex: Fatiador de Corpos) direto no 1º slot vazio,
+        # ANTES da vez dela na ordem curada; o bloco skills_hotbar então
+        # removia de novo por não estar curada-liberada ainda — bug real
+        # relatado pelo usuário (28-29/09/2026, ver
+        # PROBLEMAS_ARQUITETURA.md §216): skill "piscando" em slots
+        # diferentes a cada level até finalmente estabilizar no slot certo.
+        # NUNCA gateia os efeitos de STAT/comportamento abaixo (modifiers,
+        # cs_flags) — esses precisam continuar recalculando a cada chamada
+        # mesmo dentro da BG (ver §136, Precisão Elemental/Nova Congelante).
+        from ui.ui_components import InstanceInventoryUIState as _IIUS_ate
+        _iius_ate = self.world.get_component(self.player_id, _IIUS_ate)
+        _in_instance_ate = _iius_ate is not None and _iius_ate.active
+
         # Build é sempre derivada da classe — nunca livre nem persistida separadamente
         char = self.world.get_component(self.player_id, CharacterStats)
         if char:
@@ -257,7 +278,7 @@ class TalentSystem(UIScaleMixin):
                 tt._applied_modifiers.append(mod)
             # Habilidade desbloqueada quando atinge unlock_at (padrão = max_points)
             _unlock_at = t.get("unlock_at", t["max_points"])
-            if t["unlocks_skill"] and points >= _unlock_at:
+            if t["unlocks_skill"] and points >= _unlock_at and not _in_instance_ate:
                 _sid = t["unlocks_skill"]
                 if _sid not in tt._unlocked_skill_ids:
                     from content.skill_config import SKILL_CATALOG as _SC
