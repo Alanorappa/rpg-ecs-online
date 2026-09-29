@@ -468,6 +468,14 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._loading_timeout     = 15.0   # timeout total antes de continuar offline
         self._loading_anim_t      = 0.0    # timer para animação dos pontos (...)
         self._logged_char_name    = ""     # nome do personagem logado — hotbar per-char
+        # Fase da tela de loading (28/09/2026, pedido do usuário — ver
+        # PROBLEMAS_ARQUITETURA.md §215): "assets" enquanto
+        # `preload_all()` decodifica imagem/som (barra mostra
+        # done/total real), depois "server" (barra antiga, baseada em
+        # _loading_min_t). _draw_loading_screen() lê estes 3 campos.
+        self._loading_phase       = "assets"
+        self._preload_done        = 0
+        self._preload_total       = 0
 
         # Exibe loading screen antes das operações lentas de init (mapa, sistemas,
         # rede) para cobrir a janela preta entre set_mode e run(). Static — um frame.
@@ -475,6 +483,26 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._display.blit(self.screen, (0, 0))
         pygame.display.flip()
         pygame.event.pump()   # evita "não responde" no OS durante o carregamento
+
+        # Pré-carrega TODO sprite/som do jogo antes de abrir o mundo
+        # (28/09/2026, pedido do usuário — ver PROBLEMAS_ARQUITETURA.md
+        # §215): sem isso, cada asset era decodificado do disco na
+        # primeira vez que aparecia em jogo — bug real medido nesta
+        # sessão (folha de sprite nunca vista custando até 320ms num
+        # frame só, ao entrar numa área nova do mapa). `progress_cb`
+        # redesenha a tela de loading a cada leva de arquivos — sem
+        # isso a tela ficaria travada ~3s (o preload todo) sem nenhum
+        # feedback, e o SO podia até avisar "não responde".
+        from ui.asset_preloader import preload_all as _preload_all_boot
+        def _preload_progress_boot(done: int, total: int) -> None:
+            self._preload_done  = done
+            self._preload_total = total
+            self._draw_loading_screen(0.0)
+            self._display.blit(self.screen, (0, 0))
+            pygame.display.flip()
+            pygame.event.pump()
+        _preload_all_boot(progress_cb=_preload_progress_boot)
+        self._loading_phase = "server"
 
         self._load_map_and_entities()
         self._init_systems()

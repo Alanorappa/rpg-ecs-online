@@ -232,8 +232,13 @@ class HabilidadesHandlers:
                          (sw // 2 - 120, sh // 2 - 32),
                          (sw // 2 + 120, sh // 2 - 32), 1)
 
-        # Status
-        if self._net and self._net.connected:
+        # Status — 2 fases (28/09/2026): "assets" (preload_all rodando,
+        # ver __init__) tem prioridade de exibição sobre a fase de rede,
+        # mesmo que a conexão já tenha sido aberta em paralelo.
+        _phase = getattr(self, "_loading_phase", "server")
+        if _phase == "assets":
+            msg = f"Carregando recursos{dots}"
+        elif self._net and self._net.connected:
             msg = f"Carregando personagem{dots}"
         elif self._net and getattr(self._net, "reconnecting", False):
             msg = f"Reconectando{dots}"
@@ -242,12 +247,17 @@ class HabilidadesHandlers:
         _status = self.font_sm.render(msg, False, (150, 130, 70))
         self.screen.blit(_status, _status.get_rect(centerx=sw // 2, centery=sh // 2 + 10))
 
-        # Barra de progresso linear: 0% no início → 100% quando loading_min_t zera.
-        # _loading_min_t começa em 1.5 e é decrementado a cada frame.
+        # Barra de progresso linear — fase "assets": done/total real do
+        # preload; fase "server": 0% no início → 100% quando
+        # loading_min_t zera (_loading_min_t começa em 1.5 e decrementa
+        # a cada frame).
         _BAR_W, _BAR_H = 400, 10
         _bx = sw // 2 - _BAR_W // 2
         _by = sh // 2 + 32
-        _pct  = max(0.0, min(1.0, 1.0 - self._loading_min_t / 1.5))
+        if _phase == "assets" and self._preload_total > 0:
+            _pct = max(0.0, min(1.0, self._preload_done / self._preload_total))
+        else:
+            _pct = max(0.0, min(1.0, 1.0 - self._loading_min_t / 1.5))
         _fill = max(1, int(_BAR_W * _pct))
         pygame.draw.rect(self.screen, (70, 15, 15),  (_bx, _by, _BAR_W, _BAR_H), border_radius=3)
         pygame.draw.rect(self.screen, (25, 90, 25),  (_bx, _by, _fill,  _BAR_H), border_radius=3)
