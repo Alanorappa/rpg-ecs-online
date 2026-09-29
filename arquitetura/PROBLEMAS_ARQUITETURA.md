@@ -23575,3 +23575,63 @@ puramente visual do lado do cliente (servidor confirma o dash, cliente
 não anima) — precisa do log LOCAL do cliente
 (`$env:RPG_DEBUG_INTERCEPTAR=1; python main.py`, rodado pelo próprio
 usuário) pra confirmar ou descartar (b).
+
+---
+
+### Achado lateral investigado a fundo (29/09/2026, mesmo dia) — bot falhando Interceptar repetidamente: causa raiz AINDA não confirmada, 2ª camada de diagnóstico adicionada
+
+Usuário pediu pra investigar o achado lateral da rodada 1 (2 bots
+tentando Interceptar dezenas de vezes cada, sempre "Nenhum alvo").
+
+**Mecanismo do "sempre" confirmado**: `server/skill_processor.py` só
+registra o cooldown de uma skill DEPOIS do handler retornar sucesso —
+uma skill que falha nunca entra em cooldown. Combinado com
+`BotAISystem.update` re-decidindo a cada `BOT_DECISION_INTERVAL_S`
+(~350ms), um bot que falha Interceptar uma vez fica preso tentando a
+MESMA skill, contra o MESMO alvo, pra sempre — nunca cai pro fallback
+de auto-attack normal. Isso por si só é uma consequência que vale
+corrigir (nunca deveria retry infinito sem limite), mas não é a causa
+RAIZ da falha em si.
+
+**Rastreei o código até a suspeita mais provável**:
+`_resolve_target()` (`engine/skill_handlers.py`) tem 2 caminhos — (1)
+usa `combat_state.target_entity_id` já setado (pelo `tid` do request,
+via `server/skill_processor.py`), validando range+vida; (2) se (1)
+falhar, cai num fallback de auto-seleção que só busca
+mob/minion/`RemoteControlled` — e `RemoteControlled` só existe no
+CLIENTE, nunca no servidor (confirmado por comentário já existente no
+código, linha ~307-311). Hipótese: se o caminho (1) falhar por
+qualquer razão pra um alvo PLAYER/BOT, o fallback (2) nunca o acha de
+volta no servidor (sem `Enemy`/`AIControlled`/`RemoteControlled`) —
+EXCETO que existe um 3º loop de fallback (linha ~325-344,
+`CombatStats+CharacterStats+TileMovement`, adicionado especificamente
+pra cobrir PvP no servidor) que DEVERIA achar um player/bot igual.
+
+**2 repros sintéticos, ambos NÃO reproduziram**: (a) 2 bots parados, 5
+tiles de distância, chamando `BotAISystem._try_priority_skill` de
+verdade (a MESMA função de produção) → Interceptar funcionou
+perfeitamente, `is_dash=True`, alvo resolvido certo. (b) mesmo cenário
+com os 2 bots em pleno tween de movimento (`TileMovement.is_moving=
+True`, simulando perseguição real) → também funcionou perfeitamente.
+Ou seja, nem estar parado nem estar em movimento, isoladamente,
+reproduz a falha.
+
+**Decisão**: em vez de continuar chutando cenários sintéticos (viola a
+regra do projeto de "pesquisar/desenhar antes de codar" — não faz
+sentido escrever uma correção pra uma causa não confirmada), adicionei
+1 log de diagnóstico NOVO, puro (zero mudança de comportamento), em
+`_resolve_target` — `RESOLVE_TARGET_FALLBACK`, disparado só quando
+HAVIA um alvo pré-selecionado (`current != -1`) que falhou a validação
+(motivo exato: `fora_de_max_range` / `cs_presente_mas_hp<=0` /
+`remote_sem_hp_ou_ausente`) e caiu pro fallback — nunca no caso comum
+de skill sem alvo nenhum selecionado. Mostra posição e estado de
+movimento de caster e alvo no instante exato da falha. Suíte
+relacionada (109 testes skill/resolve_target/bot_ai + 23 de
+Interceptar) passando, zero regressão. Deploy feito pro servidor de
+dev — a próxima falha real de Interceptar de um bot na BG vai aparecer
+em `aoi_debug.log` com o motivo exato, sem precisar de mais nenhuma
+ação do usuário (o log já está sempre ativo, junto do resto da
+investigação do §217).
+
+**Não validado**: motivo real do fallback. Só será confirmado quando
+o log `RESOLVE_TARGET_FALLBACK` aparecer numa sessão de BG real.
