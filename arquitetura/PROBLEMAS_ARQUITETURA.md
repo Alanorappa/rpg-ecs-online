@@ -23685,3 +23685,58 @@ resposta → `None`; `LOGIN_ERROR` → `None`. Revert-to-confirm: 3 dos 5
 falham no código anterior. Suíte relacionada (login/main/network, 30
 testes) passando. 100% client-side (`main.py`/`ui/login_screen.py`) —
 sem deploy no servidor.
+
+---
+
+## 219. Mundo fica todo preto (HUD normal) ao sair da BG — INVESTIGAÇÃO EM ABERTO, log de diagnóstico adicionado (29/09/2026)
+
+Usuário relatou: ao sair da BG (clicou "Voltar" na tela de resultado),
+o mundo aparece todo preto — HUD continua normal — e só volta ao
+normal relogando (não se resolve andando/esperando). Pista real dada
+pelo usuário: começou a acontecer depois do trabalho recente na tela
+de loading/transição (§215).
+
+**Investigação estática, sem causa confirmada**: percorri os 3
+candidatos mais plausíveis do próprio código de §215/correlatos —
+nenhum bateu com o sintoma exato:
+- O gate de "reconectando" (`game.py::run()`, `_in_loading` — na
+  verdade bem mais antigo que §215, de maio/2026) mostraria a TELA de
+  loading inteira (título + texto), não "HUD normal + mundo preto".
+- `_draw_map_transition_screen`/`SOUNDS.set_game_ready` (§215, a
+  mudança mais recente que toca `_handle_msg_zone_change`) é um
+  desenho de 1 frame + toggle de som — não deveria deixar nenhum
+  estado de render corrompido depois que `_do_transition` roda.
+- O "Zoom surf" (`game.py::run()`, dimensiona `_zoom_surf` todo frame)
+  depende só da RESOLUÇÃO DA TELA/zoom, nunca do mapa — BG ser menor
+  que o mundo aberto não deveria afetar isso.
+- Não há `try/except` envolvendo o loop de render de sistemas de mundo
+  (`game.py::run()`, ~linha 2577) — uma exceção de verdade ali
+  derrubaria o jogo inteiro (crash.log), o que não bate com "HUD
+  continua normal".
+
+Sem dado real, insistir em mais teorias seria adivinhação — mesma
+disciplina já aplicada com sucesso no §217/§218 nesta sessão.
+
+**Log de diagnóstico adicionado** (100% client-side,
+`RPG_DEBUG_AOI=1`, nunca chega no servidor):
+- `CLIENT_ZONE_CHANGE_RAW` (`client/network_handlers.py::
+  _handle_msg_zone_change`) — payload bruto do `ZONE_CHANGE` +
+  `is_real_change`, antes de qualquer processamento.
+- `CLIENT_TRANSITION_DONE` (`game.py::_do_transition`, logo no fim) —
+  dimensões do tilemap novo, tamanho de `_zoom_surf`, posição da
+  câmera, `InstanceInventoryUIState.active`,
+  `DayNightSystem.map_affected`.
+
+**Próximo passo**: usuário reproduz localmente com
+`$env:RPG_DEBUG_AOI=1; python main.py` (log fica em
+`debug/logs/aoi_debug.log`, NO PRÓPRIO COMPUTADOR do usuário — não no
+servidor, diferente da investigação do §217) — entra numa BG, sai
+pelo botão "Voltar", e traz o log. Comparar os valores da transição
+"saída de BG" (com bug) contra uma transição normal qualquer (sem
+bug, ex: atravessar um portal de caverna) no MESMO log deve isolar o
+que é diferente.
+
+**Não validado**: causa raiz. Suíte relacionada (zone_change/
+transition/day_night, 43 testes + map_transition_screen/loading_screen,
+7 testes) passando sem regressão — o log em si não muda nenhum
+comportamento.
