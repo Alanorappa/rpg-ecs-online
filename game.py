@@ -3403,6 +3403,15 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
     def _apply_hotbar_config(self, new_character: bool = False, char_name: str = "") -> None:
         """Restaura layout e keybinds da hotbar e barra de consumíveis a partir de config.json."""
+        from debug.hotbar_slot_debug import HSD, DBG_ENABLED as _HSD_ON_ahc
+        if _HSD_ON_ahc:
+            import traceback as _tb_ahc
+            _ps_ahc = self.world.get_component(self.player_entity, PlayerSkills)
+            _before_ahc = {s.skill_id: i for i, s in enumerate(_ps_ahc.skills) if s} if _ps_ahc else {}
+            _caller_ahc = _tb_ahc.extract_stack()[-2]
+            HSD.log("APPLY_HOTBAR_CONFIG_CALLED", char_name=char_name,
+                    new_character=new_character, before=_before_ahc,
+                    caller=f"{_caller_ahc.name}:{_caller_ahc.lineno}")
         import config as _cfg
         from content.skill_config import SKILL_CATALOG, NUM_SLOTS, DEFAULT_KEYBINDS
         data = _cfg.load()
@@ -3465,6 +3474,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
                 for i in range(min(len(saved_keybinds), NUM_SLOTS)):
                     ps.keybinds[i] = saved_keybinds[i]
+
+                if _HSD_ON_ahc:
+                    _after_ahc = {s.skill_id: i for i, s in enumerate(ps.skills) if s}
+                    HSD.log("APPLY_HOTBAR_CONFIG_DONE", after=_after_ahc,
+                            learned=sorted(ps.learned_skill_ids), saved_slots=saved_slots)
 
         # ── Consumable bar ────────────────────────────────────────────────
         if cb_data:

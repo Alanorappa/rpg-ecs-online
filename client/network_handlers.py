@@ -42,6 +42,10 @@ class NetworkHandlers:
 
 
     def _handle_msg_login_ok(self, payload: dict) -> None:
+        from debug.hotbar_slot_debug import HSD, DBG_ENABLED as _HSD_ON_lok
+        if _HSD_ON_lok:
+            HSD.log("LOGIN_OK_RECEIVED", eid=payload.get("eid"),
+                    map_id=payload.get("char", {}).get("map_id"))
         from engine.components import TileMovement
         # Reseta espelhamento de players remotos de uma sessão anterior no
         # MESMO processo de cliente (reconectar sem fechar o jogo). Sem isso,
@@ -1924,6 +1928,11 @@ class NetworkHandlers:
             if "learned_skill_ids" in payload:
                 _ps_learned = self.world.get_component(self.player_entity, PlayerSkills)
                 if _ps_learned is not None:
+                    from debug.hotbar_slot_debug import HSD as _HSD_lrn, DBG_ENABLED as _HSD_ON_lrn
+                    if _HSD_ON_lrn:
+                        _HSD_lrn.log("LEARNED_SKILL_IDS_SET",
+                                     new_value=sorted(payload["learned_skill_ids"]),
+                                     old_value=sorted(_ps_learned.learned_skill_ids))
                     _ps_learned.learned_skill_ids = set(payload["learned_skill_ids"])
             if "inv_snapshot" in payload or "equip_snapshot" in payload:
                 # Causa raiz real do bug "não consigo comprar na loja de
