@@ -267,6 +267,17 @@ rpg_ecs_online/
 │   ├── chat_bubble.py               ← balão de fala acima da cabeça
 │   ├── ui_components.py/ui_helpers.py/ui_sizes.py/ui_scale_mixin.py/ui_compare.py
 │   ├── fonts.py, sound_manager.py, icon_manager.py, tile_sprite_manager.py, fov.py
+│   ├── asset_cache.py               ← (28/09/2026, §215) cache ÚNICO de
+│   │   imagem/som por caminho de arquivo (get_image/get_sound) — todo
+│   │   gerenciador acima (tile_sprite_manager/icon_manager/icon_atlas/
+│   │   sound_manager/hud_bars/render_system/spell_system/
+│   │   character_animation/entity_disguise/effect_animator) roteia seu
+│   │   carregamento CRU por aqui, nunca chama pygame.image.load/
+│   │   pygame.mixer.Sound direto — sem isso, pré-carregar um arquivo
+│   │   antecipadamente não teria efeito (cada um tinha cache próprio)
+│   ├── asset_preloader.py           ← (28/09/2026, §215) preload_all() —
+│   │   varre assets/ inteiro e carrega tudo pelo cache acima, chamado
+│   │   por game.py na tela de loading inicial (antes de abrir o mundo)
 │   ├── icon_atlas.py                ← leitura do atlas de ícones (17/09/2026,
 │   │   ver PROBLEMAS_ARQUITETURA.md §181) — extrai/cacheia sub-Surface de
 │   │   assets/icons/atlas_skills.png|atlas_items.png; ícone ainda não
