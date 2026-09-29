@@ -23203,3 +23203,107 @@ contra uma reimplementação isolada do comportamento antigo (set-
 based), só pra provar equivalência visual. Revert-to-confirm: 2 dos 3
 falham sem a chamada. Suíte completa `test_client_ui.py` (233 testes)
 passando. 100% client-side, sem deploy no servidor.
+
+## 215. Tela de loading pré-carrega TODO asset do jogo (boot + troca de mapa/instância) + silencia som até carregar de verdade (28/09/2026)
+
+Continuação da investigação de performance desta sessão. Ao analisar
+um log de playtest numa BG (mais personagens em tela), achei um
+freeze real de **~2060ms num frame só**, exatamente na entrada da BG,
+com 4 custos empilhados no mesmo instante: `network_recv` (1492ms,
+processando a mensagem `ZONE_CHANGE`), `rnd:get_world_objects` (323ms,
+sprite nunca visto), `rnd:tile_static_objects` (112ms) e `rnd:minimap`
+(102ms, rebuild do array numpy pro mapa novo). Usuário confirmou: sentiu
+como um engasgo bem na transição, e apontou 2 problemas relacionados —
+(1) o mesmo tipo de engasgo acontece ao explorar uma parte NOVA do
+mapa aberto (sprite nunca carregado), e (2) durante a tela de loading
+inicial, já dá pra ouvir som de combate antes do jogo "abrir" de
+verdade.
+
+**Pesquisa de mercado feita antes de desenhar a solução** (pedido
+explícito do usuário): como jogos (WoW e afins) tratam carregamento de
+tela — confirmou 3 pontos que guiaram o desenho: (a) transição
+INSTANTÂNEA (teleporte/instância, nosso caso) sempre mostra tela
+dedicada, mesmo em MMO AAA — nunca fica "seamless" como transição
+andando; (b) prática universal de UX: nunca deixar a tela vazia/
+congelada sem feedback enquanto carrega; (c) padrão comum (Phaser e
+afins) é 1 "boot/preloader scene" carregando tudo de uma vez — usado
+aqui porque o catálogo TOTAL do jogo é pequeno (medido: 217 imagens +
+258 sons = ~45MB, ~600ms + ~2.5s = ~3.1s pra carregar TUDO), não
+justifica a complexidade de streaming por-mapa que jogos grandes
+precisam.
+
+**Causa raiz do engasgo de sprite** (item 1 do usuário, já catalogado
+antes nesta sessão via `rnd:get_world_objects`/§209): cada gerenciador
+de asset do cliente (`TileSpriteManager`, `IconManager`, `IconAtlas`,
+`SoundManager`, `hud_bars`, `render_system`, `spell_system`,
+`character_animation`, `entity_disguise`, `effect_animator`) tinha seu
+PRÓPRIO dict de cache, nunca compartilhado — mesmo pré-carregando um
+arquivo antecipadamente, o resultado seria jogado fora, porque a
+chamada real em jogo decodificaria tudo de novo do zero.
+
+**Causa raiz do som durante o loading** (item 2 do usuário): o
+cliente já processa mensagens de rede (`_process_network()`) DURANTE
+a tela de loading inicial — só a parte VISUAL fica escondida atrás da
+tela, o processamento de jogo (e o som que ele dispara, ex: combate de
+quem está por perto) continua rolando por baixo.
+
+**Fix, em 5 partes** (commits separados, mesma sessão):
+
+1. `ui/asset_cache.py` (novo) — `get_image(path)`/`get_sound(path)`,
+   cache ÚNICO por caminho de arquivo, compartilhado entre TODOS os
+   gerenciadores acima (~14 pontos que chamavam `pygame.image.load`/
+   `pygame.mixer.Sound` direto passaram a chamar isto). Guarda a
+   Surface/Sound RAW — cada gerenciador continua responsável pela
+   própria transformação (escala/corte/composição) e cache de
+   derivadas, só o carregamento CRU do arquivo passou a ser
+   compartilhado.
+2. `ui/asset_preloader.py::preload_all(progress_cb=None)` — varre
+   `assets/` inteiro (recursivo) e carrega cada imagem/som pelo cache
+   único. Decisão deliberadamente bruta (carrega TUDO, não só o que o
+   mapa atual usa) — justificada pela pesquisa acima, dado o tamanho
+   pequeno do catálogo total.
+3. `game.py::__init__` chama `preload_all()` logo depois do 1º desenho
+   estático da tela de loading, ANTES de `_load_map_and_entities()` —
+   redesenha a tela a cada leva de arquivos via `progress_cb` (evita
+   os ~3.1s de tela travada sem feedback). `_draw_loading_screen`
+   (`client/habilidades_handlers.py`) ganhou 2 fases: "assets" (barra
+   mostra done/total real do preload) e "server" (comportamento de
+   sempre, barra baseada em `_loading_min_t`).
+4. `SoundManager.set_game_ready(bool)` — gate no único ponto de
+   entrada comum de SFX de gameplay (`play()`, do qual
+   `play_mob`/`play_ui`/`play_footstep`/`play_random`/`play_skill`/
+   `play_mob_sounds` todos derivam) — NUNCA gateia ambiente/música
+   (tocar música de fundo durante loading é normal). `game.py` desliga
+   no início do `__init__` (antes do preload) e liga de volta no
+   exato frame em que a tela de loading termina — mesmo tratamento na
+   reconexão (perda de conexão pós-login volta a silenciar até
+   reconectar).
+5. `_handle_msg_zone_change` (`client/network_handlers.py`) — antes de
+   chamar `_do_transition()`, desenha `_draw_map_transition_screen()`
+   (novo, mesmo estilo visual da tela de loading, sem barra — a troca
+   de mapa não tem contagem própria de progresso) + silencia som,
+   SÓ quando é troca de mapa DE VERDADE (arquivo diferente do atual) —
+   nunca no atalho de "portar pro mesmo mapa"/morte no mesmo mapa
+   (`_do_transition` já trata esse caso como reposição rápida, sem
+   recarregar nada, nunca teve esse engasgo). Com o pré-carregamento
+   do boot (item 3), a maior parte do freeze original (sprite/objeto
+   nunca visto, ~430ms dos ~2060ms medidos) já deveria desaparecer
+   sozinha antes mesmo desta tela entrar em cena — o que resta
+   (parse de mapa/tilemap novo, rebuild do minimapa) passa a ter
+   feedback visual em vez de silêncio.
+
+**Testes**: `tests/test_asset_cache.py` (memoização por identidade +
+arquivo inexistente não lança), `tests/test_asset_preloader.py`
+(contra pasta fake isolada — carrega tudo, arquivo corrompido entra
+em "failed" sem lançar, `progress_cb` correto, pasta ausente não
+lança), `tests/test_loading_screen.py` (barra reflete progresso real
+na fase assets, não usa `_loading_min_t` nessa fase, não lança com
+total=0), `tests/test_sound_muted_during_loading.py` (`play()` normal
+por default, `set_game_ready(False)` suprime de verdade via canal de
+mixer real — não só o retorno da função —, `set_game_ready(True)`
+restaura), `tests/test_map_transition_screen.py` (troca real mostra
+tela + silencia/libera som na ordem certa; teleporte pro MESMO mapa
+não mostra tela nem silencia; efeitos colaterais já existentes de
+BG/Faction continuam intactos). Revert-to-confirm feito em cada peça,
+separadamente. Suíte completa dos arquivos tocados passando a cada
+commit. 100% client-side, sem deploy no servidor.
