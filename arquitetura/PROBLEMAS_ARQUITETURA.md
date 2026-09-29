@@ -23307,3 +23307,53 @@ não mostra tela nem silencia; efeitos colaterais já existentes de
 BG/Faction continuam intactos). Revert-to-confirm feito em cada peça,
 separadamente. Suíte completa dos arquivos tocados passando a cada
 commit. 100% client-side, sem deploy no servidor.
+
+## 216. Skill mudando de slot sozinha na BG mesmo com preferência salva — NÃO reproduzido, log de diagnóstico adicionado (28-29/09/2026)
+
+Usuário relatou: dentro da BG, "Fatiador de Corpos" desbloqueou no
+slot "5", depois mudou pra "F", só terminando no slot certo "T" —
+mesma classe de sintoma já catalogada e supostamente corrigida em
+§73/§74/§129 (skill nunca deveria se mexer depois de conhecida, e
+deveria ir direto pro slot salvo em `skill_slot_prefs`). Confirmado
+com o usuário: existe uma preferência REAL salva (`config.json` do
+personagem "Xadread": `fatiador_de_corpos: 6`, que corresponde à tecla
+"T" — confirmado lendo `characters.Xadread.hotbar.keybinds` no mesmo
+arquivo, `116` = tecla "t"). Slot "5" = tecla `53`, que também é onde
+`punho_no_queixo` tem preferência salva (coincidência ainda sem
+explicação confirmada); slot "F" (`102`) não tem preferência de
+ninguém.
+
+**Investigação (sem reproduzir ainda)**: simulei a progressão nível a
+nível usando os dados REAIS do personagem (as 9 preferências salvas
+de verdade) contra o mecanismo atual (`ui/skill_slot_prefs.py::
+preferred_slot_for_skill` + bloco `skills_hotbar` de
+`client/network_handlers.py::_handle_msg_stats_update`), em 2 rodadas:
+(1) progressão limpa, 1 skill por nível, ordem de
+`INSTANCE_SKILL_UNLOCK_ORDER["guerreiro"]`; (2) mesma coisa MAIS o
+interloper "Punho no Queixo" entrando ad-hoc no array esparso do
+servidor (mecanismo já catalogado em §74, `server/combat_processor.py`).
+Nas duas simulações, `fatiador_de_corpos` foi direto pro slot 6 (T) na
+primeira vez que apareceu, sem nunca passar por outro slot — o
+mecanismo se comportou como projetado. 2 perguntas diretas ao usuário
+descartaram as 2 hipóteses mais prováveis: não houve arrasto manual
+na hotbar, e o level-up foi gradual (1 por vez), não em salto múltiplo.
+
+**Sem conseguir reproduzir via leitura/simulação de código**, e
+seguindo a regra do projeto de nunca declarar "corrigido" (ou, nesse
+caso, "achei a causa") sem reproduzir o sintoma relatado de verdade —
+adicionado `debug/hotbar_slot_debug.py` (mesmo padrão de
+`debug/aoi_debug.py` — env var `RPG_DEBUG_HOTBAR_SLOT`, log em
+`logs/hotbar_slot_debug.log`, no-op por default) instrumentando o
+bloco `skills_hotbar`: loga o payload bruto do servidor (array
+esparso), a origem do flag `in_instance` (payload vs componente), as
+preferências salvas do personagem, e cada skill REMOVIDA/PLACED/
+SKIPPED com o slot escolhido vs a preferência salva.
+
+**Pendente**: usuário reproduzir com `RPG_DEBUG_HOTBAR_SLOT=1` ativo
+na próxima sessão de BG, trazer `logs/hotbar_slot_debug.log` do
+momento em que "Fatiador de Corpos" aparece — a sequência real de
+`STATS_UPDATE_RAW`/`REMOVED`/`PLACED` vai mostrar exatamente o que
+ocupava o slot 6 (ou por que a preferência não foi lida) em cada
+tentativa, em vez de continuar simulando às escuras. Suíte completa
+`test_hotbar_bg_leak.py` (25 testes, precisa do Postgres real) passando
+sem regressão com a instrumentação presente — client-side, sem deploy.
