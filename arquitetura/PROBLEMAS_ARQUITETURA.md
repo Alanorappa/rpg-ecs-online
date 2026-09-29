@@ -23635,3 +23635,53 @@ investigação do §217).
 
 **Não validado**: motivo real do fallback. Só será confirmado quando
 o log `RESOLVE_TARGET_FALLBACK` aparecer numa sessão de BG real.
+
+---
+
+## 218. "Deslogar" reconectando durante restart do servidor mostrava tela de seleção de personagem VAZIA — sem perda de dado, causa raiz confirmada e corrigida (29/09/2026)
+
+Usuário relatou, no meio do teste do §217 (mesma sessão): "eu desloguei
+o char para logar de novo, e na tela de seleção de char eu não tinha
+nenhum char". Preocupação óbvia: perda de personagem.
+
+**Descartado por log real do servidor**: toda linha `auth ok: 'juugo'`
+no log do Hetzner, antes E depois do incidente (inclusive a leva
+seguinte à queda), mostra `chars=3` — os 3 personagens nunca saíram do
+banco. Coincidência de horário forte: eu tinha reiniciado o servidor
+(`deploy_server.ps1`) duas vezes bem naquela janela de tempo, pra
+aplicar os logs de diagnóstico do §217, enquanto o usuário ainda
+testava.
+
+**Causa raiz**: botão "Deslogar" (menu de pausa) reconecta com a MESMA
+conta sem passar pela tela de login normal
+(`main.py::_connect_and_login`, usado também pelo fast-path dev
+`--user`/`--password`) — espera até 10s por `AUTH_OK`. Antes desta
+correção, se essa resposta não chegasse a tempo (servidor reiniciando,
+lento, qualquer falha de rede), a função devolvia `(net, [])` — os
+MESMOS valores de uma conta genuinamente sem personagem nenhum — e o
+código seguia direto pra tela de seleção, sem nenhum aviso de erro.
+Comparação: a tela de login NORMAL (`ui/login_screen.py`) já tratava
+esse timeout corretamente (mensagem "Servidor não respondeu" + permite
+tentar de novo) — só o caminho de reconexão rápida nunca ganhou esse
+mesmo cuidado.
+
+**Fix**: `_connect_and_login` (`main.py`) agora devolve `(None, [])`
+em qualquer falha real (conexão nunca estabelece, timeout sem
+resposta, `LOGIN_ERROR`) — nunca mais confundível com "conta vazia de
+verdade". Novo `_reconnect_or_login_screen` tenta a reconexão rápida
+e, se falhar, cai na MESMA tela de login normal
+(`ui.login_screen.run`, agora com 2 parâmetros novos —
+`prefill_user`/`initial_status` — pra pré-preencher o usuário e
+mostrar o motivo da queda) em vez de reimplementar tratamento de erro
+duplicado em `main.py`. Os 2 pontos que reconectavam sem tratamento
+("Deslogar" e o fast-path dev) passam a usar esse wrapper.
+
+**Testes** (`tests/test_main_reconnect_login_fallback.py`, 5 casos,
+`NetworkClient` falso via `unittest.mock.patch`, sem socket real):
+sucesso real devolve net+lista; conta legitimamente vazia (`AUTH_OK`
+com `characters: []`) NÃO é tratada como falha (distinção central
+desta correção); conexão nunca estabelece → `None`; timeout sem
+resposta → `None`; `LOGIN_ERROR` → `None`. Revert-to-confirm: 3 dos 5
+falham no código anterior. Suíte relacionada (login/main/network, 30
+testes) passando. 100% client-side (`main.py`/`ui/login_screen.py`) —
+sem deploy no servidor.
