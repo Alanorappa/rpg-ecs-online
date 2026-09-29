@@ -23508,3 +23508,70 @@ usuário testar Interceptar contra bot de BG com `RPG_DEBUG_AOI=1` E
 — ou setar as 2 antes de subir o server de dev) e trazer os 2 arquivos
 de log (`debug/logs/aoi_debug.log` + `debug/logs/interceptar_debug.log`)
 depois de tentar a skill contra um bot repetidas vezes.
+
+---
+
+### Rodada 1 de teste real (29/09/2026, mesmo dia) — não reproduziu o sintoma principal, mas achou 2 coisas relevantes
+
+**Erro meu antes desta rodada**: eu disse ao usuário que o log já
+estava ativo no servidor Hetzner só porque eu tinha setado
+`$env:RPG_DEBUG_AOI`/`$env:RPG_DEBUG_INTERCEPTAR` na MINHA sessão local
+do PowerShell — isso nunca chega no processo do `systemd` remoto, que lê
+variáveis de `/opt/rpg_ecs_online/.env` (`EnvironmentFile=`, ver unit
+`rpg-server.service`). Corrigido adicionando as 2 linhas nesse arquivo
++ `systemctl restart rpg-server`. Lição: setar env var local só afeta
+processo local — pra afetar o serviço remoto, tem que editar o
+`.env`/unit dele e reiniciar, nunca supor que "já deployei o código,
+então a env var também foi junto" (são coisas diferentes).
+
+**Análise do log real capturado** (`aoi_debug.log`, 1.79MB;
+`interceptar_debug.log`, 69KB — ambos no Hetzner, sessão de ~13min):
+- Caster real (eid 256, o próprio usuário) deu 18 casts de Interceptar
+  no total nesta sessão — só 5 contra um alvo confirmado como bot
+  (`target_is_bot=True`, eid 265), os outros 16 contra mobs/NPCs
+  normais (`target_is_bot=False`).
+- **Todos os 5 casts contra o bot de verdade tiveram sucesso** —
+  passaram por TODAS as checagens (`INTERCEPTAR_CAST` logado, sem
+  rejeição) e o `DASH_COMPLETE` correspondente mostra
+  `landed_tile == target_tile` nos 5 casos, sem exceção. Na verdade,
+  isso vale pros 18 casts inteiros: zero divergência entre onde o dash
+  deveria pousar e onde pousou de verdade, do lado do SERVIDOR.
+- Só 2 rejeições no total pro caster=256, ambas "Alvo muito próximo"
+  contra um MOB (não-bot), comportamento esperado (a skill tem alcance
+  mínimo de propósito).
+- **Ou seja: a metade "dificilmente funciona" do sintoma relatado NÃO
+  reproduziu nesta rodada** — pelo contrário, os 5/5 casts reais contra
+  bot funcionaram sem nenhum problema do lado do servidor.
+
+**Achado lateral, NÃO o que foi pedido, mas relevante**: 2 bots
+diferentes (eid 265 e eid 263) tentaram usar Interceptar contra o
+PRÓPRIO usuário dezenas de vezes cada (90 e 63 tentativas
+respectivamente, em rajadas de ~350-370ms de intervalo, por vários
+segundos seguidos) — TODAS rejeitadas com "Nenhum alvo". Isso indica
+que a IA de bot (`server/bot_ai_system.py`) tem algum problema próprio
+ao decidir usar Interceptar (provavelmente resolve mal o alvo antes de
+mandar o pedido, ou fica re-tentando em loop sem re-avaliar a condição
+que causou a rejeição da vez anterior) — bug separado, do lado da IA,
+não da skill em si. Registrado aqui só como achado, não investigado a
+fundo (fora do escopo do pedido original do usuário).
+
+**Por que a 2ª metade do sintoma ("quando funciona não dá dash")
+continua sem dado**: os eventos client-side de
+`debug/interceptar_debug.py` (`DASH_KEEP`/`DASH_FORCED`/`DASH_START`/
+`DESYNC_CORR`, mecanismo do §126) só existem no processo do CLIENTE —
+`interceptar_debug.log` do servidor só tem os eventos SERVER-side
+(`MOVE_REQUEST`/`DASH_OK`/`DASH_REJECTED`), confirmado por esta rodada
+(zero ocorrência dos eventos client-side nesse arquivo, como esperado).
+Como o usuário testa contra o servidor Hetzner remotamente, o log
+client-side fica só na MÁQUINA DELE — nunca foi pedido pra ele ativar
+`RPG_DEBUG_INTERCEPTAR` no PRÓPRIO `python main.py` local. Esse é o
+dado que falta pra investigar a 2ª metade do sintoma.
+
+**Próximo passo revisado**: como o servidor mostrou 100% de sucesso
+nos casts reais contra bot desta rodada, a hipótese mais provável agora
+é (a) o sintoma é intermitente/depende de condição não reproduzida
+ainda (mais bots em tela? momento específico da partida?), ou (b) é
+puramente visual do lado do cliente (servidor confirma o dash, cliente
+não anima) — precisa do log LOCAL do cliente
+(`$env:RPG_DEBUG_INTERCEPTAR=1; python main.py`, rodado pelo próprio
+usuário) pra confirmar ou descartar (b).
