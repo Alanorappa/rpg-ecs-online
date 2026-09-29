@@ -23308,7 +23308,7 @@ BG/Faction continuam intactos). Revert-to-confirm feito em cada peça,
 separadamente. Suíte completa dos arquivos tocados passando a cada
 commit. 100% client-side, sem deploy no servidor.
 
-## 216. Skill mudando de slot sozinha na BG mesmo com preferência salva — NÃO reproduzido, log de diagnóstico adicionado (28-29/09/2026)
+## 216. Skill mudando de slot sozinha na BG mesmo com preferência salva — RESOLVIDO (28-29/09/2026)
 
 Usuário relatou: dentro da BG, "Fatiador de Corpos" desbloqueou no
 slot "5", depois mudou pra "F", só terminando no slot certo "T" —
@@ -23349,11 +23349,69 @@ esparso), a origem do flag `in_instance` (payload vs componente), as
 preferências salvas do personagem, e cada skill REMOVIDA/PLACED/
 SKIPPED com o slot escolhido vs a preferência salva.
 
-**Pendente**: usuário reproduzir com `RPG_DEBUG_HOTBAR_SLOT=1` ativo
-na próxima sessão de BG, trazer `logs/hotbar_slot_debug.log` do
-momento em que "Fatiador de Corpos" aparece — a sequência real de
-`STATS_UPDATE_RAW`/`REMOVED`/`PLACED` vai mostrar exatamente o que
-ocupava o slot 6 (ou por que a preferência não foi lida) em cada
-tentativa, em vez de continuar simulando às escuras. Suíte completa
-`test_hotbar_bg_leak.py` (25 testes, precisa do Postgres real) passando
-sem regressão com a instrumentação presente — client-side, sem deploy.
+**Rodada 1 de log real** (usuário reproduziu com `RPG_DEBUG_HOTBAR_SLOT=1`):
+mostrou que a mudança de slot NÃO vinha do bloco `skills_hotbar`
+instrumentado — entre 2 `STATS_UPDATE` consecutivos (27s de intervalo),
+`fatiador_de_corpos` (e outras skills reais: `golpe_debilitante`,
+`brado_provocativo`, `punho_no_queixo`) apareceram em `ps.skills` em
+posições COMPACTADAS (1,2,3,4), sem nenhum `PLACED`/`STATS_UPDATE_RAW`
+do bloco já instrumentado disparar entre essas 2 chamadas — prova de
+que outro mecanismo, fora de `_handle_msg_stats_update`, escrevia ali.
+Instrumentação expandida (`_apply_hotbar_config` + `LOGIN_OK_RECEIVED`
++ `LEARNED_SKILL_IDS_SET`) pra cobrir as 2 suspeitas mapeadas por
+leitura de código (nenhuma das 2 se confirmou na rodada 2).
+
+**Rodada 2 de log real — causa raiz confirmada**: `learned_skill_ids`
+do cliente cresceu de `{golpe_poderoso}` pra 5 skills ENTRE duas
+chamadas de `_handle_msg_stats_update`, sem NENHUM
+`LEARNED_SKILL_IDS_SET` logado no meio — ou seja, algo usa
+`.add()` incremental, não a substituição completa que eu já
+instrumentava. Busca por `learned_skill_ids.add(` achou
+`ui/talent_system.py:299`, dentro de
+`TalentSystem.apply_talent_effects()` — que também concede a skill
+desbloqueada num "1º slot vazio" (`skills.skills.index(None)`,
+`talent_system.py:293`), batendo exatamente com o padrão "compactado"
+observado.
+
+**Causa raiz completa**: `server/instance_progression.py::
+_push_stats_update()` inclui `"talent_allocated": dict(tt.allocated)`
+em TODO `STATS_UPDATE` que manda (todo level-up dentro da BG, não só
+entrada/saída — um comentário no código cliente dizia o contrário,
+desatualizado). Isso dispara `apply_talent_effects()` de novo em TODO
+level-up — como a árvore de talentos da instância já vem pré-alocada
+no MÁXIMO desde `enter_normalized_progression` (decisão de design já
+documentada), essa função tenta conceder TODA skill de talento do
+Cavaleiro de uma vez, direto no primeiro slot vazio, sem saber nada de
+`INSTANCE_SKILL_UNLOCK_ORDER` nem da preferência salva do jogador. O
+bloco `skills_hotbar` (que SIM respeita os dois) roda voltado na
+MESMA chamada e remove de novo qualquer skill que a ordem curada ainda
+não liberou — criando um ciclo concede→remove a cada level-up até a
+ordem curada alcançar o nível real daquela skill, quando o mecanismo
+correto (com a preferência) finalmente assume pra sempre.
+
+**Fix**: dentro da instância (`InstanceInventoryUIState.active`), o
+trecho de `apply_talent_effects()` que concede skill nova na hotbar
+fica desativado — revelar skill na hotbar dentro da BG passa a ser
+responsabilidade EXCLUSIVA do bloco `skills_hotbar`. Modifiers/
+cs_flags (efeitos de stat/comportamento de talento, ex: Precisão
+Elemental/Nova Congelante, §136) continuam aplicando normalmente a
+cada chamada — só a parte de concessão de skill foi gateada.
+
+**Testes** (`tests/test_talent_skill_grant_skipped_in_instance.py`):
+não concede skill dentro da instância; continua concedendo normal
+fora dela (regressão); continua aplicando modifiers dentro da
+instância (guarda contra regredir §136); ponta a ponta com 5
+"level-ups" simulados seguidos confirmando que a skill nunca aparece
+prematuramente em nenhuma chamada. Revert-to-confirm: 2 dos 4 falham
+sem o gate. Suíte completa de talentos/hotbar/BG + `test_client_ui.py`
+(270 testes) passando. 100% client-side (`ui/talent_system.py`), sem
+deploy no servidor.
+
+**Lição de processo**: 2 rodadas de simulação "limpa" (código atual +
+dados reais do personagem) NÃO reproduziram o bug — só o log real,
+capturado em 2 rodadas sucessivas (a 1ª já eliminou 2 suspeitas
+plausíveis e apontou pra uma 3ª, ainda não encontrada), revelou a
+causa de verdade. Confirma a regra do projeto: preferir reprodução ao
+vivo a leitura estática quando a simulação não bate com o sintoma
+relatado — insistir em mais teorias sem dado real teria sido só
+adivinhação.
