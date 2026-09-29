@@ -476,6 +476,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._loading_phase       = "assets"
         self._preload_done        = 0
         self._preload_total       = 0
+        # Silencia SFX de gameplay (combate/skill/passo) enquanto a tela
+        # de loading estiver ativa (28/09/2026, pedido do usuário — ver
+        # SoundManager.set_game_ready) — o cliente já processa mensagens
+        # de rede durante o loading (AOI_UPDATE de quem está por perto),
+        # sem isso o jogador ouvia combate antes de "entrar" de fato.
+        # Ambiente/música NUNCA são afetados (ver docstring do método).
+        SOUNDS.set_game_ready(False)
 
         # Exibe loading screen antes das operações lentas de init (mapa, sistemas,
         # rede) para cobrir a janela preta entre set_mode e run(). Static — um frame.
@@ -1800,7 +1807,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 self._server_ready  = False
                 self._loading_min_t = 0.0
                 self._loading_timeout = 30.0
+                SOUNDS.set_game_ready(False)   # silencia de novo até reconectar (§215)
+            _was_in_loading = getattr(self, "_was_in_loading_prev", False)
             _in_loading = (not self._server_ready) or (self._loading_min_t > 0)
+            if _was_in_loading and not _in_loading:
+                SOUNDS.set_game_ready(True)   # loading terminou de vez — libera SFX (§215)
+            self._was_in_loading_prev = _in_loading
             if _in_loading:
                 self._loading_timeout -= dt
                 self._loading_min_t   -= dt

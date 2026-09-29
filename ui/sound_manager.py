@@ -282,6 +282,10 @@ class SoundManager:
 
     def __init__(self) -> None:
         self._ready      = False
+        # Default True (28/09/2026): preserva comportamento de sempre —
+        # só game.py desliga explicitamente durante a tela de loading,
+        # ver set_game_ready().
+        self._game_ready: bool = True
         self._cache:      dict[str, pygame.mixer.Sound | None] = {}
         self._cache_cave: dict[str, pygame.mixer.Sound | None] = {}
         self._context:   str = "surface"
@@ -365,6 +369,19 @@ class SoundManager:
         """'surface' ou 'cave'."""
         self._context = context
 
+    def set_game_ready(self, ready: bool) -> None:
+        """28/09/2026, pedido do usuário: enquanto a tela de loading
+        (inicial ou reconexão) está ativa, o cliente já processa
+        mensagens de rede (AOI_UPDATE com combate de quem está por
+        perto, por exemplo) — sem isso, `play()` tocava esses sons
+        ANTES do jogador "entrar" de fato, o que soava como o jogo
+        reagindo a algo que ele ainda não estava vendo. NUNCA gateia
+        ambiente/música (`play_ambient`/`play_music_playlist`) — tocar
+        música de fundo durante o loading é comportamento normal de
+        jogo, só o SFX de gameplay (combate/skill/passo/UI, tudo que
+        passa por `play()`) é suprimido."""
+        self._game_ready = ready
+
     def play(self, name: str, volume: float = 1.0,
              channel_group: tuple[int, ...] | None = None,
              pan: float = 0.0) -> None:
@@ -372,7 +389,7 @@ class SoundManager:
 
         pan: -1.0 (esquerda) .. 0.0 (centro) .. +1.0 (direita) — ver `pan_at`.
         """
-        if not self._ready:
+        if not self._ready or not self._game_ready:
             return
         if self._context == "cave":
             sound = self._cache_cave.get(name) or self._cache.get(name)
