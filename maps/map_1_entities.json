@@ -298,6 +298,15 @@
         {"label": "Vila Sul",     "target_map": "maps/map_1.csv",          "target_x": 210, "target_y": 480},
         {"label": "Caverna Oeste","target_map": "maps/map_cave_west.csv",  "target_x": 78,  "target_y": 19}
       ]
+    },
+    {
+      "id": "portal_teste_2",
+      "x": 210,
+      "y": 480,
+      "destinations": [
+        {"label": "Centro",     "target_map": "maps/map_1.csv",          "target_x": 138, "target_y": 370},
+        {"label": "Caverna Oeste","target_map": "maps/map_cave_west.csv",  "target_x": 78,  "target_y": 19}
+      ]
     }
   ],
   "ambient_zones": [
