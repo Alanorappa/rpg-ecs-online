@@ -276,6 +276,36 @@
       "target_y": 480
     }
   ],
+  "_help_portal_gates": [
+    "portal_gates = portal com VARIOS destinos possiveis -- jogador ESCOLHE",
+    "1 num modal ao pisar no tile (diferente de 'transitions' acima, que",
+    "sempre tem 1 destino FIXO e teleporta na hora, sem escolha nem modal).",
+    "Depois de escolher, tem um cast de alguns segundos (server-autoritativo,",
+    "ver server/portal_processor.py::PORTAL_CAST_DURATION_S) antes de",
+    "teleportar de verdade -- cancela se o jogador se mover durante o cast.",
+    "Campos por entrada:",
+    "  id              (str, obrigatorio) identificador UNICO do portal",
+    "                  neste mapa -- nunca reusar entre portais diferentes.",
+    "  x, y            (int, obrigatorio) tile onde o portal fica.",
+    "  destinations    (list, obrigatorio) cada item:",
+    "                  label      (str) texto mostrado no modal.",
+    "                  target_map (str) caminho do mapa destino.",
+    "                  target_x, target_y (int) tile destino.",
+    "  Dica de autoria: pinte o tile de TERRENO deste x,y com o char 'O'",
+    "  (PORTAL_TILE, engine/tileset.py) no CSV pra consistencia visual --",
+    "  so convencao, o jogo nao depende disso pra funcionar."
+  ],
+  "portal_gates": [
+    {
+      "id": "portal_teste_1",
+      "x": 124,
+      "y": 383,
+      "destinations": [
+        {"label": "Vila Sul",     "target_map": "maps/map_1.csv",          "target_x": 210, "target_y": 480},
+        {"label": "Caverna Oeste","target_map": "maps/map_cave_west.csv",  "target_x": 78,  "target_y": 19}
+      ]
+    }
+  ],
   "ambient_zones": [
   {
     "name": "Cemetery of Moonlight",

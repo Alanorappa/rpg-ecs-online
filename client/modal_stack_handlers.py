@@ -58,6 +58,7 @@ class ModalStackHandlers:
             ("bg_accept",     lambda: self._bg_pending_match is not None,      self._close_bg_accept),
             ("arena_result",  lambda: self._arena_result is not None,          self._close_arena_result),
             ("bg_result",     lambda: self._bg_result is not None,             self._close_bg_result),
+            ("portal_select", lambda: self._portal_modal_open is not None,     self._close_portal_modal),
             ("arena_queue",   lambda: self._arena_modal_open,                  self._close_arena_queue_modal),
             ("hotbar_editor", lambda: self._show_hotbar_editor,                self._close_hotbar_editor),
             ("debug",         lambda: self._show_debug,                       self._close_debug),

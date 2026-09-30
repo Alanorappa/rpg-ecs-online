@@ -281,6 +281,17 @@ class HudHandlers:
             label  = f"Canalizando... {remaining:.1f}s"
             bar_col = (255, 100, 20)
             bg_col  = (50, 20, 0)
+        elif getattr(self, "_portal_cast_active", None):
+            # Cast de portal (30/09/2026, client/portal_handlers.py) —
+            # mesmo padrão visual de SpellCast/Channeling, sem componente
+            # ECS próprio (estado puramente client-side, confirmado pelo
+            # servidor via PORTAL_CAST_START/CANCEL).
+            _pc = self._portal_cast_active
+            remaining = max(0.0, _pc["duration"] - _pc["elapsed"])
+            ratio  = remaining / max(0.01, _pc["duration"])
+            label  = f"Teleportando... {remaining:.1f}s"
+            bar_col = (120, 200, 255)
+            bg_col  = (10, 30, 50)
         else:
             return
 

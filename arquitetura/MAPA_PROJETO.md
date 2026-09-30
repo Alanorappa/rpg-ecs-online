@@ -43,6 +43,10 @@
 | Correio — servidor (validação/gameplay) | `server/mail_processor.py` | `MailProcessorMixin` — `process_mail_send`/`process_mail_claim_item`/`process_mail_claim_gold`/`process_mail_delete`/`process_mail_open_inbox`/`process_mail_open_item` |
 | Correio — handlers de rede | `server/session.py` | `_handle_mail_*` (6), trigger de `mail_unread` em `_spawn_and_start` (login) |
 | Correio — cliente | `ui/mail_system.py` | `MailSystem` — NPC "Caixa de Correio" (clique direito), 3 telas (inbox/compor/abrir) |
+| Portal — servidor (validação/cast/teleporte) | `server/portal_processor.py` | `PortalProcessorMixin` — `request_portal_enter()`/`cancel_portal_cast()`/`_tick_portal_casts()`, estado em `_portal_casts`/`_portal_gates_by_map` |
+| Portal — handler de rede | `server/session.py` | `_handle_portal_enter_req()`; drenos de `consume_portal_teleport_events()`/`consume_portal_cast_cancel_events()` em `_dispatch_tick_deltas` |
+| Portal — cliente | `client/portal_handlers.py` | `PortalHandlers` — detecção de tile (`portal_tiles`), modal de seleção de destino, estado de cast local/otimista |
+| Portal — animação do tile (objeto de mundo) | `engine/tileset.py`, `ui/tile_sprite_manager.py`, `ui/tile_render_system.py` | `PORTAL_ANIM_SHEET_BY_TILE_ID`, `get_portal_anim_frame()`, branch em `get_world_objects()` |
 | Duelo — servidor | `server/duel_processor.py` | `DuelProcessorMixin` — `_duel_pairs`, convites, tick de distância, interceptor de golpe letal |
 | Duelo — cliente | `client/duel_handlers.py` | `DuelHandlers` — modal de convite, contexto PvP client-side, avisos, nameplate vermelho do oponente |
 | Party/Grupo — servidor | `server/party_processor.py` | `PartyProcessorMixin` — `_parties`/`_player_party_id` (N-ário), convites, líder, XP compartilhado (`_party_members_in_range`) |
@@ -341,6 +345,9 @@ rpg_ecs_online/
 │   ├── mail_processor.py            ← MailProcessorMixin: correio (25/09/2026, entrega
 │   │                                  assíncrona, único sistema com tabela de banco própria)
 │   ├── duel_processor.py            ← DuelProcessorMixin: duelo (contexto PvP, golpe letal → 1 HP)
+│   ├── portal_processor.py          ← PortalProcessorMixin: portal com destino escolhido
+│   │                                  + cast de 5s (30/09/2026), destino validado server-side
+│   │                                  contra `_portal_gates_by_map` (nunca via ZONE_CHANGE_REQ)
 │   ├── party_processor.py           ← PartyProcessorMixin: grupo N-ário, convites, líder, XP compartilhado
 │   ├── pvp_zone_processor.py        ← PvpZoneProcessorMixin: zona PvP (Fase F), stateless, sem tick-check
 │   ├── bush_zone_processor.py       ← BushZoneProcessorMixin: stealth de bush estilo MOBA, stateless, sem tick-check
@@ -356,6 +363,7 @@ rpg_ecs_online/
 │   │   consumable_bar_handlers.py, hud_handlers.py, modal_stack_handlers.py,
 │   │   trade_handlers.py, duel_handlers.py, party_handlers.py, pvp_zone_handlers.py,
 │   │   arena_handlers.py, battleground_handlers.py, bg_queue_handlers.py,
+│   │   portal_handlers.py (30/09/2026, seleção de destino + cast de 5s),
 │   │   chat_handlers.py, colors.py
 │
 ├── data/                            ← `game.db` legado (SQLite, pré-07/09/2026)

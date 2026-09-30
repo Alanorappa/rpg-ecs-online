@@ -46,6 +46,7 @@ from server.pvp_zone_processor import PvpZoneProcessorMixin
 from server.bush_zone_processor import BushZoneProcessorMixin
 from server.tile_los_processor import TileLosProcessorMixin
 from server.mail_processor import MailProcessorMixin
+from server.portal_processor import PortalProcessorMixin
 from server.match_processor import MatchProcessorMixin
 from server.bg_queue_processor import BgQueueProcessorMixin
 from debug.mob_combat_debug import MCL
@@ -162,7 +163,8 @@ class _MapBundle:
 class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootProcessorMixin,
                    SpellCompletionMixin, TradeProcessorMixin, DuelProcessorMixin, PartyProcessorMixin,
                    PvpZoneProcessorMixin, MatchProcessorMixin, BgQueueProcessorMixin,
-                   BushZoneProcessorMixin, TileLosProcessorMixin, MailProcessorMixin):
+                   BushZoneProcessorMixin, TileLosProcessorMixin, MailProcessorMixin,
+                   PortalProcessorMixin):
     # Rate-limit de CAST_SKILL por player, por tick (06/09/2026, ver
     # PROBLEMAS_ARQUITETURA.md) — folga bem acima de qualquer sequência
     # legítima real de auto-attack+skill+skill de um humano num tick de
@@ -412,6 +414,16 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # DUEL_END do tick (win/distance/disconnect) — consumidos pelo
         # broadcast loop do SessionManager (consume_duel_end_events).
         self._duel_end_events_this_tick: list[dict] = []
+
+        # Portais com seleção de destino (30/09/2026, ver
+        # server/portal_processor.py) — mesmo padrão de _duel_pairs:
+        # player_eid -> cast em andamento; catálogo de portais por mapa
+        # (mesmo padrão de _pvp_zones_by_map), populado em _load_map_for.
+        self.PORTAL_CAST_DURATION_S = 5.0
+        self._portal_gates_by_map: dict[str, list[dict]] = {}
+        self._portal_casts: dict[int, dict] = {}
+        self._portal_cast_cancel_events_this_tick: list[dict] = []
+        self._portal_teleport_events_this_tick: list[dict] = []
 
         # Party/Grupo (ver server/party_processor.py) — party_id → info do
         # grupo; índice reverso pra achar rápido o grupo de um eid;
@@ -841,6 +853,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             load_map_csv(map_file)
         self._pvp_zones_by_map[key] = spawn_points.get("pvp_zones", [])
         self._bush_zones_by_map[key] = spawn_points.get("bush_zones", [])
+        self._portal_gates_by_map[key] = spawn_points.get("portal_gates", [])
 
         # Snapshot de entidades ANTES de criar as do mapa
         _eids_before = set(self.world._components.keys())
@@ -2542,6 +2555,15 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         tm = self.world.get_component(eid, TileMovement)
         if tm is None:
             return False
+
+        # Cast de portal em andamento (30/09/2026, ver
+        # server/portal_processor.py) — move-se e CANCELA o teleporte
+        # (decisão do usuário, mesmo espírito de SpellCast.interruptible),
+        # mas o MOVE em si continua normal — diferente do guard de dash
+        # logo abaixo, que REJEITA o movimento; aqui só um efeito
+        # colateral (cancela o cast), nunca bloqueia o passo.
+        if eid in self._portal_casts:
+            self.cancel_portal_cast(eid, "moved")
 
         # Dash em andamento (Interceptar) tem autoridade exclusiva sobre a
         # posição enquanto anima — um MOVE normal (residual de WASD, comum
@@ -6536,6 +6558,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._perf_push("trade_duel_arena_ticks")
         self._tick_trade_distance_check()
         self._tick_duel_distance_check()
+        self._tick_portal_casts(dt)
         # Pareamento de fila + varreduras de deadline/timeout só comparam
         # relógio (time.time()) ou tentam parear tokens — nenhuma depende de
         # precisão de frame. Rodar a 30Hz era desperdício (pedido do usuário,

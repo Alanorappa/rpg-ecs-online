@@ -472,6 +472,11 @@ class TileRenderSystem(System):
         # acima: objetos estáticos (árvore, arbusto) não podem truncar a
         # câmera num instante diferente de onde as entidades truncam, senão
         # "tremem" relativo ao personagem ao mover.
+        # Relógio global pra animação de portal (30/09/2026) — calculado
+        # 1x por chamada (não por objeto), mesmo princípio de
+        # day_night_color() usar time.time() sem estado por-instância.
+        import time as _time_portal_anim
+        _portal_anim_now_ms = int(_time_portal_anim.time() * 1000)
 
         _tm_objs_first = self.world.get_first(Tilemap)
         if _tm_objs_first is not None:
@@ -522,6 +527,17 @@ class TileRenderSystem(System):
                         # ainda não é pra acender sozinha).
                         if light_source:
                             night_overlay_sprite = TILE_SPRITES.get_night_overlay_sprite(spr_name)
+                        # Animação de portal (30/09/2026) — substitui o
+                        # sprite ESTÁTICO pelo frame atual, se houver
+                        # folha animada cadastrada pra este tile_id
+                        # (PORTAL_ANIM_SHEET_BY_TILE_ID); None (nenhuma
+                        # arte ainda) mantém o sprite estático de sempre,
+                        # fallback gracioso igual a qualquer outro
+                        # mecanismo de arte ausente do projeto.
+                        _portal_frame = TILE_SPRITES.get_portal_anim_frame(
+                            spr_name, _portal_anim_now_ms)
+                        if _portal_frame is not None:
+                            sprite = _portal_frame
                     else:
                         tiles_wide = getattr(tile_type, "sprite_tiles_wide", 1)
                         sprite_w   = tile_size * tiles_wide

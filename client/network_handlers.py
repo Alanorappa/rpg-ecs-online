@@ -3249,6 +3249,8 @@ NetworkHandlers._NET_DISPATCH_NAMES = {
     MsgType.RECYCLE_RESULT: "_handle_msg_recycle_result",
     MsgType.PONG: "_handle_msg_pong",
     MsgType.ZONE_CHANGE: "_handle_msg_zone_change",
+    MsgType.PORTAL_CAST_START: "_handle_msg_portal_cast_start",
+    MsgType.PORTAL_CAST_CANCEL: "_handle_msg_portal_cast_cancel",
     MsgType.EQUIP_REJECTED: "_handle_msg_equip_rejected",
     MsgType.TRADE_INVITE: "_handle_msg_trade_invite",
     MsgType.TRADE_OPEN: "_handle_msg_trade_open",

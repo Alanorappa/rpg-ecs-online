@@ -37,6 +37,10 @@ class TileSpriteManager:
         # verdade, não no topo do recorte cru, que pode ter padding
         # transparente/sombra por cima do desenho).
         self._top_opaque_y: dict[str, int] = {}
+        # Frames cortados da folha animada de portal, por tile_id
+        # (30/09/2026, ver PORTAL_ANIM_SHEET_BY_TILE_ID) — lista vazia
+        # cacheada = "já tentei, não tem folha animada pra esse tile_id".
+        self._portal_anim_frames: dict[str, list[pygame.Surface]] = {}
 
     # ------------------------------------------------------------------
     # Internos
@@ -136,6 +140,54 @@ class TileSpriteManager:
         if night_sheet is None:
             return None
         return self._get_sheet_region(night_sheet, sx, sy, tw, th)
+
+    def get_portal_anim_frame(self, name: str, now_ms: int,
+                              frame_ms: int = 150) -> "pygame.Surface | None":
+        """Frame atual da animação de portal pro tile `name` (30/09/2026,
+        Sistema de Portais) — None se `name` não for um tile de
+        OBJECT_SHEET_TILE_MAP, ou se não houver folha animada cadastrada
+        pra ele (`engine.tileset.PORTAL_ANIM_SHEET_BY_TILE_ID`), caso em
+        que o chamador (`ui/tile_render_system.py::get_world_objects()`)
+        cai pro sprite ESTÁTICO de sempre.
+
+        Frame escolhido por TEMPO REAL (`now_ms // frame_ms % n_frames`)
+        — relógio global, sem estado por-instância (mesmo princípio de
+        `ui/day_night_system.py::day_night_color()`): todo portal do
+        jogo anima em sincronia, não precisa saber QUAL portal é."""
+        from engine.tileset import OBJECT_SHEET_TILE_MAP, PORTAL_ANIM_SHEET_BY_TILE_ID
+        anim_file = PORTAL_ANIM_SHEET_BY_TILE_ID.get(name)
+        if anim_file is None:
+            return None
+        frames = self._portal_anim_frames.get(name)
+        if frames is None:
+            frames = self._cut_portal_anim_frames(name, anim_file)
+            self._portal_anim_frames[name] = frames
+        if not frames:
+            return None
+        idx = int(now_ms // frame_ms) % len(frames)
+        return frames[idx]
+
+    def _cut_portal_anim_frames(self, name: str, anim_file: str) -> list:
+        """Corta `anim_file` (tira horizontal) em frames do MESMO w×h do
+        tile estático `name` — mesma técnica de corte de
+        `engine/character_animation.py::_load_sheet_frames`, só que a
+        largura do frame vem do PRÓPRIO tile catalogado, não de uma
+        constante fixa."""
+        from engine.tileset import OBJECT_SHEET_TILE_MAP
+        info = OBJECT_SHEET_TILE_MAP.get(name)
+        if info is None:
+            return []
+        _sheet_file, _sx, _sy, tw, th = info
+        sheet = self._load_raw(anim_file)
+        if sheet is None:
+            return []
+        n_frames = sheet.get_width() // tw
+        if n_frames <= 0:
+            return []
+        return [
+            sheet.subsurface(pygame.Rect(i * tw, 0, tw, th)).copy()
+            for i in range(n_frames)
+        ]
 
     def _get_sheet_region(self, sheet_file: str,
                           sx: int, sy: int, tw: int, th: int) -> "pygame.Surface | None":

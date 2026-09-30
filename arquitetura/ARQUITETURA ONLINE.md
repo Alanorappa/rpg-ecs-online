@@ -481,6 +481,111 @@ modal_stack_handlers.py`, `game.py`, `maps/map_1_entities.json`.
 Testes: `tests/test_mail.py` (envio/claim/ownership/idempotência,
 servidor). Validação visual dos 3 modais em jogo pendente (usuário).
 
+### 18. Sistema de portais — seleção de destino + cast de 5s (30/09/2026)
+
+Pedido do usuário: reaproveitar o sistema de transição de mapa já
+existente (cavernas, `ZONE_CHANGE`), mas com portais onde o jogador
+ESCOLHE o destino (em vez de 1 destino fixo por tile) via modal,
+seguido de um cast de 5s (tempo pra carregar o mapa destino), com
+animação tanto do personagem quanto do próprio tile do portal —
+fallback gracioso pra idle/sprite estático enquanto a arte não existe.
+Design discutido e aprovado antes de codar (`AskUserQuestion`,
+30/09/2026): lista de destinos FIXA e pequena por portal (não uma rede
+única com todos os portais do jogo); mover-se durante o cast CANCELA o
+teleporte (mesmo padrão de `SpellCast.interruptible`).
+
+**Achado de segurança que motivou o desenho (bloqueante, não
+opcional)**: `_handle_zone_change_req` (`ZONE_CHANGE_REQ` existente)
+confia cegamente no `to_map`/`target_x`/`target_y` que o cliente manda
+— seguro hoje só porque toda transição existente tem exatamente 1
+destino FIXO por tile (cliente desonesto só chegaria no MESMO destino
+mais cedo). Essa premissa quebra assim que destino vira ESCOLHA do
+jogador. Por isso o fluxo de portal **nunca** reusa `ZONE_CHANGE_REQ`
+vindo do cliente — o destino é validado contra a lista de destinos
+DAQUELE portal específico no momento em que o cast COMEÇA
+(server-side), e a teleportação final é disparada pelo PRÓPRIO
+SERVIDOR (`transfer_player`/`ZONE_CHANGE` internos, mesmo par que
+`ZONE_CHANGE_REQ` já usa) quando o timer dele mesmo completa — nunca
+por um pedido novo vindo do cliente nesse fluxo. As transições de
+caverna existentes continuam exatamente como estão, fora de escopo.
+
+**Dado de mapa novo**: `"portal_gates"` em `maps/{mapa}_entities.json`
+(mesma família de `"transitions"`, `engine/map_loader.py`) — lista de
+`{id, x, y, destinations: [{label, target_map, target_x, target_y}]}`.
+Nome escolhido pra evitar colisão com `spawn_points["portals"]` (dado
+morto pré-existente — tiles `PORTAL_TILE`/char "O" do CSV de terreno,
+coletados mas nunca lidos por ninguém).
+
+**Servidor** (`server/portal_processor.py::PortalProcessorMixin`,
+mixed em `WorldServer`, mesmo padrão de `DuelProcessorMixin`): estado
+em `self._portal_casts: dict[eid, {portal_id, dest_index, elapsed,
+duration, map_file}]` + `self._portal_gates_by_map` (carregado em
+`_load_map_for`, igual a `"transitions"`). `request_portal_enter(eid,
+portal_id, dest_index)` valida em 3 passos — portal existe no mapa
+ATUAL do player, player está DE VERDADE no tile do portal
+(`TileMovement`), `dest_index` no range da lista DAQUELE portal — só
+então cria a entrada. `_tick_portal_casts(dt)` (chamado de
+`WorldServer._tick`) incrementa `elapsed`; ao completar, chama
+`transfer_player(..., emit_moved_delta=True)` SÍNCRONO e enfileira o
+evento de notificação pro dispatch do tick. `move_player()` ganhou um
+guard novo (side-effect, não rejeita o MOVE em si — diferente do guard
+de dash): `eid in self._portal_casts` → `cancel_portal_cast(eid,
+"moved")`.
+
+**Protocolo** (`shared/messages.py`): `PORTAL_ENTER_REQ` (C→S,
+`{portal_id, dest_index}`), `PORTAL_CAST_START` (S→C, `{portal_id,
+dest_index, duration}` — confirma o cast, cliente já mostrou
+localmente ao clicar mas só conta pra valer com a confirmação),
+`PORTAL_CAST_CANCEL` (S→C, `{reason}`). Handler
+`_handle_portal_enter_req` em `server/session.py::_handlers`; drenos
+de `consume_portal_teleport_events()`/`consume_portal_cast_cancel_events()`
+em `_dispatch_tick_deltas`, ambos entrando em `has_pending` no mesmo
+commit. A teleportação final não é mensagem nova — reusa o
+`ZONE_CHANGE` que já existe.
+
+**Cliente** (`client/portal_handlers.py::PortalHandlers`, novo mixin):
+`self.portal_tiles` (dict paralelo a `self.transition_tiles`, 100%
+local, nunca auto-dispara) detecta chegada no tile e abre o modal de
+seleção. Clique num destino manda `PORTAL_ENTER_REQ` e seta estado de
+cast OTIMISTA (`self._portal_cast_active`), confirmado por
+`PORTAL_CAST_START` (mesmo padrão preditivo de `SpellCast`).
+`client/hud_handlers.py::_draw_cast_bar` ganhou um `elif` pro cast de
+portal ("Teleportando... Xs"). Registrado em `client/
+modal_stack_handlers.py` (ESC fecha o modal de seleção).
+
+**Animação do personagem**: reaproveita `TileMovement.
+anim_attack_state` (mesmo campo/mecanismo de golpe de skill — loop por
+duração real + fallback automático pra idle) — `PORTAL_CAST_START`
+seta `anim_attack_state = "portal"` + duração = 5000ms. Zero mudança
+em `engine/character_animation.py` (aceita qualquer string de estado);
+fallback pra idle automático enquanto `{class_id}_portal_{direction}.png`
+não existir.
+
+**Animação do tile do portal** (novo mecanismo — 1ª animação de objeto
+de MUNDO do projeto, distinta de animação de personagem):
+`engine/tileset.py::PORTAL_ANIM_SHEET_BY_TILE_ID` (dict `tile_id →
+nome de folha animada`, vazio até o usuário desenhar a arte) +
+`ui/tile_sprite_manager.py::get_portal_anim_frame(name, now_ms)`
+(corta a folha em N frames do mesmo w×h do tile estático, indexa por
+tempo real — relógio global, sem estado por-instância, mesmo princípio
+de `day_night_color()`) + branch novo em `ui/tile_render_system.py::
+get_world_objects()` que troca o sprite estático pelo frame animado
+quando cadastrado, senão cai pro sprite `PORTAL_TILE` de sempre.
+
+Arquivos: `maps/map_1_entities.json` (`"portal_gates"`, 1 portal de
+teste em (124,383) → Vila Sul/Caverna Oeste), `engine/map_loader.py`,
+`server/portal_processor.py` (novo), `server/world_server.py`,
+`server/session.py`, `shared/messages.py`, `client/portal_handlers.py`
+(novo), `game.py`, `client/hud_handlers.py`, `client/
+modal_stack_handlers.py`, `engine/tileset.py`, `ui/
+tile_sprite_manager.py`, `ui/tile_render_system.py`.
+Testes: `tests/test_portal.py` (validação de `request_portal_enter`,
+teleporte só ao completar o cast, cancelamento por movimento,
+confirmação de que `ZONE_CHANGE_REQ` direto nunca alcança destino de
+portal sem passar pela validação nova). Validação visual em jogo
+pendente (usuário) — arte de animação (personagem e tile) ainda não
+existe, fallback gracioso confirmado no design mas não visto em tela.
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```
@@ -672,6 +777,7 @@ barra de HP); ghost (`is_ghost`) desenhado semi-transparente (alpha ~120/255).
 | Duelo (contexto PvP por convite, estilo WoW) | ✅ completo, validado em jogo | `server/duel_processor.py`, `client/duel_handlers.py` |
 | Party/Grupo + XP compartilhado (Fase E) | ✅ completo, validado em jogo | `server/party_processor.py`, `client/party_handlers.py` |
 | Correio (NPC "Caixa de Correio", entrega assíncrona) | ✅ completo, testado; validação visual em jogo pendente | `server/mail_processor.py`, `server/auth.py` (tabela `mail`), `ui/mail_system.py`, ver §17 |
+| Portais (seleção de destino + cast de 5s + animação) | ✅ plumbing completo, testado; arte de animação (personagem/tile) e validação visual em jogo pendentes | `server/portal_processor.py`, `client/portal_handlers.py`, ver §18 |
 | Zona PvP (Fase F — "solo=hostil, grupo=exceção") | ✅ completo, validado em jogo (solo, mesmo grupo, e grupo vs grupo) | `server/pvp_zone_processor.py`, `client/pvp_zone_handlers.py` |
 | Arena 2x2 + instanciamento (Fase G leva 1) | ✅ completo, não validado em jogo | `server/match_processor.py`, `client/arena_handlers.py` |
 | Base compartilhada Arena/BG pro que é genuinamente idêntico no ciclo de vida de partida (janela de aceite, abertura de portão, timeout de resultado) — accept/propose/leave/fila continuam separados de propósito (semântica diverge de verdade) | ✅ completo (escopo parcial deliberado) | `server/instanced_match_processor.py::InstancedMatchMixin`, ver `PROBLEMAS_ARQUITETURA.md` §17 |

@@ -2335,6 +2335,27 @@ class SessionManager:
 
     # ── Duelo (mesmo formato do trade — ver server/duel_processor.py) ────────
 
+    async def _handle_portal_enter_req(self, session: Session, payload: dict, ts: int = 0) -> None:
+        """Jogador escolheu um destino no modal do portal — valida e,
+        se aceito, inicia o cast server-side (`request_portal_enter`,
+        server/portal_processor.py). A teleportação de verdade NUNCA
+        acontece aqui — só quando o cast completar, no tick
+        (`_tick_portal_casts`/`consume_portal_teleport_events`, drenado
+        em `_dispatch_tick_deltas` abaixo)."""
+        if not session.authenticated or session.entity_id == -1:
+            return
+        portal_id  = str(payload.get("portal_id", ""))
+        dest_index = payload.get("dest_index", -1)
+        reason = self.world_server.request_portal_enter(session.entity_id, portal_id, dest_index)
+        if reason is not None:
+            await session.send(MsgType.PORTAL_CAST_CANCEL, {"reason": reason})
+            return
+        await session.send(MsgType.PORTAL_CAST_START, {
+            "portal_id":  portal_id,
+            "dest_index": dest_index,
+            "duration":   self.world_server.PORTAL_CAST_DURATION_S,
+        })
+
     async def _handle_duel_request(self, session: Session, payload: dict, ts: int) -> None:
         """Botão "Duelar" do modal de interação com player."""
         if not session.authenticated:
@@ -2733,6 +2754,7 @@ class SessionManager:
         MsgType.BG_MATCH_LEAVE:      _handle_bg_match_leave,
         MsgType.BG_FORFEIT:          _handle_bg_forfeit,
         MsgType.CHAR_STATS_REQUEST:  _handle_char_stats_request,
+        MsgType.PORTAL_ENTER_REQ:    _handle_portal_enter_req,
     }
 
     # ── AOI subscription — núcleo do sistema ─────────────────────────────────
@@ -2810,7 +2832,13 @@ class SessionManager:
                        # sem entrar aqui, acender/apagar um item ficaria
                        # preso no buffer até atividade alheia (movimento,
                        # combate) destravar o dispatch por acaso.
-                       or bool(self.world_server._light_toggle_events_this_tick))
+                       or bool(self.world_server._light_toggle_events_this_tick)
+                       # Portal (30/09/2026) — MESMA classe de bug: o
+                       # ZONE_CHANGE de teleporte completo (ou o CANCEL por
+                       # movimento) ficaria preso até atividade alheia
+                       # destravar o dispatch por acaso.
+                       or bool(self.world_server._portal_teleport_events_this_tick)
+                       or bool(self.world_server._portal_cast_cancel_events_this_tick))
         if not has_pending:
             return
         # Mescla SEMPRE (nunca substitui) — se um despacho anterior ainda
@@ -3544,6 +3572,28 @@ class SessionManager:
                 if not (_bqr_sess and _bqr_sess.authenticated):
                     continue
                 await _bqr_sess.send(MsgType.BG_MATCH_RESULT, _bqr_payload)
+
+            # Portais com seleção de destino (30/09/2026) — cast do
+            # PRÓPRIO servidor completou (server/portal_processor.py::
+            # _tick_portal_casts), transfer_player já rodou síncrono;
+            # só falta avisar o cliente, mesmo padrão do _bql acima.
+            for _prt in self.world_server.consume_portal_teleport_events():
+                _prt_sess = self._sessions.get(_prt["session_id"])
+                if not (_prt_sess and _prt_sess.authenticated):
+                    continue
+                await _prt_sess.send(MsgType.ZONE_CHANGE, {
+                    "map_file": _prt["to_map"],
+                    "target_x": _prt["target_x"],
+                    "target_y": _prt["target_y"],
+                })
+                _prt_sess.known_eids.clear()
+
+            for _prtc in self.world_server.consume_portal_cast_cancel_events():
+                _prtc_sid  = self.world_server.get_session_id_for_player(_prtc["eid"])
+                _prtc_sess = self._sessions.get(_prtc_sid) if _prtc_sid else None
+                if not (_prtc_sess and _prtc_sess.authenticated):
+                    continue
+                await _prtc_sess.send(MsgType.PORTAL_CAST_CANCEL, {"reason": _prtc["reason"]})
 
             # Eventos de som posicionais (aggro de mob, etc.) → broadcast AOI
             for _snd_ev in self.world_server.consume_sound_events():

@@ -1959,6 +1959,22 @@ NIGHT_SHEET_BY_FILE: dict[str, str] = {
     "TX Village Props with Shadow": "TX Village Props Light",
 }
 
+# Folha animada de um PORTAL (30/09/2026, Sistema de Portais, pedido do
+# usuário) — diferente de NIGHT_SHEET_BY_FILE (companheira da FOLHA
+# inteira, 1 frame, condicional à noite): aqui é por TILE_ID específico
+# (o portal é 1 elemento só do catálogo, não uma família inteira) e
+# SEMPRE ativo (não condicional a nada), com N FRAMES num arquivo
+# dedicado — uma tira horizontal, cada frame com o MESMO w×h do tile
+# estático catalogado (mesma convenção de corte de
+# engine/character_animation.py::_load_sheet_frames, só que o frame
+# tem o tamanho do PRÓPRIO tile, não CHAR_TILE_SIZE fixo). Vazio até o
+# usuário desenhar a arte e cadastrar a 1ª entrada — sem entrada aqui,
+# `ui/tile_sprite_manager.py::get_portal_anim_frame()` devolve None e
+# `ui/tile_render_system.py::get_world_objects()` cai pro sprite
+# ESTÁTICO de sempre (fallback gracioso, mesmo espírito de
+# character_animation.py pra sprite de personagem ausente).
+PORTAL_ANIM_SHEET_BY_TILE_ID: dict[str, str] = {}
+
 
 def _resolve_collision(col_rect) -> tuple[bool, object]:
     """

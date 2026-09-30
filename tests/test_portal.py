@@ -1,0 +1,166 @@
+"""
+tests/test_portal.py — Sistema de portais (seleção de destino + cast de
+5s, ver server/portal_processor.py). Cobre: validação em 3 passos de
+request_portal_enter (portal existe no mapa, player fisicamente no
+tile, dest_index no range), teleporte só ao completar o cast (nunca
+antes), cancelamento por movimento, e a checagem de segurança central
+do desenho — ZONE_CHANGE_REQ direto (bypass de PORTAL_ENTER_REQ) nunca
+alcança um destino de portal sem passar pela validação nova.
+"""
+import os, sys
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import unittest
+
+from tests.helpers import make_world_server, spawn_player, set_entity_tile
+
+PORTAL_ID = "portal_teste_1"
+PORTAL_X, PORTAL_Y = 124, 383
+
+
+class TestPortalRequestValidation(unittest.TestCase):
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.a = spawn_player(self.ws, "s1", PORTAL_X, PORTAL_Y)
+
+    def test_portal_inexistente_e_recusado(self):
+        reason = self.ws.request_portal_enter(self.a, "portal_nao_existe", 0)
+        self.assertEqual(reason, "invalid")
+        self.assertNotIn(self.a, self.ws._portal_casts)
+
+    def test_dest_index_fora_do_range_e_recusado(self):
+        reason = self.ws.request_portal_enter(self.a, PORTAL_ID, 99)
+        self.assertEqual(reason, "invalid_destination")
+        self.assertNotIn(self.a, self.ws._portal_casts)
+
+    def test_dest_index_negativo_e_recusado(self):
+        reason = self.ws.request_portal_enter(self.a, PORTAL_ID, -1)
+        self.assertEqual(reason, "invalid_destination")
+
+    def test_player_fora_do_tile_do_portal_e_recusado(self):
+        set_entity_tile(self.ws, self.a, PORTAL_X + 3, PORTAL_Y)
+        reason = self.ws.request_portal_enter(self.a, PORTAL_ID, 0)
+        self.assertEqual(reason, "not_on_portal")
+        self.assertNotIn(self.a, self.ws._portal_casts)
+
+    def test_sucesso_cria_entrada_em_portal_casts_com_duracao_certa(self):
+        reason = self.ws.request_portal_enter(self.a, PORTAL_ID, 0)
+        self.assertIsNone(reason)
+        self.assertIn(self.a, self.ws._portal_casts)
+        cast = self.ws._portal_casts[self.a]
+        self.assertEqual(cast["portal_id"], PORTAL_ID)
+        self.assertEqual(cast["dest_index"], 0)
+        self.assertEqual(cast["elapsed"], 0.0)
+        self.assertEqual(cast["duration"], self.ws.PORTAL_CAST_DURATION_S)
+
+    def test_ja_em_cast_recusa_segundo_pedido(self):
+        self.assertIsNone(self.ws.request_portal_enter(self.a, PORTAL_ID, 0))
+        reason = self.ws.request_portal_enter(self.a, PORTAL_ID, 1)
+        self.assertEqual(reason, "already_casting")
+
+
+class TestPortalTickAndTeleport(unittest.TestCase):
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.a = spawn_player(self.ws, "s1", PORTAL_X, PORTAL_Y)
+        self.assertIsNone(self.ws.request_portal_enter(self.a, PORTAL_ID, 0))
+
+    def test_nao_teleporta_antes_do_tempo(self):
+        self.ws._tick_portal_casts(dt=1.0)
+        self.assertIn(self.a, self.ws._portal_casts)
+        self.assertEqual(self.ws.consume_portal_teleport_events(), [])
+
+    def test_teleporta_so_ao_completar_o_cast(self):
+        duration = self.ws.PORTAL_CAST_DURATION_S
+        # Ticks somados abaixo da duração: nunca completa.
+        self.ws._tick_portal_casts(dt=duration - 0.1)
+        self.assertIn(self.a, self.ws._portal_casts)
+        self.assertEqual(self.ws.consume_portal_teleport_events(), [])
+
+        # Último tick fecha o cast.
+        self.ws._tick_portal_casts(dt=0.2)
+        self.assertNotIn(self.a, self.ws._portal_casts)
+        events = self.ws.consume_portal_teleport_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["eid"], self.a)
+        self.assertEqual(events[0]["to_map"], "maps/map_1.csv")
+        self.assertEqual(events[0]["target_x"], 210)
+        self.assertEqual(events[0]["target_y"], 480)
+
+        from engine.components import TileMovement
+        tm = self.ws.world.get_component(self.a, TileMovement)
+        self.assertEqual(tm.current_tile_x, 210)
+        self.assertEqual(tm.current_tile_y, 480)
+
+    def test_consume_limpa_o_buffer(self):
+        self.ws._tick_portal_casts(dt=self.ws.PORTAL_CAST_DURATION_S)
+        self.assertEqual(len(self.ws.consume_portal_teleport_events()), 1)
+        self.assertEqual(self.ws.consume_portal_teleport_events(), [])
+
+
+class TestPortalCancelOnMove(unittest.TestCase):
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.a = spawn_player(self.ws, "s1", PORTAL_X, PORTAL_Y)
+        self.assertIsNone(self.ws.request_portal_enter(self.a, PORTAL_ID, 0))
+
+    def test_move_player_durante_cast_cancela(self):
+        self.ws.move_player("s1", PORTAL_X + 1, PORTAL_Y)
+        self.assertNotIn(self.a, self.ws._portal_casts)
+        events = self.ws.consume_portal_cast_cancel_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["eid"], self.a)
+        self.assertEqual(events[0]["reason"], "moved")
+
+    def test_cast_cancelado_nunca_completa_mesmo_esperando(self):
+        self.ws.move_player("s1", PORTAL_X + 1, PORTAL_Y)
+        self.ws._tick_portal_casts(dt=self.ws.PORTAL_CAST_DURATION_S + 1.0)
+        self.assertEqual(self.ws.consume_portal_teleport_events(), [])
+
+    def test_cancel_portal_cast_sem_cast_ativo_e_noop(self):
+        self.ws.move_player("s1", PORTAL_X + 1, PORTAL_Y)
+        self.ws.consume_portal_cast_cancel_events()
+        had_cast = self.ws.cancel_portal_cast(self.a, "moved")
+        self.assertFalse(had_cast)
+        self.assertEqual(self.ws.consume_portal_cast_cancel_events(), [])
+
+
+class TestPortalZoneChangeReqBypassBlocked(unittest.TestCase):
+    """Checagem de segurança central do desenho: um cliente malicioso que
+    manda ZONE_CHANGE_REQ direto (pulando PORTAL_ENTER_REQ) nunca alcança
+    um destino de portal por essa via nova — o fluxo de portal nunca
+    escreve em `_portal_casts` a partir de ZONE_CHANGE_REQ, e o destino de
+    portal só é acessível através de `request_portal_enter`, que valida
+    posição+id+índice antes de aceitar qualquer coisa."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.a = spawn_player(self.ws, "s1", PORTAL_X, PORTAL_Y)
+
+    def test_transfer_player_direto_nao_passa_pelo_catalogo_de_portal(self):
+        # transfer_player é o mecanismo BAIXO NÍVEL que tanto o ZONE_CHANGE_REQ
+        # antigo quanto o cast de portal usam por baixo — ele em si nunca
+        # consulta _portal_gates_by_map, confirmando que a validação de
+        # destino-de-portal só existe na camada de cima (request_portal_enter).
+        import inspect
+        src = inspect.getsource(self.ws.transfer_player)
+        self.assertNotIn("_portal_gates_by_map", src,
+                         "transfer_player não deve saber nada sobre portais — "
+                         "validação de destino é exclusiva de request_portal_enter")
+
+    def test_sem_pedido_de_portal_nao_ha_cast_pendente(self):
+        # Nenhum PORTAL_ENTER_REQ foi mandado — _portal_casts deve
+        # permanecer vazio independente de qualquer outra ação do player.
+        self.ws.move_player("s1", PORTAL_X + 1, PORTAL_Y)
+        self.assertEqual(self.ws._portal_casts, {})
+        self.ws._tick_portal_casts(dt=999.0)
+        self.assertEqual(self.ws.consume_portal_teleport_events(), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

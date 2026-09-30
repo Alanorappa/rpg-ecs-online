@@ -40,6 +40,19 @@ class MsgType(str, Enum):
     ZONE_CHANGE        = "zone_change"     # S→C  {map_file, target_x, target_y}
     ENTER_INSTANCE     = "enter_instance"  # C→S  pedir entrada em instância        # TODO: não implementado
 
+    # Portais com seleção de destino (30/09/2026, pedido do usuário) —
+    # diferente de ZONE_CHANGE_REQ (destino fixo por tile, confiado
+    # direto do cliente): aqui o destino é ESCOLHIDO pelo jogador entre
+    # vários, então o servidor VALIDA contra a lista de destinos do
+    # PRÓPRIO portal (carregada de `"portal_gates"` no mapa, ver
+    # engine/map_loader.py) antes de iniciar o cast — nunca confia num
+    # to_map/target_x/y solto vindo do cliente. A teleportação final
+    # reaproveita o ZONE_CHANGE normal, disparada pelo PRÓPRIO servidor
+    # quando o timer de cast dele mesmo completa (server/portal_processor.py).
+    PORTAL_ENTER_REQ   = "portal_enter_req"  # C→S  {portal_id, dest_index} — pedido de entrar no portal com o destino já escolhido
+    PORTAL_CAST_START  = "portal_cast_start" # S→C  {portal_id, dest_index, duration} — confirma o cast (cliente já mostrou local ao clicar, só passa a valer com esta confirmação)
+    PORTAL_CAST_CANCEL = "portal_cast_cancel" # S→C  {reason} — cast interrompido (hoje só "moved", mas genérico pra motivo futuro)
+
     # ── Movimento ─────────────────────────────────────────────────
     MOVE               = "move"            # C→S  jogador quer mover para tile
     ENTITY_MOVE        = "entity_move"     # S→C  confirmação/broadcast de movimento
@@ -395,6 +408,7 @@ C2S_REQUIRED: dict = {
     MsgType.PARTY_KICK:         {"target_eid": _NUM},
     MsgType.SAVE_STATE:         {},   # payload inteiro é dict validado a fundo no handler
     MsgType.CHAR_STATS_REQUEST: {},
+    MsgType.PORTAL_ENTER_REQ:   {"portal_id": str, "dest_index": _NUM},
 }
 
 

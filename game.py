@@ -66,6 +66,7 @@ from client.arena_handlers import ArenaHandlers
 from client.battleground_handlers import BattlegroundHandlers
 from client.bg_queue_handlers import BgQueueHandlers
 from client.chat_handlers import ChatHandlers
+from client.portal_handlers import PortalHandlers
 from client.colors import C_WHITE, C_YELLOW, C_GREEN, C_RED, C_GRAY, C_CYAN, C_ORANGE
 
 # --- Configurações do Jogo ---
@@ -158,7 +159,7 @@ def compute_window_geometry(mode: str, scale: float) -> tuple:
                 pygame.DOUBLEBUF | pygame.SCALED | pygame.RESIZABLE)
 
 
-class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, InventoryHandlers, TooltipHandlers, DebugHandlers, MenuHandlers, HotbarEditorHandlers, HabilidadesHandlers, OnlineModeHandlers, HotbarHandlers, ConsumableBarHandlers, HudHandlers, DeathUIHandlers, ModalStackHandlers, TradeHandlers, DuelHandlers, PartyHandlers, PvpZoneHandlers, ArenaHandlers, BattlegroundHandlers, BgQueueHandlers, ChatHandlers):
+class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, InventoryHandlers, TooltipHandlers, DebugHandlers, MenuHandlers, HotbarEditorHandlers, HabilidadesHandlers, OnlineModeHandlers, HotbarHandlers, ConsumableBarHandlers, HudHandlers, DeathUIHandlers, ModalStackHandlers, TradeHandlers, DuelHandlers, PartyHandlers, PvpZoneHandlers, ArenaHandlers, BattlegroundHandlers, BgQueueHandlers, ChatHandlers, PortalHandlers):
     def __init__(self, scale: float = 1.0, char_data: "dict | None" = None,
                  save_slot: int = 0,
                  net_user: str = "", net_pass: str = "",
@@ -758,6 +759,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self.map_width_px  = tilemap_comp.map_width_tiles  * TILE_SIZE
         self.map_height_px = tilemap_comp.map_height_tiles * TILE_SIZE
         self._build_transition_tiles(spawn_points)
+        self._build_portal_tiles(spawn_points)
         self._load_ambient_zones(spawn_points)
         self._load_pvp_zones(spawn_points)
 
@@ -2063,6 +2065,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                       and self._handle_bg_click(event)):
                     pass
                 elif (event.type == pygame.MOUSEBUTTONDOWN
+                      and self._handle_portal_click(event)):
+                    pass
+                elif (event.type == pygame.MOUSEBUTTONDOWN
                       and self._handle_trade_click(event)):
                     pass
                 elif (event.type == pygame.MOUSEBUTTONDOWN
@@ -2497,6 +2502,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         })
                         self._transition_cooldown = 2.0
 
+            # Portais com seleção de destino (30/09/2026) — nunca
+            # auto-dispara ZONE_CHANGE_REQ como acima; só abre modal de
+            # escolha + toca o cast local (ver client/portal_handlers.py).
+            self._update_portal_state(dt)
+
             if self._map_title_timer > 0:
                 self._map_title_timer -= dt
             if PROFILE_FRAMES:
@@ -2894,6 +2904,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._draw_arena_result_modal()
             self._draw_bg_accept_modal()
             self._draw_bg_result_modal()
+            self._draw_portal_modal()
             self._draw_pvp_zone_banner()
             if self._show_talents:
                 self._talent_system.render()
@@ -3233,6 +3244,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self.map_height_px = tilemap_comp.map_height_tiles * TILE_SIZE
 
         self._build_transition_tiles(spawn_points)
+        self._build_portal_tiles(spawn_points)
         self._load_ambient_zones(spawn_points)
         self._load_pvp_zones(spawn_points)
         self._spawn_entities_from(spawn_points)

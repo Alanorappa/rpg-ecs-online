@@ -155,6 +155,7 @@ def load_map_csv(filepath: str) -> tuple[list[str], list[str], dict, list | None
         "mailboxes":         [],
         "spawn_zones":       [],
         "transitions":       [],
+        "portal_gates":      [],
         "ambient_zones":     [],
         "pvp_zones":         [],
         "bush_zones":        [],
@@ -553,6 +554,9 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
 
     if "transitions" in data:
         spawn_points["transitions"] = data["transitions"]
+
+    if "portal_gates" in data:
+        spawn_points["portal_gates"] = data["portal_gates"]
 
     if "spawn_zones" in data:
         for zone in data["spawn_zones"]:
