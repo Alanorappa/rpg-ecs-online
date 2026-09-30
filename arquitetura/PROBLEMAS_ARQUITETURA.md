@@ -23812,3 +23812,72 @@ de diagnóstico, amostrando PIXELS DE VERDADE do `zoom_surf` +
 comparando `cam_xy` contra a posição REAL esperada do player, revelou
 a causa — mesma disciplina "medir com dado real em vez de continuar
 lendo código estático" já usada com sucesso no §217/§218 nesta sessão.
+
+---
+
+## 220. Bot martelando a mesma skill contra alvo fora de alcance — mitigado com backoff local (29/09/2026)
+
+Continuação do achado do §217: o log `RESOLVE_TARGET_FALLBACK`
+(adicionado naquela investigação) revelou 781 ocorrências numa única
+sessão de produção — quase sempre `reason=fora_de_max_range`: o bot
+decidia CORRETO (skill aprendida, alvo dentro do alcance real,
+cooldown pronto — tudo checado com dado FRESCO no instante da
+decisão), mas a tentativa falhava porque o alvo (também em movimento,
+bot ou player) saía de alcance antes do servidor processar o pedido —
+a fila de skill requests pode atrasar vários ticks sob carga (ver
+`SKILL_REQUESTS_TIME_BUDGET_MS`). Como o cooldown REAL só é registrado
+em SUCESSO (nunca em falha, de propósito — não desperdiçar 22s numa
+falha legítima de alcance), nada detinha o bot: ele reavaliava e
+tentava a MESMA skill contra o MESMO alvo a cada ciclo de decisão
+(~350ms), pra sempre.
+
+Perguntado se queria a correção arquitetural completa (revalidar
+alcance no último instante antes de executar — mudança maior, toca a
+fila de processamento de skill) ou só atacar o sintoma visível
+primeiro, o usuário escolheu focar no sintoma agora: "quero que o bot
+tente usar interceptar sempre que ele tiver a skill desbloqueada, está
+dentro da distância exigida pela skill, e a skill não está no
+cooldown" — verificado que essas 3 regras já eram exatamente as que
+`_try_priority_skill` usa (`server/bot_ai_system.py`); o problema nunca
+foi a REGRA de decisão, e sim a corrida entre decisão e execução. Como
+a fila atrasada em si (causa raiz de fundo) segue sem correção, focamos
+em impedir a RAJADA de tentativas idênticas fadadas a falhar.
+
+**Fix**: `BotControlled.skill_retry_backoff` (novo campo,
+`engine/components.py` — dict `skill_id -> próximo horário permitido`)
++ `BOT_SKILL_RETRY_BACKOFF_S = 1.5` (`server/bot_ai_system.py`).
+Aplicado nos 2 ÚNICOS pontos que enfileiram skill pro bot
+(`_try_cast_specific`, usado pela prioridade tática por classe;
+`_try_cast_offensive_skill`, o fallback genérico do hotbar) via 2
+métodos novos (`_skill_retry_allowed`/`_mark_skill_attempt`) — nunca
+hardcoded pra "interceptar" especificamente, qualquer skill futura com
+o mesmo padrão (gap-closer contra alvo móvel) se beneficia de graça.
+Bot continua podendo cair pra OUTRA skill pronta no hotbar enquanto
+uma está em backoff (não fica parado à toa — confirmado no teste: com
+Interceptar em backoff, o bot cai pra Golpe Poderoso normalmente).
+
+**Testes** (`tests/test_bg_bot.py::TestBotInterceptarRetryBackoff`, 3
+casos): 1ª tentativa enfileira normal; 2ª tentativa no ciclo seguinte
+(sem deixar o cooldown real registrar — simula uma falha real de
+alcance) NÃO reenvia a MESMA skill; depois do backoff expirar, tenta
+de novo. Revert-to-confirm: 2 dos 3 falham sem o fix (o 3º dá erro de
+atributo ausente). Suíte completa de bot (55 testes,
+`tests/test_bg_bot.py`) passando sem regressão. Deploy feito pro
+servidor (código compartilhado client/server, mas a mudança em si é
+100% server-side — `server/bot_ai_system.py` só roda lá).
+
+**Fica registrado, não esquecido**: a causa raiz de fundo (fila de
+skill requests atrasando vários ticks sob carga, permitindo o alvo se
+afastar demais entre decisão e execução) continua sem correção — só o
+SINTOMA (retry infinito) foi mitigado. Se o volume de
+`RESOLVE_TARGET_FALLBACK` continuar alto mesmo com o backoff, a
+correção arquitetural mencionada acima (revalidar distância no último
+instante antes de executar, ou reduzir a latência da fila sob carga)
+ainda está de pé como próximo passo.
+
+**Interceptar do personagem do usuário (§217, metade original)**:
+pausado por pedido explícito do usuário — juntar dados novos exige um
+teste dedicado (não incidental, como os testes de BG que geraram os
+dados usados até agora) e o usuário preferiu não gastar esse tempo
+agora. Não fechar como resolvido — retomar quando o usuário topar
+testar de novo.
