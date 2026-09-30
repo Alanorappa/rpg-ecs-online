@@ -21,7 +21,7 @@ pygame.display.set_mode((320, 240))
 from client.network_handlers import NetworkHandlers
 from client.habilidades_handlers import HabilidadesHandlers
 from engine.world import World
-from engine.components import Faction
+from engine.components import Faction, Camera
 
 
 class _ZoneChangeFixture(NetworkHandlers, HabilidadesHandlers):
@@ -95,6 +95,39 @@ class TestHandleMsgZoneChange(unittest.TestCase):
         self.assertIsNone(fx._bg_result_val)
         self.assertFalse(fx._bg_in_match_val)
         self.assertEqual(fx._bg_opponents_server_val, set())
+
+    def test_zone_change_desliga_camera_livre_ao_sair_de_instancia(self):
+        """29/09/2026, bug real relatado pelo usuário (PROBLEMAS_ARQUITETURA.md
+        §219): câmera livre estilo MOBA (tecla Y, só liga dentro da BG/
+        Arena) ficava travada em `free_mode=True` pra sempre ao sair da
+        instância sem apertar Y de novo antes — o toggle da tecla só
+        funciona com a instância ainda ativa, então não tinha como o
+        próprio jogador corrigir sozinho no mundo aberto. Câmera ficava
+        congelada na última posição do pan (coordenadas de um mapa bem
+        menor), fora de lugar/preta no mapa novo, só resolvia relogando.
+        ZONE_CHANGE agora desliga free_mode incondicionalmente."""
+        fx = _ZoneChangeFixture(current_map="maps/map_1.csv")
+        cam_eid = fx.world.create_entity()
+        fx.world.add_component(cam_eid, Camera(free_mode=True))
+
+        fx._handle_msg_zone_change({
+            "map_file": "maps/battleground_1.csv", "target_x": 5, "target_y": 5,
+        })
+
+        self.assertFalse(fx.world.get_component(cam_eid, Camera).free_mode)
+
+    def test_zone_change_pro_mesmo_mapa_tambem_desliga_camera_livre(self):
+        """Mesmo reset vale pro atalho de teleporte no MESMO mapa —
+        free_mode nunca deveria sobreviver a NENHUM ZONE_CHANGE."""
+        fx = _ZoneChangeFixture(current_map="maps/map_1.csv")
+        cam_eid = fx.world.create_entity()
+        fx.world.add_component(cam_eid, Camera(free_mode=True))
+
+        fx._handle_msg_zone_change({
+            "map_file": "maps/map_1.csv", "target_x": 210, "target_y": 480,
+        })
+
+        self.assertFalse(fx.world.get_component(cam_eid, Camera).free_mode)
 
 
 if __name__ == "__main__":

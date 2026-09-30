@@ -2967,6 +2967,22 @@ class NetworkHandlers:
         # contexto de PvP local (client/bg_queue_handlers.py).
         self._bg_in_match_val         = False
         self._bg_opponents_server_val = set()
+        # Câmera livre estilo MOBA (tecla Y, `Camera.free_mode`) só liga
+        # dentro da BG/Arena e a re-trava é manual (apertar Y de novo,
+        # ver game.py) — sem reset aqui, sair da instância com free_mode
+        # ainda ligado deixava a câmera PRA SEMPRE travada na última
+        # posição do pan de dentro da instância (coordenadas de um mapa
+        # bem menor), sem chance de corrigir sozinho no mundo aberto (o
+        # próprio toggle da tecla Y só funciona com a instância ainda
+        # ativa) — bug real relatado pelo usuário 29/09/2026: mundo
+        # preto/fora de lugar ao sair da BG, só resolvia relogando (ver
+        # PROBLEMAS_ARQUITETURA.md §219). Reset incondicional aqui é
+        # seguro mesmo fora de instância (free_mode já deveria ser False
+        # ali de qualquer forma).
+        from engine.components import Camera as _CamZc
+        _cam_zc_first = self.world.get_first(_CamZc)
+        if _cam_zc_first is not None:
+            _cam_zc_first[1].free_mode = False
         if map_file:
             # Tela de transição (28/09/2026, §215) — só quando é troca
             # de mapa DE VERDADE (_do_transition faz o mesmo check
