@@ -23688,7 +23688,7 @@ sem deploy no servidor.
 
 ---
 
-## 219. Mundo fica todo preto (HUD normal) ao sair da BG — INVESTIGAÇÃO EM ABERTO, log de diagnóstico adicionado (29/09/2026)
+## 219. Mundo fica todo preto (HUD normal) ao sair da BG — RESOLVIDO: `Camera.free_mode` nunca desligava sozinho (29/09/2026)
 
 Usuário relatou: ao sair da BG (clicou "Voltar" na tela de resultado),
 o mundo aparece todo preto — HUD continua normal — e só volta ao
@@ -23740,3 +23740,75 @@ que é diferente.
 transition/day_night, 43 testes + map_transition_screen/loading_screen,
 7 testes) passando sem regressão — o log em si não muda nenhum
 comportamento.
+
+---
+
+### Causa raiz confirmada com dado real (mesmo dia) — `Camera.free_mode` travado
+
+Usuário reproduziu de novo com o log de pixel real ativo (2 checagens:
+1 transição funcionou sem bug, a seguinte reproduziu — screenshot real
+anexado pelo usuário mostrando o mundo 100% preto). Comparação direta
+no log:
+
+- Transição que funcionou: `cam_xy=(3444.0, 12022.0)` — bate com a
+  posição esperada do player no mundo aberto (perto do tile de
+  destino, `target_x=122 target_y=383` → ~3900,12256px). Pixels
+  amostrados do `_zoom_surf`: cores reais de terreno escurecidas pela
+  noite (ex: `(11, 3, 22)`), não preto puro.
+- Transição que reproduziu o bug: `cam_xy=(1912.8, 438.0)` — **nada a
+  ver** com a posição esperada do player (`target_x=128 target_y=383`
+  → ~4096,12256px). `(1912.8, 438.0)` é uma coordenada plausível
+  DENTRO da BG (mapa de só 100×100 tiles = 3200×3200px), não do mundo
+  aberto (1944×603 tiles). Os 3 pixels amostrados vieram `(0, 0, 0)`
+  puro — o terreno realmente não desenhou nada ali (bate com a câmera
+  apontando pra uma região sem sentido no mapa novo).
+
+**Causa raiz**: `Camera.free_mode` — a câmera livre estilo MOBA
+(tecla Y, `ui/render_system.py::CameraSystem`, pedido do usuário
+20/09/2026) só liga DENTRO da BG/Arena (gate por
+`InstanceInventoryUIState.active`) e a "re-trava" é manual, por
+design (aperta Y de novo). O problema: **nada desligava `free_mode`
+ao SAIR da instância** — se o jogador não apertasse Y de novo antes
+de sair (ex: esqueceu, ou saiu logo depois de usar a câmera livre pra
+olhar o mapa da BG), `free_mode` continuava `True` no mundo aberto.
+E o próprio toggle da tecla Y só funciona com `InstanceInventoryUIState
+.active` — que é `False` no mundo aberto — ou seja, **o jogador não
+tinha NENHUMA forma de corrigir isso sozinho** uma vez fora da
+instância; a câmera ficava congelada pra sempre na última posição do
+pan livre (coordenadas de dentro da BG, sem significado no mapa muito
+maior do mundo aberto) até relogar (que recria a entidade Camera do
+zero, `free_mode=False` por default). Explica também "1ª vez
+funcionou, 2ª não": o usuário só usou a câmera livre (tecla Y) durante
+a 2ª sessão de BG.
+
+**Fix** (`client/network_handlers.py::_handle_msg_zone_change`):
+`Camera.free_mode = False` incondicional a cada `ZONE_CHANGE`, no
+mesmo bloco que já limpa outro estado escopado à instância (remoção
+de `Faction`, reset de `_bg_result_val`/`_bg_in_match_val`) — mesmo
+padrão já estabelecido, só faltava este campo na lista. Seguro mesmo
+fora de instância/nos casos que nem envolvem BG (free_mode já deveria
+ser `False` ali de qualquer forma).
+
+**Testes** (`tests/test_map_transition_screen.py`, 2 casos novos):
+`ZONE_CHANGE` pra mapa diferente desliga `free_mode` que estava ligado;
+o mesmo vale pro atalho de teleporte pro MESMO mapa (nunca deveria
+sobreviver a nenhum `ZONE_CHANGE`, não só o caminho "de verdade").
+Revert-to-confirm: os 2 falham sem o fix. Suíte relacionada (camera/
+zone_change/transition/bg_queue/arena, 176 testes) passando sem
+regressão.
+
+**Logs de diagnóstico removidos** (`CLIENT_ZONE_CHANGE_RAW`/
+`CLIENT_TRANSITION_DONE`/`CLIENT_TRANSITION_PIXEL_CHECK`) assim que a
+causa raiz foi confirmada e corrigida, a pedido do usuário — nunca
+deixar log temporário esquecido no código depois de resolver o que
+motivou ele existir. `RPG_DEBUG_AOI`/`RPG_DEBUG_INTERCEPTAR`
+continuam ativos (infra + flags em `config.json`, ver
+`main.py`) — ainda servem à investigação em aberto do Interceptar
+(§217).
+
+**Lição**: o log de TEXTO (estado no instante da transição) não bastou
+— o sintoma só existia nos frames RENDERIZADOS depois. Só a 2ª rodada
+de diagnóstico, amostrando PIXELS DE VERDADE do `zoom_surf` +
+comparando `cam_xy` contra a posição REAL esperada do player, revelou
+a causa — mesma disciplina "medir com dado real em vez de continuar
+lendo código estático" já usada com sucesso no §217/§218 nesta sessão.
