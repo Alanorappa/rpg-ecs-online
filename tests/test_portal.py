@@ -17,7 +17,7 @@ import unittest
 from tests.helpers import make_world_server, spawn_player, set_entity_tile
 
 PORTAL_ID = "portal_teste_1"
-PORTAL_X, PORTAL_Y = 124, 383
+PORTAL_X, PORTAL_Y = 138, 370
 
 
 class TestPortalRequestValidation(unittest.TestCase):

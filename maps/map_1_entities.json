@@ -267,14 +267,8 @@
       "target_map": "maps/map_cave_east.csv",
       "target_x": 1,
       "target_y": 34
-    },
-    {
-      "x": 138,
-      "y": 370,
-      "target_map": "maps/map_1.csv",
-      "target_x": 210,
-      "target_y": 480
     }
+
   ],
   "_help_portal_gates": [
     "portal_gates = portal com VARIOS destinos possiveis -- jogador ESCOLHE",
@@ -298,8 +292,8 @@
   "portal_gates": [
     {
       "id": "portal_teste_1",
-      "x": 124,
-      "y": 383,
+      "x": 138,
+      "y": 370,
       "destinations": [
         {"label": "Vila Sul",     "target_map": "maps/map_1.csv",          "target_x": 210, "target_y": 480},
         {"label": "Caverna Oeste","target_map": "maps/map_cave_west.csv",  "target_x": 78,  "target_y": 19}
