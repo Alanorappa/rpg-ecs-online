@@ -2993,18 +2993,6 @@ class NetworkHandlers:
             # nada) e nunca teve o engajo que motivou esta tela.
             _map_file_norm = map_file.replace("\\", "/")
             _is_real_change = _map_file_norm != self._current_map_file
-            # 29/09/2026 — investigação do bug real "mundo preto ao sair
-            # da BG" (ver CLIENT_TRANSITION_DONE em _do_transition, mesma
-            # investigação). Loga o payload bruto ANTES de qualquer
-            # processamento, pra cruzar com o estado final.
-            from debug.aoi_debug import AOI_DBG as _AOI_DBG_zc
-            _AOI_DBG_zc.log(
-                "CLIENT_ZONE_CHANGE_RAW",
-                map_file_raw=map_file, map_file_norm=_map_file_norm,
-                current_map_file_before=self._current_map_file,
-                is_real_change=_is_real_change,
-                target_x=target_x, target_y=target_y,
-            )
             if _is_real_change:
                 self._draw_map_transition_screen("Entrando em nova área...")
                 self._display.blit(self.screen, (0, 0))
