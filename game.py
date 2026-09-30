@@ -389,6 +389,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._current_map_file: str = MAP_FILES[0]
         self.transition_tiles: dict = {}   # (tile_x, tile_y) → trans_dict
         self._transition_cooldown = 0.0
+        self._transition_debug_frames_left = 0  # TEMPORÁRIO, ver _do_transition (§219)
         self._map_title_timer = 0.0
         self._cam_x = 0.0
         self._cam_y = 0.0
@@ -2716,6 +2717,43 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 self._day_night_system.render(world_objects=_lit_world_objs,
                                               camera_offset_x=cam_x, camera_offset_y=cam_y)
 
+            # 29/09/2026 — investigação do bug real "mundo preto ao sair
+            # da BG" (§219). O log imediato em _do_transition não bastou
+            # (sintoma só aparece nos frames RENDERIZADOS depois, não no
+            # instante da troca). Amostra pixels DE VERDADE do
+            # _zoom_surf (prova direta se terreno desenhou algo ou não) +
+            # estado do cache do TileRenderSystem + cor de dia/noite
+            # calculada agora, só nos 2 frames de checagem (1º e 15º após
+            # a transição) pra não inundar o log.
+            if self._transition_debug_frames_left > 0:
+                self._transition_debug_frames_left -= 1
+                if self._transition_debug_frames_left in (29, 15):
+                    from debug.aoi_debug import AOI_DBG as _AOI_DBG_pix
+                    from ui.day_night_system import day_night_color as _dnc_pix
+                    _zw_pix, _zh_pix = self._zoom_surf.get_size()
+                    _samples = {}
+                    for _lbl, _px, _py in (
+                        ("center", _zw_pix // 2, _zh_pix // 2),
+                        ("top_left", 10, 10),
+                        ("q1", _zw_pix // 4, _zh_pix // 4),
+                    ):
+                        try:
+                            _samples[_lbl] = self._zoom_surf.get_at((_px, _py))[:3]
+                        except Exception as _e_pix:
+                            _samples[_lbl] = repr(_e_pix)
+                    _trs = self._tile_render_system
+                    _AOI_DBG_pix.log(
+                        "CLIENT_TRANSITION_PIXEL_CHECK",
+                        frame_countdown=self._transition_debug_frames_left,
+                        pixel_samples=_samples,
+                        day_night_color=_dnc_pix(),
+                        day_night_map_affected=self._day_night_system.map_affected,
+                        tile_cache_tile_xy=(_trs._cache_tile_x, _trs._cache_tile_y),
+                        tile_cache_tiles_wh=(_trs._cache_tiles_w, _trs._cache_tiles_h),
+                        tile_cache_surf_none=(_trs._cache_surf is None),
+                        cam_xy=(round(cam_x, 1), round(cam_y, 1)),
+                    )
+
             # Morto/espírito: grayscale no zoom_surf menor (pré-scale) — ~44% menos
             # pixels a zoom=1.5 vs aplicar na tela cheia (853×480 vs 1280×720).
             _gst_gray = self.world.get_component(self.player_entity, GhostState)
@@ -3277,6 +3315,16 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             day_night_map_affected=getattr(self._day_night_system, "map_affected", None),
             **AOI_DBG_TRANS_extra,
         )
+        # Log imediato (acima) não bastou pra achar a diferença entre uma
+        # transição normal e a saída de BG que reproduz o bug — o sintoma
+        # só aparece nos frames RENDERIZADOS depois, não no instante da
+        # troca de mapa em si. Arma uma checagem adiada (30 frames ~1s
+        # depois, tempo de sobra pro cache de tiles/fog já ter rodado
+        # pelo menos 1x) que amostra PIXELS DE VERDADE do world_surf +
+        # estado interno do cache do TileRenderSystem + a cor de dia/noite
+        # calculada na hora — prova direta se o terreno realmente não
+        # desenhou nada (pixel preto puro) ou se algo desenha por cima.
+        self._transition_debug_frames_left = 30
 
     def _reposition_player(self, tile_x: int, tile_y: int):
         new_x = tile_x * TILE_SIZE + TILE_SIZE / 2
