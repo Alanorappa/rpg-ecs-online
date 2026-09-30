@@ -979,6 +979,83 @@ class TestBotPrioritySkills(unittest.TestCase):
                         "mago fugindo deveria tentar Polimorfia no perseguidor antes de só correr")
 
 
+class TestBotInterceptarRetryBackoff(unittest.TestCase):
+    """29/09/2026, PROBLEMAS_ARQUITETURA.md §217/§220 — bot que "decide
+    certo" pra Interceptar (skill aprendida, alvo dentro de alcance,
+    cooldown real pronto) mas cuja tentativa falha no processamento de
+    verdade (alvo também se move sozinho — pode sair de alcance antes
+    do servidor processar o pedido, especialmente sob fila de skill
+    atrasada) reenviava a MESMA tentativa a cada ciclo de decisão
+    (~350ms), pra sempre — o cooldown REAL só é registrado em SUCESSO
+    (nunca em falha, de propósito, pra não desperdiçar 22s numa falha
+    legítima de alcance). Fix: backoff local curto por skill_id
+    (`BotControlled.skill_retry_backoff`, `BOT_SKILL_RETRY_BACKOFF_S`)
+    — a REAL causa raiz (corrida entre decisão e execução) continua
+    existindo, mas o bot para de martelar a MESMA tentativa fadada."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        from tests.test_tile_los_visibility import _clear_area
+        _clear_area(self.ws, 8, 8, 60, 60)
+        from engine.components import PlayerSkills
+        self.bot = self.ws._spawn_bot_player(class_id="guerreiro")
+        from tests.helpers import clear_login_immunity
+        clear_login_immunity(self.ws, self.bot)
+        self.ws.world.add_component(self.bot, Faction(faction_id="arena_time_a"))
+        from engine.utils import snap_to_tile
+        snap_to_tile(self.ws.world, self.bot, 20, 20, carry_prev=False)
+        ps = self.ws.world.get_component(self.bot, PlayerSkills)
+        from content.skill_config import SKILL_CATALOG
+        ps.skills[1] = PlayerSkills._make_skill("interceptar", SKILL_CATALOG)
+        ps.learned_skill_ids.add("interceptar")
+        from engine.components import CharacterStats as _CS_backoff
+        char = self.ws.world.get_component(self.bot, _CS_backoff)
+        char.rage = 100
+        # 4 tiles — dentro do alcance real do Interceptar (2-6).
+        self.enemy = spawn_player(self.ws, "backoff_target", 24, 20)
+        self.ws.world.add_component(self.enemy, Faction(faction_id="arena_time_b"))
+        self.sid = self.ws._player_eid_to_sid[self.bot]
+
+    def _try(self) -> bool:
+        return BotAISystem._try_priority_skill(
+            self.ws, self.sid, self.bot, self.enemy, "guerreiro")
+
+    def test_1a_tentativa_enfileira_interceptar(self):
+        ok = self._try()
+        self.assertTrue(ok)
+        pending = [r for r in self.ws._pending_skill_requests if r["sid"] == "interceptar"]
+        self.assertEqual(len(pending), 1)
+
+    def test_2a_tentativa_no_ciclo_seguinte_nao_reenvia_interceptar(self):
+        """Sem deixar `_process_skill_requests` rodar entre as duas
+        chamadas (cooldown real nunca registrado, igual uma falha real
+        por alvo fora de alcance na hora H) — só o backoff local deveria
+        impedir a 2ª tentativa idêntica. O bot PODE cair pra outra skill
+        pronta no hotbar (ex: golpe_poderoso, comportamento correto —
+        não fica parado à toa) — o que não pode é reenviar Interceptar
+        de novo."""
+        self._try()
+        self.ws._pending_skill_requests.clear()
+
+        self._try()
+        pending2 = [r for r in self.ws._pending_skill_requests if r["sid"] == "interceptar"]
+        self.assertEqual(len(pending2), 0,
+                         "backoff deveria impedir reenviar Interceptar no ciclo seguinte")
+
+    def test_apos_o_backoff_expirar_tenta_de_novo(self):
+        self._try()
+        self.ws._pending_skill_requests.clear()
+
+        import time as _t
+        bot_comp = self.ws.world.get_component(self.bot, BotControlled)
+        bot_comp.skill_retry_backoff["interceptar"] = _t.time() - 0.01  # já expirou
+
+        ok3 = self._try()
+        self.assertTrue(ok3, "depois do backoff expirar, deveria tentar de novo")
+        pending3 = [r for r in self.ws._pending_skill_requests if r["sid"] == "interceptar"]
+        self.assertEqual(len(pending3), 1)
+
+
 class TestBotProjectileAutohit(unittest.TestCase):
     """Bot não tem cliente pra mandar PROJECTILE_HIT_CS — sem confirmação
     de rede, skill de projétil (Bola de Fogo, e as skills de projétil do

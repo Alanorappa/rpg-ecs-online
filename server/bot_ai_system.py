@@ -113,6 +113,23 @@ _FATIADOR_RADIUS_TILES       = 2
 _NOVA_RADIUS_TILES           = 3
 _INTERCEPTAR_MAX_RANGE_TILES = 6
 
+# Backoff de retry pós-falha (29/09/2026, PROBLEMAS_ARQUITETURA.md §217/
+# §220) — quando uma skill "decide certo" (alcance+cooldown OK no
+# instante da decisão) mas falha mesmo assim porque o alvo (também em
+# movimento) saiu de alcance antes do servidor processar o pedido
+# (fila de skill requests pode atrasar vários ticks sob carga — ver
+# SKILL_REQUESTS_TIME_BUDGET_MS), o cooldown REAL nunca é registrado
+# (só em sucesso, de propósito — não desperdiçar CD em falha legítima
+# de alcance/mira). Sem este backoff local, o bot reavaliava e tentava
+# a MESMA skill contra o MESMO alvo a cada ciclo de decisão (~350ms),
+# pra sempre, gerando dezenas de tentativas idênticas fadadas a falhar
+# (confirmado em log real de produção, 781 ocorrências de
+# RESOLVE_TARGET_FALLBACK numa sessão). Curto o bastante pra não
+# atrapalhar o combate de verdade (a skill continua tentando de novo em
+# ~1.5s, bem antes do cooldown real de 22s de Interceptar) — só evita a
+# rajada de tentativas idênticas no MESMO instante de indisponibilidade.
+BOT_SKILL_RETRY_BACKOFF_S = 1.5
+
 # Raio (Chebyshev) em que um minion aliado perto do PRÓPRIO BOT libera o
 # dive-gate (25/08/2026 — substitui "minion dentro do alcance da MESMA
 # torre", condição frágil demais: minion morre rápido pra torre, raramente
@@ -473,8 +490,11 @@ class BotAISystem:
                 continue
             if not SKILL_CATALOG.get(skill.skill_id, {}).get("offensive", True):
                 continue
+            if not BotAISystem._skill_retry_allowed(world_server, eid, skill.skill_id):
+                continue
             world_server.queue_skill(sid, skill.skill_id, target_eid, 0.0, 0.0,
                                      int(_t_try.time() * 1000))
+            BotAISystem._mark_skill_attempt(world_server, eid, skill.skill_id)
             return True
         return False
 
@@ -502,10 +522,39 @@ class BotAISystem:
                     continue
                 if skill.max_charges > 0 and skill.charges <= 0:
                     continue
+                if not BotAISystem._skill_retry_allowed(world_server, eid, skill.skill_id):
+                    continue
                 world_server.queue_skill(sid, skill.skill_id, target_eid, 0.0, 0.0,
                                          int(_t_spec.time() * 1000))
+                BotAISystem._mark_skill_attempt(world_server, eid, skill.skill_id)
                 return True
         return False
+
+    @staticmethod
+    def _skill_retry_allowed(world_server, eid: int, skill_id: str) -> bool:
+        """True se `eid` (bot) pode TENTAR `skill_id` agora — só False
+        durante o backoff curto pós-tentativa (`BOT_SKILL_RETRY_BACKOFF_S`,
+        ver constante). Sem `BotControlled` (não é bot) ou sem histórico
+        prévio pra essa skill: sempre permitido."""
+        from engine.components import BotControlled as _BCRetry
+        import time as _t_retry
+        bot = world_server.world.get_component(eid, _BCRetry)
+        if bot is None:
+            return True
+        return _t_retry.time() >= bot.skill_retry_backoff.get(skill_id, 0.0)
+
+    @staticmethod
+    def _mark_skill_attempt(world_server, eid: int, skill_id: str) -> None:
+        """Registra que `eid` acabou de TENTAR `skill_id` (independente
+        de sucesso/falha — a falha só é conhecida em tick futuro, fora
+        do alcance síncrono desta chamada) — chamado pelos 2 pontos
+        únicos que enfileiram skill pro bot (`_try_cast_specific`/
+        `_try_cast_offensive_skill`), logo após `queue_skill`."""
+        from engine.components import BotControlled as _BCMark
+        import time as _t_mark
+        bot = world_server.world.get_component(eid, _BCMark)
+        if bot is not None:
+            bot.skill_retry_backoff[skill_id] = _t_mark.time() + BOT_SKILL_RETRY_BACKOFF_S
 
     @staticmethod
     def _try_priority_skill(world_server, sid: str, eid: int, target_eid: int,

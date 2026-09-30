@@ -339,6 +339,21 @@ class BotControlled:
     # bastante (BOT_LOW_HP_REENGAGE_PCT) — histerese pra nunca oscilar
     # fugir/brigar a cada decisão bem na borda de um threshold só.
     is_retreating: bool = False
+    # Backoff de retry por skill (29/09/2026, PROBLEMAS_ARQUITETURA.md
+    # §217/§220) — skill_id -> `time.time()` a partir do qual o bot pode
+    # tentar essa skill DE NOVO. Nasce vazio (sem histórico = sempre
+    # pode tentar). Cobre o caso de uma skill que "decide certo" (alvo
+    # em alcance, cooldown pronto) mas falha mesmo assim porque o alvo
+    # se moveu antes do servidor processar o pedido (alvo também é
+    # bot/player em movimento — a checagem de alcance da IA é fresca no
+    # instante da decisão, mas a fila de processamento pode atrasar
+    # alguns ticks sob carga) — sem isso, o bot reavaliava e tentava a
+    # MESMA skill contra o MESMO alvo já fora de alcance a cada ciclo de
+    # decisão (~350ms), pra sempre, porque o cooldown real só é
+    # registrado em sucesso (nunca em falha). Genérico por skill_id, não
+    # hardcoded pra "interceptar" — qualquer skill futura com o mesmo
+    # padrão (gap-closer contra alvo móvel) se beneficia de graça.
+    skill_retry_backoff: dict = field(default_factory=dict)
 
 @dataclass
 class RemoteControlled:
