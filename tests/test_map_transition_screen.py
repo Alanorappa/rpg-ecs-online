@@ -136,5 +136,41 @@ class TestHandleMsgZoneChange(unittest.TestCase):
         self.assertFalse(fx.world.get_component(cam_eid, Camera).free_mode)
 
 
+class TestClearRemoteEntityCaches(unittest.TestCase):
+    """`GameEngine._clear_remote_entity_caches()` (02/10/2026, bug real
+    relatado pelo usuário: corpo de mob morto numa instância de BG
+    continuava aparecendo ao entrar numa instância NOVA depois) —
+    `_do_transition()` só chama isto no branch de troca de mapa DE
+    VERDADE. `_remote_corpses`/`_available_loot` foram esquecidos desta
+    lista por muito tempo (só `_remote_mobs`/`_remote_players`/
+    `_pending_mob_despawn`/`_mob_ghost_pos` eram limpos) — regressão
+    futura (cache novo esquecido de novo) é pega por este teste batendo
+    numa lista EXPLÍCITA dos 6 atributos, não um subconjunto."""
+
+    def test_limpa_todos_os_caches_de_entidade_remota(self):
+        import game
+
+        class _FakeCacheHolder:
+            def __init__(self):
+                self._remote_mobs          = {1: "mob"}
+                self._remote_players       = {2: "player"}
+                self._pending_mob_despawn  = {3: 0.5}
+                self._mob_ghost_pos        = {4: (10, 20)}
+                self._remote_corpses       = {5: (30, 40)}
+                self._available_loot       = {6: {"items": []}}
+
+        fake = _FakeCacheHolder()
+        game.GameEngine._clear_remote_entity_caches(fake)
+
+        self.assertEqual(fake._remote_mobs, {})
+        self.assertEqual(fake._remote_players, {})
+        self.assertEqual(fake._pending_mob_despawn, {})
+        self.assertEqual(fake._mob_ghost_pos, {})
+        self.assertEqual(fake._remote_corpses, {},
+                         "corpse de mapa/instância anterior não pode sobreviver à troca")
+        self.assertEqual(fake._available_loot, {},
+                         "loot de mapa/instância anterior não pode sobreviver à troca")
+
+
 if __name__ == "__main__":
     unittest.main()

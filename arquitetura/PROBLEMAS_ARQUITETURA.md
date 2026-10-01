@@ -24022,3 +24022,62 @@ do INÍCIO real) + `test_loop_diferente_ainda_substitui_normalmente`
 (controle, loop hipotético diferente registrado temporariamente). Revert-
 to-confirm feito — reproduziu o bug exato (contador reiniciando a cada
 tick) antes de restaurar o fix.
+
+## 223. Corpo de mob "sobrevivia" entre instâncias de BG — cache client-side sem mapa (02/10/2026)
+
+Usuário relatou, testando a BG repetidamente: o corpo de um mob morto
+numa sessão de teste continuava aparecendo ao entrar numa instância
+NOVA depois — ficou em dúvida se a BG era realmente instanciada.
+
+**Investigação (2 subagentes, nunca misturada com o trabalho de
+Fatiador/portal da mesma sessão)**: a isolação SERVER-SIDE está
+correta — `_unload_instance()` (`server/world_server.py:995-1026`)
+remove toda entidade com `MapLocation(instance_key)`; `/testbg` (chave
+fixa compartilhada) e a fila real (`match_id` incrementando,
+`bg_queue_processor.py`) ambos chamam isso corretamente quando os
+jogadores saem (manual, timeout, OU disconnect — `on_disconnect`
+chama `_leave` incondicionalmente). "Corpse" nem é uma entidade ECS de
+verdade — é um dict puro em `server/loot_processor.py::_corpses`
+(`corpse_id` de contador global, nunca colide entre partidas), com
+timer de expiração próprio (120s mob / 4s minion) que despacha
+`ENTITY_DESPAWN` só pra quem ainda está na AOI daquele mapa
+(`server/session.py`).
+
+**Causa raiz de verdade — 100% client-side**: `client/
+network_handlers.py` guarda cada corpse em `self._remote_corpses[
+corpse_id] = (tx, ty)` — SEM NENHUMA noção de mapa. Se o jogador sair
+da BG ANTES do timer de 120s expirar (`/testbg leave` antes da hora,
+bem comum em teste) — o que é o caminho normal, não uma exceção — o
+`ENTITY_DESPAWN` que eventualmente dispara nunca alcança esse cliente
+(ele já não está mais na AOI daquele mapa). A entrada fica presa em
+`_remote_corpses` pelo resto da SESSÃO inteira do cliente, e
+`_draw_remote_corpses` (`client/remote_entity_handlers.py`) desenha
+QUALQUER entrada ali, sem filtrar por mapa — reaparece em QUALQUER
+mapa futuro que reuse as mesmas coordenadas de tile (todo BG usa o
+mesmo layout, por isso o sintoma era tão consistente). `game.py::
+_do_transition()` já limpava `_remote_mobs`/`_remote_players`/
+`_pending_mob_despawn`/`_mob_ghost_pos` em toda troca de mapa de
+verdade, mas `_remote_corpses`/`_available_loot` (mesmo problema,
+dict por corpse_id sem mapa) nunca entraram nessa lista — mesma classe
+de bug do reset de `Camera.free_mode` (§219): estado que deveria
+resetar em TODA troca de mapa, mas não resetava.
+
+**Fix**: as 4 limpezas existentes + as 2 novas foram extraídas pra
+`GameEngine._clear_remote_entity_caches()` (novo método, chamado só no
+branch de troca de mapa DE VERDADE de `_do_transition`) — extração
+deliberada pra ficar testável isoladamente (sem precisar instanciar
+`GameEngine` inteiro) e pra qualquer cache NOVO indexado por eid/
+corpse_id remoto ter um lugar ÓBVIO pra entrar, em vez de ser lembrado
+caso a caso. Teste novo (`tests/test_map_transition_screen.py::
+TestClearRemoteEntityCaches`) bate numa lista EXPLÍCITA dos 6
+atributos — revert-to-confirm feito, reproduziu o sintoma exato
+(`_remote_corpses`/`_available_loot` sobrevivendo) antes de restaurar.
+
+**Achado secundário, não corrigido (fora do sintoma relatado)**: o
+dict `_corpses` do SERVIDOR (`server/loot_processor.py`) também nunca
+é varrido por `_unload_instance()` — um corpse criado dentro de uma
+instância sobrevive ali até o próprio timer (120s/4s) expirar, mesmo
+depois da instância já ter sido descarregada. Bounded/autolimpa
+sozinho, nunca visível pro jogador (nenhum cliente está na AOI de uma
+instância já descarregada) — mencionado ao usuário, não é o bug
+relatado, correção fica a critério dele.

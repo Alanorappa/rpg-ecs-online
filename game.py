@@ -3184,6 +3184,41 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
     # Transição de mapa (cavernas / retorno)
     # ------------------------------------------------------------------
 
+    def _clear_remote_entity_caches(self) -> None:
+        """Limpa TODO cache client-only indexado por eid/corpse_id de
+        entidades remotas — chamado por `_do_transition()` só no branch
+        de troca de mapa DE VERDADE (os `local_eid` referenciados já
+        foram destruídos ali por `world.remove_entity`, e um mapa NOVO —
+        ou instância NOVA do mesmo template — não tem relação nenhuma
+        com o conteúdo do mapa anterior).
+
+        Extraído em método próprio (02/10/2026) pra ficar testável
+        isoladamente — bug real relatado pelo usuário: `_remote_corpses`/
+        `_available_loot` foram esquecidos desta lista por muito tempo
+        (só `_remote_mobs`/`_remote_players`/`_pending_mob_despawn`/
+        `_mob_ghost_pos` eram limpos), então um corpo de mob morto numa
+        instância de BG continuava aparecendo ao entrar numa instância
+        NOVA depois — `_remote_corpses` guarda só `(tx,ty)` por
+        corpse_id, SEM mapa nenhum (ver `client/network_handlers.py`),
+        então nada detectava "isso é de outro mapa" sozinho; o despawn
+        por expiração (120s mob/4s minion, `server/loot_processor.py`)
+        só alcança quem ainda está na AOI daquele mapa — quem já saiu
+        (ex: "/testbg leave" antes do timer acabar, bem comum) nunca
+        recebe o `ENTITY_DESPAWN`, e o corpse ficava preso pro resto da
+        sessão, reaparecendo em QUALQUER mapa futuro que reusasse as
+        mesmas coordenadas de tile (todo BG usa o mesmo layout). Mesma
+        classe de bug do reset de `Camera.free_mode` (§219) — estado
+        que deveria resetar em TODA troca de mapa, mas não resetava.
+        Qualquer cache NOVO indexado por eid/corpse_id remoto que um
+        sistema futuro adicionar precisa entrar AQUI, nunca só lembrado
+        caso a caso."""
+        self._remote_mobs.clear()
+        self._remote_players.clear()
+        self._pending_mob_despawn.clear()
+        self._mob_ghost_pos.clear()
+        self._remote_corpses.clear()
+        self._available_loot.clear()
+
     def _do_transition(self, trans: dict):
         target_file = trans["target_map"].replace("\\", "/")
         target_x    = trans["target_x"]
@@ -3220,10 +3255,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 self.world.remove_entity(eid)
 
         # Limpa caches de entidades remotas — os local_eids foram destruídos acima
-        self._remote_mobs.clear()
-        self._remote_players.clear()
-        self._pending_mob_despawn.clear()
-        self._mob_ghost_pos.clear()
+        self._clear_remote_entity_caches()
 
         # Reseta caches de tilemap
         self._tile_validation_system.tilemap_comp = None
