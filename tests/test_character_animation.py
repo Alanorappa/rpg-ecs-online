@@ -815,6 +815,80 @@ class TestAttackAnimTriggerAndExpiry(unittest.TestCase):
         self.assertEqual(frame_ms, DEFAULT_FRAME_MS)
 
 
+class TestHoldLastFrame(unittest.TestCase):
+    """`anim_attack_hold_last_frame` (02/10/2026, pedido do usuário —
+    bug real: "ele volta pra idle antes de aparecer no outro portal...
+    é 1 frame, mas é perceptível"). Golpe cuja duração é só uma
+    ESTIMATIVA (ex: cast de rede, onde a conclusão real depende de
+    latência imprevisível) pode pedir pra segurar na última frame em
+    vez de voltar pro idle/run quando o ciclo "estica" expira — quem
+    liga isso é responsável por desligar depois."""
+
+    def setUp(self):
+        from engine.components import TileMovement
+        self.tm = TileMovement()
+        self.tm.facing = "down"
+        self.tm.is_moving = False
+
+    def test_sem_hold_expira_pro_idle_normalmente(self):
+        """Controle negativo -- confirma que o default (False) continua
+        com o comportamento de sempre."""
+        from engine.character_animation import trigger_attack_anim, resolve_display_state, _frames_for
+        trigger_attack_anim(self.tm, "guerreiro", "", 1000)
+        n_frames = len(_frames_for("guerreiro", "attack", "down"))
+        from engine.character_animation import DEFAULT_FRAME_MS
+        state, _, _ = resolve_display_state(self.tm, "guerreiro", 1000 + n_frames * DEFAULT_FRAME_MS + 1)
+        self.assertEqual(state, "idle")
+
+    def test_com_hold_segura_na_ultima_frame_em_vez_de_idle(self):
+        from engine.character_animation import resolve_display_state, DEFAULT_FRAME_MS, _frames_for
+        self.tm.anim_attack_state            = "attack"
+        self.tm.anim_attack_started_ms       = 1000
+        self.tm.anim_attack_frame_ms         = DEFAULT_FRAME_MS
+        self.tm.anim_attack_loop_duration_ms = 0
+        self.tm.anim_attack_hold_last_frame  = True
+        n_frames = len(_frames_for("guerreiro", "attack", "down"))
+
+        # Bem depois do ciclo "natural" ter acabado.
+        state, anim_t, frame_ms = resolve_display_state(
+            self.tm, "guerreiro", 1000 + n_frames * DEFAULT_FRAME_MS + 500)
+        self.assertEqual(state, "attack", "não deve cair pro idle enquanto o hold estiver ligado")
+        self.assertEqual(self.tm.anim_attack_state, "attack",
+                         "diferente do caminho normal, NÃO deve limpar o estado sozinho")
+        # anim_t tem que indexar exatamente a ÚLTIMA frame, nunca voltar
+        # pro frame 0 (looping) nem estourar o índice.
+        idx = int(anim_t // frame_ms) % n_frames
+        self.assertEqual(idx, n_frames - 1)
+
+    def test_hold_continua_segurando_por_muito_mais_tempo(self):
+        """O ponto inteiro do hold é não depender de UM valor exato de
+        "quanto tempo extra" — segura indefinidamente até algo externo
+        desligar."""
+        from engine.character_animation import resolve_display_state, DEFAULT_FRAME_MS, _frames_for
+        self.tm.anim_attack_state            = "attack"
+        self.tm.anim_attack_started_ms       = 1000
+        self.tm.anim_attack_frame_ms         = DEFAULT_FRAME_MS
+        self.tm.anim_attack_hold_last_frame  = True
+        n_frames = len(_frames_for("guerreiro", "attack", "down"))
+
+        state, anim_t, frame_ms = resolve_display_state(
+            self.tm, "guerreiro", 1000 + n_frames * DEFAULT_FRAME_MS + 10000)
+        self.assertEqual(state, "attack")
+        idx = int(anim_t // frame_ms) % n_frames
+        self.assertEqual(idx, n_frames - 1)
+
+    def test_trigger_attack_anim_reseta_o_hold_de_um_golpe_anterior(self):
+        """Regressão: sem resetar, um golpe NORMAL disparado logo depois
+        de um golpe com hold ativo herdaria a flag (campo do
+        componente, não limpo automaticamente) e ficaria preso na
+        última frame em vez de voltar pro idle sozinho."""
+        from engine.character_animation import trigger_attack_anim
+        self.tm.anim_attack_hold_last_frame = True   # deixado "sujo" por um golpe anterior
+        trigger_attack_anim(self.tm, "guerreiro", "", 1000)
+        self.assertFalse(self.tm.anim_attack_hold_last_frame,
+                         "golpe novo tem que limpar o hold do golpe anterior")
+
+
 class TestLoopingAttackDuration(unittest.TestCase):
     """10/09/2026, pedido do usuário: Fatiador de Corpos (dura 5s no
     SKILL_CATALOG, fonte única) fica em LOOP durante toda essa duração,

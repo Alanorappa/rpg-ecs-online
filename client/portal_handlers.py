@@ -269,6 +269,7 @@ class PortalHandlers:
             # passarem sozinhos, bloqueando golpe novo o tempo todo (bug
             # real: "estragou as animações de ataque", 01/10/2026).
             tm.anim_attack_loop_duration_ms = 0
+            tm.anim_attack_hold_last_frame  = False
 
     def _portal_local_class_id(self) -> "str | None":
         """`CharacterStats.class_id` do jogador LOCAL, ou None se
@@ -324,6 +325,14 @@ class PortalHandlers:
             tm.anim_attack_started_ms       = pygame.time.get_ticks()
             tm.anim_attack_frame_ms         = 0   # 0 = DEFAULT_FRAME_MS, velocidade natural
             tm.anim_attack_loop_duration_ms = 0
+            # Nunca segura em "portal_out" — ao contrário de "portal_in",
+            # não há nenhum evento de rede futuro que precise dar tempo;
+            # termina o ciclo e volta pro idle sozinho, normal. Também
+            # limpa um possível hold deixado por "portal_in" (não deveria
+            # sobrar nenhum — _trigger_portal_out_if_pending só roda
+            # DEPOIS do teleporte já ter acontecido de verdade — mas
+            # reset explícito é mais seguro que depender de ordem).
+            tm.anim_attack_hold_last_frame  = False
 
     def _get_portal_character_light_source(self, camera_offset_x: float,
                                            camera_offset_y: float) -> "dict | None":
@@ -427,6 +436,19 @@ class PortalHandlers:
             tm.anim_attack_started_ms     = pygame.time.get_ticks()
             tm.anim_attack_frame_ms       = frame_ms  # 0 = usa DEFAULT_FRAME_MS (ver character_animation.py)
             tm.anim_attack_loop_duration_ms = 0
+            # Segura na ÚLTIMA frame quando o ciclo "esticado" terminar,
+            # em vez de voltar pro idle (02/10/2026, bug real relatado
+            # pelo usuário: "ele volta pra idle antes de aparecer no
+            # outro portal... é 1 frame, mas é perceptível"). frame_ms
+            # acima já estica pra bater com a duração REAL do cast, mas
+            # é só uma ESTIMATIVA — latência de rede + granularidade de
+            # tick do servidor sempre deixam uma folga pequena entre "a
+            # animação terminou" e "o ZONE_CHANGE realmente chegou";
+            # nesse intervalo, sem isso, o personagem reaparecia em pé
+            # (idle) por 1+ frame antes de sumir de vez pro mapa novo.
+            # `_trigger_portal_out_if_pending`/`_cancel_portal_cast_local`
+            # limpam esta flag quando o evento real chega.
+            tm.anim_attack_hold_last_frame = True
 
     def _handle_msg_portal_cast_cancel(self, payload: dict) -> None:
         """Servidor cancelou o cast (moveu, ou qualquer motivo futuro) —

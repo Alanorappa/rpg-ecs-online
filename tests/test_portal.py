@@ -751,6 +751,21 @@ class TestPortalCharacterInOutAnimation(unittest.TestCase):
         natural_duration = 35 * tm.anim_attack_frame_ms
         self.assertAlmostEqual(natural_duration, 5000, delta=35)
 
+    def test_cast_start_liga_hold_last_frame(self):
+        """Regressão (02/10/2026, bug real relatado pelo usuário): sem o
+        hold, o personagem "pisca" de volta pro idle por 1+ frame entre
+        o ciclo esticado acabar e o ZONE_CHANGE realmente chegar (a
+        duração esticada é só uma ESTIMATIVA, latência de rede/tick do
+        servidor sempre deixa uma folga imprevisível)."""
+        from engine.character_animation import resolve_display_state
+        eng, tm = self._make_engine()
+        eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        self.assertTrue(tm.anim_attack_hold_last_frame)
+        # Bem depois do ciclo esticado ter "acabado" -- continua "portal_in",
+        # nunca pisca pro idle.
+        state, _, _ = resolve_display_state(tm, "guerreiro", tm.anim_attack_started_ms + 50000)
+        self.assertEqual(state, "portal_in")
+
     def test_trigger_portal_out_no_op_sem_chegada_pendente(self):
         eng, tm = self._make_engine()
         eng._trigger_portal_out_if_pending()
@@ -763,6 +778,22 @@ class TestPortalCharacterInOutAnimation(unittest.TestCase):
         self.assertEqual(tm.anim_attack_state, "portal_out")
         self.assertEqual(tm.anim_attack_loop_duration_ms, 0, "duração NATURAL, nunca esticada")
         self.assertFalse(eng._portal_arrival_pending, "flag consumida -- não liga de novo sozinha")
+
+    def test_trigger_portal_out_limpa_hold_deixado_pelo_portal_in(self):
+        """"portal_out" não deve herdar o hold de um "portal_in" anterior
+        -- precisa terminar o ciclo e voltar pro idle sozinho, normal."""
+        eng, tm = self._make_engine()
+        eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        self.assertTrue(tm.anim_attack_hold_last_frame)
+        eng._portal_arrival_pending = True
+        eng._trigger_portal_out_if_pending()
+        self.assertFalse(tm.anim_attack_hold_last_frame)
+
+    def test_cancelar_cast_limpa_o_hold(self):
+        eng, tm = self._make_engine()
+        eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        eng._cancel_portal_cast_local()
+        self.assertFalse(tm.anim_attack_hold_last_frame)
 
     def test_zone_change_marca_chegada_pendente_so_se_havia_cast_ativo(self):
         eng, _tm = self._make_engine()

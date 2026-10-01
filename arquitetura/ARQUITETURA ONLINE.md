@@ -575,6 +575,21 @@ só se o direcional não existir.
   `frame_ms` calculado, o ciclo natural (`n_frames × frame_ms`) já bate
   com a duração real do cast — a última frame (quase invisível) é a
   que fica na tela até o `ZONE_CHANGE` trocar de cena.
+  **`anim_attack_hold_last_frame=True` (02/10/2026, bug real: "ele
+  volta pra idle antes de aparecer no outro portal... é 1 frame, mas é
+  perceptível")** — o `frame_ms` calculado é só uma ESTIMATIVA da
+  duração real do cast; latência de rede + granularidade de tick do
+  servidor sempre deixam uma folga pequena e IMPREVISÍVEL entre "o
+  ciclo esticado acabou" e "o `ZONE_CHANGE` realmente chegou". Campo
+  novo em `TileMovement` (`engine/components.py`) consultado por
+  `resolve_display_state()` (`engine/character_animation.py`): quando
+  True e o ciclo expira, SEGURA na última frame (nunca reseta
+  `anim_attack_state` sozinho) em vez de cair pro idle/run — quem liga
+  isso é responsável por desligar quando o evento real chegar
+  (`_trigger_portal_out_if_pending`/`_cancel_portal_cast_local`, e
+  `trigger_attack_anim()` também reseta pra False em TODO golpe novo —
+  sem isso um ataque normal disparado logo depois herdaria o hold de um
+  golpe anterior e ficaria preso na última frame).
 - **"portal_out"**: `_trigger_portal_out_if_pending()` (novo, chamado
   por `game.py::_do_transition()` logo após reposicionar o jogador, nos
   2 branches) — duração NATURAL (`anim_attack_frame_ms=0`,

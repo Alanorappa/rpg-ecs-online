@@ -1414,6 +1414,17 @@ class TileMovement:
     # `engine.character_animation._looping_attack_duration_ms`
     # (10/09/2026, pedido do usuário).
     anim_attack_loop_duration_ms: int = 0
+    # Segura na ÚLTIMA frame em vez de voltar pro idle/run quando o
+    # golpe "termina" (02/10/2026, pedido do usuário — golpe de portal
+    # "in" não pode piscar de volta pro idle 1 frame antes do
+    # ZONE_CHANGE realmente chegar: a duração esticada pro cast é só
+    # uma ESTIMATIVA, latência de rede/granularidade de tick do
+    # servidor sempre deixa uma folga pequena e IMPREVISÍVEL no fim).
+    # Default False = comportamento de sempre (volta pro idle/run
+    # normalmente) — só setado True por quem sabe que algo EXTERNO vai
+    # decidir o que vem depois (ver
+    # engine.character_animation.resolve_display_state).
+    anim_attack_hold_last_frame: bool = False
 
 
 @dataclass

@@ -266,6 +266,13 @@ def trigger_attack_anim(tile_movement, class_id: str, sid: str, now_ms: int,
     # indexing (bug real pego testando: 78*1.25=97.5, frames[2.0] explode).
     tile_movement.anim_attack_frame_ms   = int(DEFAULT_FRAME_MS * (MISS_ATTACK_SLOWDOWN if missed else 1.0))
     tile_movement.anim_attack_loop_duration_ms = _new_loop_ms
+    # Sempre False aqui — "segurar na última frame" é exclusivo de quem
+    # seta isso NA MÃO fora deste caminho (ex: portal "in", ver
+    # client/portal_handlers.py). Sem este reset, um golpe NORMAL
+    # disparado logo depois de um golpe com hold ativo herdaria a flag
+    # (campo do COMPONENTE, não limpo automaticamente) e ficaria preso
+    # na última frame em vez de voltar pro idle sozinho.
+    tile_movement.anim_attack_hold_last_frame = False
 
 
 def resolve_display_state(tile_movement, class_id: str, now_ms: int,
@@ -289,7 +296,20 @@ def resolve_display_state(tile_movement, class_id: str, now_ms: int,
     anim_attack_frame_ms` (1 ciclo só) pra qualquer outro golpe — OU na
     hora se o sprite resolvido não existir pra essa direção — nesses
     casos cai pro idle/run do MESMO frame, sem 1 frame de retângulo/
-    estado errado no meio."""
+    estado errado no meio.
+
+    EXCEÇÃO: `anim_attack_hold_last_frame=True` (02/10/2026, pedido do
+    usuário — portal "in") segura na ÚLTIMA frame em vez de cair pro
+    idle/run quando a duração expira — `anim_attack_state` continua o
+    mesmo, nunca reseta sozinho. Usado por golpes cuja duração
+    "esticada" é só uma ESTIMATIVA (ex: cast de rede, onde a conclusão
+    de verdade depende de latência imprevisível) — sem isso, o
+    personagem "pisca" de volta pro idle por 1+ frame bem perceptível
+    entre a animação acabar e o evento real (ZONE_CHANGE) chegar.
+    Quem usa isso é responsável por LIMPAR `anim_attack_state`/
+    `anim_attack_hold_last_frame` explicitamente quando o evento real
+    chegar (ex: `_trigger_portal_out_if_pending`/`_cancel_portal_cast_local`)
+    — nunca expira sozinho."""
     if tile_movement.anim_attack_state:
         _attack_frame_ms = tile_movement.anim_attack_frame_ms or frame_ms
         frames  = _frames_for(class_id, tile_movement.anim_attack_state, tile_movement.facing)
@@ -297,5 +317,8 @@ def resolve_display_state(tile_movement, class_id: str, now_ms: int,
         _duration = tile_movement.anim_attack_loop_duration_ms or (len(frames) * _attack_frame_ms if frames else 0)
         if frames and elapsed < _duration:
             return tile_movement.anim_attack_state, elapsed, _attack_frame_ms
+        if frames and tile_movement.anim_attack_hold_last_frame:
+            held_elapsed = (len(frames) - 1) * _attack_frame_ms
+            return tile_movement.anim_attack_state, held_elapsed, _attack_frame_ms
         tile_movement.anim_attack_state = ""
     return resolve_anim_state(tile_movement), now_ms, frame_ms
