@@ -592,10 +592,36 @@ precisa de broadcast novo, não só estado client-local.
   propósito na linha `if no_ysort: continue` — bug real corrigido
   01/10/2026, ver `PROBLEMAS_ARQUITETURA.md` §221, a 1ª versão só
   cobria o método errado). `ui/tile_sprite_manager.py::get_portal_event_frame(name,
-  phase, elapsed_ms, duration_ms)` resolve o frame; None em qualquer
-  ponta cai pro sprite estático de sempre. Limpo em `game.py::
+  phase, elapsed_ms, duration_ms)` resolve o frame. Limpo em `game.py::
   _do_transition` (posição de tile não tem relação entre mapas
   diferentes).
+- **A animação é uma LUZ/overlay, nunca substitui o sprite (correção
+  02/10/2026, pedido do usuário — mesma técnica de `night_overlay_sprite`
+  do poste)**: campo novo `"portal_anim_overlay"` no dict de objeto de
+  `get_world_objects()`/variável local em `render_static_objects()` —
+  `RenderSystem`/`render_static_objects()` desenham o sprite ESTÁTICO
+  sempre, com o frame animado BLITADO POR CIMA (mesma posição/tamanho)
+  só quando há animação ativa. 1ª versão fazia `sprite = frame`
+  (substituição), escondendo o portal atrás da arte da animação.
+- **A luz do portal fura a camada de escuridão da noite, tom azulado
+  (02/10/2026, pedido do usuário — "a ideia é de iluminação")**: mesma
+  técnica JÁ usada por lampião/luz de item (`ui/day_night_system.py`,
+  gradiente ADD pra furar + brilho de cor com blend normal por cima) —
+  generalizada pra aceitar `glow_color` por entrada (`_get_warm_glow_gradient`
+  ganhou parâmetro `color`, cache agora por `(raio, cor)`, default
+  continua quente/laranja pra lampião/item). `engine.portal_anim_state::
+  active_positions(now_ms)` lista os tiles animando agora;
+  `ui/tile_render_system.py::get_portal_light_sources()` (novo método)
+  resolve a geometria de tela (centro do sprite, raio/intensidade/cor
+  fixos — `_PORTAL_LIGHT_RADIUS_TILES=2.5`, `_PORTAL_LIGHT_INTENSITY_PCT=90`,
+  `_PORTAL_LIGHT_GLOW_COLOR=(110,170,255)`, constantes do MECANISMO, não
+  do catálogo de tile) e devolve entradas no MESMO formato da luz de
+  item (`"screen_x"/"screen_y"/"light_source"`), só com `"portal_light"`
+  em vez de `"player_light"` + `"glow_color"` azulado — `game.py` injeta
+  essa lista numa variável SEPARADA (`_lit_world_objs`, nunca a lista
+  passada pro `RenderSystem`), mesmo padrão já usado pela luz de item
+  sob demanda. `DayNightSystem.render()` trata os dois tipos no MESMO
+  loop (só a cor do brilho final diverge).
 - **Posição do GATE ≠ posição de RENDER do objeto (bug real corrigido
   01/10/2026, ver `PROBLEMAS_ARQUITETURA.md` §221)** — `portal_gates`
   no JSON marca onde o jogador INTERAGE

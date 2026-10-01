@@ -37,6 +37,16 @@ from engine.tileset import TILE_SIZE, OBJECT_MAPPING
 from ui.tile_sprite_manager import TILE_SPRITES
 from engine.fov import compute_fov, local_vision_blob
 
+# Geometria/cor da luz do portal ativo (01/10/2026, pedido do usuário —
+# "iluminação" de tom azulado, fura a escuridão da noite igual a luz de
+# lampião/item) — constantes do MECANISMO de portal, não do catálogo de
+# tiles (não é algo que varia por tile_id como light_source genérico):
+# todo portal animando usa a MESMA geometria. Ver
+# ui/tile_render_system.py::get_portal_light_sources().
+_PORTAL_LIGHT_RADIUS_TILES = 2.5
+_PORTAL_LIGHT_INTENSITY_PCT = 90
+_PORTAL_LIGHT_GLOW_COLOR = (110, 170, 255)
+
 # Lookup reverso skill_id → (talent_id, min_points) — fonte única em
 # world_systems (_TALENT_SKILL_REQS, usado também por is_skill_authorized
 # no gate autoritativo do servidor). Alias mantido pro gate de UI local.
@@ -682,6 +692,59 @@ class TileRenderSystem(System):
                                          (scr_x, scr_y, sprite_w, total_h))
                     if portal_anim_overlay is not None:
                         self.world_surf.blit(portal_anim_overlay, (scr_x, scr_y))
+
+    def get_portal_light_sources(self, camera_offset_x: float, camera_offset_y: float) -> list:
+        """Entradas de luz DINÂMICA (01/10/2026, pedido do usuário — a
+        animação do portal é uma "iluminação" de verdade, precisa furar
+        a camada de escuridão da noite igual à luz de lampião/item) pra
+        cada tile com animação de portal ativa AGORA
+        (`engine.portal_anim_state.active_positions`). Formato igual ao
+        usado por `game.py` pra luz de item (`"screen_x"/"screen_y"/
+        "light_source"/"player_light"`), só com `"portal_light"` no
+        lugar de `"player_light"` e `"glow_color"` pro tom azulado — ver
+        `ui/day_night_system.py::DayNightSystem.render()`, que trata os
+        dois no MESMO caminho (só a cor do brilho final diverge).
+
+        Resultado vai numa lista SEPARADA de `world_objects` (nunca a
+        mesma passada pro RenderSystem) — mesmo princípio já usado pela
+        luz de item, essas entradas não têm sprite/width/height, só
+        servem pro DayNightSystem."""
+        import time as _time_portal_light
+        from engine import portal_anim_state as _pas_light
+        now_ms = int(_time_portal_light.time() * 1000)
+        positions = _pas_light.active_positions(now_ms)
+        if not positions:
+            return []
+        _tm_light = self.world.get_first(Tilemap)
+        if _tm_light is None:
+            return []
+        tilemap_comp = _tm_light[1]
+        tile_size = tilemap_comp.tile_size
+        obj_rows  = tilemap_comp.object_matrix
+        result = []
+        for tx, ty in positions:
+            if not (0 <= ty < len(obj_rows)):
+                continue
+            obj_row = obj_rows[ty]
+            if not (0 <= tx < len(obj_row)):
+                continue
+            tile_type = OBJECT_MAPPING.get(obj_row[tx])
+            if tile_type is None:
+                continue
+            spr_w = getattr(tile_type, "sprite_px_w", 0) or tile_size
+            spr_h = getattr(tile_type, "sprite_px_h", 0) or tile_size
+            anchor_y = (ty + 1) * tile_size
+            scr_x = tx * tile_size - camera_offset_x
+            scr_y = anchor_y - camera_offset_y - spr_h
+            result.append({
+                "screen_x": scr_x + spr_w / 2,
+                "screen_y": scr_y + spr_h / 2,
+                "light_source": (0, 0, 0, 0,
+                                 _PORTAL_LIGHT_INTENSITY_PCT, _PORTAL_LIGHT_RADIUS_TILES),
+                "portal_light": True,
+                "glow_color": _PORTAL_LIGHT_GLOW_COLOR,
+            })
+        return result
 
 
 

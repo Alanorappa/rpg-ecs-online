@@ -62,6 +62,16 @@ def get_active(tx: int, ty: int, now_ms: int) -> "tuple[str, int, float] | None"
     return (cur["phase"], elapsed, cur["duration_ms"])
 
 
+def active_positions(now_ms: int) -> "list[tuple[int, int]]":
+    """Tiles com animação ativa agora (01/10/2026, pedido do usuário —
+    a animação é uma "iluminação" de verdade, precisa furar a camada de
+    escuridão da noite igual à luz de lampião/item). Reusa `get_active()`
+    (mesma expiração automática) em vez de duplicar a lógica de duração
+    — chamador (`ui/tile_render_system.py::get_portal_light_sources`)
+    usa isso só pra saber ONDE desenhar luz, nunca decide duração aqui."""
+    return [pos for pos in list(_active.keys()) if get_active(pos[0], pos[1], now_ms) is not None]
+
+
 def clear_all() -> None:
     """Chamado ao trocar de mapa (`game.py::_do_transition`) — animação
     de portal nunca deve sobreviver a uma troca de mapa (tile (x,y) de

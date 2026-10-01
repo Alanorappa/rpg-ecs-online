@@ -288,7 +288,10 @@ class TestWarmPlayerLightGradients(unittest.TestCase):
         dns.warm_player_light_gradients()
 
         self.assertIn((radius_px, intensity_pct), dns._light_gradient_cache)
-        self.assertIn(radius_px, dns._warm_glow_cache)
+        # Chave do brilho inclui a COR desde 01/10/2026 (generalizado pra
+        # servir também o brilho azulado do portal) — default quente/
+        # laranja (255,200,100) pra luz de item, intocado.
+        self.assertIn((radius_px, (255, 200, 100)), dns._warm_glow_cache)
 
     def test_warm_evita_o_cache_miss_na_hora_de_ligar_a_luz(self):
         """Prova que o pré-aquecimento é USADO de fato: depois de
@@ -304,7 +307,7 @@ class TestWarmPlayerLightGradients(unittest.TestCase):
         dns = DayNightSystem(World(), -1)
         dns.warm_player_light_gradients()
         cached_add = dns._light_gradient_cache[(radius_px, intensity_pct)]
-        cached_glow = dns._warm_glow_cache[radius_px]
+        cached_glow = dns._warm_glow_cache[(radius_px, (255, 200, 100))]
 
         # mesma chamada que o render() faz quando a luz do jogador está
         # ligada (ver bloco "player_light" de DayNightSystem.render())

@@ -3726,6 +3726,11 @@ def _make_modal_stack_fixture(quest_dialog_open=False, show_inventory=False,
             self._arena_result        = None
             self._bg_result           = None
             self._arena_modal_open    = False
+            # Modal de seleção de destino de portal (30/09/2026 — mesma
+            # classe de gap já resolvida pros modais de PvP acima: faltava
+            # aqui, _modal_registry() quebrava com AttributeError pra
+            # QUALQUER teste deste fixture, não só os de portal).
+            self._portal_modal_open   = None
             self._show_hotbar_editor = False
             self._show_debug       = False
             self._show_talents     = False

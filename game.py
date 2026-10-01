@@ -2715,6 +2715,15 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 ]
                 if _extra_lights:
                     _lit_world_objs = _world_objs + _extra_lights
+            # Luz azulada do portal ativo (01/10/2026, pedido do usuário —
+            # mesma técnica/mesma lista separada da luz de item acima, só
+            # que a fonte é engine.portal_anim_state em vez de
+            # PlayerLightSource). Portal pode estar vazio na imensa
+            # maioria dos frames (nenhum cast em andamento) — método já
+            # devolve lista vazia rápido nesse caso.
+            _portal_lights = self._tile_render_system.get_portal_light_sources(cam_x, cam_y)
+            if _portal_lights:
+                _lit_world_objs = _lit_world_objs + _portal_lights
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
                 self._day_night_system.render(world_objects=_lit_world_objs,

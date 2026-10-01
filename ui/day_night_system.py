@@ -314,12 +314,14 @@ class DayNightSystem(System):
         # combinações reais existem na prática (catálogo pequeno), sem
         # risco de o cache crescer sem controle.
         self._light_gradient_cache: dict[tuple[int, int], "pygame.Surface"] = {}
-        # Cache do brilho quente — SÓ por raio (não por intensidade, ver
-        # `_get_warm_glow_gradient`): usa blend NORMAL (sem special_flags),
-        # que é ponderado por `set_alpha()` de verdade — diferente do
-        # gradiente aditivo acima, dá pra escalar a intensidade no BLIT,
-        # sem precisar assar ela nos pixels no momento de gerar.
-        self._warm_glow_cache: dict[int, "pygame.Surface"] = {}
+        # Cache do brilho de cor — por (raio, cor) (não por intensidade,
+        # ver `_get_warm_glow_gradient`): usa blend NORMAL (sem
+        # special_flags), que é ponderado por `set_alpha()` de verdade —
+        # diferente do gradiente aditivo acima, dá pra escalar a
+        # intensidade no BLIT, sem precisar assar ela nos pixels no
+        # momento de gerar. Cor generalizada em 01/10/2026 (antes só
+        # quente/laranja) pra servir também o brilho azulado do portal.
+        self._warm_glow_cache: dict[tuple[int, tuple[int, int, int]], "pygame.Surface"] = {}
         # Clusters de luz ESTÁTICA do mapa (lampião/tocha etc.) — 1 Surface
         # pré-composta por cluster inteiro, construída 1x em
         # build_static_light_clusters() (chamado por game.py a cada troca
@@ -377,23 +379,26 @@ class DayNightSystem(System):
         self._light_gradient_cache[key] = surf
         return surf
 
-    def _get_warm_glow_gradient(self, radius_px: int) -> "pygame.Surface":
-        """Brilho quente (22/09/2026, pedido do usuário) — toque de cor
-        amarela/laranja sutil sobre o ponto de luz, desenhado DEPOIS da
-        multiplicação, direto no mundo (não na camada_noite) — a
-        multiplicação sozinha só CLAREIA de volta a cor original ali
-        (via `_get_light_add_gradient`), nunca pinta uma cor de fogo por
-        cima; este é o toque estético que reproduz isso. Blend NORMAL
-        (sem special_flags) de propósito — é o único gradiente deste
-        arquivo que PODE usar `Surface.set_alpha()` pra escalar por
-        intensidade no momento do blit (blend normal É ponderado por
-        alpha de superfície; ADD/SUB/MULT não são, ver os outros
-        métodos) — por isso cacheado só por raio, sem precisar da
-        intensidade na chave.
+    def _get_warm_glow_gradient(self, radius_px: int,
+                                color: tuple[int, int, int] = (255, 200, 100)) -> "pygame.Surface":
+        """Brilho de cor sutil sobre o ponto de luz (22/09/2026, pedido do
+        usuário — originalmente só quente/amarelo-laranja; `color`
+        generalizado em 01/10/2026 pra também servir o brilho AZULADO do
+        portal, mesma técnica), desenhado DEPOIS da multiplicação, direto
+        no mundo (não na camada_noite) — a multiplicação sozinha só
+        CLAREIA de volta a cor original ali (via `_get_light_add_gradient`),
+        nunca pinta uma cor por cima; este é o toque estético que
+        reproduz isso. Blend NORMAL (sem special_flags) de propósito — é
+        o único gradiente deste arquivo que PODE usar `Surface.set_alpha()`
+        pra escalar por intensidade no momento do blit (blend normal É
+        ponderado por alpha de superfície; ADD/SUB/MULT não são, ver os
+        outros métodos) — por isso cacheado por (raio, cor), sem
+        precisar da intensidade na chave.
 
         27/09/2026 — mesmo achado/mesma vetorização de
         `_get_light_add_gradient` (ver docstring lá), aplicado aqui."""
-        cached = self._warm_glow_cache.get(radius_px)
+        key = (radius_px, color)
+        cached = self._warm_glow_cache.get(key)
         if cached is not None:
             return cached
         d = radius_px * 2
@@ -407,20 +412,20 @@ class DayNightSystem(System):
             alpha = np.zeros((d, d), dtype=np.uint8)
             alpha[mask] = np.round(peak_alpha * (1.0 - dist[mask] / radius_px)).astype(np.uint8)
             rgb = np.zeros((d, d, 3), dtype=np.uint8)
-            rgb[..., 0] = 255
-            rgb[..., 1] = 200
-            rgb[..., 2] = 100
+            rgb[..., 0] = color[0]
+            rgb[..., 1] = color[1]
+            rgb[..., 2] = color[2]
             pygame.surfarray.pixels3d(surf)[:] = rgb
             pygame.surfarray.pixels_alpha(surf)[:] = alpha
-            self._warm_glow_cache[radius_px] = surf
+            self._warm_glow_cache[key] = surf
             return surf
         for y in range(d):
             for x in range(d):
                 dist = ((x - radius_px) ** 2 + (y - radius_px) ** 2) ** 0.5
                 if dist <= radius_px:
                     a = round(peak_alpha * (1.0 - dist / radius_px))
-                    surf.set_at((x, y), (255, 200, 100, a))
-        self._warm_glow_cache[radius_px] = surf
+                    surf.set_at((x, y), (color[0], color[1], color[2], a))
+        self._warm_glow_cache[key] = surf
         return surf
 
     def build_static_light_clusters(self, tilemap) -> None:
@@ -653,7 +658,7 @@ class DayNightSystem(System):
         # não faria sentido gateá-la igual ao poste automático).
         _ambient_night = is_night() or not self.map_affected
         _lit_glow_blits: list[tuple[float, float, "pygame.Surface"]] = []
-        _lit_single_positions: list[tuple[float, float, int, float]] = []
+        _lit_single_positions: list[tuple[float, float, int, float, tuple[int, int, int]]] = []
 
         if _ambient_night and self._static_clusters:
             _screen_rect = pygame.Rect(int(camera_offset_x), int(camera_offset_y), surf_w, surf_h)
@@ -671,7 +676,14 @@ class DayNightSystem(System):
 
         if world_objects:
             for obj in world_objects:
-                if not obj.get("player_light"):
+                # player_light (luz de item sob demanda) e portal_light
+                # (01/10/2026, pedido do usuário — animação do portal é
+                # uma "iluminação" de verdade, precisa furar a camada de
+                # noite igual a qualquer outra luz dinâmica) passam pelo
+                # MESMO caminho — só a COR do brilho final diverge
+                # (glow_color, default quente/laranja pra manter
+                # player_light intocado).
+                if not (obj.get("player_light") or obj.get("portal_light")):
                     continue   # luz de mapa (estática) já resolvida acima via cluster
                 light = obj.get("light_source")
                 if not light:
@@ -689,7 +701,8 @@ class DayNightSystem(System):
                 self._overlay_surf.blit(
                     gradient, (cx - radius_px, cy - radius_px),
                     special_flags=pygame.BLEND_RGBA_ADD)
-                _lit_single_positions.append((cx, cy, radius_px, intensity_pct))
+                _lit_single_positions.append(
+                    (cx, cy, radius_px, intensity_pct, obj.get("glow_color", (255, 200, 100))))
         if _prof_record:
             _prof_record("rnd:DayNightSystem:player_light", _time_dns.perf_counter() - _t0_dns)
             _t0_dns = _time_dns.perf_counter()
@@ -708,8 +721,8 @@ class DayNightSystem(System):
         # aqui pra cluster — só a luz individual/dinâmica precisa disso).
         for sx, sy, glow_surf in _lit_glow_blits:
             self.world_surf.blit(glow_surf, (sx, sy))
-        for cx, cy, radius_px, intensity_pct in _lit_single_positions:
-            warm = self._get_warm_glow_gradient(radius_px)
+        for cx, cy, radius_px, intensity_pct, glow_color in _lit_single_positions:
+            warm = self._get_warm_glow_gradient(radius_px, glow_color)
             warm.set_alpha(round(255 * max(0.0, min(1.0, intensity_pct / 100.0))))
             self.world_surf.blit(warm, (cx - radius_px, cy - radius_px))
         if _prof_record:

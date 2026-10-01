@@ -397,5 +397,94 @@ class TestPortalAnimAnchorResolution(unittest.TestCase):
                              "deve escrever na posição real do OBJETO (anchor)")
 
 
+class TestPortalLightPunchesNightLayer(unittest.TestCase):
+    """Pedido do usuário (02/10/2026): a animação do portal é uma
+    "iluminação" (tom azulado), não um substituto do objeto — precisa
+    furar a camada de escuridão da noite igual à luz de lampião/item.
+    Cobre: `engine.portal_anim_state.active_positions()` só lista tiles
+    de verdade ativos, e `TileRenderSystem.get_portal_light_sources()`
+    gera a entrada de luz (posição de tela, raio, cor azulada) no
+    formato que `ui/day_night_system.py::DayNightSystem.render()`
+    espera — nunca mistura isso com a lista passada pro RenderSystem."""
+
+    def setUp(self):
+        import pygame
+        pygame.init()
+        from engine.tileset import OBJECT_MAPPING, TileType, PORTAL_ACTIVATE_SHEET_BY_TILE_ID
+        from engine import portal_anim_state
+        self._orig_mapping = dict(OBJECT_MAPPING)
+        self._orig_activate = dict(PORTAL_ACTIVATE_SHEET_BY_TILE_ID)
+        OBJECT_MAPPING["P"] = TileType(name="TestePortal", color=(0, 0, 0),
+                                       sprite_name="test_portal_obj",
+                                       sprite_px_w=96, sprite_px_h=96)
+        PORTAL_ACTIVATE_SHEET_BY_TILE_ID["test_portal_obj"] = "fake_sheet"
+        portal_anim_state.clear_all()
+
+    def tearDown(self):
+        from engine.tileset import OBJECT_MAPPING, PORTAL_ACTIVATE_SHEET_BY_TILE_ID
+        from engine import portal_anim_state
+        OBJECT_MAPPING.clear(); OBJECT_MAPPING.update(self._orig_mapping)
+        PORTAL_ACTIVATE_SHEET_BY_TILE_ID.clear(); PORTAL_ACTIVATE_SHEET_BY_TILE_ID.update(self._orig_activate)
+        portal_anim_state.clear_all()
+
+    def test_active_positions_so_lista_quem_esta_ativo_agora(self):
+        import time
+        from engine import portal_anim_state
+        now_ms = int(time.time() * 1000)
+        portal_anim_state.start_activate(5, 5, now_ms, 5000.0)
+        self.assertEqual(portal_anim_state.active_positions(now_ms), [(5, 5)])
+        # bem depois da duração: já não conta mais.
+        self.assertEqual(portal_anim_state.active_positions(now_ms + 6000), [])
+
+    def test_get_portal_light_sources_gera_entrada_azulada_na_posicao_certa(self):
+        import time, pygame
+        from engine.entity_factory import create_tilemap
+        from engine.world import World
+        from engine.components import Tilemap
+        from engine import portal_anim_state
+        from ui.tile_render_system import TileRenderSystem
+
+        world = World()
+        terrain = ["." * 10 for _ in range(10)]
+        objects = [["."] * 10 for _ in range(10)]
+        objects[5][5] = "P"
+        create_tilemap(world, terrain, objects, None)
+
+        now_ms = int(time.time() * 1000)
+        portal_anim_state.start_activate(5, 5, now_ms, 5000.0)
+
+        trs = TileRenderSystem(world, pygame.Surface((64, 64)))
+        lights = trs.get_portal_light_sources(0, 0)
+        self.assertEqual(len(lights), 1)
+        light = lights[0]
+        self.assertTrue(light["portal_light"])
+        self.assertNotIn("player_light", light, "nunca marcar como player_light -- são fontes distintas")
+        self.assertIsInstance(light["glow_color"], tuple)
+        self.assertNotEqual(light["glow_color"], (255, 200, 100),
+                            "cor azulada do portal não deve ser a mesma cor quente de lampião/item")
+        # Posição de tela corresponde ao centro do sprite ancorado em (5,5).
+        tile_size = world.get_component(
+            next(iter(world.get_entities_with(Tilemap)))[0], Tilemap).tile_size
+        expected_cx = 5 * tile_size + 96 / 2
+        expected_cy = (6 * tile_size - 96) + 96 / 2
+        self.assertAlmostEqual(light["screen_x"], expected_cx)
+        self.assertAlmostEqual(light["screen_y"], expected_cy)
+
+    def test_get_portal_light_sources_vazio_sem_animacao_ativa(self):
+        import pygame
+        from engine.entity_factory import create_tilemap
+        from engine.world import World
+        from ui.tile_render_system import TileRenderSystem
+
+        world = World()
+        terrain = ["." * 10 for _ in range(10)]
+        objects = [["."] * 10 for _ in range(10)]
+        objects[5][5] = "P"
+        create_tilemap(world, terrain, objects, None)
+
+        trs = TileRenderSystem(world, pygame.Surface((64, 64)))
+        self.assertEqual(trs.get_portal_light_sources(0, 0), [])
+
+
 if __name__ == "__main__":
     unittest.main()
