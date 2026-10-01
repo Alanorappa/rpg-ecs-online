@@ -58,6 +58,22 @@ _PORTAL_DEACTIVATE_DURATION_MS = 900.0
 # vizinho (gates de teste estão a dezenas de tiles de distância entre si).
 _PORTAL_ANIM_ANCHOR_SEARCH_RADIUS = 2
 
+# Animação de PERSONAGEM entrando/saindo de um portal (02/10/2026,
+# pedido do usuário) — arquivos SEM direção
+# (`{class_id}_portal_in.png`/`{class_id}_portal_out.png`, ver fallback
+# em `engine/character_animation.py::_load_sheet_frames`): "in" toca no
+# jogador que está CASTANDO (ESTICADA pra caber a duração real do cast,
+# via `anim_attack_frame_ms` calculado, NUNCA `anim_attack_loop_duration_ms`
+# — esse usa módulo/loop, errado aqui, ver docstring de
+# `_handle_msg_portal_cast_start`); "out" toca 1x, duração NATURAL, ao
+# CHEGAR (mesmo padrão da animação "desativar" do tile). Intensidade da
+# luz que fura a escuridão — mesma técnica do tile
+# (`DayNightSystem._get_portal_frame_light_mask`), só que o PRODUTOR é
+# `_get_portal_character_light_source()`, direto do frame REAL sendo
+# desenhado no personagem, só pro jogador LOCAL (sem broadcast nesta
+# rodada — decisão de escopo, diferente da luz do tile).
+_PORTAL_CHAR_LIGHT_INTENSITY_PCT = 90
+
 
 def _find_portal_anim_anchor(object_matrix: list, gate_x: int, gate_y: int) -> "tuple[int, int]":
     """Acha, perto de `(gate_x, gate_y)`, o tile ONDE o objeto de portal
@@ -161,6 +177,22 @@ class PortalHandlers:
         self._portal_cast_active_val = value
 
     @property
+    def _portal_arrival_pending(self) -> bool:
+        """True entre o momento em que `_handle_msg_zone_change` detecta
+        que um `ZONE_CHANGE` encerrou um cast de portal (02/10/2026) e o
+        momento em que `game.py::_do_transition()` termina de reposicionar
+        o jogador — consumido por `_trigger_portal_out_if_pending()`
+        (liga a animação "portal_out"). Não é a mesma coisa que
+        `_portal_cast_active` (que já foi limpo nesse ponto) — existe só
+        pra carregar esse "motivo" através da chamada de `_do_transition`,
+        que não sabe nada sobre portais."""
+        return getattr(self, "_portal_arrival_pending_val", False)
+
+    @_portal_arrival_pending.setter
+    def _portal_arrival_pending(self, value: bool) -> None:
+        self._portal_arrival_pending_val = value
+
+    @property
     def _portal_anim_anchor(self) -> dict:
         """(gate_x, gate_y) -> (anchor_x, anchor_y) — tile ONDE O OBJETO
         é desenhado de verdade (`ui/tile_render_system.py::
@@ -227,7 +259,7 @@ class PortalHandlers:
         self._portal_cast_active = None
         from engine.components import TileMovement as _TMPortalC
         tm = self.world.get_component(self.player_entity, _TMPortalC)
-        if tm is not None and tm.anim_attack_state == "portal":
+        if tm is not None and tm.anim_attack_state == "portal_in":
             tm.anim_attack_state = ""
             # anim_attack_loop_duration_ms também precisa zerar aqui —
             # trigger_attack_anim's _attack_loop_still_active (engine/
@@ -237,6 +269,14 @@ class PortalHandlers:
             # passarem sozinhos, bloqueando golpe novo o tempo todo (bug
             # real: "estragou as animações de ataque", 01/10/2026).
             tm.anim_attack_loop_duration_ms = 0
+
+    def _portal_local_class_id(self) -> "str | None":
+        """`CharacterStats.class_id` do jogador LOCAL, ou None se
+        ausente (nunca deve faltar em jogo de verdade — guard só pra
+        fixture de teste incompleta)."""
+        from engine.components import CharacterStats as _CSPortalLocal
+        cs = self.world.get_component(self.player_entity, _CSPortalLocal)
+        return cs.class_id if cs is not None else None
 
     def _suppress_portal_modal_here(self) -> None:
         """Marca o tile ONDE O JOGADOR ESTÁ AGORA como "modal já
@@ -259,6 +299,74 @@ class PortalHandlers:
         if tm is not None:
             self._portal_modal_dismissed_key = (tm.current_tile_x, tm.current_tile_y)
 
+    def _trigger_portal_out_if_pending(self) -> None:
+        """Liga a animação "portal_out" se o `ZONE_CHANGE` que acabou de
+        reposicionar o jogador (`game.py::_do_transition()`, chamado
+        LOGO DEPOIS de `_reposition_player`) veio de um cast de portal
+        completo (02/10/2026, pedido do usuário) — `_portal_arrival_pending`
+        é setado por `client/network_handlers.py::_handle_msg_zone_change`
+        ANTES de `_do_transition` rodar. No-op silencioso pra qualquer
+        OUTRO motivo de `ZONE_CHANGE` (morte de verdade, caverna) — a
+        animação de chegada é exclusiva de portal.
+
+        Duração NATURAL (`anim_attack_loop_duration_ms = 0`, nunca
+        esticada) — diferente de "portal_in", "portal_out" não tem
+        relação com nenhum tempo de servidor, é só o flourish de
+        materializar, toca 1 ciclo e volta pro idle sozinho (mesmo
+        mecanismo de qualquer golpe normal)."""
+        if not self._portal_arrival_pending:
+            return
+        self._portal_arrival_pending = False
+        from engine.components import TileMovement as _TMPortalOut
+        tm = self.world.get_component(self.player_entity, _TMPortalOut)
+        if tm is not None:
+            tm.anim_attack_state            = "portal_out"
+            tm.anim_attack_started_ms       = pygame.time.get_ticks()
+            tm.anim_attack_frame_ms         = 0   # 0 = DEFAULT_FRAME_MS, velocidade natural
+            tm.anim_attack_loop_duration_ms = 0
+
+    def _get_portal_character_light_source(self, camera_offset_x: float,
+                                           camera_offset_y: float) -> "dict | None":
+        """Luz azulada (02/10/2026, pedido do usuário — "mesma ideia" da
+        luz do tile, ver `ui/tile_render_system.py::
+        get_portal_light_sources`) derivada do frame REAL desenhado
+        agora no personagem, enquanto `anim_attack_state` for
+        "portal_in"/"portal_out" — None fora disso. Só o jogador LOCAL
+        (sem broadcast nesta rodada, diferente da luz do tile — decisão
+        de escopo, não uma limitação técnica).
+
+        Mesmo formato de dict que `get_portal_light_sources()` devolve
+        (`"screen_x"/"screen_y"/"portal_light_frame"/"intensity_pct"`) —
+        `ui/day_night_system.py::DayNightSystem.render()` trata os dois
+        no MESMO loop, sem saber se a luz veio de um tile ou de um
+        personagem."""
+        from engine.components import TileMovement as _TMPortalCharLight, Position as _PosPortalCharLight
+        from engine.character_animation import (resolve_display_state, get_character_frame,
+                                                 character_anchor_offset)
+        tm = self.world.get_component(self.player_entity, _TMPortalCharLight)
+        if tm is None or tm.anim_attack_state not in ("portal_in", "portal_out"):
+            return None
+        class_id = self._portal_local_class_id()
+        if not class_id:
+            return None
+        pos = self.world.get_component(self.player_entity, _PosPortalCharLight)
+        if pos is None:
+            return None
+        state, anim_t, frame_ms = resolve_display_state(tm, class_id, pygame.time.get_ticks())
+        if state not in ("portal_in", "portal_out"):
+            return None   # já expirou neste exato frame (resolve_display_state já resetou)
+        frame = get_character_frame(class_id, state, tm.facing, anim_t, frame_ms)
+        if frame is None:
+            return None
+        anchor_dx, anchor_dy = character_anchor_offset()
+        scr_x = int(pos.x - camera_offset_x - anchor_dx)
+        scr_y = int(pos.y - camera_offset_y - anchor_dy)
+        return {
+            "screen_x": scr_x, "screen_y": scr_y,
+            "portal_light_frame": frame,
+            "intensity_pct": _PORTAL_CHAR_LIGHT_INTENSITY_PCT,
+        }
+
     # ── Handlers de rede (dispatch em client/network_handlers.py) ────────────
 
     def _handle_msg_portal_cast_start(self, payload: dict) -> None:
@@ -277,29 +385,48 @@ class PortalHandlers:
         from engine.components import TileMovement as _TMPortalStart
         tm = self.world.get_component(self.player_entity, _TMPortalStart)
         if tm is not None:
-            # Estado "portal" — engine/character_animation.py aceita
-            # QUALQUER string aqui, cascata de fallback já cobre sprite
-            # ausente (cai pra idle sozinho): zero mudança de código lá.
-            # Convenção de arquivo: {class_id}_portal_{direction}.png.
+            # Estado "portal_in" (02/10/2026 — antes "portal", renomeado
+            # quando "portal_out" apareceu) — engine/character_animation.py
+            # aceita QUALQUER string aqui, cascata de fallback já cobre
+            # sprite ausente (cai pra idle sozinho): zero mudança de
+            # código lá. Arquivo SEM direção:
+            # `{class_id}_portal_in.png` (fallback em
+            # `_load_sheet_frames`, pilar de luz vertical não varia por
+            # lado).
             #
             # pygame.time.get_ticks() — NUNCA time.time()*1000 aqui. Todo
             # o resto do sistema de animação de personagem usa ticks do
             # pygame (ver ui/render_system.py::resolve_display_state() e
             # client/remote_entity_handlers.py::trigger_attack_anim()) —
-            # anim_attack_started_ms/anim_attack_loop_duration_ms são lidos
-            # por trigger_attack_anim's _attack_loop_still_active() pra
-            # decidir se um golpe NOVO pode tocar. Usar relógio de parede
-            # (epoch, ~1.7 trilhão de ms) aqui fazia esse campo ficar
-            # permanentemente "no passado" em relação ao ticks do pygame
-            # (dezenas de milhares) — a subtração dava um número NEGATIVO
-            # enorme, sempre menor que qualquer duração, bloqueando TODO
-            # golpe novo pra sempre depois do 1º cast de portal (bug real
-            # relatado pelo usuário: "estragou as animações de ataque do
-            # personagem", 01/10/2026).
-            tm.anim_attack_state          = "portal"
+            # anim_attack_started_ms é lido por trigger_attack_anim's
+            # _attack_loop_still_active() pra decidir se um golpe NOVO
+            # pode tocar. Usar relógio de parede (epoch, ~1.7 trilhão de
+            # ms) aqui fazia esse campo ficar permanentemente "no
+            # passado" em relação ao ticks do pygame (dezenas de
+            # milhares) — bloqueava TODO golpe novo pra sempre depois do
+            # 1º cast de portal (bug real relatado pelo usuário, 01/10/2026).
+            class_id = self._portal_local_class_id()
+            duration_ms = duration * 1000.0
+            # ESTICA via frame_ms (duração do CICLO), NUNCA via
+            # anim_attack_loop_duration_ms — esse campo faz
+            # resolve_display_state/get_character_frame REPETIREM o ciclo
+            # em loop (certo pra Fatiador de Corpos, que gira sem parar;
+            # ERRADO aqui — "portal_in" é um dissolver ÚNICO, repetir o
+            # ciclo faria o personagem "piscar" de volta visível no meio
+            # do cast). Com frame_ms = duração/n_frames, o ciclo natural
+            # (n_frames × frame_ms) já bate com a duração real do cast —
+            # a última frame (quase invisível) é a que fica na tela até o
+            # ZONE_CHANGE trocar de cena, sem repetir nada.
+            frame_ms = 0
+            if class_id:
+                from engine.character_animation import _frames_for as _cframes_for
+                n_frames = len(_cframes_for(class_id, "portal_in", tm.facing))
+                if n_frames > 0:
+                    frame_ms = max(1, round(duration_ms / n_frames))
+            tm.anim_attack_state          = "portal_in"
             tm.anim_attack_started_ms     = pygame.time.get_ticks()
-            tm.anim_attack_frame_ms       = 0  # 0 = usa DEFAULT_FRAME_MS (ver character_animation.py)
-            tm.anim_attack_loop_duration_ms = int(duration * 1000)
+            tm.anim_attack_frame_ms       = frame_ms  # 0 = usa DEFAULT_FRAME_MS (ver character_animation.py)
+            tm.anim_attack_loop_duration_ms = 0
 
     def _handle_msg_portal_cast_cancel(self, payload: dict) -> None:
         """Servidor cancelou o cast (moveu, ou qualquer motivo futuro) —

@@ -553,13 +553,44 @@ cast OTIMISTA (`self._portal_cast_active`), confirmado por
 portal ("Teleportando... Xs"). Registrado em `client/
 modal_stack_handlers.py` (ESC fecha o modal de seleção).
 
-**Animação do personagem**: reaproveita `TileMovement.
-anim_attack_state` (mesmo campo/mecanismo de golpe de skill — loop por
-duração real + fallback automático pra idle) — `PORTAL_CAST_START`
-seta `anim_attack_state = "portal"` + duração = 5000ms. Zero mudança
-em `engine/character_animation.py` (aceita qualquer string de estado);
-fallback pra idle automático enquanto `{class_id}_portal_{direction}.png`
-não existir.
+**Animação do personagem — 2 estados, "in"/"out" (02/10/2026, arte real
+entregue pelo usuário — revisão do design original acima, que previa 1
+estado genérico)**: `guerreiro_portal_in.png` (35 frames, SEM direção —
+personagem dissolvendo num pilar de luz) toca em quem está CASTANDO;
+`guerreiro_portal_out.png` (12 frames, SEM direção — pilar
+materializando o personagem) toca em quem acabou de CHEGAR. Arquivo
+sem sufixo `_{direction}` é um padrão NOVO — `engine/
+character_animation.py::_load_sheet_frames` ganhou fallback: tenta
+`{class_id}_{state}_{direction}.png` primeiro (preserva idle/run/
+attack/skill, que têm variantes reais), cai pra `{class_id}_{state}.png`
+só se o direcional não existir.
+
+- **"portal_in"**: `_handle_msg_portal_cast_start` seta
+  `anim_attack_state = "portal_in"` com `anim_attack_frame_ms =
+  round(duration_ms / n_frames)` — ESTICA via duração de FRAME, NUNCA
+  via `anim_attack_loop_duration_ms` (esse campo faz `get_character_frame`
+  repetir o ciclo em LOOP via módulo — certo pra Fatiador de Corpos,
+  que gira sem parar; ERRADO aqui, repetiria o dissolver e o
+  personagem "piscaria" de volta visível no meio do cast). Com
+  `frame_ms` calculado, o ciclo natural (`n_frames × frame_ms`) já bate
+  com a duração real do cast — a última frame (quase invisível) é a
+  que fica na tela até o `ZONE_CHANGE` trocar de cena.
+- **"portal_out"**: `_trigger_portal_out_if_pending()` (novo, chamado
+  por `game.py::_do_transition()` logo após reposicionar o jogador, nos
+  2 branches) — duração NATURAL (`anim_attack_frame_ms=0`,
+  `anim_attack_loop_duration_ms=0`), toca 1 ciclo e volta pro idle
+  sozinho. Só liga se o `ZONE_CHANGE` que chegou veio de um cast de
+  portal completo — `client/network_handlers.py::_handle_msg_zone_change`
+  captura `_portal_arrival_pending = self._portal_cast_active is not
+  None` ANTES de cancelar o cast (único sinal client-side de "motivo" do
+  teleporte, o payload não carrega isso) — nunca liga em morte/caverna.
+- **Luz azulada do personagem** (mesma técnica da luz do tile, ver
+  abaixo): `_get_portal_character_light_source()` deriva a máscara do
+  FRAME real sendo desenhado agora no personagem (`resolve_display_state`
+  + `get_character_frame`, mesmas chamadas que `RenderSystem` já faz —
+  duplicado, barato, mesmo padrão de outras geometrias já duplicadas no
+  projeto), só pro jogador LOCAL (sem broadcast nesta rodada — decisão
+  de escopo, diferente da luz do tile).
 
 **Animação do tile do portal — EVENTO, não relógio, visível por AOI
 (01/10/2026, revisão do design original acima — pedido do usuário
@@ -712,18 +743,23 @@ Oeste), `engine/map_loader.py`, `server/portal_processor.py` (novo),
 `client/portal_handlers.py` (novo), `engine/portal_anim_state.py`
 (novo), `game.py`, `client/hud_handlers.py`, `client/network_handlers.py`,
 `client/modal_stack_handlers.py`, `engine/tileset.py`, `ui/
-tile_sprite_manager.py`, `ui/tile_render_system.py`.
-Testes: `tests/test_portal.py` (40 — validação de `request_portal_enter`,
+tile_sprite_manager.py`, `ui/tile_render_system.py`, `engine/
+character_animation.py` (fallback sem direção), `assets/sprites/
+guerreiro_portal_in.png`/`guerreiro_portal_out.png`.
+Testes: `tests/test_portal.py` (48 — validação de `request_portal_enter`,
 teleporte só ao completar o cast, cancelamento por movimento,
 confirmação de que `ZONE_CHANGE_REQ` direto nunca alcança destino de
 portal sem passar pela validação nova, broadcast de animação
 start/stop/arrive incluindo os casos de 1º/último caster e disconnect,
-luz derivada do frame real, barra de cast limpa no ZONE_CHANGE, modal
-suprimido só na chegada por teleporte). Validação visual em jogo
-pendente (usuário) — animação do personagem
-(`{class_id}_portal_{direction}.png`) ainda não existe, fallback
-gracioso pra idle confirmado no design mas não visto em tela; animação
-do tile e luz já têm arte e mecanismo prontos e validados em jogo.
+luz derivada do frame real — tile E personagem —, barra de cast limpa
+no ZONE_CHANGE, modal suprimido só na chegada por teleporte, animação
+"portal_in"/"portal_out" esticada/natural, chegada pendente só com
+cast realmente ativo); `tests/test_character_animation.py` (fallback
+sem direção + assets reais de portal_in/out). Validação visual em jogo
+pendente (usuário) — animação do personagem, do tile e a luz azulada
+(tile + personagem) já têm arte e mecanismo prontos; falta só o
+usuário confirmar em jogo esta última rodada (personagem entrando/
+saindo + luz do personagem).
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 

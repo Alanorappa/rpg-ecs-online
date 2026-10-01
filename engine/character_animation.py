@@ -91,7 +91,16 @@ _frame_cache: dict[tuple, list] = {}
 
 def _load_sheet_frames(class_id: str, state: str, direction: str) -> list:
     """Carrega e corta `{class_id}_{state}_{direction}.png` em frames de
-    CHAR_TILE_SIZE de largura. Lista vazia se o arquivo não existir."""
+    CHAR_TILE_SIZE de largura. Lista vazia se o arquivo não existir.
+
+    Fallback pra arquivo SEM direção (01/10/2026, pedido do usuário —
+    `{class_id}_{state}.png`, ex: `guerreiro_portal_in.png`): alguns
+    estados não variam por direção de verdade (um pilar de luz vertical
+    engolindo/materializando o personagem é visualmente igual de
+    qualquer lado) — tentar o arquivo direcional primeiro preserva o
+    comportamento de QUALQUER estado que já tenha variantes por direção
+    (idle/run/attack/skill), e só cai pro genérico se o direcional não
+    existir."""
     import pygame
     import os
     from paths import resource_path
@@ -99,7 +108,10 @@ def _load_sheet_frames(class_id: str, state: str, direction: str) -> list:
     fname = f"{class_id}_{state}_{direction}.png"
     path  = resource_path(os.path.join("assets", "sprites", fname))
     if not os.path.exists(path):
-        return []
+        fname_nodir = f"{class_id}_{state}.png"
+        path = resource_path(os.path.join("assets", "sprites", fname_nodir))
+        if not os.path.exists(path):
+            return []
     from ui.asset_cache import get_image
     sheet = get_image(path)
     if sheet is None:

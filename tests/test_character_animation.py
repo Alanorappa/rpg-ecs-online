@@ -150,6 +150,60 @@ class TestGetCharacterFrame(unittest.TestCase):
         finally:
             os.remove(path)
 
+    def test_fallback_pra_arquivo_sem_direcao(self):
+        """Regressão (02/10/2026, pedido do usuário): algumas animações
+        (ex: entrar/sair de portal, pilar de luz vertical) não variam
+        por direção — arquivo SEM sufixo `_{direction}`
+        (`{class_id}_{state}.png`). `_load_sheet_frames` tenta o
+        arquivo direcional primeiro (nunca quebra estados que JÁ têm
+        variantes, ex: idle/run) e só cai pro genérico se o direcional
+        não existir."""
+        from engine.character_animation import get_character_frame, CHAR_TILE_SIZE
+        path = os.path.join("assets", "sprites", "testclasse3_zap.png")
+        surf = pygame.Surface((CHAR_TILE_SIZE, CHAR_TILE_SIZE), pygame.SRCALPHA)
+        pygame.draw.rect(surf, (10, 200, 10, 255), surf.get_rect())
+        pygame.image.save(surf, path)
+        try:
+            for direction in ("down", "up", "left", "right"):
+                frame = get_character_frame("testclasse3", "zap", direction, 0)
+                self.assertIsNotNone(frame, f"deveria achar via fallback pra direção {direction}")
+                self.assertEqual(frame.get_at((0, 0))[:3], (10, 200, 10))
+        finally:
+            os.remove(path)
+
+    def test_arquivo_direcional_tem_prioridade_sobre_o_generico(self):
+        """O fallback só entra em jogo quando o arquivo DIRECIONAL não
+        existe — nunca deve esconder um arquivo direcional já presente
+        (ex: idle/run, que sempre têm as 4 variantes)."""
+        from engine.character_animation import get_character_frame, CHAR_TILE_SIZE
+        path_dir  = os.path.join("assets", "sprites", "testclasse4_zap_down.png")
+        path_generic = os.path.join("assets", "sprites", "testclasse4_zap.png")
+        surf_dir = pygame.Surface((CHAR_TILE_SIZE, CHAR_TILE_SIZE), pygame.SRCALPHA)
+        pygame.draw.rect(surf_dir, (255, 0, 0, 255), surf_dir.get_rect())
+        surf_generic = pygame.Surface((CHAR_TILE_SIZE, CHAR_TILE_SIZE), pygame.SRCALPHA)
+        pygame.draw.rect(surf_generic, (0, 0, 255, 255), surf_generic.get_rect())
+        pygame.image.save(surf_dir, path_dir)
+        pygame.image.save(surf_generic, path_generic)
+        try:
+            frame = get_character_frame("testclasse4", "zap", "down", 0)
+            self.assertEqual(frame.get_at((0, 0))[:3], (255, 0, 0),
+                             "arquivo direcional específico tem que vencer o genérico")
+        finally:
+            os.remove(path_dir)
+            os.remove(path_generic)
+
+    def test_assets_reais_de_portal_in_out_existem_e_tem_frames(self):
+        """`guerreiro_portal_in.png`/`guerreiro_portal_out.png` são
+        assets reais já commitados (02/10/2026) — mesmo espírito de
+        `guerreiro_idle_down.png` acima: também serve de teste de
+        regressão do arquivo em si (frame count real: 35 "in", 12
+        "out", largura 96px cada)."""
+        from engine.character_animation import get_character_frame, _frames_for
+        self.assertEqual(len(_frames_for("guerreiro", "portal_in", "down")), 35)
+        self.assertEqual(len(_frames_for("guerreiro", "portal_out", "down")), 12)
+        self.assertIsNotNone(get_character_frame("guerreiro", "portal_in", "left", 0))
+        self.assertIsNotNone(get_character_frame("guerreiro", "portal_out", "right", 0))
+
 
 class TestTileMovementSystemSetsFacing(unittest.TestCase):
     """Integração real: TileMovementSystem.update() (não um atalho de

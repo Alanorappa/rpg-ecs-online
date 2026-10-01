@@ -2724,6 +2724,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             _portal_lights = self._tile_render_system.get_portal_light_sources(cam_x, cam_y)
             if _portal_lights:
                 _lit_world_objs = _lit_world_objs + _portal_lights
+            # Luz azulada da animação de PERSONAGEM entrando/saindo do
+            # portal (02/10/2026, pedido do usuário — "mesma ideia").
+            # None na imensa maioria dos frames (personagem não está
+            # nessas 2 animações agora).
+            _portal_char_light = self._get_portal_character_light_source(cam_x, cam_y)
+            if _portal_char_light is not None:
+                _lit_world_objs = _lit_world_objs + [_portal_char_light]
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
                 self._day_night_system.render(world_objects=_lit_world_objs,
@@ -3192,6 +3199,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # usuário) — suprime só a CHEGADA, não bloqueia uma caminhada
             # de verdade até lá depois.
             self._suppress_portal_modal_here()
+            # Animação de CHEGADA "portal_out" (02/10/2026) — só liga se
+            # este reposicionamento veio de fato de um cast de portal
+            # completo (flag setada por _handle_msg_zone_change ANTES de
+            # chamar _do_transition); no-op pra morte de verdade.
+            self._trigger_portal_out_if_pending()
             self._transition_cooldown = 1.5
             self._loot_system.open_corpse_id         = -1
             self._loot_system.pending_loot_corpse_id = -1
@@ -3278,6 +3290,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # dismissed_key pro mapa novo — senão este suppress seria
         # sobrescrito).
         self._suppress_portal_modal_here()
+        self._trigger_portal_out_if_pending()
 
         self._transition_cooldown = 1.5
         self._map_title_timer     = 3.0

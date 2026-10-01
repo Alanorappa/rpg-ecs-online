@@ -2994,6 +2994,14 @@ class NetworkHandlers:
         # o ZONE_CHANGE chegava e a barra continuava lá até o primeiro
         # passo do jogador no mapa novo. `_cancel_portal_cast_local()` é
         # idempotente (no-op se não havia cast ativo).
+        #
+        # Captura ANTES de cancelar — "havia um cast de portal ativo
+        # quando este ZONE_CHANGE chegou" é o único sinal client-side de
+        # "este teleporte veio de um portal" (o payload não carrega
+        # motivo nenhum) — consumido por `_trigger_portal_out_if_pending()`
+        # (02/10/2026, animação de chegada "portal_out") dentro de
+        # `_do_transition`, chamado logo abaixo.
+        self._portal_arrival_pending = self._portal_cast_active is not None
         self._cancel_portal_cast_local()
         if map_file:
             # Tela de transição (28/09/2026, §215) — só quando é troca

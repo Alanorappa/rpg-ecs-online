@@ -13,6 +13,17 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import unittest
+import pygame
+
+# `pygame.image.load(...).convert_alpha()` (usado por
+# ui/asset_cache.py::get_image, caminho de carregamento de QUALQUER
+# sprite real — personagem/portal/tile) precisa de um modo de vídeo já
+# setado, mesmo com SDL_VIDEODRIVER=dummy; sem isso ele falha
+# silenciosamente (get_image devolve None) e qualquer teste que carregue
+# um PNG real (ex: guerreiro_portal_in.png) vê 0 frames. `pygame.init()`
+# sozinho (já feito por tests/helpers.py) não basta — mesmo padrão já
+# usado por tests/test_character_animation.py.
+pygame.display.set_mode((100, 100))
 
 from tests.helpers import make_world_server, spawn_player, set_entity_tile
 
@@ -616,7 +627,7 @@ class TestPortalCastBarClearsOnZoneChange(unittest.TestCase):
         eng, tm = self._make_engine()
         eng._portal_cast_active = {"elapsed": 1.0, "duration": 5.0,
                                    "portal_id": "x", "dest_index": 0}
-        tm.anim_attack_state = "portal"
+        tm.anim_attack_state = "portal_in"
         tm.anim_attack_loop_duration_ms = 5000
 
         # map_file vazio -- exercita só os resets leves (inclui o fix),
@@ -696,6 +707,101 @@ class TestPortalModalSuppressedOnTeleportArrival(unittest.TestCase):
         eng._update_portal_state(0.05)
         self.assertIsNotNone(eng._portal_modal_open,
                              "voltar ANDANDO depois de sair deve abrir o modal normalmente")
+
+
+class TestPortalCharacterInOutAnimation(unittest.TestCase):
+    """Pedido do usuário (02/10/2026): animação de PERSONAGEM entrando
+    (`guerreiro_portal_in.png`, 35 frames, SEM direção) e saindo
+    (`guerreiro_portal_out.png`, 12 frames) de um portal — "in" toca no
+    jogador que castou, esticada pra caber a duração real do cast (via
+    frame_ms, nunca via anim_attack_loop_duration_ms — esse usa loop/
+    módulo, repetiria o ciclo no meio do cast); "out" toca 1x, duração
+    natural, só quando o ZONE_CHANGE que chegou veio de um cast de
+    portal completo (não de morte/caverna)."""
+
+    def _make_engine(self):
+        from client.network_handlers import NetworkHandlers
+        from client.portal_handlers import PortalHandlers
+        from engine.world import World
+        from engine.components import TileMovement, CharacterStats, Position
+
+        class _FakeEngine(NetworkHandlers, PortalHandlers):
+            pass
+
+        eng = _FakeEngine()
+        eng.world = World()
+        eng.player_entity = eng.world.create_entity()
+        tm = TileMovement()
+        tm.facing = "down"
+        eng.world.add_component(eng.player_entity, tm)
+        eng.world.add_component(eng.player_entity, CharacterStats(class_id="guerreiro"))
+        eng.world.add_component(eng.player_entity, Position(x=100, y=100))
+        return eng, tm
+
+    def test_cast_start_liga_portal_in_esticado_pra_duracao_do_cast(self):
+        eng, tm = self._make_engine()
+        eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        self.assertEqual(tm.anim_attack_state, "portal_in")
+        self.assertEqual(tm.anim_attack_loop_duration_ms, 0,
+                         "NUNCA via loop_duration_ms -- isso repetiria o ciclo (certo só pra "
+                         "Fatiador de Corpos); portal_in estica via frame_ms")
+        # 35 frames reais (guerreiro_portal_in.png) esticados pra 5000ms.
+        self.assertEqual(tm.anim_attack_frame_ms, round(5000 / 35))
+        # Duração natural (frames × frame_ms) bate com a duração real do cast.
+        natural_duration = 35 * tm.anim_attack_frame_ms
+        self.assertAlmostEqual(natural_duration, 5000, delta=35)
+
+    def test_trigger_portal_out_no_op_sem_chegada_pendente(self):
+        eng, tm = self._make_engine()
+        eng._trigger_portal_out_if_pending()
+        self.assertEqual(tm.anim_attack_state, "")
+
+    def test_trigger_portal_out_liga_e_consome_a_flag(self):
+        eng, tm = self._make_engine()
+        eng._portal_arrival_pending = True
+        eng._trigger_portal_out_if_pending()
+        self.assertEqual(tm.anim_attack_state, "portal_out")
+        self.assertEqual(tm.anim_attack_loop_duration_ms, 0, "duração NATURAL, nunca esticada")
+        self.assertFalse(eng._portal_arrival_pending, "flag consumida -- não liga de novo sozinha")
+
+    def test_zone_change_marca_chegada_pendente_so_se_havia_cast_ativo(self):
+        eng, _tm = self._make_engine()
+        eng._portal_cast_active = {"elapsed": 1.0, "duration": 5.0,
+                                   "portal_id": "x", "dest_index": 0}
+        eng._handle_msg_zone_change({"map_file": "", "target_x": 0, "target_y": 0})
+        self.assertTrue(eng._portal_arrival_pending,
+                        "havia cast ativo quando o ZONE_CHANGE chegou -- isto é uma chegada de portal")
+
+    def test_zone_change_sem_cast_ativo_nao_marca_chegada_pendente(self):
+        """Morte/caverna: nenhum cast de portal ativo -- ZONE_CHANGE não
+        deve marcar chegada de portal (senão "portal_out" tocaria numa
+        morte comum)."""
+        eng, _tm = self._make_engine()
+        eng._handle_msg_zone_change({"map_file": "", "target_x": 0, "target_y": 0})
+        self.assertFalse(eng._portal_arrival_pending)
+
+    def test_character_light_source_none_fora_de_portal_in_out(self):
+        eng, _tm = self._make_engine()
+        self.assertIsNone(eng._get_portal_character_light_source(0, 0))
+
+    def test_character_light_source_durante_portal_in(self):
+        eng, tm = self._make_engine()
+        eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        light = eng._get_portal_character_light_source(0, 0)
+        self.assertIsNotNone(light)
+        self.assertIn("portal_light_frame", light)
+        self.assertIn("screen_x", light)
+        self.assertIn("screen_y", light)
+        self.assertNotIn("player_light", light)
+        self.assertNotIn("light_source", light, "formato de personagem é o mesmo do tile -- frame real, não geometria")
+
+    def test_character_light_source_durante_portal_out(self):
+        eng, tm = self._make_engine()
+        eng._portal_arrival_pending = True
+        eng._trigger_portal_out_if_pending()
+        light = eng._get_portal_character_light_source(0, 0)
+        self.assertIsNotNone(light)
+        self.assertIn("portal_light_frame", light)
 
 
 if __name__ == "__main__":
