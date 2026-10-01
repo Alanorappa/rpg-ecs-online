@@ -162,5 +162,91 @@ class TestPortalZoneChangeReqBypassBlocked(unittest.TestCase):
         self.assertEqual(self.ws.consume_portal_teleport_events(), [])
 
 
+class TestPortalAnimBroadcastEvents(unittest.TestCase):
+    """Animação do TILE do portal (01/10/2026), visível por AOI pra
+    qualquer sessão perto — não confundir com PORTAL_CAST_START/CANCEL
+    (privados, só pro dono do cast). Cobre: só o 1º caster de um portal
+    dispara START (2º+ caster simultâneo não reinicia a animação pra
+    quem já via); só o ÚLTIMO caster saindo cedo dispara STOP; conclusão
+    NATURAL nunca dispara STOP (cliente já sabia a duração real); chegada
+    num tile que é um portal cadastrado dispara ARRIVE; chegada num tile
+    comum não dispara nada."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.a = spawn_player(self.ws, "s1", PORTAL_X, PORTAL_Y)
+        self.b = spawn_player(self.ws, "s2", PORTAL_X, PORTAL_Y)
+
+    def test_primeiro_caster_dispara_start_com_dados_do_portal(self):
+        self.assertIsNone(self.ws.request_portal_enter(self.a, PORTAL_ID, 0))
+        events = self.ws.consume_portal_anim_start_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["portal_id"], PORTAL_ID)
+        self.assertEqual(events[0]["x"], PORTAL_X)
+        self.assertEqual(events[0]["y"], PORTAL_Y)
+        self.assertEqual(events[0]["duration"], self.ws.PORTAL_CAST_DURATION_S)
+
+    def test_segundo_caster_simultaneo_nao_reinicia_start(self):
+        self.assertIsNone(self.ws.request_portal_enter(self.a, PORTAL_ID, 0))
+        self.ws.consume_portal_anim_start_events()
+        self.assertIsNone(self.ws.request_portal_enter(self.b, PORTAL_ID, 1))
+        self.assertEqual(self.ws.consume_portal_anim_start_events(), [],
+                         "2º caster no MESMO portal não deve re-disparar START")
+
+    def test_cancelar_com_outro_caster_ainda_ativo_nao_dispara_stop(self):
+        self.ws.request_portal_enter(self.a, PORTAL_ID, 0)
+        self.ws.request_portal_enter(self.b, PORTAL_ID, 1)
+        self.ws.consume_portal_anim_start_events()
+        self.ws.cancel_portal_cast(self.a, "moved")
+        self.assertEqual(self.ws.consume_portal_anim_stop_events(), [],
+                         "ainda tem o B castando — animação não deve parar pros outros")
+
+    def test_cancelar_ultimo_caster_dispara_stop(self):
+        self.ws.request_portal_enter(self.a, PORTAL_ID, 0)
+        self.ws.consume_portal_anim_start_events()
+        self.ws.cancel_portal_cast(self.a, "moved")
+        events = self.ws.consume_portal_anim_stop_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["portal_id"], PORTAL_ID)
+        self.assertEqual(events[0]["x"], PORTAL_X)
+        self.assertEqual(events[0]["y"], PORTAL_Y)
+
+    def test_conclusao_natural_nunca_dispara_stop(self):
+        self.ws.request_portal_enter(self.a, PORTAL_ID, 0)
+        self.ws.consume_portal_anim_start_events()
+        self.ws._tick_portal_casts(dt=self.ws.PORTAL_CAST_DURATION_S)
+        self.assertEqual(self.ws.consume_portal_anim_stop_events(), [],
+                         "conclusão natural não deve mandar STOP — cliente já sabia a duração real")
+        self.assertNotIn((PORTAL_ID,), [(k[1],) for k in self.ws._portal_anim_casters])
+
+    def test_chegada_em_portal_cadastrado_dispara_arrive(self):
+        # Destino "Vila Sul" do portal_teste_1 é exatamente o tile do
+        # portal_teste_2 (210,480) — ver maps/map_1_entities.json.
+        self.ws.request_portal_enter(self.a, PORTAL_ID, 0)
+        self.ws._tick_portal_casts(dt=self.ws.PORTAL_CAST_DURATION_S)
+        events = self.ws.consume_portal_anim_arrive_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["portal_id"], "portal_teste_2")
+        self.assertEqual(events[0]["x"], 210)
+        self.assertEqual(events[0]["y"], 480)
+
+    def test_chegada_em_tile_comum_nao_dispara_arrive(self):
+        # Destino "Caverna Oeste" não tem nenhum portal_gate cadastrado
+        # naquele tile — nada deve animar lá.
+        self.ws.request_portal_enter(self.a, PORTAL_ID, 1)
+        self.ws._tick_portal_casts(dt=self.ws.PORTAL_CAST_DURATION_S)
+        self.assertEqual(self.ws.consume_portal_anim_arrive_events(), [])
+
+    def test_disconnect_cancela_cast_e_dispara_stop(self):
+        self.ws.request_portal_enter(self.a, PORTAL_ID, 0)
+        self.ws.consume_portal_anim_start_events()
+        had_cast = self.ws.cancel_portal_cast(self.a, "disconnect")
+        self.assertTrue(had_cast)
+        self.assertNotIn(self.a, self.ws._portal_casts)
+        events = self.ws.consume_portal_anim_stop_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["portal_id"], PORTAL_ID)
+
+
 if __name__ == "__main__":
     unittest.main()

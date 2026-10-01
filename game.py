@@ -3205,6 +3205,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if isinstance(sys, TileRenderSystem):
                 sys.invalidate_cache()
                 break
+        # Animação de portal (01/10/2026) é chaveada por posição de tile
+        # — (x,y) do mapa anterior não tem relação nenhuma com o mesmo
+        # (x,y) do mapa novo, então nunca deve sobreviver à troca.
+        from engine import portal_anim_state as _portal_anim_state_reset
+        _portal_anim_state_reset.clear_all()
 
         # Reseta estado de combate / loot / loja
         self._loot_system.open_corpse_id         = -1

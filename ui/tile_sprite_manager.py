@@ -37,10 +37,12 @@ class TileSpriteManager:
         # verdade, não no topo do recorte cru, que pode ter padding
         # transparente/sombra por cima do desenho).
         self._top_opaque_y: dict[str, int] = {}
-        # Frames cortados da folha animada de portal, por tile_id
-        # (30/09/2026, ver PORTAL_ANIM_SHEET_BY_TILE_ID) — lista vazia
-        # cacheada = "já tentei, não tem folha animada pra esse tile_id".
-        self._portal_anim_frames: dict[str, list[pygame.Surface]] = {}
+        # Frames cortados das folhas de EVENTO de portal (ativar/
+        # desativar), por (tile_id, fase) — 01/10/2026, ver
+        # PORTAL_ACTIVATE_SHEET_BY_TILE_ID/PORTAL_DEACTIVATE_SHEET_BY_TILE_ID
+        # em engine/tileset.py. Lista vazia cacheada = "já tentei, não
+        # tem folha pra essa combinação de tile_id+fase".
+        self._portal_event_frames: dict[tuple[str, str], list[pygame.Surface]] = {}
 
     # ------------------------------------------------------------------
     # Internos
@@ -141,44 +143,64 @@ class TileSpriteManager:
             return None
         return self._get_sheet_region(night_sheet, sx, sy, tw, th)
 
-    def get_portal_anim_frame(self, name: str, now_ms: int,
-                              frame_ms: int = 150) -> "pygame.Surface | None":
-        """Frame atual da animação de portal pro tile `name` (30/09/2026,
-        Sistema de Portais) — None se `name` não for um tile de
-        OBJECT_SHEET_TILE_MAP, ou se não houver folha animada cadastrada
-        pra ele (`engine.tileset.PORTAL_ANIM_SHEET_BY_TILE_ID`), caso em
-        que o chamador (`ui/tile_render_system.py::get_world_objects()`)
-        cai pro sprite ESTÁTICO de sempre.
+    def get_portal_event_frame(self, name: str, phase: str, elapsed_ms: int,
+                               total_duration_ms: float) -> "pygame.Surface | None":
+        """Frame atual de uma animação de EVENTO de portal (01/10/2026,
+        Sistema de Portais) pro tile `name`, na fase `phase`
+        ("activate"/"deactivate") — None se `name` não for um tile de
+        OBJECT_SHEET_TILE_MAP, se não houver folha cadastrada pra essa
+        fase (`engine.tileset.PORTAL_ACTIVATE_SHEET_BY_TILE_ID`/
+        `PORTAL_DEACTIVATE_SHEET_BY_TILE_ID`), ou se a animação já
+        terminou (`elapsed_ms >= total_duration_ms`) — em qualquer
+        desses casos o chamador (`ui/tile_render_system.py::
+        get_world_objects()`) cai pro sprite ESTÁTICO de sempre.
 
-        Frame escolhido por TEMPO REAL (`now_ms // frame_ms % n_frames`)
-        — relógio global, sem estado por-instância (mesmo princípio de
-        `ui/day_night_system.py::day_night_color()`): todo portal do
-        jogo anima em sincronia, não precisa saber QUAL portal é."""
-        from engine.tileset import OBJECT_SHEET_TILE_MAP, PORTAL_ANIM_SHEET_BY_TILE_ID
-        anim_file = PORTAL_ANIM_SHEET_BY_TILE_ID.get(name)
+        `total_duration_ms` é decidido pelo CHAMADOR (`client/
+        portal_handlers.py`), não por este método — pra "activate"
+        (cast de 5s), é a duração REAL do cast, esticando os N frames
+        do sheet pra caber nela; pra "deactivate" (chegada), é a
+        duração NATURAL do sheet (N frames × um frame_ms fixo), tocada
+        1x. Esse desacoplamento é o que permite a MESMA função servir
+        os dois casos sem saber de cast/duração de jogo."""
+        from engine.tileset import (OBJECT_SHEET_TILE_MAP,
+            PORTAL_ACTIVATE_SHEET_BY_TILE_ID, PORTAL_DEACTIVATE_SHEET_BY_TILE_ID)
+        sheet_map = (PORTAL_ACTIVATE_SHEET_BY_TILE_ID if phase == "activate"
+                     else PORTAL_DEACTIVATE_SHEET_BY_TILE_ID)
+        anim_file = sheet_map.get(name)
         if anim_file is None:
             return None
-        frames = self._portal_anim_frames.get(name)
+        key = (name, phase)
+        frames = self._portal_event_frames.get(key)
         if frames is None:
-            frames = self._cut_portal_anim_frames(name, anim_file)
-            self._portal_anim_frames[name] = frames
-        if not frames:
+            frames = self._cut_portal_event_frames(name, anim_file)
+            self._portal_event_frames[key] = frames
+        n = len(frames)
+        if n == 0 or total_duration_ms <= 0:
             return None
-        idx = int(now_ms // frame_ms) % len(frames)
+        idx = int(elapsed_ms // (total_duration_ms / n))
+        if idx >= n:
+            return None
         return frames[idx]
 
-    def _cut_portal_anim_frames(self, name: str, anim_file: str) -> list:
-        """Corta `anim_file` (tira horizontal) em frames do MESMO w×h do
-        tile estático `name` — mesma técnica de corte de
-        `engine/character_animation.py::_load_sheet_frames`, só que a
-        largura do frame vem do PRÓPRIO tile catalogado, não de uma
+    def _cut_portal_event_frames(self, name: str, anim_file: str) -> list:
+        """Corta `anim_file` (tira horizontal, em assets/sprites/ — NÃO
+        assets/tiles/, mesma pasta de animação de personagem) em frames
+        do MESMO w×h do tile estático `name` — mesma técnica de corte
+        de `engine/character_animation.py::_load_sheet_frames`, só que
+        a largura do frame vem do PRÓPRIO tile catalogado, não de uma
         constante fixa."""
         from engine.tileset import OBJECT_SHEET_TILE_MAP
         info = OBJECT_SHEET_TILE_MAP.get(name)
         if info is None:
             return []
         _sheet_file, _sx, _sy, tw, th = info
-        sheet = self._load_raw(anim_file)
+        import os
+        from paths import resource_path
+        path = resource_path(os.path.join("assets", "sprites", anim_file + ".png"))
+        if not os.path.exists(path):
+            return []
+        from ui.asset_cache import get_image
+        sheet = get_image(path)
         if sheet is None:
             return []
         n_frames = sheet.get_width() // tw
@@ -233,6 +255,7 @@ class TileSpriteManager:
         self._raw.clear()
         self._scaled.clear()
         self._top_opaque_y.clear()
+        self._portal_event_frames.clear()
 
 
 # Singleton global

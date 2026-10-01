@@ -46,7 +46,7 @@
 | Portal — servidor (validação/cast/teleporte) | `server/portal_processor.py` | `PortalProcessorMixin` — `request_portal_enter()`/`cancel_portal_cast()`/`_tick_portal_casts()`, estado em `_portal_casts`/`_portal_gates_by_map` |
 | Portal — handler de rede | `server/session.py` | `_handle_portal_enter_req()`; drenos de `consume_portal_teleport_events()`/`consume_portal_cast_cancel_events()` em `_dispatch_tick_deltas` |
 | Portal — cliente | `client/portal_handlers.py` | `PortalHandlers` — detecção de tile (`portal_tiles`), modal de seleção de destino, estado de cast local/otimista |
-| Portal — animação do tile (objeto de mundo) | `engine/tileset.py`, `ui/tile_sprite_manager.py`, `ui/tile_render_system.py` | `PORTAL_ANIM_SHEET_BY_TILE_ID`, `get_portal_anim_frame()`, branch em `get_world_objects()` |
+| Portal — animação do tile (objeto de mundo, evento, broadcast AOI) | `engine/tileset.py`, `engine/portal_anim_state.py`, `ui/tile_sprite_manager.py`, `ui/tile_render_system.py` | `PORTAL_ACTIVATE_SHEET_BY_TILE_ID`/`PORTAL_DEACTIVATE_SHEET_BY_TILE_ID`, estado de módulo `portal_anim_state`, `get_portal_event_frame()`, branch em `get_world_objects()` |
 | Duelo — servidor | `server/duel_processor.py` | `DuelProcessorMixin` — `_duel_pairs`, convites, tick de distância, interceptor de golpe letal |
 | Duelo — cliente | `client/duel_handlers.py` | `DuelHandlers` — modal de convite, contexto PvP client-side, avisos, nameplate vermelho do oponente |
 | Party/Grupo — servidor | `server/party_processor.py` | `PartyProcessorMixin` — `_parties`/`_player_party_id` (N-ário), convites, líder, XP compartilhado (`_party_members_in_range`) |
@@ -239,6 +239,10 @@ rpg_ecs_online/
 │   │                                  oposto. Irmão CONCEITUAL de entity_disguise.py (mesmo
 │   │                                  padrão de cache/corte de sheet), mas diferente: aparência
 │   │                                  SEMPRE presente, não override condicional
+│   ├── portal_anim_state.py        ← NOVO (01/10/2026): estado client-only de animação de
+│   │                                  EVENTO do tile do portal (ativar/desativar), chaveado por
+│   │                                  posição — escrito por client/portal_handlers.py ao receber
+│   │                                  broadcast de rede, lido por ui/tile_render_system.py
 │   └── faction_system.py           ← can_engage()/is_hostile()/get_relationship_between()
 │
 ├── ui/                              ← ONLINE-ONLY na prática: client-only mesmo

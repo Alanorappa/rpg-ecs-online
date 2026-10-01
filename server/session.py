@@ -598,6 +598,12 @@ class SessionManager:
             # pro lado que ficou sai pelo broadcast loop do próximo tick
             # (consume_duel_end_events), o desconectado não precisa receber.
             self.world_server.end_duels_of(eid, "disconnect")
+            # Cast de portal ativo (se houver) morre no logout também —
+            # mesma lógica (no-op silencioso se não havia nenhum); sem
+            # isso, quem estava vendo a animação de "ativando" só a veria
+            # parar quando a duração original terminasse sozinha, mesmo
+            # com o desconectado já tendo sumido do mapa há tempo.
+            self.world_server.cancel_portal_cast(eid, "disconnect")
             # Grupo: mesma lógica — o PARTY_STATE pro resto do grupo sai
             # pelo broadcast loop do próximo tick (consume_party_state_events).
             self.world_server.end_parties_of(eid)
@@ -2838,7 +2844,14 @@ class SessionManager:
                        # movimento) ficaria preso até atividade alheia
                        # destravar o dispatch por acaso.
                        or bool(self.world_server._portal_teleport_events_this_tick)
-                       or bool(self.world_server._portal_cast_cancel_events_this_tick))
+                       or bool(self.world_server._portal_cast_cancel_events_this_tick)
+                       # Animação do tile do portal (01/10/2026) — MESMA
+                       # classe de bug: sem entrar aqui, "ativar"/
+                       # "desativar" ficaria preso até atividade alheia
+                       # destravar o dispatch por acaso.
+                       or bool(self.world_server._portal_anim_start_events_this_tick)
+                       or bool(self.world_server._portal_anim_stop_events_this_tick)
+                       or bool(self.world_server._portal_anim_arrive_events_this_tick))
         if not has_pending:
             return
         # Mescla SEMPRE (nunca substitui) — se um despacho anterior ainda
@@ -3594,6 +3607,28 @@ class SessionManager:
                 if not (_prtc_sess and _prtc_sess.authenticated):
                     continue
                 await _prtc_sess.send(MsgType.PORTAL_CAST_CANCEL, {"reason": _prtc["reason"]})
+
+            # Animação do TILE do portal (01/10/2026) — diferente do
+            # PORTAL_CAST_CANCEL acima (privado, só pro dono do cast),
+            # estes 3 são broadcast por AOI: qualquer sessão perto do
+            # portal (incluindo quem não está usando ele) vê o objeto
+            # "ativar"/"desativar", mesmo padrão de SOUND_EVENT abaixo.
+            for _pas in self.world_server.consume_portal_anim_start_events():
+                for s in self._sessions_in_aoi(_pas["x"], _pas["y"], _pas["map_file"]):
+                    await s.send(MsgType.PORTAL_ANIM_START, {
+                        "portal_id": _pas["portal_id"], "x": _pas["x"], "y": _pas["y"],
+                        "duration":  _pas["duration"],
+                    })
+            for _pap in self.world_server.consume_portal_anim_stop_events():
+                for s in self._sessions_in_aoi(_pap["x"], _pap["y"], _pap["map_file"]):
+                    await s.send(MsgType.PORTAL_ANIM_STOP, {
+                        "portal_id": _pap["portal_id"], "x": _pap["x"], "y": _pap["y"],
+                    })
+            for _paa in self.world_server.consume_portal_anim_arrive_events():
+                for s in self._sessions_in_aoi(_paa["x"], _paa["y"], _paa["map_file"]):
+                    await s.send(MsgType.PORTAL_ANIM_ARRIVE, {
+                        "portal_id": _paa["portal_id"], "x": _paa["x"], "y": _paa["y"],
+                    })
 
             # Eventos de som posicionais (aggro de mob, etc.) → broadcast AOI
             for _snd_ev in self.world_server.consume_sound_events():

@@ -424,6 +424,15 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._portal_casts: dict[int, dict] = {}
         self._portal_cast_cancel_events_this_tick: list[dict] = []
         self._portal_teleport_events_this_tick: list[dict] = []
+        # Animação do TILE do portal (01/10/2026, visível por AOI pra
+        # qualquer sessão perto, não só pra quem usa) — (map_file,
+        # portal_id) -> set de eids castando ALI agora (controla quando
+        # mandar START/STOP: só no 1º/último caster, nunca re-dispara
+        # pra cada caster simultâneo). Ver server/portal_processor.py.
+        self._portal_anim_casters: dict[tuple[str, str], set[int]] = {}
+        self._portal_anim_start_events_this_tick: list[dict] = []
+        self._portal_anim_stop_events_this_tick: list[dict] = []
+        self._portal_anim_arrive_events_this_tick: list[dict] = []
 
         # Party/Grupo (ver server/party_processor.py) — party_id → info do
         # grupo; índice reverso pra achar rápido o grupo de um eid;

@@ -561,30 +561,75 @@ em `engine/character_animation.py` (aceita qualquer string de estado);
 fallback pra idle automático enquanto `{class_id}_portal_{direction}.png`
 não existir.
 
-**Animação do tile do portal** (novo mecanismo — 1ª animação de objeto
-de MUNDO do projeto, distinta de animação de personagem):
-`engine/tileset.py::PORTAL_ANIM_SHEET_BY_TILE_ID` (dict `tile_id →
-nome de folha animada`, vazio até o usuário desenhar a arte) +
-`ui/tile_sprite_manager.py::get_portal_anim_frame(name, now_ms)`
-(corta a folha em N frames do mesmo w×h do tile estático, indexa por
-tempo real — relógio global, sem estado por-instância, mesmo princípio
-de `day_night_color()`) + branch novo em `ui/tile_render_system.py::
-get_world_objects()` que troca o sprite estático pelo frame animado
-quando cadastrado, senão cai pro sprite `PORTAL_TILE` de sempre.
+**Animação do tile do portal — EVENTO, não relógio, visível por AOI
+(01/10/2026, revisão do design original acima — pedido do usuário
+depois de desenhar a arte)**: diferente da 1ª versão (loop ambiente
+sempre ligado, nunca chegou a ser usada de verdade), o usuário desenhou
+2 folhas de evento — `assets/sprites/portal_activate.png` (17 frames)
+e `assets/sprites/portal_deactivate.png` (9 frames), cada frame com o
+MESMO w×h do tile estático catalogado (98×96 — ajustou `vp_144` no
+catálogo de 112→98 de propósito pra isso fechar com frame width exato:
+1666/98=17, 882/98=9). "activate" toca no portal de ORIGEM, ESTICADO
+pra caber a duração real do cast (5s); "deactivate" toca 1x no portal
+de DESTINO, na duração NATURAL do sheet, quando alguém chega — só se o
+destino também for um tile de portal cadastrado (senão não tem o que
+animar). Decisão do usuário (`AskUserQuestion`, 01/10/2026): visível
+pra QUALQUER jogador perto, não só pra quem está usando o portal —
+precisa de broadcast novo, não só estado client-local.
 
-Arquivos: `maps/map_1_entities.json` (`"portal_gates"`, 1 portal de
-teste em (124,383) → Vila Sul/Caverna Oeste), `engine/map_loader.py`,
-`server/portal_processor.py` (novo), `server/world_server.py`,
-`server/session.py`, `shared/messages.py`, `client/portal_handlers.py`
-(novo), `game.py`, `client/hud_handlers.py`, `client/
-modal_stack_handlers.py`, `engine/tileset.py`, `ui/
+- `engine/tileset.py::PORTAL_ACTIVATE_SHEET_BY_TILE_ID`/
+  `PORTAL_DEACTIVATE_SHEET_BY_TILE_ID` (dict `tile_id → nome de
+  arquivo`, hoje só `"vp_144"`) — arquivos ficam em `assets/sprites/`
+  (convenção de animação de PERSONAGEM, não `assets/tiles/`).
+- `engine/portal_anim_state.py` (novo módulo, client-only): dict de
+  módulo `(tile_x,tile_y) → {phase, started_ms, duration_ms}` — mesmo
+  padrão de `core_systems.register_lethal_interceptor`. Escrito por
+  `client/portal_handlers.py` ao receber os 3 eventos de rede abaixo;
+  lido por `ui/tile_render_system.py::get_world_objects()` (substitui
+  o sprite estático pelo frame atual via `ui/tile_sprite_manager.py::
+  get_portal_event_frame(name, phase, elapsed_ms, duration_ms)` — None
+  em qualquer ponta cai pro sprite estático de sempre). Limpo em
+  `game.py::_do_transition` (posição de tile não tem relação entre
+  mapas diferentes).
+- **Protocolo novo, broadcast por AOI** (`SessionManager._sessions_in_aoi`,
+  nunca privado ao dono — diferente de `PORTAL_CAST_START`/`CANCEL`):
+  `PORTAL_ANIM_START` (S→C, `{portal_id, x, y, duration}` — 1º caster
+  de um portal específico dispara; 2º+ caster simultâneo no MESMO
+  portal não reinicia), `PORTAL_ANIM_STOP` (S→C, `{portal_id, x, y}` —
+  só quando o ÚLTIMO caster daquele portal desiste ANTES do tempo;
+  conclusão NATURAL nunca manda STOP, o cliente já sabia a duração real
+  desde o START e encerra sozinho), `PORTAL_ANIM_ARRIVE` (S→C,
+  `{portal_id, x, y}` — ao concluir um teleporte cujo destino bate
+  exatamente com outro portal cadastrado, `_portal_gate_at_position`).
+  Servidor nunca manda sprite/tile_id, só posição — quem resolve qual
+  sheet usar é o cliente, a partir do objeto que já desenha ali.
+- Bookkeeping server-side (`server/portal_processor.py` +
+  `server/world_server.py`): `self._portal_anim_casters: dict[(map_file,
+  portal_id), set[eid]]` — controla quando de fato mandar START/STOP
+  (só na transição vazio↔não-vazio do set). `cancel_portal_cast` agora
+  também é chamado no disconnect (`server/session.py`, ao lado de
+  `end_duels_of`) — sem isso, bystanders só veriam a animação parar
+  quando a duração original (que não ia mais acontecer) terminasse
+  sozinha.
+
+Arquivos: `maps/map_1_entities.json` (`"portal_gates"`, 2 portais de
+teste se mirando — `portal_teste_1` em (138,370)→Vila Sul(210,480)/
+Caverna Oeste, `portal_teste_2` em (210,480)→Centro(138,370)/Caverna
+Oeste), `engine/map_loader.py`, `server/portal_processor.py` (novo),
+`server/world_server.py`, `server/session.py`, `shared/messages.py`,
+`client/portal_handlers.py` (novo), `engine/portal_anim_state.py`
+(novo), `game.py`, `client/hud_handlers.py`, `client/network_handlers.py`,
+`client/modal_stack_handlers.py`, `engine/tileset.py`, `ui/
 tile_sprite_manager.py`, `ui/tile_render_system.py`.
-Testes: `tests/test_portal.py` (validação de `request_portal_enter`,
+Testes: `tests/test_portal.py` (22 — validação de `request_portal_enter`,
 teleporte só ao completar o cast, cancelamento por movimento,
 confirmação de que `ZONE_CHANGE_REQ` direto nunca alcança destino de
-portal sem passar pela validação nova). Validação visual em jogo
-pendente (usuário) — arte de animação (personagem e tile) ainda não
-existe, fallback gracioso confirmado no design mas não visto em tela.
+portal sem passar pela validação nova, broadcast de animação
+start/stop/arrive incluindo os casos de 1º/último caster e
+disconnect). Validação visual em jogo pendente (usuário) — animação
+do personagem (`{class_id}_portal_{direction}.png`) ainda não existe,
+fallback gracioso pra idle confirmado no design mas não visto em tela;
+animação do tile já tem arte e mecanismo prontos.
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
@@ -777,7 +822,7 @@ barra de HP); ghost (`is_ghost`) desenhado semi-transparente (alpha ~120/255).
 | Duelo (contexto PvP por convite, estilo WoW) | ✅ completo, validado em jogo | `server/duel_processor.py`, `client/duel_handlers.py` |
 | Party/Grupo + XP compartilhado (Fase E) | ✅ completo, validado em jogo | `server/party_processor.py`, `client/party_handlers.py` |
 | Correio (NPC "Caixa de Correio", entrega assíncrona) | ✅ completo, testado; validação visual em jogo pendente | `server/mail_processor.py`, `server/auth.py` (tabela `mail`), `ui/mail_system.py`, ver §17 |
-| Portais (seleção de destino + cast de 5s + animação) | ✅ plumbing completo, testado; arte de animação (personagem/tile) e validação visual em jogo pendentes | `server/portal_processor.py`, `client/portal_handlers.py`, ver §18 |
+| Portais (seleção de destino + cast de 5s + animação) | ✅ plumbing + animação do tile completos, testado; animação de personagem e validação visual em jogo pendentes | `server/portal_processor.py`, `client/portal_handlers.py`, `engine/portal_anim_state.py`, ver §18 |
 | Zona PvP (Fase F — "solo=hostil, grupo=exceção") | ✅ completo, validado em jogo (solo, mesmo grupo, e grupo vs grupo) | `server/pvp_zone_processor.py`, `client/pvp_zone_handlers.py` |
 | Arena 2x2 + instanciamento (Fase G leva 1) | ✅ completo, não validado em jogo | `server/match_processor.py`, `client/arena_handlers.py` |
 | Base compartilhada Arena/BG pro que é genuinamente idêntico no ciclo de vida de partida (janela de aceite, abertura de portão, timeout de resultado) — accept/propose/leave/fila continuam separados de propósito (semântica diverge de verdade) | ✅ completo (escopo parcial deliberado) | `server/instanced_match_processor.py::InstancedMatchMixin`, ver `PROBLEMAS_ARQUITETURA.md` §17 |

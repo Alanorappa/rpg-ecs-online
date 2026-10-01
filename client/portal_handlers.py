@@ -40,6 +40,15 @@ _PAD = 16
 # se um dia divergir, o servidor sempre vence (é só o "chute" inicial).
 _DEFAULT_PORTAL_CAST_DURATION_S = 5.0
 
+# Duração NATURAL (não esticada) da animação de "desativar" ao chegar
+# num portal (01/10/2026) — diferente de "activate" (sempre esticada
+# pra caber a duração REAL do cast, mandada pelo servidor em
+# PORTAL_ANIM_START), PORTAL_ANIM_ARRIVE não carrega duração nenhuma
+# (é um evento pontual de chegada, não um cast com tempo) — o cliente
+# decide sozinho quanto tempo o "desligar" deve durar. Ajustável aqui,
+# 1 lugar só (ver _handle_msg_portal_anim_arrive).
+_PORTAL_DEACTIVATE_DURATION_MS = 900.0
+
 
 class PortalHandlers:
 
@@ -172,6 +181,41 @@ class PortalHandlers:
         comum, o cancelamento local roda 1 frame antes da confirmação
         de rede chegar), isto só confirma o estado que já era."""
         self._cancel_portal_cast_local()
+
+    # ── Handlers de rede — animação do TILE do portal (01/10/2026) ──────────
+    # Diferente dos 2 acima (sobre O PRÓPRIO cast do jogador local, privado),
+    # estes 3 são broadcast por AOI — chegam pra QUALQUER sessão perto do
+    # portal, incluindo quem nem está usando ele. Só escrevem em
+    # engine/portal_anim_state.py (lido por ui/tile_render_system.py); zero
+    # relação com a barra de cast ou com a animação do PERSONAGEM acima.
+
+    def _handle_msg_portal_anim_start(self, payload: dict) -> None:
+        """Portal de ORIGEM começou a animar "ativando" — alguém (local
+        ou não) iniciou um cast nele. Duração vem do servidor (mesma
+        duração real do cast) pra esticar certo os N frames do sheet."""
+        from engine import portal_anim_state as _pas_start
+        import time as _t_pas_start
+        now_ms = int(_t_pas_start.time() * 1000)
+        duration_ms = float(payload.get("duration", _DEFAULT_PORTAL_CAST_DURATION_S)) * 1000.0
+        _pas_start.start_activate(payload.get("x", 0), payload.get("y", 0), now_ms, duration_ms)
+
+    def _handle_msg_portal_anim_stop(self, payload: dict) -> None:
+        """Cast cancelado antes do tempo (último caster daquele portal
+        desistiu) — encerra a animação de "ativando" já, sem esperar a
+        duração original passar pros outros que estavam vendo."""
+        from engine import portal_anim_state as _pas_stop
+        _pas_stop.stop_activate(payload.get("x", 0), payload.get("y", 0))
+
+    def _handle_msg_portal_anim_arrive(self, payload: dict) -> None:
+        """Alguém chegou DE um portal nesse tile (ele é, ele mesmo, um
+        portal de destino cadastrado) — toca "desativando" 1x, duração
+        NATURAL do sheet (nenhuma duração vem do servidor aqui, é um
+        evento pontual, não um cast)."""
+        from engine import portal_anim_state as _pas_arrive
+        import time as _t_pas_arrive
+        now_ms = int(_t_pas_arrive.time() * 1000)
+        _pas_arrive.start_deactivate(payload.get("x", 0), payload.get("y", 0),
+                                     now_ms, _PORTAL_DEACTIVATE_DURATION_MS)
 
     # ── Envio ao servidor ─────────────────────────────────────────────────
 

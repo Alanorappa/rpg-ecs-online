@@ -53,6 +53,21 @@ class MsgType(str, Enum):
     PORTAL_CAST_START  = "portal_cast_start" # S→C  {portal_id, dest_index, duration} — confirma o cast (cliente já mostrou local ao clicar, só passa a valer com esta confirmação)
     PORTAL_CAST_CANCEL = "portal_cast_cancel" # S→C  {reason} — cast interrompido (hoje só "moved", mas genérico pra motivo futuro)
 
+    # Animação do TILE do portal (01/10/2026, pedido do usuário) — evento,
+    # não relógio: diferente de luz noturna de poste (sempre ligada por
+    # hora do dia), aqui a troca de sprite é disparada por alguém usando o
+    # portal. Broadcast por AOI (`SessionManager._sessions_in_aoi`), não só
+    # pro próprio jogador — qualquer um perto vê o portal "vivo" quando
+    # outro jogador o usa. START/STOP são sobre o portal de ORIGEM
+    # (ativando durante o cast); ARRIVE é sobre o portal de DESTINO
+    # (ao receber alguém). Servidor nunca manda sprite/tile_id — só
+    # posição; o cliente resolve sozinho qual sheet usar pro objeto que
+    # já está desenhando naquele tile (engine/tileset.py::
+    # PORTAL_ACTIVATE_SHEET_BY_TILE_ID/PORTAL_DEACTIVATE_SHEET_BY_TILE_ID).
+    PORTAL_ANIM_START   = "portal_anim_start"   # S→C (AOI) {portal_id, x, y, duration} — cast começou nesse portal (1º caster)
+    PORTAL_ANIM_STOP    = "portal_anim_stop"    # S→C (AOI) {portal_id, x, y} — cast cancelado antes do tempo (último caster desistiu)
+    PORTAL_ANIM_ARRIVE  = "portal_anim_arrive"  # S→C (AOI) {portal_id, x, y} — alguém chegou DE um portal nesse tile (um shot, só se o destino também é um portal cadastrado)
+
     # ── Movimento ─────────────────────────────────────────────────
     MOVE               = "move"            # C→S  jogador quer mover para tile
     ENTITY_MOVE        = "entity_move"     # S→C  confirmação/broadcast de movimento

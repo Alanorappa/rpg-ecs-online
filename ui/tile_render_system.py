@@ -472,11 +472,14 @@ class TileRenderSystem(System):
         # acima: objetos estáticos (árvore, arbusto) não podem truncar a
         # câmera num instante diferente de onde as entidades truncam, senão
         # "tremem" relativo ao personagem ao mover.
-        # Relógio global pra animação de portal (30/09/2026) — calculado
-        # 1x por chamada (não por objeto), mesmo princípio de
-        # day_night_color() usar time.time() sem estado por-instância.
+        # Relógio pra animação de EVENTO de portal (01/10/2026) —
+        # calculado 1x por chamada (não por objeto); diferente do
+        # relógio de dia/noite, este só importa pros tiles que têm
+        # animação ATIVA agora (engine.portal_anim_state), a maioria
+        # nunca consulta isso de verdade.
         import time as _time_portal_anim
         _portal_anim_now_ms = int(_time_portal_anim.time() * 1000)
+        from engine import portal_anim_state as _portal_anim_state_render
 
         _tm_objs_first = self.world.get_first(Tilemap)
         if _tm_objs_first is not None:
@@ -527,17 +530,24 @@ class TileRenderSystem(System):
                         # ainda não é pra acender sozinha).
                         if light_source:
                             night_overlay_sprite = TILE_SPRITES.get_night_overlay_sprite(spr_name)
-                        # Animação de portal (30/09/2026) — substitui o
-                        # sprite ESTÁTICO pelo frame atual, se houver
-                        # folha animada cadastrada pra este tile_id
-                        # (PORTAL_ANIM_SHEET_BY_TILE_ID); None (nenhuma
-                        # arte ainda) mantém o sprite estático de sempre,
-                        # fallback gracioso igual a qualquer outro
-                        # mecanismo de arte ausente do projeto.
-                        _portal_frame = TILE_SPRITES.get_portal_anim_frame(
-                            spr_name, _portal_anim_now_ms)
-                        if _portal_frame is not None:
-                            sprite = _portal_frame
+                        # Animação de EVENTO de portal (01/10/2026) —
+                        # substitui o sprite ESTÁTICO pelo frame atual
+                        # de "ativando"/"desativando" SE este tile
+                        # específico (rx,ry) tem uma animação em
+                        # andamento (engine.portal_anim_state, escrito
+                        # por client/portal_handlers.py ao receber
+                        # PORTAL_ANIM_START/STOP/ARRIVE) — maioria dos
+                        # tiles nunca tem nada aqui, fallback gracioso
+                        # pro sprite estático de sempre (mesmo sem
+                        # nenhuma folha cadastrada ainda).
+                        _portal_anim = _portal_anim_state_render.get_active(
+                            rx, ry, _portal_anim_now_ms)
+                        if _portal_anim is not None:
+                            _phase, _elapsed_ms, _dur_ms = _portal_anim
+                            _portal_frame = TILE_SPRITES.get_portal_event_frame(
+                                spr_name, _phase, _elapsed_ms, _dur_ms)
+                            if _portal_frame is not None:
+                                sprite = _portal_frame
                     else:
                         tiles_wide = getattr(tile_type, "sprite_tiles_wide", 1)
                         sprite_w   = tile_size * tiles_wide

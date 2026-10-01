@@ -44,6 +44,18 @@ class PortalProcessorMixin:
                 return gate
         return None
 
+    def _portal_gate_at_position(self, map_file: str, x: int, y: int) -> "dict | None":
+        """Mesmo que `_portal_gate_at`, mas busca por POSIÇÃO em vez de
+        id — usado por `_tick_portal_casts` pra saber se o tile de
+        CHEGADA de um teleporte também é um portal cadastrado (gatilho
+        da animação de "desativar", ver PORTAL_ANIM_ARRIVE). None se
+        não há portal nenhum naquele tile específico (destino comum,
+        sem portal — não deve animar nada)."""
+        for gate in self._portal_gates_by_map.get(map_file, []):
+            if gate.get("x") == x and gate.get("y") == y:
+                return gate
+        return None
+
     # ── API pública (handlers de server/session.py) ──────────────────────────
 
     def request_portal_enter(self, eid: int, portal_id: str, dest_index: int) -> "str | None":
@@ -85,19 +97,52 @@ class PortalProcessorMixin:
             "duration":   self.PORTAL_CAST_DURATION_S,
             "map_file":   map_file,
         }
+
+        # Animação de "ativando" no tile do portal (01/10/2026, visível
+        # pra qualquer sessão por perto, não só pra quem está castando)
+        # — broadcast SÓ no 1º caster deste portal específico (2º+
+        # jogador castando no MESMO portal ao mesmo tempo não reinicia
+        # a animação pra quem já estava vendo).
+        anim_key = (map_file, portal_id)
+        casters = self._portal_anim_casters.setdefault(anim_key, set())
+        if not casters:
+            self._portal_anim_start_events_this_tick.append({
+                "map_file": map_file, "portal_id": portal_id,
+                "x": gate["x"], "y": gate["y"],
+                "duration": self.PORTAL_CAST_DURATION_S,
+            })
+        casters.add(eid)
         return None
 
     def cancel_portal_cast(self, eid: int, reason: str) -> bool:
-        """Cancela o cast de `eid` se houver um ativo (movimento, ou
-        qualquer motivo futuro — ex: dano recebido). True se havia
-        cast pra cancelar (handler manda PORTAL_CAST_CANCEL);
-        False = no-op silencioso (não havia cast, chamador não precisa
-        mandar nada)."""
-        if self._portal_casts.pop(eid, None) is None:
+        """Cancela o cast de `eid` se houver um ativo (movimento,
+        disconnect, ou qualquer motivo futuro — ex: dano recebido).
+        True se havia cast pra cancelar (handler manda
+        PORTAL_CAST_CANCEL); False = no-op silencioso (não havia cast,
+        chamador não precisa mandar nada)."""
+        cast = self._portal_casts.pop(eid, None)
+        if cast is None:
             return False
         self._portal_cast_cancel_events_this_tick.append({
             "eid": eid, "reason": reason,
         })
+
+        # Última pessoa castando NESTE portal desistiu antes do tempo —
+        # avisa quem estava vendo a animação de "ativando" pra ela
+        # parar JÁ, sem esperar a duração original (que não vai mais
+        # acontecer de verdade) terminar sozinha no cliente deles.
+        anim_key = (cast["map_file"], cast["portal_id"])
+        casters = self._portal_anim_casters.get(anim_key)
+        if casters is not None:
+            casters.discard(eid)
+            if not casters:
+                del self._portal_anim_casters[anim_key]
+                gate = self._portal_gate_at(cast["map_file"], cast["portal_id"])
+                if gate is not None:
+                    self._portal_anim_stop_events_this_tick.append({
+                        "map_file": cast["map_file"], "portal_id": cast["portal_id"],
+                        "x": gate["x"], "y": gate["y"],
+                    })
         return True
 
     # ── Tick: contagem do cast + teleporte ao completar ───────────────────────
@@ -110,6 +155,19 @@ class PortalProcessorMixin:
                 completed.append((eid, cast))
         for eid, cast in completed:
             del self._portal_casts[eid]
+
+            # Conclusão NATURAL (chegou ao fim do tempo) — sai do set de
+            # casters igual ao cancelamento, mas SEM broadcast de STOP:
+            # quem estava vendo a animação já recebeu a duração certa em
+            # PORTAL_ANIM_START e encerra sozinho no cliente, no mesmo
+            # instante (ver engine/portal_anim_state.py::get_active).
+            anim_key = (cast["map_file"], cast["portal_id"])
+            casters = self._portal_anim_casters.get(anim_key)
+            if casters is not None:
+                casters.discard(eid)
+                if not casters:
+                    del self._portal_anim_casters[anim_key]
+
             gate = self._portal_gate_at(cast["map_file"], cast["portal_id"])
             if gate is None:
                 continue  # mapa/portal sumiu entre o início do cast e agora (raríssimo)
@@ -135,6 +193,18 @@ class PortalProcessorMixin:
                 "target_y":   dest["target_y"],
             })
 
+            # Chegada EM CIMA de outro portal cadastrado (ex: os 2
+            # portais de teste se mirando) — toca "desativando" nele,
+            # visível pra quem já estiver perto do destino. Destino sem
+            # portal nenhum (ex: caverna comum) não dispara nada.
+            dest_gate = self._portal_gate_at_position(
+                dest["target_map"], dest["target_x"], dest["target_y"])
+            if dest_gate is not None:
+                self._portal_anim_arrive_events_this_tick.append({
+                    "map_file": dest["target_map"], "portal_id": dest_gate["id"],
+                    "x": dest["target_x"], "y": dest["target_y"],
+                })
+
     def consume_portal_cast_cancel_events(self) -> list[dict]:
         result = list(self._portal_cast_cancel_events_this_tick)
         self._portal_cast_cancel_events_this_tick.clear()
@@ -143,4 +213,19 @@ class PortalProcessorMixin:
     def consume_portal_teleport_events(self) -> list[dict]:
         result = list(self._portal_teleport_events_this_tick)
         self._portal_teleport_events_this_tick.clear()
+        return result
+
+    def consume_portal_anim_start_events(self) -> list[dict]:
+        result = list(self._portal_anim_start_events_this_tick)
+        self._portal_anim_start_events_this_tick.clear()
+        return result
+
+    def consume_portal_anim_stop_events(self) -> list[dict]:
+        result = list(self._portal_anim_stop_events_this_tick)
+        self._portal_anim_stop_events_this_tick.clear()
+        return result
+
+    def consume_portal_anim_arrive_events(self) -> list[dict]:
+        result = list(self._portal_anim_arrive_events_this_tick)
+        self._portal_anim_arrive_events_this_tick.clear()
         return result
