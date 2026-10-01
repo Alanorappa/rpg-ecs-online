@@ -759,7 +759,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self.map_width_px  = tilemap_comp.map_width_tiles  * TILE_SIZE
         self.map_height_px = tilemap_comp.map_height_tiles * TILE_SIZE
         self._build_transition_tiles(spawn_points)
-        self._build_portal_tiles(spawn_points)
+        self._build_portal_tiles(spawn_points, object_matrix)
         self._load_ambient_zones(spawn_points)
         self._load_pvp_zones(spawn_points)
 
@@ -3249,7 +3249,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self.map_height_px = tilemap_comp.map_height_tiles * TILE_SIZE
 
         self._build_transition_tiles(spawn_points)
-        self._build_portal_tiles(spawn_points)
+        self._build_portal_tiles(spawn_points, object_matrix)
         self._load_ambient_zones(spawn_points)
         self._load_pvp_zones(spawn_points)
         self._spawn_entities_from(spawn_points)

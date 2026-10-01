@@ -49,6 +49,69 @@ _DEFAULT_PORTAL_CAST_DURATION_S = 5.0
 # 1 lugar só (ver _handle_msg_portal_anim_arrive).
 _PORTAL_DEACTIVATE_DURATION_MS = 900.0
 
+# Raio de busca (em tiles) pra achar o objeto VISUAL do portal perto do
+# tile de interação do gate (01/10/2026) — ver _find_portal_anim_anchor.
+# Achado real nos 2 portais de teste: o objeto fica consistentemente a
+# (-1,+1) do gate (ancorado no canto inferior-esquerdo da própria arte,
+# enquanto o gate marca onde o jogador INTERAGE) — raio 2 cobre essa
+# distância com folga sem risco de pegar um objeto de outro portal
+# vizinho (gates de teste estão a dezenas de tiles de distância entre si).
+_PORTAL_ANIM_ANCHOR_SEARCH_RADIUS = 2
+
+
+def _find_portal_anim_anchor(object_matrix: list, gate_x: int, gate_y: int) -> "tuple[int, int]":
+    """Acha, perto de `(gate_x, gate_y)`, o tile ONDE o objeto de portal
+    (catalogado com folha de ativar/desativar, ver `engine.tileset.
+    PORTAL_ACTIVATE_SHEET_BY_TILE_ID`/`PORTAL_DEACTIVATE_SHEET_BY_TILE_ID`)
+    está DE VERDADE desenhado — `ui/tile_render_system.py` indexa pelo
+    tile onde o CARACTERE do objeto aparece no `object_matrix` (o
+    "anchor"), que não precisa ser o mesmo tile que `portal_gates` marca
+    pra interação (o gate marca "onde o jogador fica em pé pra usar o
+    portal"; o objeto pode estar desenhado num canto diferente da
+    própria arte). Bug real (01/10/2026): os 2 portais de teste têm o
+    objeto plantado a (-1,+1) do gate — sem esta função, o estado de
+    animação era escrito na posição do GATE mas o renderer só olhava a
+    posição do OBJETO, então a animação nunca aparecia (chaves
+    diferentes, nunca batiam).
+
+    Retorna o MAIS PRÓXIMO (distância euclidiana ao quadrado) dentro de
+    `_PORTAL_ANIM_ANCHOR_SEARCH_RADIUS` tiles; se nenhum for achado
+    (arte ainda não cadastrada, ou erro de autoria no mapa), cai pro
+    próprio `(gate_x, gate_y)` — mesmo fallback gracioso de qualquer
+    outro mecanismo de animação ausente no projeto (resultado nesse
+    caso: `portal_anim_state` nunca bate com nada no render, igual a
+    hoje sem este fix, mas sem quebrar nada)."""
+    from engine.tileset import (OBJECT_MAPPING, PORTAL_ACTIVATE_SHEET_BY_TILE_ID,
+                                PORTAL_DEACTIVATE_SHEET_BY_TILE_ID)
+    animatable_ids = set(PORTAL_ACTIVATE_SHEET_BY_TILE_ID) | set(PORTAL_DEACTIVATE_SHEET_BY_TILE_ID)
+    if not animatable_ids:
+        return (gate_x, gate_y)
+
+    best = None
+    best_dist = None
+    r = _PORTAL_ANIM_ANCHOR_SEARCH_RADIUS
+    for dy in range(-r, r + 1):
+        row_idx = gate_y + dy
+        if not (0 <= row_idx < len(object_matrix)):
+            continue
+        obj_row = object_matrix[row_idx]
+        for dx in range(-r, r + 1):
+            col_idx = gate_x + dx
+            if not (0 <= col_idx < len(obj_row)):
+                continue
+            ch = obj_row[col_idx]
+            if not ch or ch == ".":
+                continue
+            tile_type = OBJECT_MAPPING.get(ch)
+            if tile_type is None:
+                continue
+            if getattr(tile_type, "sprite_name", "") not in animatable_ids:
+                continue
+            dist = dx * dx + dy * dy
+            if best_dist is None or dist < best_dist:
+                best_dist, best = dist, (col_idx, row_idx)
+    return best if best is not None else (gate_x, gate_y)
+
 
 class PortalHandlers:
 
@@ -97,13 +160,33 @@ class PortalHandlers:
     def _portal_cast_active(self, value) -> None:
         self._portal_cast_active_val = value
 
+    @property
+    def _portal_anim_anchor(self) -> dict:
+        """(gate_x, gate_y) -> (anchor_x, anchor_y) — tile ONDE O OBJETO
+        é desenhado de verdade (`ui/tile_render_system.py::
+        render_static_objects()`/`get_world_objects()`, chave usada por
+        `engine.portal_anim_state`), resolvido por `_build_portal_tiles`
+        a partir do `object_matrix` real. NUNCA assuma que é igual ao
+        tile do gate — ver docstring de `_find_portal_anim_anchor` pro
+        porquê (bug real, 01/10/2026: eram tiles DIFERENTES, animação
+        nunca aparecia porque o estado era escrito numa posição que o
+        renderer nunca consultava)."""
+        return getattr(self, "_portal_anim_anchor_val", None) or {}
+
+    @_portal_anim_anchor.setter
+    def _portal_anim_anchor(self, value: dict) -> None:
+        self._portal_anim_anchor_val = value
+
     # ── Construção de dados do mapa (chamado de game.py, ao lado de
     # _build_transition_tiles) ────────────────────────────────────────────
 
-    def _build_portal_tiles(self, spawn_points: dict) -> None:
-        self.portal_tiles = {
-            (gate["x"], gate["y"]): gate
-            for gate in spawn_points.get("portal_gates", [])
+    def _build_portal_tiles(self, spawn_points: dict, object_matrix: list) -> None:
+        gates = spawn_points.get("portal_gates", [])
+        self.portal_tiles = {(gate["x"], gate["y"]): gate for gate in gates}
+        self._portal_anim_anchor = {
+            (gate["x"], gate["y"]): _find_portal_anim_anchor(
+                object_matrix, gate["x"], gate["y"])
+            for gate in gates
         }
         self._portal_modal_open = None
         self._portal_modal_dismissed_key = None
@@ -211,6 +294,16 @@ class PortalHandlers:
     # engine/portal_anim_state.py (lido por ui/tile_render_system.py); zero
     # relação com a barra de cast ou com a animação do PERSONAGEM acima.
 
+    def _portal_anim_render_pos(self, payload: dict) -> "tuple[int, int]":
+        """Traduz (x,y) do GATE, como o servidor manda (payload cru, ele
+        não sabe nada de sprite — ver shared/messages.py), pro tile onde
+        o OBJETO é desenhado de verdade (`_portal_anim_anchor`, resolvido
+        em `_build_portal_tiles`) — NUNCA usar payload["x"]/["y"] direto
+        como chave de `engine.portal_anim_state`, ou a animação nunca
+        bate com o que o renderer consulta (bug real, 01/10/2026)."""
+        key = (payload.get("x", 0), payload.get("y", 0))
+        return self._portal_anim_anchor.get(key, key)
+
     def _handle_msg_portal_anim_start(self, payload: dict) -> None:
         """Portal de ORIGEM começou a animar "ativando" — alguém (local
         ou não) iniciou um cast nele. Duração vem do servidor (mesma
@@ -219,14 +312,16 @@ class PortalHandlers:
         import time as _t_pas_start
         now_ms = int(_t_pas_start.time() * 1000)
         duration_ms = float(payload.get("duration", _DEFAULT_PORTAL_CAST_DURATION_S)) * 1000.0
-        _pas_start.start_activate(payload.get("x", 0), payload.get("y", 0), now_ms, duration_ms)
+        ax, ay = self._portal_anim_render_pos(payload)
+        _pas_start.start_activate(ax, ay, now_ms, duration_ms)
 
     def _handle_msg_portal_anim_stop(self, payload: dict) -> None:
         """Cast cancelado antes do tempo (último caster daquele portal
         desistiu) — encerra a animação de "ativando" já, sem esperar a
         duração original passar pros outros que estavam vendo."""
         from engine import portal_anim_state as _pas_stop
-        _pas_stop.stop_activate(payload.get("x", 0), payload.get("y", 0))
+        ax, ay = self._portal_anim_render_pos(payload)
+        _pas_stop.stop_activate(ax, ay)
 
     def _handle_msg_portal_anim_arrive(self, payload: dict) -> None:
         """Alguém chegou DE um portal nesse tile (ele é, ele mesmo, um
@@ -236,8 +331,8 @@ class PortalHandlers:
         from engine import portal_anim_state as _pas_arrive
         import time as _t_pas_arrive
         now_ms = int(_t_pas_arrive.time() * 1000)
-        _pas_arrive.start_deactivate(payload.get("x", 0), payload.get("y", 0),
-                                     now_ms, _PORTAL_DEACTIVATE_DURATION_MS)
+        ax, ay = self._portal_anim_render_pos(payload)
+        _pas_arrive.start_deactivate(ax, ay, now_ms, _PORTAL_DEACTIVATE_DURATION_MS)
 
     # ── Envio ao servidor ─────────────────────────────────────────────────
 

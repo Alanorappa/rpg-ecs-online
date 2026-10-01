@@ -585,12 +585,39 @@ precisa de broadcast novo, não só estado client-local.
   módulo `(tile_x,tile_y) → {phase, started_ms, duration_ms}` — mesmo
   padrão de `core_systems.register_lethal_interceptor`. Escrito por
   `client/portal_handlers.py` ao receber os 3 eventos de rede abaixo;
-  lido por `ui/tile_render_system.py::get_world_objects()` (substitui
-  o sprite estático pelo frame atual via `ui/tile_sprite_manager.py::
-  get_portal_event_frame(name, phase, elapsed_ms, duration_ms)` — None
-  em qualquer ponta cai pro sprite estático de sempre). Limpo em
-  `game.py::_do_transition` (posição de tile não tem relação entre
-  mapas diferentes).
+  lido tanto por `ui/tile_render_system.py::get_world_objects()`
+  (objetos Y-sorted) quanto por `render_static_objects()` (objetos
+  `no_ysort=True` — **vp_144, o portal, é um destes**: tem
+  `sort_val=0` no catálogo, logo `get_world_objects()` pula ele de
+  propósito na linha `if no_ysort: continue` — bug real corrigido
+  01/10/2026, ver `PROBLEMAS_ARQUITETURA.md` §221, a 1ª versão só
+  cobria o método errado). `ui/tile_sprite_manager.py::get_portal_event_frame(name,
+  phase, elapsed_ms, duration_ms)` resolve o frame; None em qualquer
+  ponta cai pro sprite estático de sempre. Limpo em `game.py::
+  _do_transition` (posição de tile não tem relação entre mapas
+  diferentes).
+- **Posição do GATE ≠ posição de RENDER do objeto (bug real corrigido
+  01/10/2026, ver `PROBLEMAS_ARQUITETURA.md` §221)** — `portal_gates`
+  no JSON marca onde o jogador INTERAGE
+  (tile de pé), mas o objeto `vp_144` pode estar plantado num tile
+  DIFERENTE do `object_matrix` (nos 2 portais de teste, consistentemente
+  a `(-1,+1)` do gate — o sprite ancora no canto onde a arte foi
+  desenhada, não necessariamente onde o jogador fica em pé). O servidor
+  só conhece a posição do GATE (nunca sabe de sprite/objeto); escrever
+  o estado de animação direto nessa posição significava que o renderer
+  (que consulta pela posição real do OBJETO) nunca encontrava nada.
+  Fix: `client/portal_handlers.py::_find_portal_anim_anchor()` escaneia
+  um raio pequeno (`_PORTAL_ANIM_ANCHOR_SEARCH_RADIUS = 2`) ao redor de
+  cada gate, no `object_matrix` real, procurando um tile cujo
+  `sprite_name` esteja cadastrado em `PORTAL_ACTIVATE_SHEET_BY_TILE_ID`/
+  `PORTAL_DEACTIVATE_SHEET_BY_TILE_ID` — resultado cacheado em
+  `self._portal_anim_anchor` (`_build_portal_tiles`, roda 1x por carga
+  de mapa). Os 3 handlers de rede (`_handle_msg_portal_anim_*`) traduzem
+  `(payload["x"], payload["y"])` por esse dict (`_portal_anim_render_pos`)
+  ANTES de escrever em `portal_anim_state` — nunca usar o x/y cru do
+  payload como chave. Sem objeto nenhum encontrado no raio, cai pro
+  próprio gate (fallback gracioso, mesma animação simplesmente nunca
+  aparece, sem quebrar nada).
 - **Protocolo novo, broadcast por AOI** (`SessionManager._sessions_in_aoi`,
   nunca privado ao dono — diferente de `PORTAL_CAST_START`/`CANCEL`):
   `PORTAL_ANIM_START` (S→C, `{portal_id, x, y, duration}` — 1º caster

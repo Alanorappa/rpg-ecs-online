@@ -23881,3 +23881,92 @@ teste dedicado (não incidental, como os testes de BG que geraram os
 dados usados até agora) e o usuário preferiu não gastar esse tempo
 agora. Não fechar como resolvido — retomar quando o usuário topar
 testar de novo.
+
+## 221. Sistema de Portais (§18, Animação do tile): 2 bugs reais no 1º playtest — relógio errado quebrou ataque, animação nunca batia com o objeto (01/10/2026)
+
+Usuário testou em jogo a animação de evento do portal (ver
+`ARQUITETURA ONLINE.md` §18) e relatou 2 problemas na mesma mensagem:
+"não funcionou" (a animação do portal) e "além disso estragou as
+animações de ataque do personagem, não funcionam mais".
+
+**Bug 1 — relógio de parede vs ticks do pygame (quebrava TODO ataque
+depois do 1º cast de portal)**: `client/portal_handlers.py::
+_handle_msg_portal_cast_start` setava `TileMovement.
+anim_attack_started_ms` com `time.time()*1000` (relógio de PAREDE,
+epoch — número ~1.7 trilhão). TODO o resto do sistema de animação de
+personagem usa `pygame.time.get_ticks()` (dezenas de milhares,
+resetando a cada sessão) — ver `ui/render_system.py::
+resolve_display_state()` e `client/remote_entity_handlers.py::
+_apply_combat_result` → `trigger_attack_anim(..., pygame.time.
+get_ticks())`. `engine/character_animation.py::_attack_loop_still_active`
+faz `now_ms - anim_attack_started_ms < duration` — com a escala
+errada, essa subtração dá um número NEGATIVO enorme, sempre menor que
+qualquer duração, então `trigger_attack_anim`'s guard de "golpe em
+loop ativo" (pensado originalmente só pra Fatiador de Corpos, ver §18
+histórico) bloqueava PERMANENTEMENTE qualquer golpe novo depois do 1º
+cast de portal — não só durante os 5s do cast. Fix: `pygame.time.
+get_ticks()`, igual ao resto do jogo. Também zera
+`anim_attack_loop_duration_ms` em `_cancel_portal_cast_local` (cast
+cancelado antes do tempo deixava esse campo "vivo" até os 5s originais
+passarem sozinhos — bug menor, mesma classe).
+
+**Lição**: qualquer campo que vai ser lido por `trigger_attack_anim`/
+`_attack_loop_still_active` (ou qualquer código que mistura timestamps
+com código já existente) precisa confirmar, por grep nos call sites
+REAIS (não só na assinatura da função), qual relógio aquele código já
+usa — `now_ms: int` no type hint não diz nada sobre a ESCALA esperada.
+
+**Bug 2 — animação nunca desenhada: `vp_144` é `no_ysort=True`, nunca
+passa por `get_world_objects()`**: a implementação original só
+adicionava a troca de sprite estático→animado dentro de
+`get_world_objects()`. Mas o catálogo do portal
+(`engine/tileset.py`, grupo "cemiterio", entrada `"144"`) tem o 9º
+campo posicional (`sort_val`) igual a `0` → `no_ysort=True` —
+`get_world_objects()` pula esses objetos de propósito (`if no_ysort:
+continue`, são desenhados por `render_static_objects()`, uma função
+TOTALMENTE separada). A animação nunca tinha chance de aparecer
+porque o código novo vivia na função errada. Fix: mesma lógica
+(`engine.portal_anim_state.get_active` + `TILE_SPRITES.
+get_portal_event_frame`) duplicada em `render_static_objects()`.
+
+**Bug 3 — posição do GATE ≠ posição de RENDER do objeto (achado
+DEPOIS do usuário confirmar que o bug 2 sozinho não bastou — pergunta
+dele: "você garantiu que a animação está ordenada acima do objeto do
+portal?")**: mesmo corrigindo o bug 2, a animação ainda não aparecia.
+Investigação: `maps/map_1_entities.json::portal_gates` marca a posição
+onde o JOGADOR fica em pé pra interagir (`portal_teste_1` em
+(138,370), `portal_teste_2` em (210,480)); `grep` em
+`maps/map_1_objects.csv` mostrou que o objeto `vp_144` de CADA um dos
+2 portais está plantado em `(gate_x-1, gate_y+1)` — UM TILE DE
+DISTÂNCIA, consistente nos dois casos (sprite ancora no canto onde a
+arte foi desenhada, não necessariamente onde o jogador interage). O
+servidor só manda a posição do GATE (nunca sabe de sprite/objeto, por
+desenho — ver §18); escrever o estado de animação direto nessa posição
+significava que `render_static_objects()`/`get_world_objects()`
+(que consultam pela posição REAL do objeto no `object_matrix`) nunca
+encontravam nada — chaves diferentes, nunca batiam. Fix:
+`client/portal_handlers.py::_find_portal_anim_anchor()` (novo) escaneia
+um raio pequeno (`_PORTAL_ANIM_ANCHOR_SEARCH_RADIUS = 2`) ao redor do
+gate, no `object_matrix` real, procurando o tile cujo `sprite_name`
+está cadastrado em `PORTAL_ACTIVATE_SHEET_BY_TILE_ID`/
+`PORTAL_DEACTIVATE_SHEET_BY_TILE_ID` — resultado cacheado em
+`self._portal_anim_anchor` (`_build_portal_tiles`, 1x por carga de
+mapa, precisou de parâmetro novo `object_matrix`, 2 call sites em
+`game.py`). `_handle_msg_portal_anim_start/stop/arrive` traduzem
+`(payload["x"], payload["y"])` por esse dict ANTES de escrever em
+`portal_anim_state` — nunca mais usar o x/y cru do payload como chave
+de animação.
+
+**Revert-to-confirm**: os 2 bugs tiveram teste novo em
+`tests/test_portal.py` (`TestPortalClientAnimationClock`,
+`TestPortalAnimAnchorResolution`) — reintroduzidos de propósito, 1 por
+vez, confirmando que os testes pegam cada um; restaurados os fixes
+depois. Suíte relacionada (portal + character_animation + duelo, 106
+testes) passando. Como são bugs 100% client-side, não precisam de
+deploy no servidor — só reabrir o jogo local já pega a correção.
+
+**Lição de processo**: a pergunta direta do usuário ("ordenada acima
+do objeto?") não era literalmente a causa raiz (não era Z-order), mas
+apontou corretamente pra região certa do problema (algo entre o
+desenho do objeto e a animação não estava se conectando) — vale como
+pista de investigação mesmo quando o termo técnico usado não é exato.

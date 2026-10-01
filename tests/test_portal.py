@@ -326,5 +326,76 @@ class TestPortalClientAnimationClock(unittest.TestCase):
         self.assertEqual(self.tm.anim_attack_state, "attack")
 
 
+class TestPortalAnimAnchorResolution(unittest.TestCase):
+    """Regressão (01/10/2026, bug real relatado pelo usuário: "a
+    animação do portal ainda não funciona"). Causa raiz: o servidor
+    manda a posição do GATE (onde o jogador fica em pé pra interagir),
+    mas `ui/tile_render_system.py` desenha e consulta a animação pela
+    posição do OBJETO no `object_matrix` — que pode ser (e, nos 2
+    portais de teste reais do mapa, É) um tile DIFERENTE do gate (ambos
+    a (-1,+1) do gate). Sem traduzir uma posição pra outra, o estado de
+    animação era escrito numa chave que o renderer nunca consultava —
+    a animação nunca aparecia, mesmo com tudo mais funcionando."""
+
+    def setUp(self):
+        from engine.tileset import OBJECT_MAPPING, TileType, PORTAL_ACTIVATE_SHEET_BY_TILE_ID
+        self._orig_mapping = dict(OBJECT_MAPPING)
+        self._orig_activate = dict(PORTAL_ACTIVATE_SHEET_BY_TILE_ID)
+        OBJECT_MAPPING["P"] = TileType(name="TestePortal", color=(0, 0, 0),
+                                       sprite_name="test_portal_obj")
+        PORTAL_ACTIVATE_SHEET_BY_TILE_ID["test_portal_obj"] = "fake_sheet"
+
+    def tearDown(self):
+        from engine.tileset import OBJECT_MAPPING, PORTAL_ACTIVATE_SHEET_BY_TILE_ID
+        from engine import portal_anim_state
+        OBJECT_MAPPING.clear(); OBJECT_MAPPING.update(self._orig_mapping)
+        PORTAL_ACTIVATE_SHEET_BY_TILE_ID.clear(); PORTAL_ACTIVATE_SHEET_BY_TILE_ID.update(self._orig_activate)
+        portal_anim_state.clear_all()
+
+    @staticmethod
+    def _matrix(obj_x: int, obj_y: int, size: int = 10) -> list:
+        rows = [["." for _ in range(size)] for _ in range(size)]
+        rows[obj_y][obj_x] = "P"
+        return rows
+
+    def test_acha_objeto_deslocado_do_gate(self):
+        from client.portal_handlers import _find_portal_anim_anchor
+        # Gate em (5,5), objeto em (4,6) -- (-1,+1), igual ao caso real.
+        matrix = self._matrix(obj_x=4, obj_y=6)
+        self.assertEqual(_find_portal_anim_anchor(matrix, 5, 5), (4, 6))
+
+    def test_sem_objeto_por_perto_cai_pro_proprio_gate(self):
+        from client.portal_handlers import _find_portal_anim_anchor
+        matrix = self._matrix(obj_x=0, obj_y=0)  # longe demais de (5,5)
+        self.assertEqual(_find_portal_anim_anchor(matrix, 5, 5), (5, 5))
+
+    def test_build_portal_tiles_resolve_anchor_de_verdade(self):
+        from client.portal_handlers import PortalHandlers
+        class _FakeEngine(PortalHandlers):
+            pass
+        eng = _FakeEngine()
+        matrix = self._matrix(obj_x=4, obj_y=6)
+        spawn_points = {"portal_gates": [{"id": "px", "x": 5, "y": 5, "destinations": []}]}
+        eng._build_portal_tiles(spawn_points, matrix)
+        self.assertEqual(eng._portal_anim_anchor[(5, 5)], (4, 6))
+
+    def test_handler_de_rede_escreve_no_anchor_nao_no_gate(self):
+        import time
+        from client.portal_handlers import PortalHandlers
+        from engine import portal_anim_state
+        class _FakeEngine(PortalHandlers):
+            pass
+        eng = _FakeEngine()
+        matrix = self._matrix(obj_x=4, obj_y=6)
+        spawn_points = {"portal_gates": [{"id": "px", "x": 5, "y": 5, "destinations": []}]}
+        eng._build_portal_tiles(spawn_points, matrix)
+        eng._handle_msg_portal_anim_start({"portal_id": "px", "x": 5, "y": 5, "duration": 5.0})
+        now_ms = int(time.time() * 1000)
+        self.assertIsNone(portal_anim_state.get_active(5, 5, now_ms),
+                          "não deve escrever na posição do GATE")
+        self.assertIsNotNone(portal_anim_state.get_active(4, 6, now_ms),
+                             "deve escrever na posição real do OBJETO (anchor)")
+
+
 if __name__ == "__main__":
     unittest.main()
