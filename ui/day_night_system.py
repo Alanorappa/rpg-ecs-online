@@ -473,7 +473,10 @@ class DayNightSystem(System):
                 off_x, off_y, lw, lh, intensity_pct, radius_tiles = tile_type.light_source
                 cx = world_x + off_x + lw / 2
                 cy = world_y + off_y + lh / 2
-                radius_px = radius_tiles * tile_size
+                # round() — mesma razão do loop de luz dinâmica abaixo:
+                # radius_tiles pode ser fracionário, mas vira DIMENSÃO de
+                # array/Surface, que exige int.
+                radius_px = round(radius_tiles * tile_size)
                 if radius_px <= 0:
                     continue
                 lights.append((cx, cy, radius_px, intensity_pct))
@@ -691,7 +694,13 @@ class DayNightSystem(System):
                 off_x, off_y, lw, lh, intensity_pct, radius_tiles = light
                 cx = obj["screen_x"] + off_x + lw / 2
                 cy = obj["screen_y"] + off_y + lh / 2
-                radius_px = radius_tiles * TILE_SIZE
+                # round() — radius_tiles pode ser fracionário (ex: luz do
+                # portal, 2.5 tiles, ver _PORTAL_LIGHT_RADIUS_TILES em
+                # ui/tile_render_system.py) — _get_light_add_gradient usa
+                # isso como DIMENSÃO de Surface/array numpy, que exige int
+                # (bug real: TypeError "'float' object cannot be
+                # interpreted as an integer", 02/10/2026).
+                radius_px = round(radius_tiles * TILE_SIZE)
                 if radius_px <= 0:
                     continue
                 if (cx < -radius_px or cx > surf_w + radius_px

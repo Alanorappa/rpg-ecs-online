@@ -485,6 +485,37 @@ class TestPortalLightPunchesNightLayer(unittest.TestCase):
         trs = TileRenderSystem(world, pygame.Surface((64, 64)))
         self.assertEqual(trs.get_portal_light_sources(0, 0), [])
 
+    def test_render_nao_quebra_com_raio_fracionario(self):
+        """Regressão (02/10/2026, erro real relatado pelo usuário):
+        `_PORTAL_LIGHT_RADIUS_TILES = 2.5` (fracionário) × `TILE_SIZE`
+        vira um `radius_px` FLOAT — usado como dimensão de array numpy/
+        Surface em `_get_light_add_gradient`, que exige int. Sem
+        arredondar antes, `DayNightSystem.render()` crashava com
+        `TypeError: 'float' object cannot be interpreted as an integer`
+        assim que QUALQUER portal animava à noite. Força o relógio pra
+        meia-noite (senão o early-return de "dia pleno" nunca chegaria
+        no código que crasha)."""
+        import pygame
+        from engine.world import World
+        from ui.day_night_system import DayNightSystem
+        import ui.day_night_system as dns_mod
+
+        orig_offset = dns_mod._debug_time_offset_s
+        try:
+            dns_mod.jump_to_fraction(0.0)   # meia-noite -- garante noite real
+            world = World()
+            dns = DayNightSystem(world, -1)
+            dns.world_surf = pygame.Surface((200, 200))
+            fake_light = {
+                "screen_x": 100, "screen_y": 100,
+                "light_source": (0, 0, 0, 0, 90, 2.5),   # raio FRACIONÁRIO, igual ao do portal
+                "portal_light": True,
+                "glow_color": (110, 170, 255),
+            }
+            dns.render(world_objects=[fake_light])   # não deve lançar TypeError
+        finally:
+            dns_mod.set_debug_time_offset(orig_offset)
+
 
 if __name__ == "__main__":
     unittest.main()
