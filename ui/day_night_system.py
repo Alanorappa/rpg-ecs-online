@@ -320,8 +320,16 @@ class DayNightSystem(System):
         # diferente do gradiente aditivo acima, dá pra escalar a
         # intensidade no BLIT, sem precisar assar ela nos pixels no
         # momento de gerar. Cor generalizada em 01/10/2026 (antes só
-        # quente/laranja) pra servir também o brilho azulado do portal.
+        # quente/laranja) — só luz de ITEM usa isto hoje (portal passou
+        # a furar a escuridão com a forma do próprio desenho, ver
+        # `_get_portal_frame_light_mask`, não com um brilho de cor solto).
         self._warm_glow_cache: dict[tuple[int, tuple[int, int, int]], "pygame.Surface"] = {}
+        # Máscara ADITIVA derivada do canal ALPHA do frame de animação do
+        # portal (02/10/2026, pedido do usuário — a luz tem que ter a
+        # FORMA do brilho azul já desenhado, não um círculo sintético) —
+        # cacheada por (id(frame), intensidade). Ver
+        # `_get_portal_frame_light_mask`.
+        self._portal_frame_mask_cache: dict[tuple[int, int], "pygame.Surface"] = {}
         # Clusters de luz ESTÁTICA do mapa (lampião/tocha etc.) — 1 Surface
         # pré-composta por cluster inteiro, construída 1x em
         # build_static_light_clusters() (chamado por game.py a cada troca
@@ -426,6 +434,55 @@ class DayNightSystem(System):
                     a = round(peak_alpha * (1.0 - dist / radius_px))
                     surf.set_at((x, y), (color[0], color[1], color[2], a))
         self._warm_glow_cache[key] = surf
+        return surf
+
+    def _get_portal_frame_light_mask(self, frame: "pygame.Surface",
+                                     intensity_pct: int) -> "pygame.Surface":
+        """Máscara ADITIVA derivada do canal ALPHA do `frame` de animação
+        do portal (02/10/2026, pedido do usuário: "a luz tem que vir do
+        desenho real da animação, não de um círculo") — branco escalado
+        pela OPACIDADE de cada pixel do próprio frame × intensidade,
+        mesmo princípio de `_get_light_add_gradient` (que gera um
+        gradiente SINTÉTICO a partir de uma fórmula de distância), só
+        que aqui o "gradiente" é o desenho de verdade do artista: onde a
+        arte é mais opaca, mais luz; onde é transparente, nenhuma.
+
+        `BLEND_RGBA_ADD` NUNCA pondera pela alpha de ORIGEM (confirmado
+        empiricamente, ver docstring de `_get_light_add_gradient`) — se
+        esta máscara simplesmente copiasse o frame e o usasse direto com
+        ADD, a cor cheia seria somada em QUALQUER pixel com alpha>0,
+        criando um furo com borda dura (retângulo), não o brilho suave
+        que a arte desenha. Por isso a intensidade precisa estar ASSADA
+        no RGB aqui (branco × alpha/255 × intensidade), igual a qualquer
+        outro gradiente ADD deste arquivo — nunca um blit direto do
+        frame original.
+
+        Cacheado por `(id(frame), intensity_pct)` — frames vêm de uma
+        lista FIXA pré-cortada (`ui/tile_sprite_manager.py::
+        TileSpriteManager._portal_event_frames`), o mesmo objeto Surface
+        é reusado toda vez que aquele índice específico está ativo, então
+        a chave por `id()` é estável (nunca aponta pra um frame diferente
+        sob a mesma chave)."""
+        key = (id(frame), intensity_pct)
+        cached = self._portal_frame_mask_cache.get(key)
+        if cached is not None:
+            return cached
+        strength = max(0.0, min(1.0, intensity_pct / 100.0))
+        w, h = frame.get_size()
+        surf = pygame.Surface((w, h))
+        if _NUMPY_OK:
+            alpha = pygame.surfarray.pixels_alpha(frame).astype(np.float64)
+            v = np.round(alpha * strength).astype(np.uint8)
+            arr = np.repeat(v[:, :, None], 3, axis=2)
+            pygame.surfarray.pixels3d(surf)[:] = arr
+        else:
+            surf.fill((0, 0, 0))
+            for y in range(h):
+                for x in range(w):
+                    a = frame.get_at((x, y))[3]
+                    v = round(a * strength)
+                    surf.set_at((x, y), (v, v, v))
+        self._portal_frame_mask_cache[key] = surf
         return surf
 
     def build_static_light_clusters(self, tilemap) -> None:
@@ -679,14 +736,7 @@ class DayNightSystem(System):
 
         if world_objects:
             for obj in world_objects:
-                # player_light (luz de item sob demanda) e portal_light
-                # (01/10/2026, pedido do usuário — animação do portal é
-                # uma "iluminação" de verdade, precisa furar a camada de
-                # noite igual a qualquer outra luz dinâmica) passam pelo
-                # MESMO caminho — só a COR do brilho final diverge
-                # (glow_color, default quente/laranja pra manter
-                # player_light intocado).
-                if not (obj.get("player_light") or obj.get("portal_light")):
+                if not obj.get("player_light"):
                     continue   # luz de mapa (estática) já resolvida acima via cluster
                 light = obj.get("light_source")
                 if not light:
@@ -694,12 +744,6 @@ class DayNightSystem(System):
                 off_x, off_y, lw, lh, intensity_pct, radius_tiles = light
                 cx = obj["screen_x"] + off_x + lw / 2
                 cy = obj["screen_y"] + off_y + lh / 2
-                # round() — radius_tiles pode ser fracionário (ex: luz do
-                # portal, 2.5 tiles, ver _PORTAL_LIGHT_RADIUS_TILES em
-                # ui/tile_render_system.py) — _get_light_add_gradient usa
-                # isso como DIMENSÃO de Surface/array numpy, que exige int
-                # (bug real: TypeError "'float' object cannot be
-                # interpreted as an integer", 02/10/2026).
                 radius_px = round(radius_tiles * TILE_SIZE)
                 if radius_px <= 0:
                     continue
@@ -714,6 +758,33 @@ class DayNightSystem(System):
                     (cx, cy, radius_px, intensity_pct, obj.get("glow_color", (255, 200, 100))))
         if _prof_record:
             _prof_record("rnd:DayNightSystem:player_light", _time_dns.perf_counter() - _t0_dns)
+            _t0_dns = _time_dns.perf_counter()
+
+        # Luz do portal ativo (01/10/2026, corrigido 02/10/2026 — pedido
+        # do usuário: furar a escuridão com a FORMA real do brilho azul
+        # já desenhado na animação, não um círculo sintético). Caminho
+        # SEPARADO do player_light acima (formato de entrada diferente,
+        # `"portal_light_frame"` em vez de `"light_source"`) — a arte já
+        # é a própria cor/forma, então só precisa da máscara ADD
+        # derivada do canal alpha do frame (ver
+        # _get_portal_frame_light_mask), nunca de um brilho de cor em
+        # cima depois (a animação JÁ é desenhada visivelmente em
+        # ui/tile_render_system.py::render_static_objects()/
+        # get_world_objects(), fora do day/night).
+        if world_objects:
+            for obj in world_objects:
+                frame = obj.get("portal_light_frame")
+                if frame is None:
+                    continue
+                fw, fh = frame.get_size()
+                px, py = obj["screen_x"], obj["screen_y"]
+                if (px + fw < 0 or px > surf_w or py + fh < 0 or py > surf_h):
+                    continue  # fora da tela — não desenha
+                mask = self._get_portal_frame_light_mask(
+                    frame, round(obj.get("intensity_pct", 90)))
+                self._overlay_surf.blit(mask, (px, py), special_flags=pygame.BLEND_RGBA_ADD)
+        if _prof_record:
+            _prof_record("rnd:DayNightSystem:portal_light", _time_dns.perf_counter() - _t0_dns)
             _t0_dns = _time_dns.perf_counter()
 
         self.world_surf.blit(self._overlay_surf, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)

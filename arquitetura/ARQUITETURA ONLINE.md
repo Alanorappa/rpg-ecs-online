@@ -603,25 +603,36 @@ precisa de broadcast novo, não só estado client-local.
   sempre, com o frame animado BLITADO POR CIMA (mesma posição/tamanho)
   só quando há animação ativa. 1ª versão fazia `sprite = frame`
   (substituição), escondendo o portal atrás da arte da animação.
-- **A luz do portal fura a camada de escuridão da noite, tom azulado
-  (02/10/2026, pedido do usuário — "a ideia é de iluminação")**: mesma
-  técnica JÁ usada por lampião/luz de item (`ui/day_night_system.py`,
-  gradiente ADD pra furar + brilho de cor com blend normal por cima) —
-  generalizada pra aceitar `glow_color` por entrada (`_get_warm_glow_gradient`
-  ganhou parâmetro `color`, cache agora por `(raio, cor)`, default
-  continua quente/laranja pra lampião/item). `engine.portal_anim_state::
-  active_positions(now_ms)` lista os tiles animando agora;
-  `ui/tile_render_system.py::get_portal_light_sources()` (novo método)
-  resolve a geometria de tela (centro do sprite, raio/intensidade/cor
-  fixos — `_PORTAL_LIGHT_RADIUS_TILES=2.5`, `_PORTAL_LIGHT_INTENSITY_PCT=90`,
-  `_PORTAL_LIGHT_GLOW_COLOR=(110,170,255)`, constantes do MECANISMO, não
-  do catálogo de tile) e devolve entradas no MESMO formato da luz de
-  item (`"screen_x"/"screen_y"/"light_source"`), só com `"portal_light"`
-  em vez de `"player_light"` + `"glow_color"` azulado — `game.py` injeta
-  essa lista numa variável SEPARADA (`_lit_world_objs`, nunca a lista
-  passada pro `RenderSystem`), mesmo padrão já usado pela luz de item
-  sob demanda. `DayNightSystem.render()` trata os dois tipos no MESMO
-  loop (só a cor do brilho final diverge).
+- **A luz do portal fura a camada de escuridão da noite, com a FORMA
+  real do brilho azul desenhado na animação (02/10/2026, 2 rodadas —
+  pedido do usuário: "a ideia é de iluminação", depois "não quero que
+  o portal como um todo emita luz... queria que essa luz [a do
+  desenho] furasse a camada de noite")**: a 1ª versão usava um círculo
+  sintético (`_get_light_add_gradient`, raio fixo) centrado no objeto —
+  TROCADA por uma máscara derivada do canal ALPHA do próprio FRAME
+  ativo da animação (`DayNightSystem._get_portal_frame_light_mask(frame,
+  intensity_pct)`, cacheada por `(id(frame), intensity_pct)`): branco ×
+  (alpha do pixel / 255) × intensidade — onde a arte é mais opaca, mais
+  luz; onde é transparente, nenhuma. `BLEND_RGBA_ADD` NUNCA pondera pela
+  alpha de ORIGEM (mesmo achado empírico já documentado pro gradiente de
+  lampião) — por isso a intensidade precisa estar ASSADA no RGB aqui,
+  nunca um blit direto do frame (que criaria um furo de borda dura, não
+  o brilho suave da arte).
+  `engine.portal_anim_state::active_positions(now_ms)` lista os tiles
+  animando agora; `ui/tile_render_system.py::get_portal_light_sources()`
+  resolve o FRAME de verdade (`TILE_SPRITES.get_portal_event_frame`,
+  mesma chamada que já desenha a animação visível) + a posição de tela
+  EXATA onde ele é desenhado (idêntica à de `portal_anim_overlay` —
+  tem que bater pixel a pixel, senão o furo apareceria num lugar
+  diferente do brilho visível) — devolve `{"screen_x"/"screen_y"/
+  "portal_light_frame"/"intensity_pct"}`, um formato PRÓPRIO (não mais
+  reaproveita `"light_source"`/`"player_light"` da luz de item — são
+  caminhos de desenho DIFERENTES em `DayNightSystem.render()` agora,
+  cada um com seu próprio loop). `_PORTAL_LIGHT_INTENSITY_PCT=90` é a
+  única constante do mecanismo que resta (força do efeito; forma/cor
+  vêm do desenho). `game.py` injeta essa lista na mesma variável
+  SEPARADA de sempre (`_lit_world_objs`, nunca a lista passada pro
+  `RenderSystem`).
 - **Posição do GATE ≠ posição de RENDER do objeto (bug real corrigido
   01/10/2026, ver `PROBLEMAS_ARQUITETURA.md` §221)** — `portal_gates`
   no JSON marca onde o jogador INTERAGE

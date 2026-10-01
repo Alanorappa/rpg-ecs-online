@@ -37,15 +37,13 @@ from engine.tileset import TILE_SIZE, OBJECT_MAPPING
 from ui.tile_sprite_manager import TILE_SPRITES
 from engine.fov import compute_fov, local_vision_blob
 
-# Geometria/cor da luz do portal ativo (01/10/2026, pedido do usuário —
-# "iluminação" de tom azulado, fura a escuridão da noite igual a luz de
-# lampião/item) — constantes do MECANISMO de portal, não do catálogo de
-# tiles (não é algo que varia por tile_id como light_source genérico):
-# todo portal animando usa a MESMA geometria. Ver
-# ui/tile_render_system.py::get_portal_light_sources().
-_PORTAL_LIGHT_RADIUS_TILES = 2.5
+# Intensidade da luz do portal ativo (01/10/2026, pedido do usuário —
+# fura a escuridão da noite igual a luz de lampião/item; corrigido
+# 02/10/2026: a FORMA do furo vem do desenho real da animação — canal
+# alpha do frame ativo, ver DayNightSystem._get_portal_frame_light_mask
+# — nunca de um raio/cor sintéticos soltos. Só a FORÇA do efeito
+# continua configurável aqui, 1 lugar só.
 _PORTAL_LIGHT_INTENSITY_PCT = 90
-_PORTAL_LIGHT_GLOW_COLOR = (110, 170, 255)
 
 # Lookup reverso skill_id → (talent_id, min_points) — fonte única em
 # world_systems (_TALENT_SKILL_REQS, usado também por is_skill_authorized
@@ -694,16 +692,19 @@ class TileRenderSystem(System):
                         self.world_surf.blit(portal_anim_overlay, (scr_x, scr_y))
 
     def get_portal_light_sources(self, camera_offset_x: float, camera_offset_y: float) -> list:
-        """Entradas de luz DINÂMICA (01/10/2026, pedido do usuário — a
-        animação do portal é uma "iluminação" de verdade, precisa furar
-        a camada de escuridão da noite igual à luz de lampião/item) pra
-        cada tile com animação de portal ativa AGORA
-        (`engine.portal_anim_state.active_positions`). Formato igual ao
-        usado por `game.py` pra luz de item (`"screen_x"/"screen_y"/
-        "light_source"/"player_light"`), só com `"portal_light"` no
-        lugar de `"player_light"` e `"glow_color"` pro tom azulado — ver
-        `ui/day_night_system.py::DayNightSystem.render()`, que trata os
-        dois no MESMO caminho (só a cor do brilho final diverge).
+        """Entradas de luz DINÂMICA (01/10/2026, corrigido 02/10/2026 —
+        pedido do usuário: a luz tem que vir do DESENHO real da animação
+        (o "brilho azul" já pintado no PNG), não de um círculo sintético
+        centrado no objeto) pra cada tile com animação de portal ativa
+        AGORA (`engine.portal_anim_state.active_positions`). Devolve o
+        FRAME em si (`"portal_light_frame"`) + a posição de tela EXATA
+        onde ele é desenhado (mesma fórmula de `get_world_objects()`/
+        `render_static_objects()` — tem que bater com `portal_anim_overlay`
+        pixel a pixel, senão a luz furaria a escuridão num lugar
+        diferente de onde o brilho aparece) — `DayNightSystem.render()`
+        deriva o furo a partir do canal ALPHA desse frame (ver
+        `_get_portal_frame_light_mask`), nunca de uma geometria
+        sintética solta.
 
         Resultado vai numa lista SEPARADA de `world_objects` (nunca a
         mesma passada pro RenderSystem) — mesmo princípio já usado pela
@@ -731,18 +732,24 @@ class TileRenderSystem(System):
             tile_type = OBJECT_MAPPING.get(obj_row[tx])
             if tile_type is None:
                 continue
-            spr_w = getattr(tile_type, "sprite_px_w", 0) or tile_size
+            spr_name = getattr(tile_type, "sprite_name", "")
+            if not spr_name:
+                continue
+            anim = _pas_light.get_active(tx, ty, now_ms)
+            if anim is None:
+                continue   # expirou entre active_positions() e agora (raríssimo)
+            phase, elapsed_ms, dur_ms = anim
+            frame = TILE_SPRITES.get_portal_event_frame(spr_name, phase, elapsed_ms, dur_ms)
+            if frame is None:
+                continue   # sem folha cadastrada ainda — nada pra furar
             spr_h = getattr(tile_type, "sprite_px_h", 0) or tile_size
             anchor_y = (ty + 1) * tile_size
             scr_x = tx * tile_size - camera_offset_x
             scr_y = anchor_y - camera_offset_y - spr_h
             result.append({
-                "screen_x": scr_x + spr_w / 2,
-                "screen_y": scr_y + spr_h / 2,
-                "light_source": (0, 0, 0, 0,
-                                 _PORTAL_LIGHT_INTENSITY_PCT, _PORTAL_LIGHT_RADIUS_TILES),
-                "portal_light": True,
-                "glow_color": _PORTAL_LIGHT_GLOW_COLOR,
+                "screen_x": scr_x, "screen_y": scr_y,
+                "portal_light_frame": frame,
+                "intensity_pct": _PORTAL_LIGHT_INTENSITY_PCT,
             })
         return result
 

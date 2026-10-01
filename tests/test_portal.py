@@ -398,33 +398,47 @@ class TestPortalAnimAnchorResolution(unittest.TestCase):
 
 
 class TestPortalLightPunchesNightLayer(unittest.TestCase):
-    """Pedido do usuário (02/10/2026): a animação do portal é uma
-    "iluminação" (tom azulado), não um substituto do objeto — precisa
-    furar a camada de escuridão da noite igual à luz de lampião/item.
-    Cobre: `engine.portal_anim_state.active_positions()` só lista tiles
-    de verdade ativos, e `TileRenderSystem.get_portal_light_sources()`
-    gera a entrada de luz (posição de tela, raio, cor azulada) no
-    formato que `ui/day_night_system.py::DayNightSystem.render()`
-    espera — nunca mistura isso com a lista passada pro RenderSystem."""
+    """Pedido do usuário (02/10/2026, duas rodadas): a animação do
+    portal é uma "iluminação" azul, precisa furar a camada de
+    escuridão da noite igual à luz de lampião/item — E a FORMA do furo
+    tem que vir do desenho real da animação (canal alpha do frame
+    ativo), não de um círculo sintético centrado no objeto (1ª versão,
+    corrigida nesta rodada). Cobre:
+    `engine.portal_anim_state.active_positions()` só lista tiles de
+    verdade ativos; `TileRenderSystem.get_portal_light_sources()` gera
+    a entrada (frame + posição de tela EXATA, igual à do desenho
+    visível) no formato que `DayNightSystem.render()` espera — nunca
+    mistura isso com a lista passada pro RenderSystem."""
 
     def setUp(self):
         import pygame
         pygame.init()
         from engine.tileset import OBJECT_MAPPING, TileType, PORTAL_ACTIVATE_SHEET_BY_TILE_ID
         from engine import portal_anim_state
+        from ui.tile_sprite_manager import TILE_SPRITES
         self._orig_mapping = dict(OBJECT_MAPPING)
         self._orig_activate = dict(PORTAL_ACTIVATE_SHEET_BY_TILE_ID)
+        self._orig_frames = dict(TILE_SPRITES._portal_event_frames)
         OBJECT_MAPPING["P"] = TileType(name="TestePortal", color=(0, 0, 0),
                                        sprite_name="test_portal_obj",
-                                       sprite_px_w=96, sprite_px_h=96)
+                                       sprite_px_w=32, sprite_px_h=32)
         PORTAL_ACTIVATE_SHEET_BY_TILE_ID["test_portal_obj"] = "fake_sheet"
+        # Injeta o frame direto no cache (sem precisar de um PNG real em
+        # disco) — mesma chave que get_portal_event_frame consultaria
+        # depois de resolver anim_file via PORTAL_ACTIVATE_SHEET_BY_TILE_ID.
+        self._fake_frame = pygame.Surface((32, 32), pygame.SRCALPHA)
+        self._fake_frame.fill((110, 170, 255, 200))
+        TILE_SPRITES._portal_event_frames[("test_portal_obj", "activate")] = [self._fake_frame]
         portal_anim_state.clear_all()
 
     def tearDown(self):
         from engine.tileset import OBJECT_MAPPING, PORTAL_ACTIVATE_SHEET_BY_TILE_ID
         from engine import portal_anim_state
+        from ui.tile_sprite_manager import TILE_SPRITES
         OBJECT_MAPPING.clear(); OBJECT_MAPPING.update(self._orig_mapping)
         PORTAL_ACTIVATE_SHEET_BY_TILE_ID.clear(); PORTAL_ACTIVATE_SHEET_BY_TILE_ID.update(self._orig_activate)
+        TILE_SPRITES._portal_event_frames.clear()
+        TILE_SPRITES._portal_event_frames.update(self._orig_frames)
         portal_anim_state.clear_all()
 
     def test_active_positions_so_lista_quem_esta_ativo_agora(self):
@@ -436,7 +450,7 @@ class TestPortalLightPunchesNightLayer(unittest.TestCase):
         # bem depois da duração: já não conta mais.
         self.assertEqual(portal_anim_state.active_positions(now_ms + 6000), [])
 
-    def test_get_portal_light_sources_gera_entrada_azulada_na_posicao_certa(self):
+    def test_get_portal_light_sources_devolve_o_frame_real_na_posicao_do_desenho(self):
         import time, pygame
         from engine.entity_factory import create_tilemap
         from engine.world import World
@@ -457,18 +471,21 @@ class TestPortalLightPunchesNightLayer(unittest.TestCase):
         lights = trs.get_portal_light_sources(0, 0)
         self.assertEqual(len(lights), 1)
         light = lights[0]
-        self.assertTrue(light["portal_light"])
+        self.assertIs(light["portal_light_frame"], self._fake_frame,
+                      "tem que ser o FRAME de verdade (sua forma/alpha é a luz), "
+                      "nunca uma geometria sintética solta")
         self.assertNotIn("player_light", light, "nunca marcar como player_light -- são fontes distintas")
-        self.assertIsInstance(light["glow_color"], tuple)
-        self.assertNotEqual(light["glow_color"], (255, 200, 100),
-                            "cor azulada do portal não deve ser a mesma cor quente de lampião/item")
-        # Posição de tela corresponde ao centro do sprite ancorado em (5,5).
+        self.assertNotIn("light_source", light, "formato novo não usa mais geometria genérica")
+        # Posição de tela tem que ser EXATAMENTE onde o sprite/overlay é
+        # desenhado (mesma fórmula de get_world_objects()/
+        # render_static_objects()) -- senão o furo na escuridão aparece
+        # num lugar diferente de onde o brilho é visível.
         tile_size = world.get_component(
             next(iter(world.get_entities_with(Tilemap)))[0], Tilemap).tile_size
-        expected_cx = 5 * tile_size + 96 / 2
-        expected_cy = (6 * tile_size - 96) + 96 / 2
-        self.assertAlmostEqual(light["screen_x"], expected_cx)
-        self.assertAlmostEqual(light["screen_y"], expected_cy)
+        expected_scr_x = 5 * tile_size
+        expected_scr_y = 6 * tile_size - 32
+        self.assertAlmostEqual(light["screen_x"], expected_scr_x)
+        self.assertAlmostEqual(light["screen_y"], expected_scr_y)
 
     def test_get_portal_light_sources_vazio_sem_animacao_ativa(self):
         import pygame
@@ -485,16 +502,67 @@ class TestPortalLightPunchesNightLayer(unittest.TestCase):
         trs = TileRenderSystem(world, pygame.Surface((64, 64)))
         self.assertEqual(trs.get_portal_light_sources(0, 0), [])
 
-    def test_render_nao_quebra_com_raio_fracionario(self):
-        """Regressão (02/10/2026, erro real relatado pelo usuário):
-        `_PORTAL_LIGHT_RADIUS_TILES = 2.5` (fracionário) × `TILE_SIZE`
-        vira um `radius_px` FLOAT — usado como dimensão de array numpy/
-        Surface em `_get_light_add_gradient`, que exige int. Sem
-        arredondar antes, `DayNightSystem.render()` crashava com
-        `TypeError: 'float' object cannot be interpreted as an integer`
-        assim que QUALQUER portal animava à noite. Força o relógio pra
-        meia-noite (senão o early-return de "dia pleno" nunca chegaria
-        no código que crasha)."""
+    def test_get_portal_light_sources_vazio_sem_folha_cadastrada(self):
+        """Fallback gracioso: animação ativa, mas sem frame resolvível
+        (arte ainda não cadastrada/sem sheet) -- não deve gerar entrada
+        nenhuma, nunca quebrar."""
+        import time, pygame
+        from engine.entity_factory import create_tilemap
+        from engine.world import World
+        from engine import portal_anim_state
+        from ui.tile_sprite_manager import TILE_SPRITES
+        from ui.tile_render_system import TileRenderSystem
+
+        del TILE_SPRITES._portal_event_frames[("test_portal_obj", "activate")]
+
+        world = World()
+        terrain = ["." * 10 for _ in range(10)]
+        objects = [["."] * 10 for _ in range(10)]
+        objects[5][5] = "P"
+        create_tilemap(world, terrain, objects, None)
+
+        now_ms = int(time.time() * 1000)
+        portal_anim_state.start_activate(5, 5, now_ms, 5000.0)
+
+        trs = TileRenderSystem(world, pygame.Surface((64, 64)))
+        self.assertEqual(trs.get_portal_light_sources(0, 0), [])
+
+    def test_get_portal_frame_light_mask_assa_intensidade_no_rgb(self):
+        """`_get_portal_frame_light_mask` precisa ASSAR a intensidade no
+        RGB (branco × alpha/255 × intensidade) -- BLEND_RGBA_ADD não
+        pondera por alpha de origem, então um blit direto do frame
+        criaria um furo de borda dura em vez do brilho suave da arte."""
+        import pygame
+        from ui.day_night_system import DayNightSystem
+        from engine.world import World
+
+        dns = DayNightSystem(World(), -1)
+        frame = pygame.Surface((4, 4), pygame.SRCALPHA)
+        frame.fill((110, 170, 255, 255))      # pixel totalmente opaco
+        frame.set_at((0, 0), (110, 170, 255, 0))   # pixel totalmente transparente
+
+        mask_full = dns._get_portal_frame_light_mask(frame, 100)
+        mask_half = dns._get_portal_frame_light_mask(frame, 50)
+
+        # Pixel opaco: intensidade 100% vira branco cheio; 50% vira a metade.
+        self.assertEqual(tuple(mask_full.get_at((1, 1)))[:3], (255, 255, 255))
+        self.assertEqual(tuple(mask_half.get_at((1, 1)))[:3], (128, 128, 128))
+        # Pixel transparente na arte: nenhuma luz, em qualquer intensidade.
+        self.assertEqual(tuple(mask_full.get_at((0, 0)))[:3], (0, 0, 0))
+
+    def test_render_player_light_nao_quebra_com_raio_fracionario(self):
+        """Regressão (02/10/2026, erro real relatado pelo usuário) —
+        continua valendo como defesa GENÉRICA mesmo depois da luz do
+        portal deixar de usar radius_tiles (ver classe acima, agora usa
+        a forma do frame direto): `radius_tiles` fracionário × `TILE_SIZE`
+        virava um `radius_px` FLOAT, usado como dimensão de array numpy/
+        Surface em `_get_light_add_gradient`, que exige int — crashava
+        com `TypeError: 'float' object cannot be interpreted as an
+        integer`. Simula qualquer luz de ITEM futura com radius_tiles
+        fracionário pra garantir que o round() defensivo continua
+        protegendo esse caminho. Força o relógio pra meia-noite (senão
+        o early-return de "dia pleno" nunca chegaria no código que
+        crashava)."""
         import pygame
         from engine.world import World
         from ui.day_night_system import DayNightSystem
@@ -508,9 +576,8 @@ class TestPortalLightPunchesNightLayer(unittest.TestCase):
             dns.world_surf = pygame.Surface((200, 200))
             fake_light = {
                 "screen_x": 100, "screen_y": 100,
-                "light_source": (0, 0, 0, 0, 90, 2.5),   # raio FRACIONÁRIO, igual ao do portal
-                "portal_light": True,
-                "glow_color": (110, 170, 255),
+                "light_source": (0, 0, 0, 0, 90, 2.5),   # raio FRACIONÁRIO
+                "player_light": True,
             }
             dns.render(world_objects=[fake_light])   # não deve lançar TypeError
         finally:
