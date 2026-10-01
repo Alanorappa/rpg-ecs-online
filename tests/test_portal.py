@@ -635,5 +635,68 @@ class TestPortalCastBarClearsOnZoneChange(unittest.TestCase):
         self.assertIsNone(eng._portal_cast_active)
 
 
+class TestPortalModalSuppressedOnTeleportArrival(unittest.TestCase):
+    """Bug real relatado pelo usuário (02/10/2026): chegar num portal
+    DE OUTRO portal (teleporte) abria o modal de seleção na hora, como
+    se o jogador tivesse ANDADO até lá — os 2 portais de teste se
+    miram (destino de um é exatamente o tile do outro). Fix:
+    `_suppress_portal_modal_here()`, chamado por `game.py::
+    _do_transition()` logo após reposicionar o jogador por teleporte,
+    marca o tile de chegada como "já dispensado" — só suprime a
+    CHEGADA; sair e voltar ANDANDO depois abre normal."""
+
+    def _make_engine(self, gate_x: int, gate_y: int):
+        from client.portal_handlers import PortalHandlers
+        from engine.world import World
+        from engine.components import TileMovement
+
+        class _FakeEngine(PortalHandlers):
+            def _any_modal_open(self):
+                return False
+
+        eng = _FakeEngine()
+        eng.world = World()
+        eng.player_entity = eng.world.create_entity()
+        tm = TileMovement()
+        tm.current_tile_x = tm.target_tile_x = gate_x
+        tm.current_tile_y = tm.target_tile_y = gate_y
+        tm.is_moving = False
+        eng.world.add_component(eng.player_entity, tm)
+        eng.portal_tiles = {
+            (gate_x, gate_y): {"id": "px", "x": gate_x, "y": gate_y, "destinations": []},
+        }
+        return eng, tm
+
+    def test_chegada_por_teleporte_nao_abre_modal(self):
+        eng, _tm = self._make_engine(10, 10)
+        eng._suppress_portal_modal_here()   # mesma chamada que _do_transition faz
+        eng._update_portal_state(0.05)
+        self.assertIsNone(eng._portal_modal_open)
+
+    def test_sem_suprimir_abriria_normalmente(self):
+        """Controle negativo -- confirma que o teste acima não passa
+        "à toa" (sem a chamada de supressão, o comportamento ANTIGO —
+        abrir na hora — continua existindo pra quem ANDA até lá)."""
+        eng, _tm = self._make_engine(10, 10)
+        eng._update_portal_state(0.05)
+        self.assertIsNotNone(eng._portal_modal_open)
+
+    def test_sair_e_voltar_andando_depois_da_supressao_abre_normal(self):
+        eng, tm = self._make_engine(10, 10)
+        eng._suppress_portal_modal_here()
+        eng._update_portal_state(0.05)
+        self.assertIsNone(eng._portal_modal_open, "ainda suprimido logo após chegar")
+
+        # Anda pra um tile vizinho (fora do portal) -- reseta a supressão.
+        tm.current_tile_x = tm.target_tile_x = 11
+        eng._update_portal_state(0.05)
+
+        # Volta ANDANDO pro tile do portal -- agora deve abrir normal.
+        tm.current_tile_x = tm.target_tile_x = 10
+        eng._update_portal_state(0.05)
+        self.assertIsNotNone(eng._portal_modal_open,
+                             "voltar ANDANDO depois de sair deve abrir o modal normalmente")
+
+
 if __name__ == "__main__":
     unittest.main()

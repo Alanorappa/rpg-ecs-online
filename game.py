@@ -3185,6 +3185,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # Morte no mesmo mapa: apenas reposiciona o player, mobs continuam vivos
         if target_file == self._current_map_file:
             self._reposition_player(target_x, target_y)
+            # Teleporte (morte, OU portal de mundo aberto pro mesmo
+            # arquivo, ex: Vila Sul -> Centro nos portais de teste) nunca
+            # deve abrir o modal de seleção de outro portal só porque o
+            # destino calha de ser o tile dele (02/10/2026, pedido do
+            # usuário) — suprime só a CHEGADA, não bloqueia uma caminhada
+            # de verdade até lá depois.
+            self._suppress_portal_modal_here()
             self._transition_cooldown = 1.5
             self._loot_system.open_corpse_id         = -1
             self._loot_system.pending_loot_corpse_id = -1
@@ -3265,6 +3272,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
 
         # Reposiciona o jogador
         self._reposition_player(target_x, target_y)
+        # Mesmo motivo do branch "mesmo mapa" acima — teleporte pra OUTRO
+        # mapa também não deve abrir modal de portal só por coincidência
+        # de tile (DEPOIS de _build_portal_tiles(), que já resetou o
+        # dismissed_key pro mapa novo — senão este suppress seria
+        # sobrescrito).
+        self._suppress_portal_modal_here()
 
         self._transition_cooldown = 1.5
         self._map_title_timer     = 3.0

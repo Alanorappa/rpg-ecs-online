@@ -238,6 +238,27 @@ class PortalHandlers:
             # real: "estragou as animações de ataque", 01/10/2026).
             tm.anim_attack_loop_duration_ms = 0
 
+    def _suppress_portal_modal_here(self) -> None:
+        """Marca o tile ONDE O JOGADOR ESTÁ AGORA como "modal já
+        dispensado" (02/10/2026, pedido do usuário) — chamado por
+        `game.py::_do_transition()` logo depois de reposicionar o
+        jogador por TELEPORTE (morte, portal, qualquer `ZONE_CHANGE`),
+        nunca por caminhada normal. Sem isso, chegar via portal numa
+        posição que por acaso é o tile de OUTRO portal (ex: os 2
+        portais de teste se mirando) abria o modal de seleção na hora,
+        como se o jogador tivesse ANDADO até lá — bug real relatado
+        pelo usuário.
+
+        `_update_portal_state()` já reseta esse dismissed_key sozinho
+        assim que o jogador SAI do tile (`key not in self.portal_tiles`
+        não se aplica aqui — o reset é no `else` de "saiu de um tile que
+        ERA portal"), então isso só suprime o momento exato da chegada —
+        sair e voltar ANDANDO depois abre normal."""
+        from engine.components import TileMovement as _TMPortalSup
+        tm = self.world.get_component(self.player_entity, _TMPortalSup)
+        if tm is not None:
+            self._portal_modal_dismissed_key = (tm.current_tile_x, tm.current_tile_y)
+
     # ── Handlers de rede (dispatch em client/network_handlers.py) ────────────
 
     def _handle_msg_portal_cast_start(self, payload: dict) -> None:

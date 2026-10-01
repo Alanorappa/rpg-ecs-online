@@ -676,6 +676,34 @@ precisa de broadcast novo, não só estado client-local.
   quando a duração original (que não ia mais acontecer) terminasse
   sozinha.
 
+- **Barra de cast não sumia sozinha ao completar (bug real relatado
+  02/10/2026)**: `_update_portal_state()` só limpava
+  `_portal_cast_active` em 2 casos (movimento local, `PORTAL_CAST_CANCEL`
+  do servidor) — a conclusão NATURAL (chegou ao destino) nunca era
+  nenhum dos dois, então o `ZONE_CHANGE` teleportava o jogador mas a
+  barra ficava órfã na tela até o 1º passo no mapa novo. Fix:
+  `client/network_handlers.py::_handle_msg_zone_change` chama
+  `_cancel_portal_cast_local()` incondicionalmente pra QUALQUER troca
+  de mapa, mesmo padrão dos outros resets que já rodavam ali (resultado
+  de BG, contexto de PvP, câmera livre) — idempotente.
+- **Modal de seleção abria sozinho ao CHEGAR via teleporte (bug real
+  relatado 02/10/2026, consequência direta do fix anterior)**: com a
+  barra agora sumindo na hora, sobrou um efeito colateral — os 2
+  portais de teste se miram (destino de um é exatamente o tile do
+  outro), então chegar NUM portal vindo de OUTRO já abria o modal de
+  seleção dele, como se o jogador tivesse ANDADO até lá. Fix:
+  `client/portal_handlers.py::_suppress_portal_modal_here()` (novo) —
+  chamado por `game.py::_do_transition()` logo após reposicionar o
+  jogador em QUALQUER teleporte (morte no mesmo mapa, ou troca de mapa
+  de verdade — os 2 branches), marca o tile de chegada como "modal já
+  dispensado". `_update_portal_state()` já reseta esse dismissed_key
+  sozinho assim que o jogador SAI do tile — só suprime a CHEGADA; sair
+  e voltar ANDANDO depois abre normal. **Achado fora de escopo, não
+  corrigido**: o branch "mesmo mapa" de `_do_transition()` sempre loga
+  "Você morreu e voltou ao ponto de spawn." — mensagem falsa quando o
+  motivo é um portal pro mesmo arquivo (ex: Vila Sul→Centro), não morte
+  de verdade; avisado ao usuário, decisão de corrigir ou não é dele.
+
 Arquivos: `maps/map_1_entities.json` (`"portal_gates"`, 2 portais de
 teste se mirando — `portal_teste_1` em (138,370)→Vila Sul(210,480)/
 Caverna Oeste, `portal_teste_2` em (210,480)→Centro(138,370)/Caverna
@@ -685,15 +713,17 @@ Oeste), `engine/map_loader.py`, `server/portal_processor.py` (novo),
 (novo), `game.py`, `client/hud_handlers.py`, `client/network_handlers.py`,
 `client/modal_stack_handlers.py`, `engine/tileset.py`, `ui/
 tile_sprite_manager.py`, `ui/tile_render_system.py`.
-Testes: `tests/test_portal.py` (22 — validação de `request_portal_enter`,
+Testes: `tests/test_portal.py` (40 — validação de `request_portal_enter`,
 teleporte só ao completar o cast, cancelamento por movimento,
 confirmação de que `ZONE_CHANGE_REQ` direto nunca alcança destino de
 portal sem passar pela validação nova, broadcast de animação
-start/stop/arrive incluindo os casos de 1º/último caster e
-disconnect). Validação visual em jogo pendente (usuário) — animação
-do personagem (`{class_id}_portal_{direction}.png`) ainda não existe,
-fallback gracioso pra idle confirmado no design mas não visto em tela;
-animação do tile já tem arte e mecanismo prontos.
+start/stop/arrive incluindo os casos de 1º/último caster e disconnect,
+luz derivada do frame real, barra de cast limpa no ZONE_CHANGE, modal
+suprimido só na chegada por teleporte). Validação visual em jogo
+pendente (usuário) — animação do personagem
+(`{class_id}_portal_{direction}.png`) ainda não existe, fallback
+gracioso pra idle confirmado no design mas não visto em tela; animação
+do tile e luz já têm arte e mecanismo prontos e validados em jogo.
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
