@@ -584,5 +584,56 @@ class TestPortalLightPunchesNightLayer(unittest.TestCase):
             dns_mod.set_debug_time_offset(orig_offset)
 
 
+class TestPortalCastBarClearsOnZoneChange(unittest.TestCase):
+    """Bug real relatado pelo usuário (02/10/2026): a barra de cast do
+    portal só sumia depois que o jogador se movia — `_update_portal_state`
+    só limpa `_portal_cast_active` em 2 casos (movimento local,
+    PORTAL_CAST_CANCEL do servidor), e a conclusão NATURAL do cast
+    (chegou ao destino) nunca era nenhum dos dois: o ZONE_CHANGE
+    chegava, o jogador teleportava, mas a barra continuava na tela até
+    o 1º passo no mapa novo. Fix: `_handle_msg_zone_change` cancela
+    qualquer cast de portal ativo incondicionalmente, mesmo padrão dos
+    outros resets que já rodam ali (resultado de BG, contexto de PvP,
+    câmera livre)."""
+
+    def _make_engine(self):
+        from client.network_handlers import NetworkHandlers
+        from client.portal_handlers import PortalHandlers
+        from engine.world import World
+        from engine.components import TileMovement
+
+        class _FakeEngine(NetworkHandlers, PortalHandlers):
+            pass
+
+        eng = _FakeEngine()
+        eng.world = World()
+        eng.player_entity = eng.world.create_entity()
+        tm = TileMovement()
+        eng.world.add_component(eng.player_entity, tm)
+        return eng, tm
+
+    def test_zone_change_limpa_cast_ativo_mesmo_sem_mover(self):
+        eng, tm = self._make_engine()
+        eng._portal_cast_active = {"elapsed": 1.0, "duration": 5.0,
+                                   "portal_id": "x", "dest_index": 0}
+        tm.anim_attack_state = "portal"
+        tm.anim_attack_loop_duration_ms = 5000
+
+        # map_file vazio -- exercita só os resets leves (inclui o fix),
+        # sem precisar simular o carregamento de mapa inteiro de
+        # _do_transition (fora do escopo deste teste).
+        eng._handle_msg_zone_change({"map_file": "", "target_x": 0, "target_y": 0})
+
+        self.assertIsNone(eng._portal_cast_active,
+                          "ZONE_CHANGE tem que limpar a barra de cast na hora, sem esperar movimento")
+        self.assertEqual(tm.anim_attack_state, "")
+        self.assertEqual(tm.anim_attack_loop_duration_ms, 0)
+
+    def test_zone_change_sem_cast_ativo_e_no_op_seguro(self):
+        eng, _tm = self._make_engine()
+        eng._handle_msg_zone_change({"map_file": "", "target_x": 0, "target_y": 0})
+        self.assertIsNone(eng._portal_cast_active)
+
+
 if __name__ == "__main__":
     unittest.main()

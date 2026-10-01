@@ -20,15 +20,21 @@ pygame.display.set_mode((320, 240))
 
 from client.network_handlers import NetworkHandlers
 from client.habilidades_handlers import HabilidadesHandlers
+from client.portal_handlers import PortalHandlers
 from engine.world import World
-from engine.components import Faction, Camera
+from engine.components import Faction, Camera, TileMovement
 
 
-class _ZoneChangeFixture(NetworkHandlers, HabilidadesHandlers):
+class _ZoneChangeFixture(NetworkHandlers, HabilidadesHandlers, PortalHandlers):
     def __init__(self, current_map: str):
         self.world = World()
         self.player_entity = self.world.create_entity()
         self.world.add_component(self.player_entity, Faction(faction_id="time_a"))
+        # PortalHandlers._cancel_portal_cast_local() (chamado por
+        # _handle_msg_zone_change desde 01/10/2026) lê TileMovement do
+        # player — sem o componente, o fixture quebraria pra QUALQUER
+        # teste deste arquivo, não só os de portal.
+        self.world.add_component(self.player_entity, TileMovement())
         self._current_map_file = current_map
         self._bg_result_val = "algo"
         self._bg_in_match_val = True

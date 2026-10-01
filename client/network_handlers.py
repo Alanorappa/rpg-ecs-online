@@ -2983,6 +2983,18 @@ class NetworkHandlers:
         _cam_zc_first = self.world.get_first(_CamZc)
         if _cam_zc_first is not None:
             _cam_zc_first[1].free_mode = False
+        # Cast de portal (01/10/2026): QUALQUER ZONE_CHANGE encerra um
+        # cast de portal em andamento, se houver (conclusão natural —
+        # chegamos ao destino escolhido) — mesmo princípio dos resets
+        # acima (BG result/PvP/câmera livre). Bug real relatado pelo
+        # usuário: a barra de cast só sumia depois que o jogador se
+        # mexia, porque `_update_portal_state` só limpa
+        # `_portal_cast_active` em 2 casos (movimento, PORTAL_CAST_CANCEL)
+        # — a conclusão natural do cast nunca foi um desses casos, então
+        # o ZONE_CHANGE chegava e a barra continuava lá até o primeiro
+        # passo do jogador no mapa novo. `_cancel_portal_cast_local()` é
+        # idempotente (no-op se não havia cast ativo).
+        self._cancel_portal_cast_local()
         if map_file:
             # Tela de transição (28/09/2026, §215) — só quando é troca
             # de mapa DE VERDADE (_do_transition faz o mesmo check
