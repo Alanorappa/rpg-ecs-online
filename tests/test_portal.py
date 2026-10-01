@@ -248,5 +248,83 @@ class TestPortalAnimBroadcastEvents(unittest.TestCase):
         self.assertEqual(events[0]["portal_id"], PORTAL_ID)
 
 
+class TestPortalClientAnimationClock(unittest.TestCase):
+    """Regressão (01/10/2026, bug real relatado pelo usuário: "estragou
+    as animações de ataque do personagem, não funcionam mais"). Causa
+    raiz: `PortalHandlers._handle_msg_portal_cast_start` setava
+    `TileMovement.anim_attack_started_ms` com `time.time()*1000`
+    (relógio de PAREDE, epoch — número gigante, ~1.7 trilhão) enquanto
+    TODO o resto do sistema de animação de ataque usa
+    `pygame.time.get_ticks()` (ver `engine/character_animation.py::
+    trigger_attack_anim`, chamado com `pygame.time.get_ticks()` de
+    `client/remote_entity_handlers.py::_apply_combat_result`). Como
+    epoch é sempre MUITO maior que ticks do pygame (que zeram a cada
+    sessão), a subtração em `_attack_loop_still_active` dava um número
+    NEGATIVO enorme — sempre "menor que a duração", bloqueando
+    PERMANENTEMENTE qualquer golpe novo depois do 1º cast de portal."""
+
+    def setUp(self):
+        import pygame
+        pygame.init()
+        from engine.world import World
+        from engine.components import TileMovement
+        self.world = World()
+        self.player_entity = self.world.create_entity()
+        self.tm = TileMovement()
+        self.tm.facing = "down"
+        self.world.add_component(self.player_entity, self.tm)
+
+    def _make_engine(self):
+        from client.portal_handlers import PortalHandlers
+        class _FakeEngine(PortalHandlers):
+            pass
+        eng = _FakeEngine()
+        eng.world = self.world
+        eng.player_entity = self.player_entity
+        return eng
+
+    def test_anim_attack_started_ms_usa_ticks_do_pygame_nao_relogio_de_parede(self):
+        import pygame
+        eng = self._make_engine()
+        before = pygame.time.get_ticks()
+        eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        after = pygame.time.get_ticks()
+        self.assertTrue(
+            before <= self.tm.anim_attack_started_ms <= after + 50,
+            "anim_attack_started_ms tem que estar na escala de pygame.time.get_ticks() "
+            "(dezenas de milhares), não de time.time()*1000 (epoch, trilhões) -- "
+            f"valor gravado: {self.tm.anim_attack_started_ms}, ticks agora: {after}")
+
+    def test_golpe_normal_nao_fica_bloqueado_para_sempre_apos_cast(self):
+        import pygame
+        from engine.character_animation import trigger_attack_anim, _attack_loop_still_active
+        eng = self._make_engine()
+        eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        # `now_ms` vem de um pygame.time.get_ticks() INDEPENDENTE (igual
+        # a todo chamador real — client/remote_entity_handlers.py::
+        # _apply_combat_result), NUNCA derivado de
+        # anim_attack_started_ms — senão o teste mediria só a diferença
+        # relativa ao próprio valor (potencialmente já errado) em vez de
+        # reproduzir o bug de verdade (relógio de parede fica sempre no
+        # "passado" em relação a QUALQUER tick independente do pygame).
+        now_ms = pygame.time.get_ticks() + 6000
+        self.assertFalse(_attack_loop_still_active(self.tm, now_ms))
+        trigger_attack_anim(self.tm, "guerreiro", "", now_ms)
+        self.assertEqual(self.tm.anim_attack_state, "attack",
+                         "golpe normal precisa conseguir tocar depois do cast de portal terminar")
+
+    def test_cancelar_cast_zera_loop_duration_e_destrava_golpe_na_hora(self):
+        import pygame
+        from engine.character_animation import trigger_attack_anim
+        eng = self._make_engine()
+        eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        eng._cancel_portal_cast_local()
+        self.assertEqual(self.tm.anim_attack_loop_duration_ms, 0)
+        # Golpe IMEDIATAMENTE após cancelar (sem esperar nada) já
+        # funciona — now_ms independente, mesmo motivo do teste acima.
+        trigger_attack_anim(self.tm, "guerreiro", "", pygame.time.get_ticks() + 10)
+        self.assertEqual(self.tm.anim_attack_state, "attack")
+
+
 if __name__ == "__main__":
     unittest.main()

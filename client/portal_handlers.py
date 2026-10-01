@@ -146,6 +146,14 @@ class PortalHandlers:
         tm = self.world.get_component(self.player_entity, _TMPortalC)
         if tm is not None and tm.anim_attack_state == "portal":
             tm.anim_attack_state = ""
+            # anim_attack_loop_duration_ms também precisa zerar aqui —
+            # trigger_attack_anim's _attack_loop_still_active (engine/
+            # character_animation.py) só olha esse campo + started_ms,
+            # NUNCA anim_attack_state. Sem isso, cancelar o cast ANTES do
+            # tempo deixava esse campo "vivo" até os 5s originais
+            # passarem sozinhos, bloqueando golpe novo o tempo todo (bug
+            # real: "estragou as animações de ataque", 01/10/2026).
+            tm.anim_attack_loop_duration_ms = 0
 
     # ── Handlers de rede (dispatch em client/network_handlers.py) ────────────
 
@@ -163,15 +171,29 @@ class PortalHandlers:
             "dest_index": payload.get("dest_index", -1),
         }
         from engine.components import TileMovement as _TMPortalStart
-        import time as _t_portal_start
         tm = self.world.get_component(self.player_entity, _TMPortalStart)
         if tm is not None:
             # Estado "portal" — engine/character_animation.py aceita
             # QUALQUER string aqui, cascata de fallback já cobre sprite
             # ausente (cai pra idle sozinho): zero mudança de código lá.
             # Convenção de arquivo: {class_id}_portal_{direction}.png.
+            #
+            # pygame.time.get_ticks() — NUNCA time.time()*1000 aqui. Todo
+            # o resto do sistema de animação de personagem usa ticks do
+            # pygame (ver ui/render_system.py::resolve_display_state() e
+            # client/remote_entity_handlers.py::trigger_attack_anim()) —
+            # anim_attack_started_ms/anim_attack_loop_duration_ms são lidos
+            # por trigger_attack_anim's _attack_loop_still_active() pra
+            # decidir se um golpe NOVO pode tocar. Usar relógio de parede
+            # (epoch, ~1.7 trilhão de ms) aqui fazia esse campo ficar
+            # permanentemente "no passado" em relação ao ticks do pygame
+            # (dezenas de milhares) — a subtração dava um número NEGATIVO
+            # enorme, sempre menor que qualquer duração, bloqueando TODO
+            # golpe novo pra sempre depois do 1º cast de portal (bug real
+            # relatado pelo usuário: "estragou as animações de ataque do
+            # personagem", 01/10/2026).
             tm.anim_attack_state          = "portal"
-            tm.anim_attack_started_ms     = int(_t_portal_start.time() * 1000)
+            tm.anim_attack_started_ms     = pygame.time.get_ticks()
             tm.anim_attack_frame_ms       = 0  # 0 = usa DEFAULT_FRAME_MS (ver character_animation.py)
             tm.anim_attack_loop_duration_ms = int(duration * 1000)
 

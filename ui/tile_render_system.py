@@ -638,6 +638,23 @@ class TileRenderSystem(System):
                         sprite  = TILE_SPRITES.get_raw_sprite(spr_name)
                         total_h = spr_px_h
                         sprite_w = spr_px_w
+                        # Animação de EVENTO de portal (01/10/2026) — o
+                        # portal (vp_144) tem no_ysort=True, então é
+                        # desenhado AQUI, não em get_world_objects()
+                        # (bug real: a 1ª versão só cobria o outro
+                        # método, animação nunca aparecia). Mesma lógica
+                        # de lá: None em qualquer ponta cai pro sprite
+                        # estático de sempre.
+                        from engine import portal_anim_state as _portal_anim_state_static
+                        import time as _time_portal_static
+                        _portal_anim_s = _portal_anim_state_static.get_active(
+                            rx, ry, int(_time_portal_static.time() * 1000))
+                        if _portal_anim_s is not None:
+                            _phase_s, _elapsed_s, _dur_s = _portal_anim_s
+                            _frame_s = TILE_SPRITES.get_portal_event_frame(
+                                spr_name, _phase_s, _elapsed_s, _dur_s)
+                            if _frame_s is not None:
+                                sprite = _frame_s
                     else:
                         sprite   = TILE_SPRITES.get(tile_type, rx, ry)
                         total_h  = tile_size + tile_type.overlay_height
