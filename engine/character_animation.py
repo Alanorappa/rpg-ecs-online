@@ -254,13 +254,29 @@ def trigger_attack_anim(tile_movement, class_id: str, sid: str, now_ms: int,
     da skill (bug real relatado 10/09/2026: "a animação do tornado é
     cancelada quando o personagem se move" — causa raiz de verdade era o
     auto-attack concorrente que o movimento provoca ao entrar em alcance
-    de um mob, não o movimento em si). Só um golpe em loop NOVO (a mesma
-    skill de novo, ou uma skill de loop futura diferente) substitui um
-    loop ainda ativo."""
+    de um mob, não o movimento em si). Um golpe em loop NOVO (uma skill de
+    loop DIFERENTE da que já está tocando) substitui um loop ainda ativo.
+
+    Um TICK do MESMO loop já ativo (mesmo `sid` — ex: Fatiador de Corpos
+    manda 1 resultado de combate por tick de dano, ~1/s, durante os 5s
+    inteiros) é IGNORADO (02/10/2026, bug real relatado pelo usuário:
+    "a skill dura 5 segundos mas a animação fica um bom tempo depois")
+    — sem este guard, CADA tick reiniciava `anim_attack_started_ms`
+    (e o frame, de volta pro 0), empurrando o fim VISUAL do loop pra
+    bem depois do fim de verdade da skill (e fazendo a animação
+    "piscar" a cada tick). Recast de verdade da MESMA skill, ainda
+    dentro da janela antiga, re-arma do zero — mas isso só seria
+    alcançável se o cooldown da skill fosse menor que sua própria
+    duração, o que não acontece com nenhuma skill de loop hoje
+    (Fatiador: 45s de cooldown, 5s de duração)."""
     _new_loop_ms = _looping_attack_duration_ms(sid) or 0
-    if _new_loop_ms == 0 and _attack_loop_still_active(tile_movement, now_ms):
-        return
+    if _attack_loop_still_active(tile_movement, now_ms):
+        if _new_loop_ms == 0:
+            return
+        if sid and sid == tile_movement.anim_attack_sid:
+            return
     tile_movement.anim_attack_state      = resolve_attack_state_name(class_id, sid, tile_movement.facing)
+    tile_movement.anim_attack_sid        = sid
     tile_movement.anim_attack_started_ms = now_ms
     # int() — frame_ms indexa frames[] via // e %; float quebraria o
     # indexing (bug real pego testando: 78*1.25=97.5, frames[2.0] explode).

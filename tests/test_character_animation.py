@@ -1002,13 +1002,54 @@ class TestLoopingAttackHasPriorityOverConcurrentTrigger(unittest.TestCase):
         self.assertEqual(state, "attack", "após o loop expirar, um golpe comum deve tocar normalmente")
         self.assertEqual(anim_t, 0)
 
-    def test_recast_do_mesmo_loop_substitui_normalmente(self):
+    def test_tick_do_mesmo_loop_e_ignorado_nunca_reinicia(self):
+        """Regressão (02/10/2026, bug real relatado pelo usuário: "a
+        skill dura 5 segundos mas a animação fica um bom tempo depois").
+        Fatiador manda 1 resultado de combate POR TICK de dano (~1/s,
+        5 ticks ao longo dos 5s) — cada trigger é o MESMO sid do loop
+        já ativo, então NENHUM deles deve reiniciar o contador: o
+        `elapsed` continua contando desde o INÍCIO de verdade (t=1000),
+        nunca do tick mais recente."""
         from engine.character_animation import trigger_attack_anim, resolve_display_state
         trigger_attack_anim(self.tm, "guerreiro", "fatiador_de_corpos", 1000)
-        trigger_attack_anim(self.tm, "guerreiro", "fatiador_de_corpos", 1800)  # novo tick do mesmo loop
-        state, anim_t, _ = resolve_display_state(self.tm, "guerreiro", 1800)
+        for tick_ms in (2000, 3000, 4000, 4900):   # ticks de dano, mesmo sid
+            trigger_attack_anim(self.tm, "guerreiro", "fatiador_de_corpos", tick_ms)
+            self.assertEqual(self.tm.anim_attack_started_ms, 1000,
+                             "tick do mesmo loop não deve mexer no início registrado")
+        state, anim_t, _ = resolve_display_state(self.tm, "guerreiro", 4900)
         self.assertEqual(state, "fatiador_de_corpos")
-        self.assertEqual(anim_t, 0, "retrigger do mesmo loop reinicia o contador (novo tick de dano)")
+        self.assertEqual(anim_t, 3900, "elapsed conta do início real do loop (t=1000), nunca do último tick")
+
+        # E o loop ainda expira no tempo CERTO (5s do início real, não
+        # 5s do último tick) — sem a correção, o último tick (t=4900)
+        # teria empurrado o fim pra 4900+5000=9900.
+        state, _, _ = resolve_display_state(self.tm, "guerreiro", 1000 + 5000 + 1)
+        self.assertEqual(state, "idle", "tem que expirar 5s depois do INÍCIO real, não do último tick")
+
+    def test_loop_diferente_ainda_substitui_normalmente(self):
+        """Controle: a correção acima é só pro MESMO sid — um loop
+        genuinamente DIFERENTE (hipotético, skill de loop futura)
+        continua substituindo o loop ativo normalmente, reiniciando do
+        zero (comportamento documentado desde 10/09/2026, intocado)."""
+        from engine.character_animation import trigger_attack_anim, resolve_display_state
+        import engine.character_animation as _ca
+        orig_looping = set(_ca._LOOPING_ATTACK_SKILLS)
+        _ca._LOOPING_ATTACK_SKILLS = orig_looping | {"golpe_poderoso"}
+        _orig_duration_fn = _ca._looping_attack_duration_ms
+        try:
+            _ca._looping_attack_duration_ms = lambda sid: (
+                3000 if sid == "golpe_poderoso" else _orig_duration_fn(sid))
+            trigger_attack_anim(self.tm, "guerreiro", "fatiador_de_corpos", 1000)
+            trigger_attack_anim(self.tm, "guerreiro", "golpe_poderoso", 1800)  # loop DIFERENTE
+            self.assertEqual(self.tm.anim_attack_sid, "golpe_poderoso")
+            self.assertEqual(self.tm.anim_attack_started_ms, 1800,
+                             "loop diferente tem que substituir, reiniciando o início")
+            state, anim_t, _ = resolve_display_state(self.tm, "guerreiro", 1800)
+            self.assertNotEqual(state, "fatiador_de_corpos", "o loop antigo foi substituído")
+            self.assertEqual(anim_t, 0)
+        finally:
+            _ca._LOOPING_ATTACK_SKILLS = orig_looping
+            _ca._looping_attack_duration_ms = _orig_duration_fn
 
 
 class TestApplyCombatResultTriggersAttackAnim(unittest.TestCase):

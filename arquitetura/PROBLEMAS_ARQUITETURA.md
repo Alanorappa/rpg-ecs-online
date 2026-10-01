@@ -23970,3 +23970,55 @@ do objeto?") não era literalmente a causa raiz (não era Z-order), mas
 apontou corretamente pra região certa do problema (algo entre o
 desenho do objeto e a animação não estava se conectando) — vale como
 pista de investigação mesmo quando o termo técnico usado não é exato.
+
+## 222. Fatiador de Corpos: cada tick de dano reiniciava o loop de animação (02/10/2026)
+
+Usuário relatou: "a skill dura 5 segundos mas a animação fica um bom
+tempo depois". Investigado por subagente dedicado (não misturado com o
+trabalho de portal da mesma sessão).
+
+**Causa raiz**: Fatiador de Corpos manda 1 resultado de combate POR
+TICK de dano (`server/world_server.py:6299-6348`, `tick_interval=1.0`
+no `SKILL_CATALOG`, ~5 ticks ao longo dos 5s reais), cada um com
+`"source": "skill", "sid": "fatiador_de_corpos"`. O cliente
+(`client/remote_entity_handlers.py::_apply_combat_result`) chama
+`trigger_attack_anim(...)` pra CADA um desses resultados, sem
+filtro — e `trigger_attack_anim` (`engine/character_animation.py`)
+tinha um guard que só bloqueava golpe CONCORRENTE de outro tipo
+durante um loop ativo (`if _new_loop_ms == 0 and
+_attack_loop_still_active(...): return`); como `_new_loop_ms` é
+SEMPRE != 0 pro próprio Fatiador (é uma skill de loop), esse guard
+nunca pegava o caso "é o MESMO loop de novo" — cada tick reiniciava
+`anim_attack_started_ms` pra "agora" e rearmava os 5000ms do zero. O
+último tick (perto de t≈4s) empurrava o fim VISUAL pra ~t≈9s — ~4s
+depois do fim de verdade da skill. Efeito colateral: a cada tick o
+frame também voltava pro 0, fazendo a animação "piscar"/reiniciar
+visivelmente uma vez por segundo.
+
+**Achado de processo**: existia um teste
+(`tests/test_character_animation.py`, agora reescrito) que CODIFICAVA
+esse reset como comportamento esperado — comentário original "retrigger
+do mesmo loop reinicia o contador (novo tick de dano)" — ou seja, quem
+escreveu aquele teste (uma sessão anterior) já sabia que ticks
+reiniciavam o contador e tratou isso como intencional, sem perceber que
+isso esticava a duração VISUAL além da duração real da skill. Confirmado
+com o usuário (`AskUserQuestion`) antes de mexer: o cooldown real do
+Fatiador é 45s contra 5s de duração, então "recast genuíno no meio do
+próprio loop" é IMPOSSÍVEL hoje — o cenário que o teste antigo tentava
+proteger nunca acontece de verdade; só os ticks do MESMO cast acontecem,
+e esses nunca deveriam reiniciar nada.
+
+**Fix**: `TileMovement` ganha `anim_attack_sid` (novo campo — sid CRU
+que ligou o loop atual, distinto de `anim_attack_state`, que é o nome
+RESOLVIDO/exibido e pode ser genérico tipo "skill"). `trigger_attack_anim`
+passa a comparar o `sid` do trigger NOVO contra `anim_attack_sid` do
+loop já ativo: mesmo sid + loop ainda dentro da janela → IGNORA
+(não reinicia nada, nem o relógio nem o frame); sid DIFERENTE → substitui
+normalmente (comportamento já existente, intocado — ex: skill de loop
+futura interrompendo outra). Testes: `tests/test_character_animation.py`
+— `test_tick_do_mesmo_loop_e_ignorado_nunca_reinicia` (5 ticks seguidos,
+nenhum mexe em `anim_attack_started_ms`, expira no tempo certo a partir
+do INÍCIO real) + `test_loop_diferente_ainda_substitui_normalmente`
+(controle, loop hipotético diferente registrado temporariamente). Revert-
+to-confirm feito — reproduziu o bug exato (contador reiniciando a cada
+tick) antes de restaurar o fix.

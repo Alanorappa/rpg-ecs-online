@@ -1425,6 +1425,21 @@ class TileMovement:
     # decidir o que vem depois (ver
     # engine.character_animation.resolve_display_state).
     anim_attack_hold_last_frame: bool = False
+    # `sid` (skill id CRU, nunca o nome RESOLVIDO/exibido de
+    # `anim_attack_state`) do golpe que ligou o loop atual — 02/10/2026,
+    # bug real relatado pelo usuário: Fatiador de Corpos (loop de 5s)
+    # recebe 1 resultado de combate POR TICK de dano (~1/s, ver
+    # `server/world_server.py`), e cada um desses ticks é OUTRO trigger
+    # pro MESMO golpe já em andamento — sem guardar o sid de origem,
+    # `trigger_attack_anim` não tinha como distinguir "tick do loop que
+    # já está rodando" de "golpe NOVO, reinicia tudo", e reiniciava o
+    # contador de 5s a cada tick — o último tick (perto do fim real)
+    # empurrava o fim VISUAL bem além do fim de verdade da skill (e a
+    # animação "piscava" de volta pro frame 0 a cada tick). Comparado
+    # contra o `sid` do NOVO trigger em `_attack_loop_still_active`'s
+    # guard — mesmo sid + loop ainda ativo = ignora (deixa o loop em
+    # andamento continuar, sem reiniciar nada).
+    anim_attack_sid: str = ""
 
 
 @dataclass
