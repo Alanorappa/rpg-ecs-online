@@ -551,6 +551,16 @@ class RenderSystem(System):
                 _night_overlay = obj.get("night_overlay_sprite")
                 if _night_overlay is not None and is_night():
                     self.world_surf.blit(_night_overlay, (sx, sy))
+                # Animação de EVENTO de portal (01/10/2026, corrigido
+                # 02/10/2026 — pedido do usuário: é uma "iluminação" do
+                # portal, mesma técnica de night_overlay_sprite acima —
+                # desenha POR CIMA do sprite base, nunca substitui).
+                # Já vem None de get_world_objects() pra qualquer tile
+                # sem animação ativa agora — sem gate de condição extra
+                # aqui, a condição já foi resolvida lá.
+                _portal_anim_overlay = obj.get("portal_anim_overlay")
+                if _portal_anim_overlay is not None:
+                    self.world_surf.blit(_portal_anim_overlay, (sx, sy))
                 continue
 
             # ── Entidade ──────────────────────────────────────────────────────

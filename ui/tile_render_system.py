@@ -518,6 +518,7 @@ class TileRenderSystem(System):
                     spr_name = getattr(tile_type, "sprite_name", "")
                     light_source = getattr(tile_type, "light_source", None)
                     night_overlay_sprite = None
+                    portal_anim_overlay  = None
                     if spr_px_w > 0 and spr_px_h > 0 and spr_name:
                         sprite_w = spr_px_w
                         total_h  = spr_px_h
@@ -530,24 +531,25 @@ class TileRenderSystem(System):
                         # ainda não é pra acender sozinha).
                         if light_source:
                             night_overlay_sprite = TILE_SPRITES.get_night_overlay_sprite(spr_name)
-                        # Animação de EVENTO de portal (01/10/2026) —
-                        # substitui o sprite ESTÁTICO pelo frame atual
-                        # de "ativando"/"desativando" SE este tile
-                        # específico (rx,ry) tem uma animação em
-                        # andamento (engine.portal_anim_state, escrito
-                        # por client/portal_handlers.py ao receber
-                        # PORTAL_ANIM_START/STOP/ARRIVE) — maioria dos
-                        # tiles nunca tem nada aqui, fallback gracioso
-                        # pro sprite estático de sempre (mesmo sem
-                        # nenhuma folha cadastrada ainda).
+                        # Animação de EVENTO de portal (01/10/2026, corrigido
+                        # 02/10/2026 — pedido do usuário: é uma "iluminação"
+                        # do portal, NUNCA substitui o objeto como a 1ª
+                        # versão fazia — mesmo princípio de night_overlay_sprite
+                        # acima: camada desenhada POR CIMA do sprite estático,
+                        # que continua sempre lá) SE este tile específico
+                        # (rx,ry) tem uma animação em andamento
+                        # (engine.portal_anim_state, escrito por
+                        # client/portal_handlers.py ao receber
+                        # PORTAL_ANIM_START/STOP/ARRIVE) — maioria dos tiles
+                        # nunca tem nada aqui, fallback gracioso de não
+                        # desenhar overlay nenhum (mesmo sem nenhuma folha
+                        # cadastrada ainda).
                         _portal_anim = _portal_anim_state_render.get_active(
                             rx, ry, _portal_anim_now_ms)
                         if _portal_anim is not None:
                             _phase, _elapsed_ms, _dur_ms = _portal_anim
-                            _portal_frame = TILE_SPRITES.get_portal_event_frame(
+                            portal_anim_overlay = TILE_SPRITES.get_portal_event_frame(
                                 spr_name, _phase, _elapsed_ms, _dur_ms)
-                            if _portal_frame is not None:
-                                sprite = _portal_frame
                     else:
                         tiles_wide = getattr(tile_type, "sprite_tiles_wide", 1)
                         sprite_w   = tile_size * tiles_wide
@@ -586,6 +588,13 @@ class TileRenderSystem(System):
                         # width/height acima) — nunca recalcula âncora à
                         # parte.
                         "night_overlay_sprite": night_overlay_sprite,
+                        # portal_anim_overlay (01/10/2026) — mesma ideia de
+                        # night_overlay_sprite acima, mas sem gate de
+                        # condição externa (a condição JÁ é "existe uma
+                        # animação ativa nesta posição agora", resolvida
+                        # aqui mesmo) — RenderSystem só desenha por cima,
+                        # sempre que não for None.
+                        "portal_anim_overlay": portal_anim_overlay,
                     })
         return objects
 
@@ -634,27 +643,29 @@ class TileRenderSystem(System):
                     spr_px_w = getattr(tile_type, "sprite_px_w", 0)
                     spr_px_h = getattr(tile_type, "sprite_px_h", 0)
                     spr_name = getattr(tile_type, "sprite_name", "")
+                    portal_anim_overlay = None
                     if spr_px_w > 0 and spr_px_h > 0 and spr_name:
                         sprite  = TILE_SPRITES.get_raw_sprite(spr_name)
                         total_h = spr_px_h
                         sprite_w = spr_px_w
-                        # Animação de EVENTO de portal (01/10/2026) — o
-                        # portal (vp_144) tem no_ysort=True, então é
-                        # desenhado AQUI, não em get_world_objects()
-                        # (bug real: a 1ª versão só cobria o outro
-                        # método, animação nunca aparecia). Mesma lógica
-                        # de lá: None em qualquer ponta cai pro sprite
-                        # estático de sempre.
+                        # Animação de EVENTO de portal (01/10/2026, corrigido
+                        # 02/10/2026 — pedido do usuário: é uma "iluminação"
+                        # do portal, como a camada "aceso" do poste à noite
+                        # (ver night_overlay_sprite em get_world_objects()) —
+                        # desenha POR CIMA do sprite estático, NUNCA
+                        # substitui. O portal (vp_144) tem no_ysort=True,
+                        # então é desenhado AQUI, não em get_world_objects()
+                        # (1ª versão do fix só cobria o outro método,
+                        # animação nunca aparecia). None em qualquer ponta =
+                        # sem overlay nenhum, só o sprite estático de sempre.
                         from engine import portal_anim_state as _portal_anim_state_static
                         import time as _time_portal_static
                         _portal_anim_s = _portal_anim_state_static.get_active(
                             rx, ry, int(_time_portal_static.time() * 1000))
                         if _portal_anim_s is not None:
                             _phase_s, _elapsed_s, _dur_s = _portal_anim_s
-                            _frame_s = TILE_SPRITES.get_portal_event_frame(
+                            portal_anim_overlay = TILE_SPRITES.get_portal_event_frame(
                                 spr_name, _phase_s, _elapsed_s, _dur_s)
-                            if _frame_s is not None:
-                                sprite = _frame_s
                     else:
                         sprite   = TILE_SPRITES.get(tile_type, rx, ry)
                         total_h  = tile_size + tile_type.overlay_height
@@ -669,6 +680,8 @@ class TileRenderSystem(System):
                     else:
                         pygame.draw.rect(self.world_surf, tile_type.color,
                                          (scr_x, scr_y, sprite_w, total_h))
+                    if portal_anim_overlay is not None:
+                        self.world_surf.blit(portal_anim_overlay, (scr_x, scr_y))
 
 
 
