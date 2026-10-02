@@ -295,10 +295,15 @@ class TestPortalClientAnimationClock(unittest.TestCase):
         return eng
 
     def test_anim_attack_started_ms_usa_ticks_do_pygame_nao_relogio_de_parede(self):
+        """02/10/2026: a animação não liga mais em `_handle_msg_portal_cast_start`
+        (só no último segundo, via `_update_portal_char_anim` chamado
+        de `_update_portal_state`) -- avança o cast pra dentro dessa
+        janela antes de checar o relógio."""
         import pygame
         eng = self._make_engine()
-        before = pygame.time.get_ticks()
         eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        before = pygame.time.get_ticks()
+        eng._update_portal_state(5.0 - 0.1)   # entra no último segundo, liga "portal_in"
         after = pygame.time.get_ticks()
         self.assertTrue(
             before <= self.tm.anim_attack_started_ms <= after + 50,
@@ -311,6 +316,7 @@ class TestPortalClientAnimationClock(unittest.TestCase):
         from engine.character_animation import trigger_attack_anim, _attack_loop_still_active
         eng = self._make_engine()
         eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        eng._update_portal_state(5.0 - 0.1)   # liga "portal_in" no último segundo
         # `now_ms` vem de um pygame.time.get_ticks() INDEPENDENTE (igual
         # a todo chamador real — client/remote_entity_handlers.py::
         # _apply_combat_result), NUNCA derivado de
@@ -329,6 +335,7 @@ class TestPortalClientAnimationClock(unittest.TestCase):
         from engine.character_animation import trigger_attack_anim
         eng = self._make_engine()
         eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        eng._update_portal_state(5.0 - 0.1)   # liga "portal_in" antes de cancelar
         eng._cancel_portal_cast_local()
         self.assertEqual(self.tm.anim_attack_loop_duration_ms, 0)
         # Golpe IMEDIATAMENTE após cancelar (sem esperar nada) já
@@ -1062,18 +1069,36 @@ class TestPortalCharacterInOutAnimation(unittest.TestCase):
         eng.world.add_component(eng.player_entity, Position(x=100, y=100))
         return eng, tm
 
-    def test_cast_start_liga_portal_in_esticado_pra_duracao_do_cast(self):
+    def test_cast_start_nao_liga_a_animacao_imediatamente(self):
+        """02/10/2026, pedido do usuário: arte foi refeita mais curta
+        (8 frames, antes 35) -- deixou de fazer sentido esticar pelos
+        5s inteiros do cast. Animação só liga no último segundo (ver
+        teste abaixo); nos primeiros segundos o personagem fica no idle
+        normal (nenhum estado de animação tocando)."""
         eng, tm = self._make_engine()
         eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        self.assertEqual(tm.anim_attack_state, "")
+        eng._update_portal_state(1.0)   # ainda bem antes do último segundo
+        self.assertEqual(tm.anim_attack_state, "")
+
+    def test_cast_start_liga_portal_in_esticado_pro_ultimo_segundo(self):
+        from client.portal_handlers import _PORTAL_CHAR_ANIM_START_S
+        from engine.character_animation import _frames_for
+        eng, tm = self._make_engine()
+        eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        eng._update_portal_state(5.0 - _PORTAL_CHAR_ANIM_START_S)   # entra no último segundo
         self.assertEqual(tm.anim_attack_state, "portal_in")
         self.assertEqual(tm.anim_attack_loop_duration_ms, 0,
                          "NUNCA via loop_duration_ms -- isso repetiria o ciclo (certo só pra "
                          "Fatiador de Corpos); portal_in estica via frame_ms")
-        # 35 frames reais (guerreiro_portal_in.png) esticados pra 5000ms.
-        self.assertEqual(tm.anim_attack_frame_ms, round(5000 / 35))
-        # Duração natural (frames × frame_ms) bate com a duração real do cast.
-        natural_duration = 35 * tm.anim_attack_frame_ms
-        self.assertAlmostEqual(natural_duration, 5000, delta=35)
+        n_frames = len(_frames_for("guerreiro", "portal_in", tm.facing))
+        self.assertGreater(n_frames, 0, "guerreiro_portal_in.png precisa existir pro teste valer algo")
+        # Frames reais esticados pro último 1s (1000ms), NÃO a duração
+        # inteira do cast (5000ms, comportamento antigo).
+        self.assertEqual(tm.anim_attack_frame_ms, round(1000 / n_frames))
+        # Duração natural (frames × frame_ms) bate com a janela final, não o cast inteiro.
+        natural_duration = n_frames * tm.anim_attack_frame_ms
+        self.assertAlmostEqual(natural_duration, 1000, delta=n_frames)
 
     def test_cast_start_liga_hold_last_frame(self):
         """Regressão (02/10/2026, bug real relatado pelo usuário): sem o
@@ -1081,9 +1106,11 @@ class TestPortalCharacterInOutAnimation(unittest.TestCase):
         o ciclo esticado acabar e o ZONE_CHANGE realmente chegar (a
         duração esticada é só uma ESTIMATIVA, latência de rede/tick do
         servidor sempre deixa uma folga imprevisível)."""
+        from client.portal_handlers import _PORTAL_CHAR_ANIM_START_S
         from engine.character_animation import resolve_display_state
         eng, tm = self._make_engine()
         eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        eng._update_portal_state(5.0 - _PORTAL_CHAR_ANIM_START_S)
         self.assertTrue(tm.anim_attack_hold_last_frame)
         # Bem depois do ciclo esticado ter "acabado" -- continua "portal_in",
         # nunca pisca pro idle.
@@ -1106,16 +1133,21 @@ class TestPortalCharacterInOutAnimation(unittest.TestCase):
     def test_trigger_portal_out_limpa_hold_deixado_pelo_portal_in(self):
         """"portal_out" não deve herdar o hold de um "portal_in" anterior
         -- precisa terminar o ciclo e voltar pro idle sozinho, normal."""
+        from client.portal_handlers import _PORTAL_CHAR_ANIM_START_S
         eng, tm = self._make_engine()
         eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        eng._update_portal_state(5.0 - _PORTAL_CHAR_ANIM_START_S)
         self.assertTrue(tm.anim_attack_hold_last_frame)
         eng._portal_arrival_pending = True
         eng._trigger_portal_out_if_pending()
         self.assertFalse(tm.anim_attack_hold_last_frame)
 
     def test_cancelar_cast_limpa_o_hold(self):
+        from client.portal_handlers import _PORTAL_CHAR_ANIM_START_S
         eng, tm = self._make_engine()
         eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        eng._update_portal_state(5.0 - _PORTAL_CHAR_ANIM_START_S)
+        self.assertTrue(tm.anim_attack_hold_last_frame, "pré-condição -- hold precisa estar ligado antes de cancelar")
         eng._cancel_portal_cast_local()
         self.assertFalse(tm.anim_attack_hold_last_frame)
 
@@ -1140,8 +1172,10 @@ class TestPortalCharacterInOutAnimation(unittest.TestCase):
         self.assertIsNone(eng._get_portal_character_light_source(0, 0))
 
     def test_character_light_source_durante_portal_in(self):
+        from client.portal_handlers import _PORTAL_CHAR_ANIM_START_S
         eng, tm = self._make_engine()
         eng._handle_msg_portal_cast_start({"portal_id": "x", "dest_index": 0, "duration": 5.0})
+        eng._update_portal_state(5.0 - _PORTAL_CHAR_ANIM_START_S)
         light = eng._get_portal_character_light_source(0, 0)
         self.assertIsNotNone(light)
         self.assertIn("portal_light_frame", light)

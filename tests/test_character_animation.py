@@ -194,13 +194,16 @@ class TestGetCharacterFrame(unittest.TestCase):
 
     def test_assets_reais_de_portal_in_out_existem_e_tem_frames(self):
         """`guerreiro_portal_in.png`/`guerreiro_portal_out.png` são
-        assets reais já commitados (02/10/2026) — mesmo espírito de
+        assets reais já commitados — mesmo espírito de
         `guerreiro_idle_down.png` acima: também serve de teste de
-        regressão do arquivo em si (frame count real: 35 "in", 12
-        "out", largura 96px cada)."""
+        regressão do arquivo em si (frame count real: 8 cada, largura
+        96px cada -- arte refeita mais curta em 02/10/2026, antes eram
+        35 "in"/12 "out"; animação de personagem passou a ligar só no
+        último segundo do cast, não mais esticada pelos 5s inteiros,
+        ver client/portal_handlers.py::_update_portal_char_anim)."""
         from engine.character_animation import get_character_frame, _frames_for
-        self.assertEqual(len(_frames_for("guerreiro", "portal_in", "down")), 35)
-        self.assertEqual(len(_frames_for("guerreiro", "portal_out", "down")), 12)
+        self.assertEqual(len(_frames_for("guerreiro", "portal_in", "down")), 8)
+        self.assertEqual(len(_frames_for("guerreiro", "portal_out", "down")), 8)
         self.assertIsNotNone(get_character_frame("guerreiro", "portal_in", "left", 0))
         self.assertIsNotNone(get_character_frame("guerreiro", "portal_out", "right", 0))
 

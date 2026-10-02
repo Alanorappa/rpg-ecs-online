@@ -885,6 +885,29 @@ por movimento para o canal, conclusão natural NÃO para) —
 revert-to-confirm feito (disparo desativado, 3 testes falharam como
 esperado, restaurado).
 
+**Animação de personagem passa a ligar só no último 1 segundo, não
+mais esticada pelos 5s inteiros (02/10/2026, pedido do usuário — arte
+de `guerreiro_portal_in.png`/`guerreiro_portal_out.png` foi refeita
+mais curta, 35→8 e 12→8 frames respectivamente)**: `_handle_msg_
+portal_cast_start` não liga mais "portal_in" na hora — só registra o
+cast. `_update_portal_char_anim` (novo, chamado todo frame junto da
+rampa do tremor/SFX) dispara quando `remaining <= _PORTAL_CHAR_ANIM_
+START_S = 1.0`, esticando o ciclo pro RESTANTE real do cast nesse
+instante (`frame_ms = restante_ms / n_frames`), não mais pra duração
+inteira — mesma técnica de sempre, janela menor. Nos segundos
+anteriores o personagem fica no idle normal. A luz azulada do
+personagem (`_get_portal_character_light_source`, condicionada ao
+mesmo `anim_attack_state`) automaticamente também passa a acender só
+nesse último segundo — confirmado com o usuário via `AskUserQuestion`
+que é o comportamento desejado (antes acendia quase o cast inteiro).
+Testes: `tests/test_portal.py::TestPortalCharacterInOutAnimation`/
+`TestPortalClientAnimationClock` atualizados pra avançar
+`_update_portal_state` até a janela final antes de checar o estado de
+animação (6 testes ajustados); `tests/test_character_animation.py::
+test_assets_reais_de_portal_in_out_existem_e_tem_frames` atualizado
+pro frame count real novo (8/8, antes 35/12) — revert-to-confirm feito
+(disparo desativado, 6 testes falharam como esperado, restaurado).
+
 ### 19. Corpse de loot — sem loot não aparece corpo (02/10/2026)
 
 Pedido do usuário (redesenho, substitui o par antigo "120s mob / 4s

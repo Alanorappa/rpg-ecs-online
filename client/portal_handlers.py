@@ -90,6 +90,19 @@ _PORTAL_SHAKE_MAX_AMPLITUDE_PX = 6.0
 # até o fim.
 _PORTAL_SFX_START_S = 1.317
 
+# Animação de PERSONAGEM "portal_in" (02/10/2026, pedido do usuário:
+# arte foi refeita mais curta, deixou de fazer sentido esticar o ciclo
+# pelos 5s inteiros do cast) -- liga só no ÚLTIMO
+# `_PORTAL_CHAR_ANIM_START_S` segundo do cast, esticada (mesma técnica
+# de sempre, `frame_ms = restante_ms / n_frames`) pra caber exatamente
+# nesse intervalo final, terminando junto da troca de tela. Nos
+# segundos anteriores o personagem fica no idle normal (nenhum estado
+# de animação tocando). A luz azulada do personagem
+# (`_get_portal_character_light_source`) é condicionada ao MESMO estado
+# de animação -- acende só junto, decisão confirmada com o usuário
+# (02/10/2026, não precisa aparecer mais cedo que a animação).
+_PORTAL_CHAR_ANIM_START_S = 1.0
+
 # Raio de busca (em tiles) pra achar o objeto VISUAL do portal perto do
 # tile de interação do gate (01/10/2026) — ver _find_portal_anim_anchor.
 # Achado real nos 2 portais de teste: o objeto fica consistentemente a
@@ -274,6 +287,17 @@ class PortalHandlers:
         self._portal_sfx_channel_val = value
 
     @property
+    def _portal_char_anim_triggered(self) -> bool:
+        """True depois que a animação "portal_in" já foi ligada pra
+        este cast (ver `_update_portal_char_anim`) -- evita religar
+        todo frame restante do último segundo."""
+        return getattr(self, "_portal_char_anim_triggered_val", False)
+
+    @_portal_char_anim_triggered.setter
+    def _portal_char_anim_triggered(self, value: bool) -> None:
+        self._portal_char_anim_triggered_val = value
+
+    @property
     def _portal_cast_active(self):
         """None sem cast em andamento; senão {"elapsed","duration",
         "portal_id","dest_index"} — lido por client/hud_handlers.py::
@@ -336,6 +360,7 @@ class PortalHandlers:
         self._portal_shake_intensity = 0.0
         self._portal_shake_fade_elapsed = None
         self._portal_sfx_channel = None
+        self._portal_char_anim_triggered = False
 
     # ── Update por frame (chamado de game.py, perto da detecção de
     # transição de cavernas) ──────────────────────────────────────────────
@@ -355,6 +380,7 @@ class PortalHandlers:
                 self._portal_cast_active["elapsed"] += dt
                 self._update_portal_shake_ramp()
                 self._update_portal_sfx()
+                self._update_portal_char_anim(tm)
             return
 
         # Fora de cast: só pode estar decaindo de uma chegada recente
@@ -443,6 +469,62 @@ class PortalHandlers:
         if self._portal_cast_active["elapsed"] < _PORTAL_SFX_START_S:
             return
         self._portal_sfx_channel = SOUNDS.play("portal")
+
+    def _update_portal_char_anim(self, tm) -> None:
+        """Liga a animação "portal_in" quando o cast ativo entra no
+        último `_PORTAL_CHAR_ANIM_START_S` segundo (02/10/2026, pedido
+        do usuário) -- chamado todo frame enquanto `_portal_cast_active`
+        existe e não está em movimento, igual `_update_portal_shake_ramp`/
+        `_update_portal_sfx`. `_portal_char_anim_triggered` cobre "já
+        ligou pra este cast" -- nunca religa no mesmo cast.
+
+        Estica o ciclo pra caber no `remaining` REAL no instante do
+        disparo (não um valor fixo de 1000ms) -- mesma técnica de
+        sempre (`frame_ms = restante_ms / n_frames`), só que a janela
+        agora é o último segundo, não o cast inteiro."""
+        if self._portal_char_anim_triggered or tm is None:
+            return
+        cast = self._portal_cast_active
+        remaining = cast["duration"] - cast["elapsed"]
+        if remaining > _PORTAL_CHAR_ANIM_START_S:
+            return
+        self._portal_char_anim_triggered = True
+
+        # Estado "portal_in" (`{class_id}_portal_in.png`, sem direção)
+        # -- engine/character_animation.py aceita QUALQUER string aqui,
+        # cascata de fallback já cobre sprite ausente (cai pra idle
+        # sozinho).
+        #
+        # pygame.time.get_ticks() — NUNCA time.time()*1000 aqui (bug
+        # real já corrigido 01/10/2026, ver _trigger_portal_out_if_pending
+        # pro histórico completo -- relógio de parede deixava
+        # anim_attack_started_ms permanentemente "no passado" em
+        # relação aos ticks do pygame, bloqueando golpe novo pra sempre).
+        class_id = self._portal_local_class_id()
+        remaining_ms = max(1.0, remaining) * 1000.0
+        # ESTICA via frame_ms (duração do CICLO), NUNCA via
+        # anim_attack_loop_duration_ms (repetiria o ciclo -- errado pra
+        # um dissolver ÚNICO). n_frames × frame_ms já bate com o
+        # restante real do cast -- a última frame (quase invisível) é a
+        # que fica na tela até o ZONE_CHANGE trocar de cena.
+        frame_ms = 0
+        if class_id:
+            from engine.character_animation import _frames_for as _cframes_for
+            n_frames = len(_cframes_for(class_id, "portal_in", tm.facing))
+            if n_frames > 0:
+                frame_ms = max(1, round(remaining_ms / n_frames))
+        tm.anim_attack_state          = "portal_in"
+        tm.anim_attack_started_ms     = pygame.time.get_ticks()
+        tm.anim_attack_frame_ms       = frame_ms  # 0 = usa DEFAULT_FRAME_MS
+        tm.anim_attack_loop_duration_ms = 0
+        # Segura na ÚLTIMA frame quando o ciclo "esticado" terminar, em
+        # vez de voltar pro idle (bug real já corrigido 02/10/2026: 1
+        # frame de idle perceptível antes do ZONE_CHANGE chegar de
+        # verdade -- latência de rede + granularidade de tick do
+        # servidor sempre deixam uma folga pequena).
+        # `_trigger_portal_out_if_pending`/`_cancel_portal_cast_local`
+        # limpam esta flag quando o evento real chega.
+        tm.anim_attack_hold_last_frame = True
 
     def _cancel_portal_cast_local(self, stop_shake: bool = True) -> None:
         """`stop_shake=True` (padrão, usado pelo cancelamento por
@@ -601,9 +683,14 @@ class PortalHandlers:
     def _handle_msg_portal_cast_start(self, payload: dict) -> None:
         """Servidor confirmou o cast (request_portal_enter aceito) —
         substitui a previsão otimista (_DEFAULT_PORTAL_CAST_DURATION_S)
-        pela duração REAL, e SÓ AGORA dispara a animação do personagem
+        pela duração REAL. A animação do personagem NÃO liga aqui
         (nunca client-side otimista puro, mesmo princípio de
-        trigger_attack_anim só rodar em confirmação real)."""
+        trigger_attack_anim só rodar em confirmação real) -- liga só
+        no último `_PORTAL_CHAR_ANIM_START_S` segundo, via
+        `_update_portal_char_anim` (chamado de `_update_portal_state`
+        todo frame enquanto o cast está ativo; 02/10/2026, pedido do
+        usuário -- arte foi refeita mais curta, deixou de fazer sentido
+        esticar pelos 5s inteiros)."""
         duration = payload.get("duration", _DEFAULT_PORTAL_CAST_DURATION_S)
         self._portal_cast_active = {
             "elapsed":    0.0,
@@ -611,64 +698,7 @@ class PortalHandlers:
             "portal_id":  payload.get("portal_id", ""),
             "dest_index": payload.get("dest_index", -1),
         }
-        from engine.components import TileMovement as _TMPortalStart
-        tm = self.world.get_component(self.player_entity, _TMPortalStart)
-        if tm is not None:
-            # Estado "portal_in" (02/10/2026 — antes "portal", renomeado
-            # quando "portal_out" apareceu) — engine/character_animation.py
-            # aceita QUALQUER string aqui, cascata de fallback já cobre
-            # sprite ausente (cai pra idle sozinho): zero mudança de
-            # código lá. Arquivo SEM direção:
-            # `{class_id}_portal_in.png` (fallback em
-            # `_load_sheet_frames`, pilar de luz vertical não varia por
-            # lado).
-            #
-            # pygame.time.get_ticks() — NUNCA time.time()*1000 aqui. Todo
-            # o resto do sistema de animação de personagem usa ticks do
-            # pygame (ver ui/render_system.py::resolve_display_state() e
-            # client/remote_entity_handlers.py::trigger_attack_anim()) —
-            # anim_attack_started_ms é lido por trigger_attack_anim's
-            # _attack_loop_still_active() pra decidir se um golpe NOVO
-            # pode tocar. Usar relógio de parede (epoch, ~1.7 trilhão de
-            # ms) aqui fazia esse campo ficar permanentemente "no
-            # passado" em relação ao ticks do pygame (dezenas de
-            # milhares) — bloqueava TODO golpe novo pra sempre depois do
-            # 1º cast de portal (bug real relatado pelo usuário, 01/10/2026).
-            class_id = self._portal_local_class_id()
-            duration_ms = duration * 1000.0
-            # ESTICA via frame_ms (duração do CICLO), NUNCA via
-            # anim_attack_loop_duration_ms — esse campo faz
-            # resolve_display_state/get_character_frame REPETIREM o ciclo
-            # em loop (certo pra Fatiador de Corpos, que gira sem parar;
-            # ERRADO aqui — "portal_in" é um dissolver ÚNICO, repetir o
-            # ciclo faria o personagem "piscar" de volta visível no meio
-            # do cast). Com frame_ms = duração/n_frames, o ciclo natural
-            # (n_frames × frame_ms) já bate com a duração real do cast —
-            # a última frame (quase invisível) é a que fica na tela até o
-            # ZONE_CHANGE trocar de cena, sem repetir nada.
-            frame_ms = 0
-            if class_id:
-                from engine.character_animation import _frames_for as _cframes_for
-                n_frames = len(_cframes_for(class_id, "portal_in", tm.facing))
-                if n_frames > 0:
-                    frame_ms = max(1, round(duration_ms / n_frames))
-            tm.anim_attack_state          = "portal_in"
-            tm.anim_attack_started_ms     = pygame.time.get_ticks()
-            tm.anim_attack_frame_ms       = frame_ms  # 0 = usa DEFAULT_FRAME_MS (ver character_animation.py)
-            tm.anim_attack_loop_duration_ms = 0
-            # Segura na ÚLTIMA frame quando o ciclo "esticado" terminar,
-            # em vez de voltar pro idle (02/10/2026, bug real relatado
-            # pelo usuário: "ele volta pra idle antes de aparecer no
-            # outro portal... é 1 frame, mas é perceptível"). frame_ms
-            # acima já estica pra bater com a duração REAL do cast, mas
-            # é só uma ESTIMATIVA — latência de rede + granularidade de
-            # tick do servidor sempre deixam uma folga pequena entre "a
-            # animação terminou" e "o ZONE_CHANGE realmente chegou";
-            # nesse intervalo, sem isso, o personagem reaparecia em pé
-            # (idle) por 1+ frame antes de sumir de vez pro mapa novo.
-            # `_trigger_portal_out_if_pending`/`_cancel_portal_cast_local`
-            # limpam esta flag quando o evento real chega.
-            tm.anim_attack_hold_last_frame = True
+        self._portal_char_anim_triggered = False
 
     def _handle_msg_portal_cast_cancel(self, payload: dict) -> None:
         """Servidor cancelou o cast (moveu, ou qualquer motivo futuro) —
