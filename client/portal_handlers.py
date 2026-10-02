@@ -58,6 +58,23 @@ _PORTAL_MODAL_STAND_DELAY_S = 0.5
 # 1 lugar só (ver _handle_msg_portal_anim_arrive).
 _PORTAL_DEACTIVATE_DURATION_MS = 900.0
 
+# Tremor de câmera no cast de portal (02/10/2026, pedido do usuário):
+# sobe linear de 0% a 100% nos ÚLTIMOS `_PORTAL_SHAKE_RAMP_S` segundos
+# do cast (ex: cast de 5s -> começa aos 2s decorridos) e, ao chegar no
+# destino (mesmo instante que liga "portal_out", ver
+# _trigger_portal_out_if_pending), decai de volta a 0 em
+# `_PORTAL_SHAKE_FADE_S` -- reusa a MESMA duração da animação natural
+# de "desativar" (_PORTAL_DEACTIVATE_DURATION_MS), não um número novo.
+# Cancelamento por movimento para o tremor NA HORA (sem fade) -- só
+# chegada de verdade decai suave, decisão confirmada com o usuário.
+# Amplitude em pixels de MUNDO (antes do zoom) -- aplicado só no offset
+# usado pra DESENHAR (self._cam_x/_cam_y em game.py), nunca dentro de
+# engine.utils.get_camera_offset() (ponto único usado também por
+# clique/mira/loot -- tremer ali deixaria clique impreciso).
+_PORTAL_SHAKE_RAMP_S = 3.0
+_PORTAL_SHAKE_FADE_S = _PORTAL_DEACTIVATE_DURATION_MS / 1000.0
+_PORTAL_SHAKE_MAX_AMPLITUDE_PX = 6.0
+
 # Raio de busca (em tiles) pra achar o objeto VISUAL do portal perto do
 # tile de interação do gate (01/10/2026) — ver _find_portal_anim_anchor.
 # Achado real nos 2 portais de teste: o objeto fica consistentemente a
@@ -196,6 +213,38 @@ class PortalHandlers:
         self._portal_stand_elapsed_val = value
 
     @property
+    def _portal_shake_intensity(self) -> float:
+        """0.0-1.0 — fração da amplitude máxima de tremor AGORA. Lida por
+        `_portal_shake_render_offset()`, única consumidora (aplicada só
+        no offset de DESENHO, nunca em `get_camera_offset()`)."""
+        return getattr(self, "_portal_shake_intensity_val", 0.0)
+
+    @_portal_shake_intensity.setter
+    def _portal_shake_intensity(self, value: float) -> None:
+        self._portal_shake_intensity_val = value
+
+    @property
+    def _portal_shake_fade_elapsed(self):
+        """None fora de fade (tremor zerado, ou subindo junto do cast);
+        senão segundos já decorridos desde a chegada, decaindo
+        `_portal_shake_intensity` até 0 em `_PORTAL_SHAKE_FADE_S`."""
+        return getattr(self, "_portal_shake_fade_elapsed_val", None)
+
+    @_portal_shake_fade_elapsed.setter
+    def _portal_shake_fade_elapsed(self, value) -> None:
+        self._portal_shake_fade_elapsed_val = value
+
+    @property
+    def _portal_shake_fade_start(self) -> float:
+        """Intensidade capturada no instante da chegada -- ponto de
+        partida do decaimento linear em `_tick_portal_shake_fade`."""
+        return getattr(self, "_portal_shake_fade_start_val", 0.0)
+
+    @_portal_shake_fade_start.setter
+    def _portal_shake_fade_start(self, value: float) -> None:
+        self._portal_shake_fade_start_val = value
+
+    @property
     def _portal_cast_active(self):
         """None sem cast em andamento; senão {"elapsed","duration",
         "portal_id","dest_index"} — lido por client/hud_handlers.py::
@@ -255,6 +304,8 @@ class PortalHandlers:
         self._portal_stand_key = None
         self._portal_stand_elapsed = 0.0
         self._portal_cast_active = None
+        self._portal_shake_intensity = 0.0
+        self._portal_shake_fade_elapsed = None
 
     # ── Update por frame (chamado de game.py, perto da detecção de
     # transição de cavernas) ──────────────────────────────────────────────
@@ -272,7 +323,12 @@ class PortalHandlers:
                 self._cancel_portal_cast_local()
             else:
                 self._portal_cast_active["elapsed"] += dt
+                self._update_portal_shake_ramp()
             return
+
+        # Fora de cast: só pode estar decaindo de uma chegada recente
+        # (nunca subindo — subida só acontece dentro do bloco acima).
+        self._tick_portal_shake_fade(dt)
 
         if not self.portal_tiles or tm is None or tm.is_moving:
             self._portal_stand_key = None
@@ -299,8 +355,57 @@ class PortalHandlers:
         self._portal_modal_open = self.portal_tiles[key]
         SOUNDS.play_ui("map_open")
 
+    def _update_portal_shake_ramp(self) -> None:
+        """Sobe `_portal_shake_intensity` linear de 0 a 1 nos últimos
+        `_PORTAL_SHAKE_RAMP_S` segundos do cast ativo -- chamado todo
+        frame enquanto `_portal_cast_active` existe e não está em
+        movimento (ver `_update_portal_state`)."""
+        cast = self._portal_cast_active
+        remaining = cast["duration"] - cast["elapsed"]
+        if remaining <= _PORTAL_SHAKE_RAMP_S:
+            frac = 1.0 - max(0.0, remaining) / _PORTAL_SHAKE_RAMP_S
+            self._portal_shake_intensity = min(1.0, max(0.0, frac))
+        else:
+            self._portal_shake_intensity = 0.0
+
+    def _tick_portal_shake_fade(self, dt: float) -> None:
+        """Decai `_portal_shake_intensity` até 0 em `_PORTAL_SHAKE_FADE_S`,
+        a partir do valor capturado em `_portal_shake_fade_start`
+        (`_trigger_portal_out_if_pending` é quem liga o fade, no
+        instante exato da chegada). No-op se não há fade em andamento
+        (`_portal_shake_fade_elapsed is None` -- tremor já zerado, ou
+        ainda subindo dentro de um cast, caso que nunca chega aqui)."""
+        if self._portal_shake_fade_elapsed is None:
+            return
+        self._portal_shake_fade_elapsed += dt
+        t = self._portal_shake_fade_elapsed / _PORTAL_SHAKE_FADE_S
+        if t >= 1.0:
+            self._portal_shake_intensity = 0.0
+            self._portal_shake_fade_elapsed = None
+        else:
+            self._portal_shake_intensity = self._portal_shake_fade_start * (1.0 - t)
+
+    def _portal_shake_render_offset(self) -> tuple:
+        """(dx, dy) em pixels de MUNDO pra somar no offset de câmera só
+        de DESENHO (`game.py`'s `self._cam_x`/`_cam_y`) -- NUNCA dentro
+        de `engine.utils.get_camera_offset()`, que clique/mira/loot
+        também usam; tremer ali deixaria esses sistemas imprecisos
+        durante o cast/chegada de portal. Recomputado do zero todo
+        frame (ruído intencional, sem acúmulo -- diferente do resíduo
+        de lerp documentado em CameraSystem, que é bug, não efeito)."""
+        if self._portal_shake_intensity <= 0.0:
+            return 0.0, 0.0
+        import random
+        amp = self._portal_shake_intensity * _PORTAL_SHAKE_MAX_AMPLITUDE_PX
+        return random.uniform(-amp, amp), random.uniform(-amp, amp)
+
     def _cancel_portal_cast_local(self) -> None:
         self._portal_cast_active = None
+        # Cancelamento para o tremor NA HORA, sem fade -- só chegada de
+        # verdade (_trigger_portal_out_if_pending) decai suave; decisão
+        # confirmada com o usuário (02/10/2026).
+        self._portal_shake_intensity = 0.0
+        self._portal_shake_fade_elapsed = None
         from engine.components import TileMovement as _TMPortalC
         tm = self.world.get_component(self.player_entity, _TMPortalC)
         if tm is not None and tm.anim_attack_state == "portal_in":
@@ -362,6 +467,12 @@ class PortalHandlers:
         if not self._portal_arrival_pending:
             return
         self._portal_arrival_pending = False
+        # Tremor: captura a intensidade de AGORA (deveria ser ~1.0 se o
+        # cast rodou os 3s finais inteiros) e liga o decaimento suave em
+        # _PORTAL_SHAKE_FADE_S (ver _tick_portal_shake_fade, chamado de
+        # _update_portal_state enquanto _portal_cast_active já é None).
+        self._portal_shake_fade_start = self._portal_shake_intensity
+        self._portal_shake_fade_elapsed = 0.0
         from engine.components import TileMovement as _TMPortalOut
         tm = self.world.get_component(self.player_entity, _TMPortalOut)
         if tm is not None:

@@ -2578,7 +2578,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # offset` não arredonda nada, preserva essa garantia de graça.
             from engine.utils import get_camera_offset
             cam_x, cam_y = get_camera_offset(self.world, lw, lh)
-            self._cam_x, self._cam_y = cam_x, cam_y
+            # Tremor de cast de portal (02/10/2026) — somado SÓ aqui, no
+            # offset usado pra DESENHAR o mundo, nunca dentro de
+            # get_camera_offset() (clique/mira/loot usam a mesma função
+            # e ficariam imprecisos se tremesse ali). Ver
+            # client/portal_handlers.py::_portal_shake_render_offset.
+            _shake_dx, _shake_dy = self._portal_shake_render_offset()
+            self._cam_x, self._cam_y = cam_x + _shake_dx, cam_y + _shake_dy
 
             # ── Passe de mundo — renderiza em world_surf ──────────────────────
             self._zoom_surf.fill((0, 0, 0))

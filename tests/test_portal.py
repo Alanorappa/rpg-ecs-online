@@ -793,6 +793,108 @@ class TestPortalModalStandDelay(unittest.TestCase):
                           "trocar de tile de portal antes do delay completar deve zerar o acumulado")
 
 
+class TestPortalShake(unittest.TestCase):
+    """Pedido do usuário (02/10/2026): tremor de câmera nos últimos
+    `_PORTAL_SHAKE_RAMP_S` segundos do cast (sobe linear 0->1), que
+    decai suave em `_PORTAL_SHAKE_FADE_S` ao chegar no destino -- e
+    para NA HORA (sem fade) se o cast for cancelado por movimento."""
+
+    def _make_engine(self):
+        from client.portal_handlers import PortalHandlers
+        from engine.world import World
+        from engine.components import TileMovement
+
+        class _FakeEngine(PortalHandlers):
+            def _any_modal_open(self):
+                return False
+
+        eng = _FakeEngine()
+        eng.world = World()
+        eng.player_entity = eng.world.create_entity()
+        tm = TileMovement()
+        tm.is_moving = False
+        eng.world.add_component(eng.player_entity, tm)
+        eng.portal_tiles = {}
+        return eng, tm
+
+    def test_sem_cast_tremor_fica_zero(self):
+        eng, _tm = self._make_engine()
+        eng._update_portal_state(0.1)
+        self.assertEqual(eng._portal_shake_intensity, 0.0)
+
+    def test_cast_antes_dos_ultimos_3s_sem_tremor(self):
+        from client.portal_handlers import _PORTAL_SHAKE_RAMP_S
+        eng, tm = self._make_engine()
+        eng._portal_cast_active = {"elapsed": 0.0, "duration": 5.0,
+                                   "portal_id": "x", "dest_index": 0}
+        eng._update_portal_state(5.0 - _PORTAL_SHAKE_RAMP_S - 1.0)  # ainda fora da janela
+        self.assertEqual(eng._portal_shake_intensity, 0.0)
+
+    def test_cast_nos_ultimos_3s_sobe_linear(self):
+        from client.portal_handlers import _PORTAL_SHAKE_RAMP_S
+        eng, tm = self._make_engine()
+        duration = 5.0
+        eng._portal_cast_active = {"elapsed": duration - _PORTAL_SHAKE_RAMP_S,
+                                   "duration": duration, "portal_id": "x", "dest_index": 0}
+        eng._update_portal_state(_PORTAL_SHAKE_RAMP_S / 2)   # metade da janela de tremor
+        self.assertAlmostEqual(eng._portal_shake_intensity, 0.5, places=3)
+
+    def test_cast_completo_tremor_chega_a_1(self):
+        from client.portal_handlers import _PORTAL_SHAKE_RAMP_S
+        eng, tm = self._make_engine()
+        duration = 5.0
+        eng._portal_cast_active = {"elapsed": duration - _PORTAL_SHAKE_RAMP_S,
+                                   "duration": duration, "portal_id": "x", "dest_index": 0}
+        eng._update_portal_state(_PORTAL_SHAKE_RAMP_S)
+        self.assertAlmostEqual(eng._portal_shake_intensity, 1.0, places=3)
+
+    def test_cancelar_cast_por_movimento_zera_tremor_na_hora(self):
+        from client.portal_handlers import _PORTAL_SHAKE_RAMP_S
+        eng, tm = self._make_engine()
+        duration = 5.0
+        eng._portal_cast_active = {"elapsed": duration - _PORTAL_SHAKE_RAMP_S,
+                                   "duration": duration, "portal_id": "x", "dest_index": 0}
+        eng._update_portal_state(_PORTAL_SHAKE_RAMP_S / 2)
+        self.assertGreater(eng._portal_shake_intensity, 0.0)
+
+        tm.is_moving = True
+        eng._update_portal_state(0.05)
+        self.assertEqual(eng._portal_shake_intensity, 0.0,
+                         "cancelar por movimento deve zerar o tremor na hora, sem fade")
+        self.assertIsNone(eng._portal_shake_fade_elapsed)
+
+    def test_chegada_liga_fade_e_decai_gradualmente(self):
+        from client.portal_handlers import _PORTAL_SHAKE_FADE_S
+        eng, tm = self._make_engine()
+        eng._portal_shake_intensity = 1.0   # como se o cast tivesse terminado no máximo
+        eng._portal_arrival_pending = True
+        eng._trigger_portal_out_if_pending()
+
+        self.assertEqual(eng._portal_shake_intensity, 1.0, "fade começa do valor de chegada")
+
+        half = _PORTAL_SHAKE_FADE_S / 2
+        eng._update_portal_state(half)
+        self.assertAlmostEqual(eng._portal_shake_intensity, 0.5, places=3)
+
+        eng._update_portal_state(half)
+        self.assertEqual(eng._portal_shake_intensity, 0.0)
+        self.assertIsNone(eng._portal_shake_fade_elapsed)
+
+    def test_offset_de_render_zero_sem_tremor(self):
+        eng, _tm = self._make_engine()
+        dx, dy = eng._portal_shake_render_offset()
+        self.assertEqual((dx, dy), (0.0, 0.0))
+
+    def test_offset_de_render_respeita_amplitude_maxima(self):
+        from client.portal_handlers import _PORTAL_SHAKE_MAX_AMPLITUDE_PX
+        eng, _tm = self._make_engine()
+        eng._portal_shake_intensity = 1.0
+        for _ in range(50):
+            dx, dy = eng._portal_shake_render_offset()
+            self.assertLessEqual(abs(dx), _PORTAL_SHAKE_MAX_AMPLITUDE_PX)
+            self.assertLessEqual(abs(dy), _PORTAL_SHAKE_MAX_AMPLITUDE_PX)
+
+
 class TestPortalCharacterInOutAnimation(unittest.TestCase):
     """Pedido do usuário (02/10/2026): animação de PERSONAGEM entrando
     (`guerreiro_portal_in.png`, 35 frames, SEM direção) e saindo

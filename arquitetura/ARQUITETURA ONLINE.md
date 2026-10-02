@@ -791,6 +791,36 @@ o suficiente abre, mover no meio da contagem zera, trocar de tile de
 portal zera) — revert-to-confirm feito (delay zerado, os 4 testes
 falharam como esperado, restaurado).
 
+**Tremor de câmera nos últimos 3s do cast, decaindo na chegada
+(02/10/2026, pedido do usuário)**: durante os últimos
+`_PORTAL_SHAKE_RAMP_S = 3.0` segundos do cast de 5s, `_portal_shake_
+intensity` (0.0-1.0) sobe linear até 1.0; ao chegar no destino (mesmo
+instante que liga "portal_out" via `_trigger_portal_out_if_pending`),
+decai de volta a 0 em `_PORTAL_SHAKE_FADE_S` (= `_PORTAL_DEACTIVATE_
+DURATION_MS/1000`, reusa a MESMA duração da animação natural de
+"desativar", nenhum número novo). Cancelamento do cast por movimento
+zera o tremor NA HORA, sem fade (decisão confirmada com o usuário —
+só chegada de verdade decai suave).
+
+Aplicado SÓ no offset de DESENHO (`game.py`, `self._cam_x`/`_cam_y`,
+`_portal_shake_render_offset()`, amplitude `_PORTAL_SHAKE_MAX_
+AMPLITUDE_PX = 6.0` px de mundo) — **NUNCA** dentro de `engine.utils.
+get_camera_offset()`, que clique/mira/loot/tooltip também usam
+(`ui/player_input_system.py`, `ui/loot_system.py`, `ui/skill_system.py`,
+etc.) — tremer ali deixaria esses sistemas imprecisos durante o cast/
+chegada. `client/tooltip_handlers.py` lê `self._cam_x`/`_cam_y`
+diretamente (único outro consumidor fora do próprio render) e por
+isso o hover de tooltip também treme de leve junto — efeito colateral
+aceito (cosmético, sem mutação de estado).
+
+Testes: `tests/test_portal.py::TestPortalShake` (sem cast fica em
+zero, antes da janela de 3s não sobe, sobe linear dentro da janela,
+chega a 1.0 no fim do cast, cancelamento zera na hora sem fade,
+chegada liga o fade e decai gradualmente até zero, offset de render
+fica em zero sem tremor e nunca excede a amplitude máxima) —
+revert-to-confirm feito (ramp zerada, os testes de subida/cancelamento
+falharam como esperado, restaurado).
+
 ### 19. Corpse de loot — sem loot não aparece corpo (02/10/2026)
 
 Pedido do usuário (redesenho, substitui o par antigo "120s mob / 4s
