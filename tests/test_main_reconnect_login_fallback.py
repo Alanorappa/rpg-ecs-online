@@ -36,8 +36,8 @@ class _FakeNetworkClient:
     CONNECT_SUCCEEDS = True
     POLL_SEQUENCE: list = []   # lista de listas de (MsgType, payload, seq, ts)
 
-    def __init__(self, host="localhost", port=8765):
-        self.host, self.port = host, port
+    def __init__(self, host="localhost", port=8765, use_tls=False):
+        self.host, self.port, self.use_tls = host, port, use_tls
         self.connected = False
         self.disconnected = False
         self._poll_i = 0

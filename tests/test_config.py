@@ -115,6 +115,27 @@ class TestConfigLoadSave(unittest.TestCase):
         data = config.load()
         self.assertEqual(data["window_mode"], "windowed")
 
+    def test_use_tls_default_e_false(self):
+        """TLS (02/10/2026) -- default False: dev local sem certificado
+        continua conectando em ws:// normal, zero configuração extra."""
+        self.assertEqual(config.DEFAULTS["use_tls"], False)
+        data = config.load()
+        self.assertEqual(data["use_tls"], False)
+
+    def test_config_existente_sem_use_tls_recebe_o_default(self):
+        """Mesmo caso de `window_mode` acima -- config.json salvo ANTES
+        desta chave existir tem que receber o default (False) pelo
+        merge de load(), sem exigir migração manual."""
+        with open(config.CONFIG_FILE, "w") as f:
+            json.dump({"server_host": "1.2.3.4"}, f)
+        data = config.load()
+        self.assertEqual(data["use_tls"], False)
+
+    def test_use_tls_true_persistido_pelo_build_client(self):
+        config.save({"use_tls": True})
+        data = config.load()
+        self.assertEqual(data["use_tls"], True)
+
     def test_save_apos_arquivo_corrompido_recupera(self):
         """Mesmo se um load() anterior bateu num arquivo corrompido, o
         próximo save() ainda produz um config.json válido (não propaga

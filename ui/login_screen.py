@@ -111,7 +111,7 @@ def _safe_disconnect(net):
 
 
 def run(screen: pygame.Surface, host: str = "localhost", port: int = 8765,
-        prefill_user: str = "", initial_status: str = ""):
+        use_tls: bool = False, prefill_user: str = "", initial_status: str = ""):
     """
     Loop de login/cadastro.
     Retorna (username, password, net_client, char_list) ou None (quit).
@@ -159,7 +159,7 @@ def run(screen: pygame.Surface, host: str = "localhost", port: int = 8765,
     def _start_request(action):
         _safe_disconnect(st["net"])
         st["net"] = None
-        net = NetworkClient(host=host, port=port)
+        net = NetworkClient(host=host, port=port, use_tls=use_tls)
         net.connect()
         st["net"] = net; st["pending"] = action
         st["pending_time"] = time.time()

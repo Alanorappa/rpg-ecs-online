@@ -83,7 +83,8 @@ def _parse_args():
     return p.parse_args()
 
 
-def _connect_and_login(host: str, port: int, username: str, password: str):
+def _connect_and_login(host: str, port: int, username: str, password: str,
+                       use_tls: bool = False):
     """Conecta e loga sem UI — usado no fast-path --user/--password e ao
     reconectar depois de "Deslogar" (reaproveita usuário/senha já guardados
     em memória, sem pedir de novo — mesmo mecanismo de re-login automático
@@ -101,7 +102,7 @@ def _connect_and_login(host: str, port: int, username: str, password: str):
     from shared.messages import MsgType as _MT
     import time as _t
 
-    net = NetworkClient(host=host, port=port)
+    net = NetworkClient(host=host, port=port, use_tls=use_tls)
     net.connect()
     _deadline = _t.time() + 10.0
     while not net.connected and _t.time() < _deadline:
@@ -134,7 +135,8 @@ def _connect_and_login(host: str, port: int, username: str, password: str):
     return net, char_list
 
 
-def _reconnect_or_login_screen(screen, host: str, port: int, username: str, password: str):
+def _reconnect_or_login_screen(screen, host: str, port: int, username: str, password: str,
+                               use_tls: bool = False):
     """Wrapper de `_connect_and_login` pros 2 pontos que reconectam sem
     passar pela tela de login normal (fast-path --user/--password e
     "Deslogar") — se a reconexão falhar/expirar, cai na tela de login de
@@ -144,13 +146,13 @@ def _reconnect_or_login_screen(screen, host: str, port: int, username: str, pass
     (username, password, net, char_list) — mesmo shape de
     `ui.login_screen.run` — ou None se o usuário fechar a janela na tela
     de fallback."""
-    net, char_list = _connect_and_login(host, port, username, password)
+    net, char_list = _connect_and_login(host, port, username, password, use_tls=use_tls)
     if net is not None:
         return username, password, net, char_list
 
     from ui.login_screen import run as _login_run
     result = _login_run(
-        screen, host, port, prefill_user=username,
+        screen, host, port, use_tls=use_tls, prefill_user=username,
         initial_status="Conexão perdida ao reconectar — faça login de novo.",
     )
     return result
@@ -188,6 +190,7 @@ if __name__ == "__main__":
 
     host = cfg.get("server_host", "localhost")
     port = int(cfg.get("server_port", 8765))
+    use_tls = bool(cfg.get("use_tls", False))
 
     # --user/--password só pula a tela de login na PRIMEIRA volta — se o
     # jogador apertar ESC na seleção de personagem (quer trocar de conta),
@@ -198,14 +201,15 @@ if __name__ == "__main__":
         # ── Etapa 1: Login / Cadastro ─────────────────────────────────────────────
         if use_dev_login:
             use_dev_login = False
-            result = _reconnect_or_login_screen(screen, host, port, args.user, args.password)
+            result = _reconnect_or_login_screen(screen, host, port, args.user, args.password,
+                                                use_tls=use_tls)
             if result is None:
                 pygame.quit()
                 raise SystemExit(0)
             net_user, net_pass, net, char_list = result
         else:
             from ui.login_screen import run as _login_run
-            result = _login_run(screen, host, port)
+            result = _login_run(screen, host, port, use_tls=use_tls)
             if result is None:
                 pygame.quit()
                 raise SystemExit(0)
@@ -262,7 +266,8 @@ if __name__ == "__main__":
             screen = pygame.display.set_mode((W, H), win_flags, vsync=1)
             pygame.display.set_caption("RPG ECS [ONLINE]")
 
-            result = _reconnect_or_login_screen(screen, host, port, net_user, net_pass)
+            result = _reconnect_or_login_screen(screen, host, port, net_user, net_pass,
+                                                use_tls=use_tls)
             if result is None:
                 pygame.quit()
                 raise SystemExit(0)

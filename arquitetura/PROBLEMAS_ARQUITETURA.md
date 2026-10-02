@@ -4661,6 +4661,17 @@ legada migra no login e continua logando; hash vazado do banco NÃO loga)
 "a senha") e argon2/bcrypt no lugar de sha256 — os dois juntos na migração
 de infra pré-lançamento.
 
+**✅ TLS/wss implementado (02/10/2026)** — ver `ARQUITETURA ONLINE.md`
+§20 pro desenho completo. Nota: a suposição original deste item (TLS
+"precisa de domínio pra certificado") era imprecisa — decisão real
+tomada com o usuário foi certificado AUTOASSINADO (SAN = IP do
+servidor), fixado ("pinned") no próprio cliente via `cafile=`, sem
+nenhuma autoridade certificadora pública envolvida — o cliente é
+nosso, não um navegador de terceiro, então não precisa de confiança
+pública. argon2/bcrypt continua adiado de propósito pra quando fizer
+sentido trocar o formato de hash de contas já reais (decisão
+reconfirmada, não é esquecimento).
+
 ### 🟡 C2 — Identidade de item é o nome (string)
 
 Saves/protocolo/reconstrução usam `item.name` como chave. Renomear item no

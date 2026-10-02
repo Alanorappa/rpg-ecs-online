@@ -28,7 +28,8 @@ class OnlineModeHandlers:
         data = _cfg.load()
         host = data.get("server_host", "localhost")
         port = int(data.get("server_port", 8765))
-        self._net = NetworkClient(host=host, port=port)
+        use_tls = bool(data.get("use_tls", False))
+        self._net = NetworkClient(host=host, port=port, use_tls=use_tls)
         self._net.connect()
         import threading
         threading.Timer(0.5, self._do_login).start()

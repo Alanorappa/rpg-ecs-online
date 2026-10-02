@@ -42,10 +42,20 @@ robocopy "assets" (Join-Path $dist "assets") /E /NFL /NDL /NJH /NJS | Out-Null
 robocopy "maps" (Join-Path $dist "maps") /E /NFL /NDL /NJH /NJS `
     /XF "map_main*" "map_worm_cave*" "main_*.png" "*.png" | Out-Null
 
-Write-Host "== Gravando config.json com server_host=$ServerHost =="
+Write-Host "== Copiando certs/ para $dist =="
+robocopy "certs" (Join-Path $dist "certs") /E /NFL /NDL /NJH /NJS | Out-Null
+
+# TLS (02/10/2026): o certificado autoassinado foi gerado com SAN = IP
+# real do servidor -- so faz sentido pra quem conecta nesse IP. Build
+# local (-ServerHost localhost) nao tem certificado pra "localhost",
+# entao fica em ws:// normal; qualquer outro host (o caso real de
+# distribuicao) liga TLS automaticamente, sem flag manual pra lembrar.
+$UseTls = ($ServerHost -ne "localhost")
+
+Write-Host "== Gravando config.json com server_host=$ServerHost use_tls=$UseTls =="
 # Arquivo parcial de proposito: config.load() mescla com os DEFAULTS em
 # runtime, entao so o que difere do default precisa estar aqui.
-@{ server_host = $ServerHost; server_port = $ServerPort } |
+@{ server_host = $ServerHost; server_port = $ServerPort; use_tls = $UseTls } |
     ConvertTo-Json | Out-File -FilePath (Join-Path $dist "config.json") -Encoding ascii
 
 Write-Host "== Gerando LEIA-ME.txt =="

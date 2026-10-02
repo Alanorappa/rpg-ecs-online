@@ -981,6 +981,95 @@ também cria corpse, saque total expira na hora, saque parcial dá +30s);
 ajustado (mob "Lobo" sem loot natural precisou de um coin mockado pra
 o teste de reciclagem de flecha continuar tendo um corpse pra inspecionar).
 
+### 20. TLS (wss://) via certificado autoassinado fixado no cliente (02/10/2026)
+
+Usuário quer publicar o jogo jogável (itch.io, download direto do
+`.exe` já empacotado por `release_tools/build_client.ps1`) e pediu
+revisão de segurança antes. Achado confirmado nesta sessão (já
+catalogado em `PROBLEMAS_ARQUITETURA.md` item C1): servidor falava
+`ws://` sem criptografia nenhuma — senha (com hash) e todo o resto do
+tráfego expostos em texto plano na rede. **Sem domínio** (decisão do
+usuário — não quer comprar um): caminho escolhido é certificado
+autoassinado com SAN = IP do servidor, fixado ("pinned") no cliente —
+funciona porque o cliente é nosso, não um navegador de terceiro, não
+precisa de autoridade certificadora pública confiável.
+
+**Certificado**: gerado 1x no servidor via SSH (`openssl req -x509
+-newkey rsa:2048 -days 3650 -nodes -subj "/CN=5.161.104.174"
+-addext "subjectAltName=IP:5.161.104.174"`), chave privada fica SÓ no
+servidor (`/opt/rpg_ecs_online/certs/server.key`, `chmod 600`,
+`chown rpgapp`, fora do git pra sempre); o certificado PÚBLICO é
+commitado no repo em `certs/server_cert.pem` — é ele que o cliente
+embute e usa pra fixar confiança (não é segredo, só prova identidade).
+10 anos de validade — sem CA pública envolvida, sem rotação
+automática. Limitação conhecida: se o IP do servidor mudar, o
+certificado precisa ser regerado e o cliente republicado (aceitável
+no estágio atual, sem rotação dinâmica).
+
+**Servidor** (`server/main.py::_build_server_ssl_context(cert_path,
+key_path)`): `None` (sem TLS, `ws://` normal) se as 2 env vars
+(`RPG_TLS_CERT`/`RPG_TLS_KEY`) vierem vazias — default de dev local,
+zero configuração extra. Lidas via `os.environ.get(...)`, mesmo padrão
+já usado por `server/auth.py::DATABASE_URL` (`RPG_DATABASE_URL`); em
+produção setadas em `/opt/rpg_ecs_online/.env` (`EnvironmentFile=` do
+unit `rpg-server.service`, mesmo mecanismo já usado antes pra ligar
+flags de debug remotamente, ver `PROBLEMAS_ARQUITETURA.md` ~linha
+23520) + `systemctl restart rpg-server`. Se a env var vier preenchida
+mas o arquivo não existir, `load_cert_chain` levanta — nunca cai pra
+`ws://` em silêncio quando TLS foi pedido explicitamente. `main()`
+NÃO ganhou parâmetro novo (as env vars são lidas dentro da função) —
+`tests/test_graceful_shutdown.py`/`test_gc_freeze_startup.py` chamam
+`main(host, port)` posicionalmente, mudar a assinatura quebraria os
+dois.
+
+**Cliente** (`client/network.py`): `NetworkClient.__init__` ganha
+`use_tls: bool = False`. `_build_uri(host, port, use_tls)` escolhe
+`wss://`/`ws://` (passar `ssl=` numa URI `ws://` é erro na lib
+`websockets`). `_build_client_ssl_context(use_tls)` — `None` se
+`use_tls=False`; senão `ssl.create_default_context(cafile=...)`
+apontando pro certificado bundlado (`certs/server_cert.pem`, resolvido
+via `paths.resource_path()` — mesmo ponto único já usado por
+assets/maps pra funcionar tanto em dev quanto no `.exe` empacotado).
+Certificado ausente com `use_tls=True` levanta — mesmo princípio do
+servidor, nunca conecta sem TLS em silêncio.
+
+`use_tls` threaded pelos 3 pontos reais que criam `NetworkClient`:
+`main.py::_connect_and_login` (lido de `config.json`), `ui/
+login_screen.py::run()` (parâmetro novo), `client/
+online_mode_handlers.py::_connect_online` (lido de `config.json`
+direto). `config.py::DEFAULTS["use_tls"] = False`.
+`release_tools/build_client.ps1` copia `certs/` pro pacote (mesmo
+padrão de assets/maps) e escreve `use_tls = ($ServerHost -ne
+"localhost")` no `config.json` parcial — build local continua sem
+TLS (não existe certificado pra "localhost"), build pro IP de
+produção liga automaticamente.
+
+**Fora de escopo**: `tools/loadtest/protocol_client.py` tem seu
+próprio `ws://` independente (comentário no arquivo já documenta que
+nunca reusa `client/network.py`) — ferramenta local/dev, nunca aponta
+pro servidor de produção com TLS fixado pra um IP específico, não
+precisa de TLS. Hash de senha com KDF lenta (argon2/bcrypt) continua
+adiado de propósito (decisão já confirmada com o usuário antes, ver
+`PROBLEMAS_ARQUITETURA.md` item C1) — trocar isso é uma rodada
+separada, depois que TLS estiver rodando de verdade.
+
+**Achado novo, catalogado mas fora de escopo**: `MAX_PLAYERS_PER_WORLD`
+(`shared/constants.py`) nunca é checado em `SessionManager.on_connect`
+— servidor aceita qualquer número de conexões sem teto. Baixo risco na
+escala de itch.io, registrado pra uma rodada própria futura.
+
+Testes: `tests/test_tls.py` (`_build_server_ssl_context` sem
+cert/key → None, com fixture real → SSLContext, caminho inexistente
+com env preenchida → levanta; `_build_client_ssl_context` mesma
+tríade do lado cliente; `_build_uri` nas 4 combinações host/use_tls) —
+revert-to-confirm feito nas 2 funções "nunca cai em silêncio" (guard
+removido, os 2 testes falharam como esperado, restaurado). Prova de
+mecanismo ponta-a-ponta feita fora da suíte (sem Postgres local pra
+rodar o servidor completo): script isolado em scratchpad usando
+`_build_server_ssl_context`/`_build_uri` reais contra um
+`websockets.serve()`/`websockets.connect()` mínimo — handshake TLS
+real confirmado funcionando nos dois lados antes de tocar em produção.
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```

@@ -11,6 +11,7 @@ import asyncio
 import argparse
 import sys
 import os
+import ssl
 import ctypes
 
 # Comentário antigo dizia que o servidor precisava disso por importar
@@ -51,6 +52,29 @@ from server.auth         import init_db
 from server.world_server import WorldServer
 from server.session      import SessionManager
 from shared.constants    import SERVER_HOST, SERVER_PORT, PROTOCOL_VERSION
+
+
+def _build_server_ssl_context(cert_path: str, key_path: str) -> "ssl.SSLContext | None":
+    """None (sem TLS, `ws://` normal) se `cert_path`/`key_path` vierem
+    vazios — default de dev local, zero configuração extra precisa
+    (02/10/2026, pedido do usuário: publicar o jogo exige TLS, mas sem
+    domínio -- certificado autoassinado, SAN=IP do servidor, fixado no
+    cliente via `cafile=`, ver `client/network.py::
+    _build_client_ssl_context`). Lido via env vars
+    (`RPG_TLS_CERT`/`RPG_TLS_KEY`) no mesmo padrão já usado por
+    `server/auth.py::DATABASE_URL` (`RPG_DATABASE_URL`) -- em produção,
+    setado em `/opt/rpg_ecs_online/.env` (`EnvironmentFile=` do unit
+    `rpg-server.service`), nunca hardcoded.
+
+    Se as env vars vierem PREENCHIDAS mas o arquivo não existir,
+    `load_cert_chain` levanta — NUNCA cai pra `ws://` em silêncio
+    quando o operador pediu TLS explicitamente (falha alto, visível no
+    boot, em vez de servir sem criptografia sem avisar)."""
+    if not cert_path or not key_path:
+        return None
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert_path, key_path)
+    return ctx
 
 
 async def handle_connection(ws, session_manager: SessionManager) -> None:
@@ -106,14 +130,19 @@ async def main(host: str, port: int) -> None:
     _gc.collect()
     _gc.freeze()
 
+    ssl_context = _build_server_ssl_context(
+        os.environ.get("RPG_TLS_CERT", ""), os.environ.get("RPG_TLS_KEY", ""))
+    scheme = "wss" if ssl_context is not None else "ws"
+
     log.info(f"[Server] RPG Online v{PROTOCOL_VERSION}")
-    log.info(f"[Server] WebSocket em ws://{host}:{port}")
+    log.info(f"[Server] WebSocket em {scheme}://{host}:{port}")
     log.info(f"[Server] Ctrl+C para encerrar\n")
 
     # Roda servidor WebSocket e loop de ticks em paralelo
     async with websockets.serve(
         lambda ws: handle_connection(ws, mgr),
         host, port,
+        ssl=ssl_context,        # None = ws:// normal (dev local, default)
         max_size=1_048_576,    # 1 MB máximo por mensagem
         ping_interval=20,      # keepalive
         ping_timeout=60,

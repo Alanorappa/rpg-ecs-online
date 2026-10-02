@@ -29,6 +29,11 @@ DEFAULTS = {
     "window_mode":   "maximized",
     "server_host":   "localhost",
     "server_port":   8765,
+    # TLS via certificado autoassinado fixado no cliente (02/10/2026) --
+    # default False (dev local sem certificado continua em ws:// normal,
+    # zero configuração extra). build_client.ps1 escreve True pro
+    # pacote distribuído (servidor real tem certs/server_cert.pem).
+    "use_tls":       False,
     "net_user":      "teste",
     "net_pass":      "123456",
     "music_volume":  0.4,

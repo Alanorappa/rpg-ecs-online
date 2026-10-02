@@ -9,7 +9,9 @@ O game loop nunca bloqueia: apenas coloca/retira itens das filas.
 """
 from __future__ import annotations
 import asyncio
+import os
 import queue
+import ssl
 import threading
 import time
 from typing import Callable
@@ -22,6 +24,39 @@ _RECONNECT_INITIAL_DELAY = 1.0
 _RECONNECT_MAX_DELAY     = 30.0
 
 
+def _build_uri(host: str, port: int, use_tls: bool) -> str:
+    """`wss://` ou `ws://` — passar `ssl=` pra `websockets.connect()`
+    com um URI `ws://` é erro na lib, por isso o esquema precisa
+    refletir `use_tls` de verdade."""
+    scheme = "wss" if use_tls else "ws"
+    return f"{scheme}://{host}:{port}"
+
+
+def _build_client_ssl_context(use_tls: bool) -> "ssl.SSLContext | None":
+    """None (sem TLS) se `use_tls=False` -- default de sempre, conecta
+    em `ws://` normal. Com `use_tls=True`, fixa ("pinned") o
+    certificado autoassinado do servidor via `cafile=` (02/10/2026,
+    pedido do usuário -- sem domínio, não dá pra usar uma autoridade
+    certificadora pública; como o cliente é nosso, não um navegador de
+    terceiro, confiar especificamente NESSE certificado é seguro e não
+    precisa de CA nenhuma). Certificado público bundlado ao lado do
+    exe/projeto em `certs/server_cert.pem` (`paths.resource_path()`,
+    mesmo ponto único já usado por assets/maps pra resolver caminho
+    tanto em dev quanto no `.exe` empacotado via PyInstaller).
+
+    Arquivo ausente com `use_tls=True` levanta — NUNCA conecta sem TLS
+    em silêncio quando TLS foi pedido explicitamente."""
+    if not use_tls:
+        return None
+    from paths import resource_path
+    cert_path = resource_path(os.path.join("certs", "server_cert.pem"))
+    if not os.path.isfile(cert_path):
+        raise FileNotFoundError(
+            f"use_tls=True mas certificado não encontrado em {cert_path!r} -- "
+            "build incompleto (falta certs/server_cert.pem) ou caminho errado.")
+    return ssl.create_default_context(cafile=cert_path)
+
+
 class NetworkClient:
     """
     Roda o WebSocket em uma thread separada (asyncio loop próprio).
@@ -31,9 +66,11 @@ class NetworkClient:
     backoff exponencial (1s → 2s → 4s → … → 30s).
     """
 
-    def __init__(self, host: str = SERVER_HOST, port: int = SERVER_PORT):
+    def __init__(self, host: str = SERVER_HOST, port: int = SERVER_PORT,
+                 use_tls: bool = False):
         self.host = host
         self.port = port
+        self.use_tls = use_tls
 
         # Filas thread-safe
         self.inbox:  queue.Queue = queue.Queue()   # (MsgType, payload, seq, ts)
@@ -172,9 +209,11 @@ class NetworkClient:
 
     async def _connect_and_run(self) -> None:
         import websockets
-        uri = f"ws://{self.host}:{self.port}"
+        uri = _build_uri(self.host, self.port, self.use_tls)
+        ssl_context = _build_client_ssl_context(self.use_tls)
         print(f"[Network] conectando em {uri}")
-        async with websockets.connect(uri) as ws:
+        connect_kwargs = {"ssl": ssl_context} if self.use_tls else {}
+        async with websockets.connect(uri, **connect_kwargs) as ws:
             self._ws        = ws
             self.connected  = True
             self.reconnecting = False
