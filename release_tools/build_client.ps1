@@ -55,7 +55,11 @@ $UseTls = ($ServerHost -ne "localhost")
 Write-Host "== Gravando config.json com server_host=$ServerHost use_tls=$UseTls =="
 # Arquivo parcial de proposito: config.load() mescla com os DEFAULTS em
 # runtime, entao so o que difere do default precisa estar aqui.
-@{ server_host = $ServerHost; server_port = $ServerPort; use_tls = $UseTls } |
+# scale/music_volume/sfx_volume (02/10/2026, pedido do usuario -- valores
+# pro pacote distribuido no itch.io, nao mudam o default de dev local em
+# config.py::DEFAULTS): escala 1.25x, volume de musica/efeitos em 10%.
+@{ server_host = $ServerHost; server_port = $ServerPort; use_tls = $UseTls;
+   scale = 1.25; music_volume = 0.1; sfx_volume = 0.1 } |
     ConvertTo-Json | Out-File -FilePath (Join-Path $dist "config.json") -Encoding ascii
 
 Write-Host "== Gerando LEIA-ME.txt =="

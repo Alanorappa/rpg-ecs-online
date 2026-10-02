@@ -1934,14 +1934,23 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         # _open_bg_queue_modal) — abre o modal unificado,
                         # nunca entra direto.
                         self._open_bg_queue_modal()
-                    elif event.key == pygame.K_F10:
+                    elif event.key == pygame.K_F10 and self.is_gm:
+                        # Gate por GM (02/10/2026, pedido do usuário —
+                        # antes do lançamento no itch.io): God Mode já
+                        # era inócuo pra quem não é GM de verdade (o
+                        # servidor rejeita GM_LEVELUP/GM_ADD_GOLD/
+                        # GM_ADD_ITEM sem `session.is_gm`, ver
+                        # `server/session.py`), mas o painel em si
+                        # continuava abrindo pra qualquer jogador —
+                        # mesmo padrão já usado por F12 (`self.is_gm`
+                        # abaixo, `DEBUG_MODE and self.is_gm`).
                         self._close_all_modals()
                         self._god_mode.toggle()
                         if self._god_mode.active and self._zoom != 1.0:
                             self._zoom = 1.0
                             self._tile_render_system.invalidate_cache()
                             self._zoom_cache_dirty_timer = -1.0  # cancela debounce pendente de scroll
-                    elif event.key == pygame.K_F11:
+                    elif event.key == pygame.K_F11 and self.is_gm:
                         self._show_perf_overlay = not self._show_perf_overlay
                         # Simétrico com o overlay — antes só ligava (nunca
                         # desligava), e _save_config() persiste PROFILE_FRAMES
