@@ -857,6 +857,34 @@ controle `test_zone_change_sem_cast_zera_tremor_normalmente`) —
 revert-to-confirm feito (stop_shake forçado True, o teste falhou como
 esperado, restaurado).
 
+**SFX de cast (02/10/2026, pedido do usuário, timing calculado por ele
+a partir da forma de onda de `assets/sounds/sfx/portal.ogg`)**: toca
+aos `_PORTAL_SFX_START_S = 1.317` segundos de cast decorridos
+(`client/portal_handlers.py::_update_portal_sfx`, chamado junto da
+rampa do tremor). Arquivo tem 6.807s de duração total (confirmado via
+`pygame.mixer.Sound.get_length()`); o usuário identificou que o ápice/
+estouro do ARQUIVO cai aos 3.683s de reprodução — 1.317+3.683=5.000s =
+exatamente a duração do cast, fazendo o estouro coincidir com o
+instante da troca de tela. O restante do arquivo (~3.12s) toca
+naturalmente já no mapa de destino, sem corte. `SOUNDS.play("portal")`
+— carregamento automático, qualquer `.ogg` em `assets/sounds/sfx/`
+sem entrada em `_REGISTRY` já é pré-carregado pelo nome do arquivo
+(`ui/sound_manager.py::SoundManager.init()`).
+
+Mesmo padrão de "abrupto vs. natural" do tremor: `_cancel_portal_cast_
+local`'s `stop_shake` agora TAMBÉM controla o SFX — `True` (cancelamento
+por movimento) chama `.stop()` no canal na hora; `False` (conclusão
+natural, `_handle_msg_zone_change`) só solta a referência
+(`_portal_sfx_channel = None`) sem parar, deixando o canal tocar até o
+fim por conta própria. Exigiu 1 mudança pequena e compatível em
+`ui/sound_manager.py::SoundManager.play()`: agora devolve o `Channel`
+usado (antes `None` sempre) — nenhum chamador existente usava o
+retorno. Testes: `tests/test_portal.py::TestPortalSfx` (não toca antes
+do tempo, toca ao atingir 1.317s, não toca 2x no mesmo cast, cancelar
+por movimento para o canal, conclusão natural NÃO para) —
+revert-to-confirm feito (disparo desativado, 3 testes falharam como
+esperado, restaurado).
+
 ### 19. Corpse de loot — sem loot não aparece corpo (02/10/2026)
 
 Pedido do usuário (redesenho, substitui o par antigo "120s mob / 4s

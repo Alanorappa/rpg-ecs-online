@@ -936,6 +936,103 @@ class TestPortalShake(unittest.TestCase):
             self.assertLessEqual(abs(dy), _PORTAL_SHAKE_MAX_AMPLITUDE_PX)
 
 
+class TestPortalSfx(unittest.TestCase):
+    """Pedido do usuário (02/10/2026): SFX de `assets/sounds/sfx/
+    portal.ogg` começa aos `_PORTAL_SFX_START_S` (1.317s) de cast
+    decorridos -- o ápice do ARQUIVO (contado a partir de quando a
+    reprodução começa) cai aos 3.683s de reprodução, e
+    1.317+3.683=5.000s=duração do cast, fazendo o estouro coincidir com
+    a troca de tela. Cancelamento por movimento para o som na hora;
+    conclusão natural deixa tocar até o fim no mapa de destino."""
+
+    def _make_engine(self):
+        from client.portal_handlers import PortalHandlers
+        from engine.world import World
+        from engine.components import TileMovement
+
+        class _FakeEngine(PortalHandlers):
+            def _any_modal_open(self):
+                return False
+
+        eng = _FakeEngine()
+        eng.world = World()
+        eng.player_entity = eng.world.create_entity()
+        tm = TileMovement()
+        tm.is_moving = False
+        eng.world.add_component(eng.player_entity, tm)
+        eng.portal_tiles = {}
+        return eng, tm
+
+    def test_sfx_nao_toca_antes_do_tempo(self):
+        from unittest import mock
+        import client.portal_handlers as ph
+        eng, _tm = self._make_engine()
+        eng._portal_cast_active = {"elapsed": 0.0, "duration": 5.0,
+                                   "portal_id": "x", "dest_index": 0}
+        with mock.patch.object(ph.SOUNDS, "play") as m_play:
+            eng._update_portal_state(ph._PORTAL_SFX_START_S - 0.1)
+            m_play.assert_not_called()
+        self.assertIsNone(eng._portal_sfx_channel)
+
+    def test_sfx_toca_ao_atingir_1_317s(self):
+        from unittest import mock
+        import client.portal_handlers as ph
+        eng, _tm = self._make_engine()
+        eng._portal_cast_active = {"elapsed": 0.0, "duration": 5.0,
+                                   "portal_id": "x", "dest_index": 0}
+        fake_channel = mock.Mock()
+        with mock.patch.object(ph.SOUNDS, "play", return_value=fake_channel) as m_play:
+            eng._update_portal_state(ph._PORTAL_SFX_START_S)
+            m_play.assert_called_once_with("portal")
+        self.assertIs(eng._portal_sfx_channel, fake_channel)
+
+    def test_sfx_nao_toca_de_novo_no_mesmo_cast(self):
+        from unittest import mock
+        import client.portal_handlers as ph
+        eng, _tm = self._make_engine()
+        eng._portal_cast_active = {"elapsed": 0.0, "duration": 5.0,
+                                   "portal_id": "x", "dest_index": 0}
+        with mock.patch.object(ph.SOUNDS, "play", return_value=mock.Mock()) as m_play:
+            eng._update_portal_state(ph._PORTAL_SFX_START_S)
+            eng._update_portal_state(0.5)
+            eng._update_portal_state(0.5)
+        m_play.assert_called_once()
+
+    def test_cancelar_por_movimento_para_o_som(self):
+        from unittest import mock
+        import client.portal_handlers as ph
+        eng, tm = self._make_engine()
+        eng._portal_cast_active = {"elapsed": 0.0, "duration": 5.0,
+                                   "portal_id": "x", "dest_index": 0}
+        fake_channel = mock.Mock()
+        with mock.patch.object(ph.SOUNDS, "play", return_value=fake_channel):
+            eng._update_portal_state(ph._PORTAL_SFX_START_S)
+        self.assertIs(eng._portal_sfx_channel, fake_channel)
+
+        tm.is_moving = True
+        eng._update_portal_state(0.05)
+        fake_channel.stop.assert_called_once()
+        self.assertIsNone(eng._portal_sfx_channel,
+                          "cancelar por movimento deve parar o som na hora")
+
+    def test_conclusao_natural_nao_para_o_som(self):
+        """Mesma chamada que `_handle_msg_zone_change` faz na chegada de
+        verdade (`stop_shake=False`) -- o canal NÃO deve ser parado, só
+        a referência é solta (deixa tocar até o fim por conta própria,
+        mesmo já no mapa de destino)."""
+        from unittest import mock
+        eng, _tm = self._make_engine()
+        fake_channel = mock.Mock()
+        eng._portal_sfx_channel = fake_channel
+        eng._portal_cast_active = {"elapsed": 5.0, "duration": 5.0,
+                                   "portal_id": "x", "dest_index": 0}
+
+        eng._cancel_portal_cast_local(stop_shake=False)
+
+        fake_channel.stop.assert_not_called()
+        self.assertIsNone(eng._portal_sfx_channel)
+
+
 class TestPortalCharacterInOutAnimation(unittest.TestCase):
     """Pedido do usuário (02/10/2026): animação de PERSONAGEM entrando
     (`guerreiro_portal_in.png`, 35 frames, SEM direção) e saindo

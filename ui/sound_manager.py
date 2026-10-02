@@ -384,28 +384,36 @@ class SoundManager:
 
     def play(self, name: str, volume: float = 1.0,
              channel_group: tuple[int, ...] | None = None,
-             pan: float = 0.0) -> None:
+             pan: float = 0.0) -> "pygame.mixer.Channel | None":
         """Toca um SFX pelo nome. Em contexto 'cave' usa a versão processada da pasta cave/.
 
         pan: -1.0 (esquerda) .. 0.0 (centro) .. +1.0 (direita) — ver `pan_at`.
-        """
+
+        Devolve o `Channel` usado (ou None se nada tocou -- mixer
+        indisponível/nome desconhecido/sem canal livre), 02/10/2026,
+        pedido do usuário -- só pra quem precisa poder `.stop()` o som
+        antes do fim natural (ex: SFX de cast de portal cancelado por
+        movimento, `client/portal_handlers.py`). Todo chamador
+        existente já ignorava o retorno (era `None` sempre), mudança
+        100% compatível."""
         if not self._ready or not self._game_ready:
-            return
+            return None
         if self._context == "cave":
             sound = self._cache_cave.get(name) or self._cache.get(name)
         else:
             sound = self._cache.get(name)
         if sound is None:
-            return
+            return None
         group = channel_group if channel_group is not None else _CH_GENERAL
         ch = self._find_free_channel(group)
         if ch is None:
-            return
+            return None
         eff = volume * (self.sfx_volume if self.sfx_enabled else 0.0)
         sound.set_volume(eff)
         ch.play(sound)
         left, right = self._pan_gains(pan)
         ch.set_volume(left, right)
+        return ch
 
     def play_random(self, names: list[str], volume: float = 1.0,
                     channel_group: tuple[int, ...] | None = None,

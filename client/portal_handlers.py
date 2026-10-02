@@ -75,6 +75,21 @@ _PORTAL_SHAKE_RAMP_S = 3.0
 _PORTAL_SHAKE_FADE_S = _PORTAL_DEACTIVATE_DURATION_MS / 1000.0
 _PORTAL_SHAKE_MAX_AMPLITUDE_PX = 6.0
 
+# SFX de cast de portal (02/10/2026, pedido do usuário, timing exato
+# calculado por ele a partir da forma de onda de `assets/sounds/sfx/
+# portal.ogg`, 6.807s de duração total): toca a partir de
+# `_PORTAL_SFX_START_S = 1.317` segundos de cast decorridos -- o ápice
+# do ARQUIVO (contado a partir de quando a reprodução começa) cai aos
+# 3.683s de reprodução, e 1.317 + 3.683 = 5.000s = exatamente a
+# duração do cast (`_DEFAULT_PORTAL_CAST_DURATION_S`/`WorldServer.
+# PORTAL_CAST_DURATION_S`) -- o estouro do som coincide com o instante
+# da troca de tela. O restante do arquivo (~3.12s) toca naturalmente
+# já no mapa de destino, sem interrupção (nunca corta no ZONE_CHANGE).
+# Cancelamento por movimento PARA o som na hora (mesmo tratamento do
+# tremor, `_PORTAL_SHAKE_*` acima) -- só chegada de verdade deixa tocar
+# até o fim.
+_PORTAL_SFX_START_S = 1.317
+
 # Raio de busca (em tiles) pra achar o objeto VISUAL do portal perto do
 # tile de interação do gate (01/10/2026) — ver _find_portal_anim_anchor.
 # Achado real nos 2 portais de teste: o objeto fica consistentemente a
@@ -245,6 +260,20 @@ class PortalHandlers:
         self._portal_shake_fade_start_val = value
 
     @property
+    def _portal_sfx_channel(self):
+        """`pygame.mixer.Channel` do SFX de cast em andamento, ou None
+        antes de `_PORTAL_SFX_START_S` ter decorrido (ainda não tocou)
+        ou depois do cast terminar (tocado e já sem necessidade de
+        controle -- deixado tocar até o fim por conta própria).
+        `_cancel_portal_cast_local()` usa isso pra `.stop()` no
+        cancelamento por movimento."""
+        return getattr(self, "_portal_sfx_channel_val", None)
+
+    @_portal_sfx_channel.setter
+    def _portal_sfx_channel(self, value) -> None:
+        self._portal_sfx_channel_val = value
+
+    @property
     def _portal_cast_active(self):
         """None sem cast em andamento; senão {"elapsed","duration",
         "portal_id","dest_index"} — lido por client/hud_handlers.py::
@@ -306,6 +335,7 @@ class PortalHandlers:
         self._portal_cast_active = None
         self._portal_shake_intensity = 0.0
         self._portal_shake_fade_elapsed = None
+        self._portal_sfx_channel = None
 
     # ── Update por frame (chamado de game.py, perto da detecção de
     # transição de cavernas) ──────────────────────────────────────────────
@@ -324,6 +354,7 @@ class PortalHandlers:
             else:
                 self._portal_cast_active["elapsed"] += dt
                 self._update_portal_shake_ramp()
+                self._update_portal_sfx()
             return
 
         # Fora de cast: só pode estar decaindo de uma chegada recente
@@ -399,6 +430,20 @@ class PortalHandlers:
         amp = self._portal_shake_intensity * _PORTAL_SHAKE_MAX_AMPLITUDE_PX
         return random.uniform(-amp, amp), random.uniform(-amp, amp)
 
+    def _update_portal_sfx(self) -> None:
+        """Dispara o SFX (`assets/sounds/sfx/portal.ogg`, pré-carregado
+        pelo nome `"portal"`) assim que o cast ativo atinge
+        `_PORTAL_SFX_START_S` segundos decorridos -- chamado todo frame
+        enquanto `_portal_cast_active` existe e não está em movimento
+        (ver `_update_portal_state`), igual `_update_portal_shake_ramp`.
+        `_portal_sfx_channel is not None` já cobre "já tocou pra este
+        cast" -- nunca re-dispara no mesmo cast."""
+        if self._portal_sfx_channel is not None:
+            return
+        if self._portal_cast_active["elapsed"] < _PORTAL_SFX_START_S:
+            return
+        self._portal_sfx_channel = SOUNDS.play("portal")
+
     def _cancel_portal_cast_local(self, stop_shake: bool = True) -> None:
         """`stop_shake=True` (padrão, usado pelo cancelamento por
         movimento em `_update_portal_state`) zera o tremor NA HORA, sem
@@ -412,11 +457,20 @@ class PortalHandlers:
         (02/10/2026): sem esse parâmetro, o tremor sempre zerava ANTES
         do fade conseguir capturar nada -- o usuário via o tremor subir
         normal durante o cast e simplesmente desaparecer ao chegar, em
-        vez de decair suave."""
+        vez de decair suave.
+
+        Mesmo `stop_shake` também controla o SFX (`_portal_sfx_channel`)
+        -- `True` para o som NA HORA (cancelamento por movimento, nunca
+        ouve o resto do "estouro" de um teleporte que não aconteceu);
+        `False` (conclusão natural) deixa o canal tocando por conta
+        própria até o fim, mesmo já no mapa de destino."""
         self._portal_cast_active = None
         if stop_shake:
             self._portal_shake_intensity = 0.0
             self._portal_shake_fade_elapsed = None
+            if self._portal_sfx_channel is not None:
+                self._portal_sfx_channel.stop()
+        self._portal_sfx_channel = None
         from engine.components import TileMovement as _TMPortalC
         tm = self.world.get_component(self.player_entity, _TMPortalC)
         if tm is not None and tm.anim_attack_state == "portal_in":
