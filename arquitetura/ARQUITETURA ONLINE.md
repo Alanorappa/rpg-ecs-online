@@ -908,6 +908,36 @@ test_assets_reais_de_portal_in_out_existem_e_tem_frames` atualizado
 pro frame count real novo (8/8, antes 35/12) — revert-to-confirm feito
 (disparo desativado, 6 testes falharam como esperado, restaurado).
 
+**Âncora de desenho de personagem passa a ser pela BASE do frame, não
+mais um offset fixo a partir do topo (02/10/2026, bug real relatado
+pelo usuário)**: `engine/character_animation.py::character_anchor_
+offset()` ganhou parâmetro opcional `frame_height` (default
+`CHAR_BASELINE_FRAME_H = 80`, as sheets "normais"). Causa: sprites de
+portal_in/portal_out foram redesenhadas bem mais altas (80px→640px,
+pensadas pra crescer PRA CIMA mantendo os pés no mesmo lugar) — com o
+offset antigo (`CHAR_COLLISION_OFFSET_Y + CHAR_COLLISION_SIZE/2 = 48`,
+FIXO, sempre medido do topo do frame), a sheet mais alta "crescia pra
+baixo" a partir desse topo fixo, enterrando os pés. `dy` agora é
+`frame_height - CHAR_FRAME_BOTTOM_MARGIN_PX - CHAR_COLLISION_SIZE/2`
+(`CHAR_FRAME_BOTTOM_MARGIN_PX = 16`, derivada: distância constante
+entre a base do tile de colisão e a base do frame, a mesma não importa
+a altura da sheet) — numa sheet baseline (80px) dá exatamente 48,
+idêntico ao valor fixo de sempre (zero mudança pra quem chama sem
+argumento). 2 call sites que já têm o Surface do frame em mãos passam
+a passar `frame.get_height()`: `ui/render_system.py` (RenderSystem,
+blit do personagem local) e `client/portal_handlers.py::
+_get_portal_character_light_source` (luz azulada do personagem).
+`client/remote_entity_handlers.py` (nameplate de player remoto)
+continua usando o default de propósito — fixo, não deve "balançar"
+seguindo a sheet de cada animação. Y-sort não foi afetado (já usa
+`CHAR_COLLISION_SIZE` fixo, independente de altura de frame, desde
+sempre). Testes: `tests/test_character_animation.py::
+TestCharacterAnchorOffsetFrameAltoAncoraPelaBase` (frame baseline
+mantém comportamento de sempre, frame 8x mais alto ancora pela base,
+margem da base é constante entre alturas diferentes) —
+revert-to-confirm feito (offset fixo antigo restaurado temporariamente,
+2 testes falharam como esperado, restaurado).
+
 ### 19. Corpse de loot — sem loot não aparece corpo (02/10/2026)
 
 Pedido do usuário (redesenho, substitui o par antigo "120s mob / 4s

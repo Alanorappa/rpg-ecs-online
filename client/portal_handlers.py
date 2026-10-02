@@ -669,7 +669,7 @@ class PortalHandlers:
         frame = get_character_frame(class_id, state, tm.facing, anim_t, frame_ms)
         if frame is None:
             return None
-        anchor_dx, anchor_dy = character_anchor_offset()
+        anchor_dx, anchor_dy = character_anchor_offset(frame.get_height())
         scr_x = int(pos.x - camera_offset_x - anchor_dx)
         scr_y = int(pos.y - camera_offset_y - anchor_dy)
         return {

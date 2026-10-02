@@ -540,6 +540,48 @@ class TestCharacterAnchorOffset(unittest.TestCase):
         self.assertEqual(character_anchor_offset(), (48, 48))
 
 
+class TestCharacterAnchorOffsetFrameAltoAncoraPelaBase(unittest.TestCase):
+    """Bug real relatado pelo usuário (02/10/2026): sprites de
+    portal_in/portal_out foram redesenhadas mais altas (80px -> 640px)
+    pra crescer PRA CIMA mantendo os pés no mesmo lugar -- com o offset
+    FIXO antigo (sempre medido do topo do frame), a sheet mais alta
+    "crescia pra baixo", enterrando os pés. Fix: `dy` derivado da
+    altura REAL do frame (`frame_height`), ancorado pela BASE."""
+
+    def test_frame_baseline_80px_mantem_comportamento_de_sempre(self):
+        from engine.character_animation import character_anchor_offset, CHAR_BASELINE_FRAME_H
+        self.assertEqual(character_anchor_offset(CHAR_BASELINE_FRAME_H), (48, 48))
+
+    def test_frame_8x_mais_alto_ancora_pela_base_nao_pelo_topo(self):
+        from engine.character_animation import character_anchor_offset, CHAR_BASELINE_FRAME_H
+        # 640 = 80 * 8 (guerreiro_portal_in.png/out.png reais, 02/10/2026).
+        dx, dy = character_anchor_offset(640)
+        # dx não depende de altura -- sempre o mesmo (horizontal não mudou).
+        self.assertEqual(dx, 48)
+        # dy cresce JUNTO com a altura (640-80=560 de diferença) -- é
+        # exatamente essa diferença que faz o blit começar mais PRA
+        # CIMA (blit_y = draw_y - dy), preservando a posição dos pés em
+        # vez de manter o TOPO fixo (bug antigo: dy sempre 48,
+        # independente da altura, sepultando os pés sob a sheet nova).
+        _, dy_baseline = character_anchor_offset(CHAR_BASELINE_FRAME_H)
+        self.assertEqual(dy - dy_baseline, 640 - CHAR_BASELINE_FRAME_H)
+        self.assertEqual(dy, 608)
+
+    def test_margem_da_base_e_constante_entre_alturas_diferentes(self):
+        """A distância entre a BASE do tile de colisão e a base do
+        FRAME tem que ser a MESMA (16px) não importa a altura da
+        sheet -- é isso que garante que os pés ficam no mesmo lugar
+        relativo à base, só o espaço ACIMA deles que varia."""
+        from engine.character_animation import (character_anchor_offset,
+                                                  CHAR_COLLISION_SIZE,
+                                                  CHAR_FRAME_BOTTOM_MARGIN_PX)
+        for h in (80, 160, 640):
+            _, dy = character_anchor_offset(h)
+            collision_box_bottom_from_frame_top = dy + CHAR_COLLISION_SIZE / 2
+            margin_below = h - collision_box_bottom_from_frame_top
+            self.assertAlmostEqual(margin_below, CHAR_FRAME_BOTTOM_MARGIN_PX)
+
+
 class TestCharacterSpriteBlitAnchor(unittest.TestCase):
     """Integração real: `RenderSystem.render()` deve blitar o sprite de
     personagem alinhando o CENTRO do tile de colisão (32×32) com

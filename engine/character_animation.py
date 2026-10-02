@@ -71,16 +71,45 @@ CHAR_COLLISION_OFFSET_X = 32
 CHAR_COLLISION_OFFSET_Y = 32
 CHAR_COLLISION_SIZE     = 32
 
+# Altura de frame das sheets "normais" (idle/run/attack/skill sem
+# tratamento especial) — 80px, ex: guerreiro_idle_down.png. Serve só
+# de REFERÊNCIA pra derivar a margem abaixo; uma sheet com altura
+# DIFERENTE (ex: portal_in/portal_out, 640px) não precisa deste valor
+# em si, só da margem (constante, qualquer altura).
+CHAR_BASELINE_FRAME_H = 80
 
-def character_anchor_offset() -> "tuple[float, float]":
+# Distância entre a BASE do tile de colisão (y=64 numa sheet de 80px,
+# CHAR_COLLISION_OFFSET_Y + CHAR_COLLISION_SIZE) e a base do FRAME —
+# 16px, derivada (não um número livre). Esta margem é o dado estável
+# entre sheets de alturas diferentes; CHAR_COLLISION_OFFSET_Y sozinho
+# (medido a partir do TOPO) só vale pra sheets de altura BASELINE.
+CHAR_FRAME_BOTTOM_MARGIN_PX = CHAR_BASELINE_FRAME_H - CHAR_COLLISION_OFFSET_Y - CHAR_COLLISION_SIZE
+
+
+def character_anchor_offset(frame_height: int = CHAR_BASELINE_FRAME_H) -> "tuple[float, float]":
     """(dx, dy) a subtrair de (draw_x, draw_y) — ponto de referência do
     ECS (centro do tile lógico da entidade, em espaço de tela) — pra
     achar o canto superior esquerdo de onde blitar o frame do
     personagem. Alinha o CENTRO do tile de colisão (32×32, ver
     `CHAR_COLLISION_OFFSET_X/Y`) com (draw_x, draw_y), não o centro/
-    canto do frame inteiro (96×H)."""
-    return (CHAR_COLLISION_OFFSET_X + CHAR_COLLISION_SIZE / 2,
-            CHAR_COLLISION_OFFSET_Y + CHAR_COLLISION_SIZE / 2)
+    canto do frame inteiro (96×H).
+
+    Ancorado pela BASE do frame, não mais um offset fixo a partir do
+    topo (02/10/2026, pedido do usuário — bug real: sprite de portal
+    foi redesenhada mais alta, 80px->640px, pensada pra crescer PRA
+    CIMA mantendo os pés no mesmo lugar; com o offset fixo antigo —
+    sempre medido do topo — a sheet mais alta "crescia pra baixo",
+    enterrando os pés). `dy` agora é derivado da altura REAL do frame:
+    `frame_height - CHAR_FRAME_BOTTOM_MARGIN_PX - CHAR_COLLISION_SIZE/2`
+    -- numa sheet BASELINE (80px) isso dá exatamente 48, idêntico ao
+    valor fixo de sempre (zero mudança pra quem já chama sem argumento,
+    ex: nameplate de player remoto em `client/remote_entity_handlers.py`,
+    que usa o default DE PROPÓSITO — fixo, não deve "balançar" seguindo
+    a sheet de cada animação). Chamador que JÁ tem o Surface do frame
+    em mãos (RenderSystem, luz de personagem do portal) deve passar
+    `frame.get_height()`."""
+    dy = frame_height - CHAR_FRAME_BOTTOM_MARGIN_PX - CHAR_COLLISION_SIZE / 2
+    return (CHAR_COLLISION_OFFSET_X + CHAR_COLLISION_SIZE / 2, dy)
 
 # Cache de módulo, chaveado por (class_id, state, direction) — conjunto
 # BEM pequeno e fixo (3 classes × 2 estados × 4 direções = 24 no
