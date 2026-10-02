@@ -821,6 +821,20 @@ fica em zero sem tremor e nunca excede a amplitude máxima) —
 revert-to-confirm feito (ramp zerada, os testes de subida/cancelamento
 falharam como esperado, restaurado).
 
+**Bug real na 1ª versão (02/10/2026, usuário testou e não viu nada)**:
+o tremor somava `_shake_dx/_shake_dy` só em `self._cam_x`/`self._cam_y`
+(`game.py`) — mas TODO o passe de mundo (`system.render(cam_x, cam_y)`
+do loop genérico, `TileRenderSystem`, `loot_system`, `DASH_TRAIL`, etc.)
+lê as variáveis LOCAIS `cam_x`/`cam_y`, nunca os atributos — só
+`client/tooltip_handlers.py` (hover) lia `self._cam_x`/`_cam_y`. Os
+testes automatizados (`TestPortalShake`) não pegaram porque testam
+`_portal_shake_render_offset()`/estado isolados em `client/
+portal_handlers.py`, nunca a fiação de `game.py` que aplica o offset
+no desenho — esse wiring não tem teste (mesma categoria de "fora do
+automatizável" já documentada em várias outras features de render).
+Fix: muta `cam_x += _shake_dx; cam_y += _shake_dy` ANTES de qualquer
+uso, com `self._cam_x/_cam_y` só espelhando o resultado já somado.
+
 ### 19. Corpse de loot — sem loot não aparece corpo (02/10/2026)
 
 Pedido do usuário (redesenho, substitui o par antigo "120s mob / 4s

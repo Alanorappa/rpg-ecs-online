@@ -2581,10 +2581,17 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # Tremor de cast de portal (02/10/2026) — somado SÓ aqui, no
             # offset usado pra DESENHAR o mundo, nunca dentro de
             # get_camera_offset() (clique/mira/loot usam a mesma função
-            # e ficariam imprecisos se tremesse ali). Ver
-            # client/portal_handlers.py::_portal_shake_render_offset.
+            # e ficariam imprecisos se tremesse ali). Muta cam_x/cam_y
+            # DIRETO (não só self._cam_x/_cam_y) -- todo o passe de
+            # mundo abaixo (system.render(cam_x, cam_y), TileRenderSystem,
+            # loot_system, etc.) lê essas variáveis LOCAIS, não os
+            # atributos (bug real: tremor não aparecia nenhum, só
+            # self._cam_x/_cam_y tremia -- usado só por tooltip hover).
+            # Ver client/portal_handlers.py::_portal_shake_render_offset.
             _shake_dx, _shake_dy = self._portal_shake_render_offset()
-            self._cam_x, self._cam_y = cam_x + _shake_dx, cam_y + _shake_dy
+            cam_x += _shake_dx
+            cam_y += _shake_dy
+            self._cam_x, self._cam_y = cam_x, cam_y
 
             # ── Passe de mundo — renderiza em world_surf ──────────────────────
             self._zoom_surf.fill((0, 0, 0))
