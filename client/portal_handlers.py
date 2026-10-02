@@ -399,13 +399,24 @@ class PortalHandlers:
         amp = self._portal_shake_intensity * _PORTAL_SHAKE_MAX_AMPLITUDE_PX
         return random.uniform(-amp, amp), random.uniform(-amp, amp)
 
-    def _cancel_portal_cast_local(self) -> None:
+    def _cancel_portal_cast_local(self, stop_shake: bool = True) -> None:
+        """`stop_shake=True` (padrão, usado pelo cancelamento por
+        movimento em `_update_portal_state`) zera o tremor NA HORA, sem
+        fade -- decisão confirmada com o usuário (02/10/2026). `client/
+        network_handlers.py::_handle_msg_zone_change` chama esta mesma
+        função pra limpar `_portal_cast_active` em TODO ZONE_CHANGE,
+        inclusive a conclusão NATURAL do cast (chegou ao destino) -- ali
+        passa `stop_shake=False` pra preservar a intensidade atual
+        (devia estar em ~1.0), que `_trigger_portal_out_if_pending()`
+        captura logo depois pra iniciar o fade de chegada. Bug real
+        (02/10/2026): sem esse parâmetro, o tremor sempre zerava ANTES
+        do fade conseguir capturar nada -- o usuário via o tremor subir
+        normal durante o cast e simplesmente desaparecer ao chegar, em
+        vez de decair suave."""
         self._portal_cast_active = None
-        # Cancelamento para o tremor NA HORA, sem fade -- só chegada de
-        # verdade (_trigger_portal_out_if_pending) decai suave; decisão
-        # confirmada com o usuário (02/10/2026).
-        self._portal_shake_intensity = 0.0
-        self._portal_shake_fade_elapsed = None
+        if stop_shake:
+            self._portal_shake_intensity = 0.0
+            self._portal_shake_fade_elapsed = None
         from engine.components import TileMovement as _TMPortalC
         tm = self.world.get_component(self.player_entity, _TMPortalC)
         if tm is not None and tm.anim_attack_state == "portal_in":

@@ -645,6 +645,47 @@ class TestPortalCastBarClearsOnZoneChange(unittest.TestCase):
         eng._handle_msg_zone_change({"map_file": "", "target_x": 0, "target_y": 0})
         self.assertIsNone(eng._portal_cast_active)
 
+    def test_zone_change_de_cast_completo_preserva_tremor_pro_fade(self):
+        """Bug real relatado pelo usuário (02/10/2026): o tremor subia
+        normal durante o cast, mas desaparecia na hora ao chegar, em vez
+        de decair suave -- `_handle_msg_zone_change` chamava
+        `_cancel_portal_cast_local()` incondicionalmente, que zerava
+        `_portal_shake_intensity` ANTES de `_trigger_portal_out_if_pending()`
+        (chamado depois, dentro de `_do_transition`) conseguir capturar
+        o valor pro fade. Fix: `stop_shake=False` quando a chegada vem
+        de um cast real (`_portal_arrival_pending`)."""
+        eng, _tm = self._make_engine()
+        eng._portal_cast_active = {"elapsed": 5.0, "duration": 5.0,
+                                   "portal_id": "x", "dest_index": 0}
+        eng._portal_shake_intensity = 1.0   # cast terminou no máximo
+
+        eng._handle_msg_zone_change({"map_file": "", "target_x": 0, "target_y": 0})
+
+        self.assertIsNone(eng._portal_cast_active)
+        self.assertTrue(eng._portal_arrival_pending)
+        self.assertEqual(eng._portal_shake_intensity, 1.0,
+                         "tremor não pode zerar antes do fade de chegada capturar o valor")
+        self.assertIsNone(eng._portal_shake_fade_elapsed,
+                          "fade só começa quando _trigger_portal_out_if_pending roda (em _do_transition)")
+
+        # Mesma chamada que _do_transition faz logo depois de reposicionar.
+        eng._portal_arrival_pending = True   # _handle_msg_zone_change já setou; reforça o teste
+        eng._trigger_portal_out_if_pending()
+        self.assertEqual(eng._portal_shake_fade_start, 1.0)
+        self.assertEqual(eng._portal_shake_fade_elapsed, 0.0)
+        self.assertEqual(eng._portal_shake_intensity, 1.0, "fade recém-iniciado ainda não decaiu nada")
+
+    def test_zone_change_sem_cast_zera_tremor_normalmente(self):
+        """Controle: ZONE_CHANGE sem cast de portal (caverna, morte) com
+        algum resíduo de tremor (não deveria existir em jogo de
+        verdade, mas confirma que o stop_shake=True ainda funciona
+        nesse caminho)."""
+        eng, _tm = self._make_engine()
+        eng._portal_shake_intensity = 0.4
+        eng._handle_msg_zone_change({"map_file": "", "target_x": 0, "target_y": 0})
+        self.assertFalse(eng._portal_arrival_pending)
+        self.assertEqual(eng._portal_shake_intensity, 0.0)
+
 
 class TestPortalModalSuppressedOnTeleportArrival(unittest.TestCase):
     """Bug real relatado pelo usuário (02/10/2026): chegar num portal

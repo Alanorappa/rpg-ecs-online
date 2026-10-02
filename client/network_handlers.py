@@ -3002,7 +3002,13 @@ class NetworkHandlers:
         # (02/10/2026, animação de chegada "portal_out") dentro de
         # `_do_transition`, chamado logo abaixo.
         self._portal_arrival_pending = self._portal_cast_active is not None
-        self._cancel_portal_cast_local()
+        # stop_shake=False quando é conclusão NATURAL (chegada de
+        # verdade) -- preserva a intensidade atual pra
+        # _trigger_portal_out_if_pending() capturar e iniciar o fade de
+        # chegada (ver docstring de _cancel_portal_cast_local). Sem
+        # cast ativo (ZONE_CHANGE de caverna/morte), stop_shake=True é
+        # no-op seguro (intensidade já era 0).
+        self._cancel_portal_cast_local(stop_shake=not self._portal_arrival_pending)
         if map_file:
             # Tela de transição (28/09/2026, §215) — só quando é troca
             # de mapa DE VERDADE (_do_transition faz o mesmo check

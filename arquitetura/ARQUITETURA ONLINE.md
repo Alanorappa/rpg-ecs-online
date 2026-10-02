@@ -835,6 +835,28 @@ automatizável" já documentada em várias outras features de render).
 Fix: muta `cam_x += _shake_dx; cam_y += _shake_dy` ANTES de qualquer
 uso, com `self._cam_x/_cam_y` só espelhando o resultado já somado.
 
+**2º bug real (02/10/2026, usuário testou de novo): tremor não
+continuava decaindo na chegada, desaparecia na hora**. Causa:
+`client/network_handlers.py::_handle_msg_zone_change` chama
+`_cancel_portal_cast_local()` incondicionalmente pra limpar
+`_portal_cast_active` em QUALQUER `ZONE_CHANGE` (inclusive a conclusão
+NATURAL do cast) — e essa função também zerava
+`_portal_shake_intensity` sem condição, ANTES de
+`_trigger_portal_out_if_pending()` (chamado só depois, dentro de
+`_do_transition()`) conseguir capturar o valor pro fade. Fix:
+`_cancel_portal_cast_local(stop_shake: bool = True)` — o cancelamento
+por movimento (`_update_portal_state`) continua com o padrão (zera na
+hora, decisão já confirmada); `_handle_msg_zone_change` passa
+`stop_shake=not self._portal_arrival_pending` — preserva a intensidade
+quando a chegada vem de um cast real, deixando
+`_trigger_portal_out_if_pending()` capturá-la pro fade; `ZONE_CHANGE`
+sem cast ativo (caverna, morte) continua zerando normalmente (no-op
+seguro, intensidade já era 0). Teste:
+`test_zone_change_de_cast_completo_preserva_tremor_pro_fade` (+
+controle `test_zone_change_sem_cast_zera_tremor_normalmente`) —
+revert-to-confirm feito (stop_shake forçado True, o teste falhou como
+esperado, restaurado).
+
 ### 19. Corpse de loot — sem loot não aparece corpo (02/10/2026)
 
 Pedido do usuário (redesenho, substitui o par antigo "120s mob / 4s
