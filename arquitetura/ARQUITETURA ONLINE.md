@@ -776,6 +776,21 @@ pendente (usuário) — animação do personagem, do tile e a luz azulada
 usuário confirmar em jogo esta última rodada (personagem entrando/
 saindo + luz do personagem).
 
+**Modal só abre com o jogador PARADO no tile, não de passagem
+(02/10/2026)**: `_update_portal_state` (`client/portal_handlers.py`)
+abria o modal no 1º frame em que `TileMovement.is_moving` ficava
+`False` — isso acontece por 1 frame só entre dois tweens de tile,
+mesmo andando sem parar (tecla segurada), então só "passar por cima"
+já abria. Fix: `_PORTAL_MODAL_STAND_DELAY_S = 0.5` — o jogador precisa
+ficar parado no MESMO tile de portal por 0.5s acumulados antes do
+modal abrir (`_portal_stand_key`/`_portal_stand_elapsed`, zerados
+sempre que o jogador se move ou troca de tile). 100% client-side, sem
+mudança de protocolo. Testes: `tests/test_portal.py::
+TestPortalModalStandDelay` (passar de passagem não abre, ficar parado
+o suficiente abre, mover no meio da contagem zera, trocar de tile de
+portal zera) — revert-to-confirm feito (delay zerado, os 4 testes
+falharam como esperado, restaurado).
+
 ### 19. Corpse de loot — sem loot não aparece corpo (02/10/2026)
 
 Pedido do usuário (redesenho, substitui o par antigo "120s mob / 4s

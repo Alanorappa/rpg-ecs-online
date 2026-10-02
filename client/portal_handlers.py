@@ -40,6 +40,15 @@ _PAD = 16
 # se um dia divergir, o servidor sempre vence (é só o "chute" inicial).
 _DEFAULT_PORTAL_CAST_DURATION_S = 5.0
 
+# Tempo parado no MESMO tile de portal antes do modal de seleção abrir
+# (02/10/2026, pedido do usuário) — sem isso, andar DE PASSAGEM por
+# cima do tile já abria o modal: o tween de um tile pra outro deixa
+# `TileMovement.is_moving` False por 1 frame só entre dois passos, e
+# isso bastava pra `_update_portal_state` abrir na hora. Ver
+# `_portal_stand_key`/`_portal_stand_elapsed` — zera a cada frame em
+# que o jogador se move ou troca de tile, só conta parado no mesmo.
+_PORTAL_MODAL_STAND_DELAY_S = 0.5
+
 # Duração NATURAL (não esticada) da animação de "desativar" ao chegar
 # num portal (01/10/2026) — diferente de "activate" (sempre esticada
 # pra caber a duração REAL do cast, mandada pelo servidor em
@@ -166,6 +175,27 @@ class PortalHandlers:
         self._portal_modal_dismissed_key_val = value
 
     @property
+    def _portal_stand_key(self):
+        """(x,y) do tile de portal onde o jogador está parado ACUMULANDO
+        tempo agora (ver `_PORTAL_MODAL_STAND_DELAY_S`) — None quando não
+        está parado em nenhum. Trocar de tile (ou se mover) zera o
+        acumulado em `_portal_stand_elapsed`."""
+        return getattr(self, "_portal_stand_key_val", None)
+
+    @_portal_stand_key.setter
+    def _portal_stand_key(self, value) -> None:
+        self._portal_stand_key_val = value
+
+    @property
+    def _portal_stand_elapsed(self) -> float:
+        """Segundos acumulados parado em `_portal_stand_key`."""
+        return getattr(self, "_portal_stand_elapsed_val", 0.0)
+
+    @_portal_stand_elapsed.setter
+    def _portal_stand_elapsed(self, value: float) -> None:
+        self._portal_stand_elapsed_val = value
+
+    @property
     def _portal_cast_active(self):
         """None sem cast em andamento; senão {"elapsed","duration",
         "portal_id","dest_index"} — lido por client/hud_handlers.py::
@@ -222,6 +252,8 @@ class PortalHandlers:
         }
         self._portal_modal_open = None
         self._portal_modal_dismissed_key = None
+        self._portal_stand_key = None
+        self._portal_stand_elapsed = 0.0
         self._portal_cast_active = None
 
     # ── Update por frame (chamado de game.py, perto da detecção de
@@ -243,15 +275,27 @@ class PortalHandlers:
             return
 
         if not self.portal_tiles or tm is None or tm.is_moving:
+            self._portal_stand_key = None
+            self._portal_stand_elapsed = 0.0
             return
         key = (tm.current_tile_x, tm.current_tile_y)
         if key not in self.portal_tiles:
             self._portal_modal_dismissed_key = None
+            self._portal_stand_key = None
+            self._portal_stand_elapsed = 0.0
             return
         if key == self._portal_modal_dismissed_key:
             return
         if self._portal_modal_open is not None or self._any_modal_open():
             return
+
+        if key != self._portal_stand_key:
+            self._portal_stand_key = key
+            self._portal_stand_elapsed = 0.0
+        self._portal_stand_elapsed += dt
+        if self._portal_stand_elapsed < _PORTAL_MODAL_STAND_DELAY_S:
+            return
+
         self._portal_modal_open = self.portal_tiles[key]
         SOUNDS.play_ui("map_open")
 

@@ -687,9 +687,12 @@ class TestPortalModalSuppressedOnTeleportArrival(unittest.TestCase):
     def test_sem_suprimir_abriria_normalmente(self):
         """Controle negativo -- confirma que o teste acima não passa
         "à toa" (sem a chamada de supressão, o comportamento ANTIGO —
-        abrir na hora — continua existindo pra quem ANDA até lá)."""
+        abrir ao ficar parado -- continua existindo pra quem ANDA até
+        lá e PARA). dt>=_PORTAL_MODAL_STAND_DELAY_S simula já ter
+        ficado parado o suficiente (ver TestPortalModalStandDelay pro
+        acúmulo frame-a-frame de verdade)."""
         eng, _tm = self._make_engine(10, 10)
-        eng._update_portal_state(0.05)
+        eng._update_portal_state(0.6)
         self.assertIsNotNone(eng._portal_modal_open)
 
     def test_sair_e_voltar_andando_depois_da_supressao_abre_normal(self):
@@ -702,11 +705,92 @@ class TestPortalModalSuppressedOnTeleportArrival(unittest.TestCase):
         tm.current_tile_x = tm.target_tile_x = 11
         eng._update_portal_state(0.05)
 
-        # Volta ANDANDO pro tile do portal -- agora deve abrir normal.
+        # Volta ANDANDO pro tile do portal e FICA PARADO -- agora deve
+        # abrir normal (dt>=_PORTAL_MODAL_STAND_DELAY_S simula o tempo
+        # parado exigido).
         tm.current_tile_x = tm.target_tile_x = 10
-        eng._update_portal_state(0.05)
+        eng._update_portal_state(0.6)
         self.assertIsNotNone(eng._portal_modal_open,
-                             "voltar ANDANDO depois de sair deve abrir o modal normalmente")
+                             "voltar ANDANDO e PARAR depois de sair deve abrir o modal normalmente")
+
+
+class TestPortalModalStandDelay(unittest.TestCase):
+    """Pedido do usuário (02/10/2026): o modal de seleção não deve abrir
+    só por PASSAR pelo tile de portal, só se o jogador FICAR PARADO ali
+    por `_PORTAL_MODAL_STAND_DELAY_S` (0.5s). Causa raiz do bug antigo:
+    `TileMovement.is_moving` fica False por 1 frame só entre dois
+    tweens de tile — um frame assim já bastava pra abrir na hora."""
+
+    def _make_engine(self, gate_x: int, gate_y: int):
+        from client.portal_handlers import PortalHandlers
+        from engine.world import World
+        from engine.components import TileMovement
+
+        class _FakeEngine(PortalHandlers):
+            def _any_modal_open(self):
+                return False
+
+        eng = _FakeEngine()
+        eng.world = World()
+        eng.player_entity = eng.world.create_entity()
+        tm = TileMovement()
+        tm.current_tile_x = tm.target_tile_x = gate_x
+        tm.current_tile_y = tm.target_tile_y = gate_y
+        tm.is_moving = False
+        eng.world.add_component(eng.player_entity, tm)
+        eng.portal_tiles = {
+            (gate_x, gate_y): {"id": "px", "x": gate_x, "y": gate_y, "destinations": []},
+        }
+        return eng, tm
+
+    def test_passar_de_passagem_nao_abre_modal(self):
+        """1 frame parado (fim do tween) seguido de voltar a mover
+        (início do próximo tween) -- nunca acumula o delay inteiro."""
+        eng, tm = self._make_engine(10, 10)
+        eng._update_portal_state(1 / 30)   # 1 frame a 30 ticks/s, ainda parado
+        self.assertIsNone(eng._portal_modal_open)
+
+        tm.is_moving = True   # próximo tween já começou
+        eng._update_portal_state(1 / 30)
+        self.assertIsNone(eng._portal_modal_open,
+                          "andar de passagem não deve abrir o modal")
+
+    def test_ficar_parado_o_suficiente_abre_modal(self):
+        from client.portal_handlers import _PORTAL_MODAL_STAND_DELAY_S
+        eng, _tm = self._make_engine(10, 10)
+        elapsed = 0.0
+        dt = 1 / 30
+        while elapsed < _PORTAL_MODAL_STAND_DELAY_S:
+            eng._update_portal_state(dt)
+            elapsed += dt
+            if elapsed < _PORTAL_MODAL_STAND_DELAY_S:
+                self.assertIsNone(eng._portal_modal_open,
+                                  "não deve abrir antes do delay completar")
+        self.assertIsNotNone(eng._portal_modal_open,
+                             "deve abrir depois de ficar parado o tempo suficiente")
+
+    def test_mover_no_meio_da_contagem_zera_o_acumulado(self):
+        eng, tm = self._make_engine(10, 10)
+        eng._update_portal_state(0.3)   # acumula parte do delay
+        self.assertIsNone(eng._portal_modal_open)
+
+        tm.is_moving = True
+        eng._update_portal_state(0.05)   # se moveu -- zera
+        tm.is_moving = False
+        eng._update_portal_state(0.3)   # sozinho não bastaria pro delay inteiro
+        self.assertIsNone(eng._portal_modal_open,
+                          "mover no meio da contagem deve zerar o acumulado, não só pausar")
+
+    def test_trocar_de_tile_de_portal_zera_o_acumulado(self):
+        eng, tm = self._make_engine(10, 10)
+        eng.portal_tiles[(11, 10)] = {"id": "py", "x": 11, "y": 10, "destinations": []}
+        eng._update_portal_state(0.3)
+        self.assertIsNone(eng._portal_modal_open)
+
+        tm.current_tile_x = tm.target_tile_x = 11
+        eng._update_portal_state(0.3)   # sozinho não bastaria pro delay inteiro
+        self.assertIsNone(eng._portal_modal_open,
+                          "trocar de tile de portal antes do delay completar deve zerar o acumulado")
 
 
 class TestPortalCharacterInOutAnimation(unittest.TestCase):
