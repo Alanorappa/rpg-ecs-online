@@ -55,11 +55,17 @@ $UseTls = ($ServerHost -ne "localhost")
 Write-Host "== Gravando config.json com server_host=$ServerHost use_tls=$UseTls =="
 # Arquivo parcial de proposito: config.load() mescla com os DEFAULTS em
 # runtime, entao so o que difere do default precisa estar aqui.
-# scale/music_volume/sfx_volume (02/10/2026, pedido do usuario -- valores
-# pro pacote distribuido no itch.io, nao mudam o default de dev local em
-# config.py::DEFAULTS): escala 1.25x, volume de musica/efeitos em 10%.
+# scale/ui_scale/music_volume/sfx_volume (02/10/2026, pedido do usuario --
+# valores pro pacote distribuido no itch.io, nao mudam o default de dev
+# local em config.py::DEFAULTS): escala 1.25x, volume de musica/efeitos
+# em 10%. "scale" (tamanho da JANELA, config.py::DEFAULTS) e "ui_scale"
+# (tamanho dos elementos de INTERFACE, lido direto em game.py, fora de
+# DEFAULTS) sao 2 chaves SEPARADAS -- as duas precisam ser setadas, senao
+# a janela cresce mas os paineis/fontes ficam no tamanho de sempre (bug
+# real: 1a tentativa so setou "scale", usuario testou e a interface
+# continuava 1x).
 @{ server_host = $ServerHost; server_port = $ServerPort; use_tls = $UseTls;
-   scale = 1.25; music_volume = 0.1; sfx_volume = 0.1 } |
+   scale = 1.25; ui_scale = 1.25; music_volume = 0.1; sfx_volume = 0.1 } |
     ConvertTo-Json | Out-File -FilePath (Join-Path $dist "config.json") -Encoding ascii
 
 Write-Host "== Gerando LEIA-ME.txt =="
