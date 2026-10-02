@@ -684,9 +684,15 @@ class ServerDeathHandler:
                     _ret.stack = _recovered
                     loot_items.append(_ret)
 
-            # Sempre registra o corpse (visual) — só inclui itens se houve drop.
-            # Sem essa entrada, o world_server nunca cria o body e o cliente
-            # nunca recebe ENTITY_SPAWN(kind="corpse").
+            # Registra a ENTRADA sempre que há atacante conhecido — quem
+            # decide se um corpse de VERDADE nasce disso (e aparece
+            # ENTITY_SPAWN(kind="corpse") pro cliente) é
+            # `server/loot_processor.py::_process_loot_drops`, não aqui
+            # (02/10/2026, pedido do usuário: mob sem loot nenhum — nem
+            # item, nem gold — não deve mostrar corpo nenhum; antes
+            # TODO mob gerava um corpse vazio "só visual", minion
+            # incluído). Items/coins vazios chegam até lá normalmente;
+            # o filtro é só no consumidor.
             if first_attacker_eid != -1:
                 # "map": capturado ANTES do remove_entity — corpse/loot são
                 # broadcast por loops diretos (não AOI_UPDATE) e precisam do
@@ -706,14 +712,6 @@ class ServerDeathHandler:
                     # _resolve_conditional_loot_for.
                     "mob_name":  mob_name,
                     "mob_race":  identity.race if identity else "",
-                    # Minion nunca tem loot (items/coins sempre vazios, ver
-                    # passo 5 abaixo) — corpse dele é só confirmação visual
-                    # de morte, não um objeto pra lootear. Timer curto
-                    # dedicado (server/loot_processor.py::_process_loot_drops)
-                    # em vez do padrão de mob normal (120s) — pedido do
-                    # usuário (03/08/2026): volume de mortes numa lane
-                    # "floodava" o mapa de corpses vazios por 2 minutos.
-                    "is_minion": _minion_dh is not None,
                 })
 
             # 6. Notifica SpawnZone — remove de active_entity_ids e agenda respawn

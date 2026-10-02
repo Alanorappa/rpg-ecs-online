@@ -728,7 +728,18 @@ class TestInstanceReciclagemNoEffect(unittest.TestCase):
         inv = self.ws.world.get_component(self.eid, Inventory)
         self.assertEqual(inv.items, [])
 
-        loot = self._kill_mob_with_arrows_received(self.eid)
+        # "Lobo" não dropa moeda nenhuma por design (content/loot_tables.py)
+        # e o item table é por CHANCE (1-4%, não garantido) — sem a flecha
+        # reciclada (desligada aqui de propósito, é o que este teste prova),
+        # o kill ficaria com items=[]/coins=0 e NENHUM corpse nasceria
+        # (02/10/2026, regra nova: sem loot nenhum, sem corpse) — o que
+        # tornaria a asserção abaixo trivial/sem sentido (não existe corpse
+        # pra conferir que a flecha não está nele). Garante 1 moeda
+        # determinística só pra ESTE teste existir um corpse de verdade
+        # pra inspecionar.
+        import unittest.mock as _mock
+        with _mock.patch("content.loot_tables.roll_mob_coins", return_value=1):
+            loot = self._kill_mob_with_arrows_received(self.eid)
 
         self.assertEqual(inv.items, [],
                          "Reciclagem não deveria ter efeito nenhum dentro da instância "

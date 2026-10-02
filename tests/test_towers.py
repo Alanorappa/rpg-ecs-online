@@ -384,12 +384,14 @@ class TestTowerDeathXpGoldRespawn(unittest.TestCase):
                          "corpse não deveria ter coins — ouro de instância já concedido "
                          "ao player, mesmo com killer_eid sendo um minion")
 
-    def test_corpse_de_minion_usa_timer_curto_nao_o_de_mob_normal(self):
-        """Pedido do usuário (03/08/2026): corpo de minion (sem loot,
-        sempre 0 moedas/0 itens) floodava o mapa usando o mesmo timer de
-        120s de um mob normal — volume de mortes numa lane MOBA acumula
-        rápido. Fix: timer curto dedicado (LootProcessorMixin.
-        MINION_CORPSE_TIMER_S, 4s), só pra minion."""
+    def test_corpse_de_minion_nao_aparece_mais_sem_loot_nenhum(self):
+        """Pedido do usuário (02/10/2026, substitui o timer curto de
+        03/08/2026 — 4s dedicado só pra minion): minion nunca tem loot
+        de verdade (sempre 0 moedas/0 itens no corpse, ouro de
+        instância vai direto pra wallet por outro caminho, ver teste
+        acima) — sob a regra nova ("sem loot nenhum, não aparece o
+        corpo", vale pra QUALQUER mob), minion simplesmente não gera
+        corpse NENHUM, nunca mais um corpo vazio com timer curto."""
         from engine.entity_factory import create_minion
         minion_eid = create_minion(self.ws.world, 20, 10, "minion_melee",
                                    faction_id="monstros_hostis", route=[(20, 10)])
@@ -399,12 +401,13 @@ class TestTowerDeathXpGoldRespawn(unittest.TestCase):
         cs.current_hp = 0
         self.ws.world.add_component(minion_eid, PendingDeath(killer_entity_id=self.player_eid))
         self.ws._mob_damage_log[minion_eid] = {self.player_eid: 999}
+        # Mapa real já tem harvestables (corpses "permanentes", owner_eid=-1)
+        # carregados sozinhos — compara ANTES/DEPOIS, nunca assume vazio.
+        before_corpses = set(self.ws._corpses.keys())
         run_ticks(self.ws, 1)
 
-        loot = self.ws._corpses.get(max(self.ws._corpses.keys()))
-        self.assertIsNotNone(loot)
-        self.assertAlmostEqual(loot["timer"], self.ws.MINION_CORPSE_TIMER_S, delta=0.5)
-        self.assertLess(loot["timer"], 120.0)
+        self.assertEqual(set(self.ws._corpses.keys()) - before_corpses, set(),
+                         "minion sem loot não deveria gerar corpse NOVO nenhum")
 
     def test_torre_respawnavel_volta_no_mesmo_tile_com_hp_cheio(self):
         tower_eid = create_tower(self.ws.world, 12, 10, "torre_de_flechas",

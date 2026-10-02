@@ -198,7 +198,18 @@ class LootProcessorMixin:
             corpse["quest_rolls"][player_eid] = [d for d in personal_items if id(d) in _kept_ids]
             coins = corpse.pop("coins", 0)
 
-        corpse["timer"] = min(corpse["timer"], 15.0)  # reduz timer após saque
+        # Timer pós-saque (02/10/2026, pedido do usuário): saqueou TUDO
+        # (pote comum de items + coins zerado) — corpse some na hora
+        # (INSTANT_EXPIRE_S); sobrou algo (outro item, ou o pedido foi
+        # só parcial) — mais 30s (PARTIAL_LOOT_TIMER_S) pra quem mais
+        # quiser vir saquear o resto. Checa só o pote COMUM
+        # (items/coins) — loot condicional pessoal de quest
+        # (quest_rolls[player_eid]) não entra nessa conta, mesmo
+        # critério que o resto do código já usa pra "o que sobrou"
+        # (ex: no_space acima).
+        corpse["timer"] = (self.INSTANT_EXPIRE_S
+                           if not corpse.get("items") and corpse.get("coins", 0) <= 0
+                           else self.PARTIAL_LOOT_TIMER_S)
         # Atualiza Wallet do servidor para persistência
         if coins > 0:
             from engine.components import Wallet as _W
@@ -219,29 +230,44 @@ class LootProcessorMixin:
         # gatilho do popup) — não é mais lido aqui.
         return {"items": granted, "coins": coins, "no_space": no_space}
 
-    # Corpse de minion (sem loot nenhum, por design — ver
-    # server_death_handler.py) some rápido: só confirma a morte
-    # visualmente, estilo MOBA (LoL/Dota) — nunca fica ali pra "lootear"
-    # (pedido do usuário, 03/08/2026: mortes de lane floodavam o mapa
-    # com o timer de mob normal, 120s).
-    MINION_CORPSE_TIMER_S = 4.0
+    # Timer do corpse (02/10/2026, pedido do usuário — substitui o par
+    # antigo "120s mob / 4s minion"): nasce com 45s SE tiver algo pra
+    # lootear (qualquer mob sem item/gold nenhum — minion incluído,
+    # nunca tem loot por design — não gera corpse nenhum, ver
+    # `_process_loot_drops` abaixo). Reduzido pra
+    # `PARTIAL_LOOT_TIMER_S` (30s) assim que ALGUÉM saqueia mas ainda
+    # sobra algo; zerado na hora (`INSTANT_EXPIRE_S`) quando o saque
+    # esvazia tudo — ver `request_loot`.
+    CORPSE_TIMER_S       = 45.0
+    PARTIAL_LOOT_TIMER_S = 30.0
+    INSTANT_EXPIRE_S     = 0.0
 
     def _process_loot_drops(self, dt: float) -> None:
         """Registra corpses de mobs mortos e faz decay dos existentes."""
         # Processa loot dos mobs mortos — registra corpse e agenda notificações
         for loot_entry in self._death_handler.consume_loot():
+            items = loot_entry["items"]
+            coins = loot_entry.get("coins", 0)
+            # Sem loot NENHUM (nem item, nem gold) — nenhum corpse
+            # nasce (02/10/2026, pedido do usuário: "quando não trava
+            # nenhum loot, não aparece o corpo"). Vale pra QUALQUER mob,
+            # minion incluído — minion nunca tem loot por design, então
+            # simplesmente nunca mais gera corpse (antes tinha um timer
+            # curto dedicado, 4s, só pra confirmação visual de morte;
+            # removido por decisão explícita do usuário, mesma regra
+            # pra todo mundo agora).
+            if not items and coins <= 0:
+                continue
             owner_eid  = loot_entry["owner_eid"]
             corpse_id  = self._next_corpse_id
             self._next_corpse_id += 1
-            _timer = (self.MINION_CORPSE_TIMER_S if loot_entry.get("is_minion")
-                     else 120.0)
             self._corpses[corpse_id] = {
                 "tx":        loot_entry["tx"],
                 "ty":        loot_entry["ty"],
                 "owner_eid": owner_eid,
-                "items":     loot_entry["items"],
-                "coins":     loot_entry.get("coins", 0),
-                "timer":     _timer,
+                "items":     items,
+                "coins":     coins,
+                "timer":     self.CORPSE_TIMER_S,
                 "map":       loot_entry.get("map"),
                 # Fase L1 (25/07/2026) — loot condicional de quest resolvido
                 # por jogador, não mais 1x na morte (ver
@@ -255,15 +281,15 @@ class LootProcessorMixin:
                 "owner_eid": owner_eid,
                 "tx":        loot_entry["tx"],
                 "ty":        loot_entry["ty"],
-                "items":     loot_entry["items"],
-                "coins":     loot_entry.get("coins", 0),
+                "items":     items,
+                "coins":     coins,
                 "map":       loot_entry.get("map"),
             })
             # DEBUG, não INFO (05/08/2026 — mesma causa de "travamento"
             # relatado pelo usuário numa troca de lane da BG: log síncrono
             # por morte, ver server_death_handler.py::update).
             log.debug(f"[Loot] corpse_id={corpse_id}  owner={owner_eid}  "
-                  f"items={len(loot_entry['items'])}  coins={loot_entry.get('coins', 0)}  "
+                  f"items={len(items)}  coins={coins}  "
                   f"tile=({loot_entry['tx']},{loot_entry['ty']})")
 
         # Decay de corpses (timer baseado em tempo real via dt).

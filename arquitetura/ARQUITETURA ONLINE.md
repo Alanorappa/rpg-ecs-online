@@ -776,6 +776,49 @@ pendente (usuário) — animação do personagem, do tile e a luz azulada
 usuário confirmar em jogo esta última rodada (personagem entrando/
 saindo + luz do personagem).
 
+### 19. Corpse de loot — sem loot não aparece corpo (02/10/2026)
+
+Pedido do usuário (redesenho, substitui o par antigo "120s mob / 4s
+minion / min 15s após qualquer interação"): **se a morte não droppa
+item nem moeda nenhuma, nenhum corpse é criado** — nem pra mob normal,
+nem pra minion (confirmado explicitamente: minion também some sem
+corpo nenhum, apesar de minion nunca ter loot real por design). Quando
+há loot (item e/ou moeda), o corpse aparece por **45s**
+(`LootProcessorMixin.CORPSE_TIMER_S`); se o player saqueia TUDO de uma
+vez (`take="all"`, ou o último item restante), o corpse some **na
+hora** (`INSTANT_EXPIRE_S = 0.0`); se saqueia só parte, o timer cai pra
+**30s** (`PARTIAL_LOOT_TIMER_S`) a partir daquele momento, nunca os 45s
+originais.
+
+**Implementação** (`server/loot_processor.py`):
+- `_process_loot_drops(dt)` — logo após extrair `items`/`coins` de cada
+  `loot_entry`, `if not items and coins <= 0: continue` — pula tanto a
+  criação do dict em `self._corpses[corpse_id]` quanto a notificação
+  que dispara `ENTITY_SPAWN(kind="corpse")` pro cliente. Sem essa
+  notificação, o cliente nunca sabe que aquele mob tinha um "corpo" —
+  não precisou de nenhuma mudança client-side.
+- `request_loot(...)` — ao final de qualquer saque, decide o timer
+  novo só pelo pool COMPARTILHADO (`items`/`coins` do corpse, não o
+  `quest_rolls[player_eid]` pessoal): `INSTANT_EXPIRE_S` se não sobrou
+  nada, senão `PARTIAL_LOOT_TIMER_S`.
+- Removida a antiga flag `is_minion` do dict de `pending_loot`
+  (`server/server_death_handler.py`) — ficou morta: minion nunca tem
+  loot de verdade (ouro de instância vai direto pra wallet por outro
+  caminho), então sob a regra nova ele cai sempre no caminho "sem loot
+  = sem corpse", nunca precisou de um timer dedicado de 4s.
+
+Harvestables (`no_decay=True`, `owner_eid=-1`) são um mecanismo
+SEPARADO, sem relação com esta mudança — continuam com seu próprio
+ciclo de `empty_timer`/`respawn_s`.
+
+Testes: `tests/test_loot_authoritative.py::TestCorpseTimerSemLootNaoAparece`
+(5 — sem loot não cria corpse, item cria corpse de 45s, gold sozinho
+também cria corpse, saque total expira na hora, saque parcial dá +30s);
+`tests/test_towers.py::test_corpse_de_minion_nao_aparece_mais_sem_loot_nenhum`
+(substitui o teste antigo do timer de 4s); `tests/test_instance_progression.py`
+ajustado (mob "Lobo" sem loot natural precisou de um coin mockado pra
+o teste de reciclagem de flecha continuar tendo um corpse pra inspecionar).
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```

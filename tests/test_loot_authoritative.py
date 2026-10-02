@@ -257,5 +257,82 @@ class TestNameCollisionGuard(unittest.TestCase):
             MATERIALS.pop("__teste_colisao__", None)
 
 
+class TestCorpseTimerSemLootNaoAparece(unittest.TestCase):
+    """Pedido do usuário (02/10/2026): "quando não trava nenhum loot,
+    não aparece o corpo; quando tem loot, aparece por 45s; se o player
+    lootear o corpo inteiro some na hora; se não saqueou tudo aguarda
+    mais 30 segundos" — substitui o par antigo "120s mob / 4s minion".
+    `_process_loot_drops` é quem decide se um corpse nasce; testado
+    direto via `_death_handler.pending_loot`, sem precisar simular uma
+    morte de mob inteira."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.eid = spawn_player(self.ws, "s1", 130, 374)
+
+    def _drop(self, items: list, coins: int = 0) -> None:
+        self.ws._death_handler.pending_loot.append({
+            "mob_eid": -1, "owner_eid": self.eid,
+            "items": items, "coins": coins,
+            "tx": 130, "ty": 374, "map": self.ws._map_file,
+            "mob_name": "Teste", "mob_race": "",
+        })
+
+    def test_sem_loot_nenhum_nao_cria_corpse(self):
+        antes = set(self.ws._corpses.keys())
+        self._drop(items=[], coins=0)
+        self.ws._process_loot_drops(dt=0.1)
+        self.assertEqual(set(self.ws._corpses.keys()), antes,
+                         "mob sem item nem gold não deveria gerar corpse nenhum")
+
+    def test_com_item_cria_corpse_com_timer_de_45s(self):
+        antes = set(self.ws._corpses.keys())
+        self._drop(items=[_loot_dict("hp_potion")], coins=0)
+        # dt=0.0 — só registra o corpse novo, sem decair nada ainda (a
+        # mesma chamada já faz as 2 coisas: registra E decai os
+        # existentes, ver _process_loot_drops).
+        self.ws._process_loot_drops(dt=0.0)
+        novos = set(self.ws._corpses.keys()) - antes
+        self.assertEqual(len(novos), 1)
+        corpse = self.ws._corpses[novos.pop()]
+        self.assertEqual(corpse["timer"], self.ws.CORPSE_TIMER_S)
+        self.assertEqual(corpse["timer"], 45.0)
+
+    def test_so_com_gold_tambem_cria_corpse(self):
+        antes = set(self.ws._corpses.keys())
+        self._drop(items=[], coins=10)
+        self.ws._process_loot_drops(dt=0.1)
+        self.assertEqual(len(set(self.ws._corpses.keys()) - antes), 1,
+                         "gold sozinho (sem item nenhum) já é loot suficiente pra criar corpse")
+
+    def test_saquear_tudo_faz_corpse_sumir_na_hora(self):
+        antes = set(self.ws._corpses.keys())
+        self._drop(items=[_loot_dict("hp_potion")], coins=5)
+        self.ws._process_loot_drops(dt=0.0)
+        cid = (set(self.ws._corpses.keys()) - antes).pop()
+
+        result = self.ws.request_loot("s1", cid, take="all")
+        self.assertIsNotNone(result)
+        self.assertEqual(self.ws._corpses[cid]["timer"], self.ws.INSTANT_EXPIRE_S)
+        self.assertEqual(self.ws._corpses[cid]["timer"], 0.0)
+
+        # Confirma que de fato expira no tick seguinte (decay real).
+        self.ws._process_loot_drops(dt=0.1)
+        self.assertNotIn(cid, self.ws._corpses)
+
+    def test_saquear_parcialmente_da_mais_30s(self):
+        antes = set(self.ws._corpses.keys())
+        self._drop(items=[_loot_dict("hp_potion"), _loot_dict("iron_sword")], coins=0)
+        self.ws._process_loot_drops(dt=0.0)
+        cid = (set(self.ws._corpses.keys()) - antes).pop()
+
+        # Pega só 1 dos 2 itens -- sobra o outro.
+        result = self.ws.request_loot("s1", cid, take="item", item_id="hp_potion")
+        self.assertIsNotNone(result)
+        self.assertTrue(self.ws._corpses[cid]["items"], "ainda devia sobrar 1 item")
+        self.assertEqual(self.ws._corpses[cid]["timer"], self.ws.PARTIAL_LOOT_TIMER_S)
+        self.assertEqual(self.ws._corpses[cid]["timer"], 30.0)
+
+
 if __name__ == "__main__":
     unittest.main()
