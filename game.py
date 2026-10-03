@@ -383,16 +383,18 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._chat_tab:     str = "local"      # aba ativa: "local" | "world" | "combat"
         from collections import deque as _deque_chat
         # (label, text, color, reply_target) -- reply_target (02/10/2026)
-        # é quem clicar no nome (client/chat_handlers.py) deve sussurrar
-        # de volta; None pra mensagens de Sistema/sem alvo claro.
+        # é `(mode, value)` -- `("whisper", Nome)` ou `("party", None)`
+        # -- o que clicar no nome (client/chat_handlers.py) deve fazer;
+        # None pra mensagens de Sistema/sem alvo claro.
         self._chat_local: "_deque_chat" = _deque_chat(maxlen=500)
         self._chat_world: "_deque_chat" = _deque_chat(maxlen=500)
         self._chat_scroll: dict = {"local": 0, "world": 0, "combat": 0}  # linhas rolado (0 = mais recente)
-        # Sussurro fixo (03/10/2026, pedido do usuário, estilo WoW) --
-        # None = chat normal (local/mundial pela aba); com nome, texto
-        # PLANO digitado continua indo pro mesmo alvo até "/w OutroNome"
+        # Modo FIXO de chat (03/10/2026, pedido do usuário, estilo WoW)
+        # -- None = chat normal (local/mundial pela aba); `("whisper",
+        # Nome)` ou `("party", None)` faz texto PLANO digitado depois
+        # continuar indo pro mesmo alvo/grupo, até outro "/w"/"/p"
         # trocar ou "/s" sair (ver client/chat_handlers.py).
-        self._chat_whisper_target: "str | None" = None
+        self._chat_sticky_mode: "tuple | None" = None
         self._chat_bs_hold_t:    float = 0.0    # hold-to-repeat do Backspace (ver chat_handlers.py)
         self._chat_bs_repeating: bool  = False
         self._current_map_file: str = MAP_FILES[0]

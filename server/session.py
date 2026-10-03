@@ -1358,6 +1358,30 @@ class SessionManager:
                 "to": target_session.display_name,
             })
             return
+        # Chat de grupo (03/10/2026, pedido do usuário — "/p"/"/grupo") —
+        # entrega pra TODOS os membros do grupo (inclui o remetente, que
+        # vê a MESMA mensagem que o resto, sem eco assimétrico como o
+        # whisper) via `get_party_members`/`get_session_id_for_player`,
+        # mesmo par já usado pelo broadcast de LOOT_UPDATE do grupo
+        # (`_handle_loot_request`) — nunca passa por AOI/mapa, igual
+        # o whisper.
+        if channel == "party":
+            member_eids = self.world_server.get_party_members(session.entity_id)
+            if len(member_eids) <= 1:
+                await session.send(MsgType.CHAT_MESSAGE, {
+                    "sender": "Sistema", "eid": -1,
+                    "text": "Você não está em um grupo.",
+                    "channel": "local", "color": [255, 200, 80],
+                })
+                return
+            party_msg = {"sender": session.display_name, "eid": session.entity_id,
+                        "text": text, "channel": "party", "color": [140, 230, 150]}
+            for m_eid in member_eids:
+                m_sid = self.world_server.get_session_id_for_player(m_eid)
+                m_sess = self._sessions.get(m_sid) if m_sid else None
+                if m_sess and m_sess.authenticated:
+                    await m_sess.send(MsgType.CHAT_MESSAGE, party_msg)
+            return
         # "eid" além de "sender": nome de personagem NÃO é único (duplicatas
         # legadas, ver PROBLEMAS_ARQUITETURA.md) — sem o eid, o cliente só
         # consegue posicionar o balão de fala comparando nomes, o que

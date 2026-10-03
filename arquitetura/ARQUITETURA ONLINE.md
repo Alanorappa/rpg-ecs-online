@@ -1181,38 +1181,75 @@ dentro da largura anotada, e — se não for o PRÓPRIO nome do jogador
 (`CharacterStats.name`, guard contra sussurrar pra si mesmo) — abre o
 campo de chat com `/w <reply_target> ` pré-preenchido.
 
-**Sussurro FIXO (03/10/2026, pedido do usuário logo depois, mesma
-ideia do WoW)**: `/w Nome msg` passou a gravar `self._chat_
-whisper_target = Nome` (`game.py`, novo campo, default `None`) —
-enquanto setado, qualquer texto PLANO (sem `/comando` nenhum) digitado
-depois continua indo pro MESMO alvo (`channel:"whisper"`), sem
-precisar repetir `/w Nome` em toda mensagem de uma conversa. Outro
-`/w OutroNome` troca o alvo; `/s` (sozinho) limpa o alvo e confirma
-localmente "Voltou ao chat normal"; `/s mensagem` limpa o alvo E já
-manda essa mensagem no canal normal (local/mundial pela aba atual) na
-mesma tecla Enter — mesmo padrão do WoW. Único ponto de ESCRITA de
-`_chat_whisper_target`: dentro de `_try_handle_whisper_chat_command`
-(nunca ativa com comando incompleto, ex: `/w Nome` sem mensagem) e
-`_try_handle_say_chat_command` (sempre limpa). Único ponto de LEITURA:
-o fallback de `_send_chat_message`, verificado ANTES de cair no
-canal normal — clicar no nome (mecanismo acima) e digitar `/w`
-manualmente alimentam o MESMO estado, então ambos ativam o sussurro
+**Modo FIXO (03/10/2026, pedido do usuário logo depois, mesma ideia do
+WoW — generalizado em seguida pro chat de grupo também, ver §23)**:
+`self._chat_sticky_mode` (`game.py`, novo campo, default `None`) —
+`None` = chat normal (local/mundial pela aba); `("whisper", Nome)` ou
+`("party", None)` faz qualquer texto PLANO (sem `/comando` nenhum)
+digitado depois continuar indo pro MESMO alvo/grupo, sem precisar
+repetir o comando em toda mensagem de uma conversa. `/w Nome` grava
+`("whisper", Nome)`; outro `/w OutroNome` troca; `/s` (sozinho) limpa
+o modo e confirma localmente "Voltou ao chat normal"; `/s mensagem`
+limpa E já manda essa mensagem no canal normal (local/mundial pela
+aba atual) na mesma tecla Enter — mesmo padrão do WoW. Único ponto de
+ESCRITA: dentro de `_try_handle_whisper_chat_command`/`_try_handle_
+group_chat_command` (nunca ativa whisper com comando incompleto, ex:
+`/w Nome` sem mensagem — mas "/p" sozinho JÁ é válido, não precisa de
+mensagem pra ligar o modo) e `_try_handle_say_chat_command` (sempre
+limpa, não importa qual modo estava ativo). Único ponto de LEITURA: o
+fallback de `_send_chat_message`, verificado ANTES de cair no canal
+normal — clicar no nome (mecanismo acima) e digitar `/w`/`/p`
+manualmente alimentam o MESMO estado, então os dois ativam o modo
 fixo igual.
 
-Testes: `tests/test_whisper_chat.py` (27) — roteamento server-side
-(entrega certa por nome, case-insensitive, alvo offline avisa só o
-remetente, nunca usa AOI/broadcast pra whisper); parsing do comando
-cliente (válido, maiúsculo, sem mensagem, sem nome, grava/não-grava/
-troca o alvo fixo); `/s` sozinho e com mensagem, nas 2 abas; fluxo
-completo via `_send_chat_message` de verdade (`/w` → texto plano
-pro mesmo alvo → novo `/w` troca → `/s` sai → texto plano volta pro
-local); composição do rótulo/`reply_target` nos 2 lados do whisper +
-mensagem normal + "Sistema"; clique no nome abre resposta, clique no
-próprio nome não faz nada, clique fora da região do nome não faz
-nada, aba Combate nunca é clicável. Revert-to-confirm feito em 3
-pontos (match case-insensitive do servidor, bounds-check do X do
-clique, leitura do alvo fixo no fallback) — os 3 testes relevantes
-falharam como esperado antes de restaurar.
+### 23. Chat de grupo ("/p" ou "/grupo") (03/10/2026)
+
+Mesma ideia do sussurro (§22), mas entrega pra TODOS os membros do
+grupo em vez de 1 pessoa só. `server/session.py::_handle_chat`, novo
+ramo `channel == "party"`: resolve membros via `WorldServer.
+get_party_members(session.entity_id)` (já existia, mesmo usado pelo
+broadcast de `LOOT_UPDATE`) + `get_session_id_for_player(m_eid)` pra
+cada um — nunca passa por AOI/mapa, igual o whisper. Mensagem é a
+MESMA pra todos (inclui o próprio remetente, sem eco assimétrico como
+o whisper precisa — não existe "Você disse pro grupo", todo mundo vê
+exatamente a mesma linha). Sem grupo (ou grupo "de 1", já que
+`get_party_members` sempre inclui o próprio eid): aviso de sistema só
+pro remetente ("Você não está em um grupo"). Cor: verde claro
+`[140,230,150]` (escolha minha, sem pedido explícito do usuário sobre
+cor — diferente do azul do whisper).
+
+**Cliente**: `/p` ou `/grupo`, com ou sem mensagem
+(`_try_handle_group_chat_command`) — "/p" SOZINHO já é uma ação
+válida (liga o modo fixo de grupo, diferente de "/w" sem nome, que é
+erro por faltar o alvo). Exibição: `client/network_handlers.py::
+_handle_msg_chat_message`, `channel=="party"` → rótulo
+`"grupo/<sender>"` (formato EXATO pedido pelo usuário, barra entre a
+palavra e o nome — não é o `"[Mundial] "` com colchete que a aba
+Mundial usa) + `reply_target = ("party", None)`. Cai na aba LOCAL,
+mesma decisão já tomada pro whisper (§22) — sem aba própria.
+
+**Clicar numa mensagem de grupo** (`_try_handle_chat_name_click`) —
+`mode=="party"` pré-enche `/p ` (resposta vai pro GRUPO, nunca sussurra
+só pra quem mandou) — diferente do whisper, NUNCA bloqueia clicar na
+própria mensagem (reativar o modo de grupo é sempre uma ação válida,
+não tem o problema de "sussurrar pra si mesmo" que o whisper tem).
+
+Testes: `tests/test_whisper_chat.py` (40) — roteamento server-side do
+whisper (entrega certa por nome, case-insensitive, alvo offline avisa
+só o remetente, nunca usa AOI) + do grupo (entrega pra todos os
+membros inclusive o remetente, sem grupo avisa só o remetente, grupo
+"de 1" também avisa, nunca usa AOI); parsing dos comandos cliente
+("/w"/"/s"/"/p"+"/grupo", válidos/maiúsculo/incompletos, gravam/não-
+gravam/trocam o modo fixo); fluxo completo via `_send_chat_message` de
+verdade (`/w`→texto plano→novo `/w`→`/s`; `/p`→texto plano→`/w` troca
+de grupo pra whisper); composição do rótulo/`reply_target` dos 2
+lados do whisper + grupo + mensagem normal + "Sistema"; clique no
+nome (whisper e grupo) abre resposta certa, clique no próprio nome só
+bloqueia pro whisper, clique fora da região/aba Combate nunca abrem
+nada. Revert-to-confirm feito em 4 pontos (match case-insensitive do
+whisper, bounds-check do X do clique, leitura do modo fixo no
+fallback, entrega pra TODOS os membros do grupo não só o 1º) — os 4
+testes relevantes falharam como esperado antes de restaurar.
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 

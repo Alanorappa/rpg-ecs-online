@@ -96,29 +96,40 @@ class ChatHandlers:
         if text and self._try_handle_whisper_chat_command(text):
             self._close_chat_input()
             return
-        # "/s [mensagem]" — sai do modo "sussurro fixo" (03/10/2026,
-        # pedido do usuário, mesma ideia do WoW: "/s" sozinho só volta
-        # pro chat normal; "/s mensagem" já manda ESSA mensagem no
-        # canal normal, sem esperar outro Enter). Precisa vir ANTES do
-        # fallback abaixo, que é o único lugar que lê
-        # `_chat_whisper_target` pra decidir se o texto plano continua
-        # indo pro mesmo alvo.
+        # "/p mensagem" ou "/grupo mensagem" — chat de GRUPO (03/10/2026,
+        # pedido do usuário, mesma ideia do "/w"). Ver
+        # _try_handle_group_chat_command -- NUNCA confundir com
+        # _try_handle_party_chat_command acima, que é "/convidar" (convite).
+        if text and self._try_handle_group_chat_command(text):
+            self._close_chat_input()
+            return
+        # "/s [mensagem]" — sai do modo FIXO (sussurro OU grupo,
+        # 03/10/2026, pedido do usuário, mesma ideia do WoW: "/s"
+        # sozinho só volta pro chat normal; "/s mensagem" já manda ESSA
+        # mensagem no canal normal, sem esperar outro Enter). Precisa
+        # vir ANTES do fallback abaixo, que é o único lugar que lê
+        # `_chat_sticky_mode` pra decidir se o texto plano continua
+        # indo pro mesmo alvo/grupo.
         if text and self._try_handle_say_chat_command(text):
             self._close_chat_input()
             return
         if text and self._net:
             from shared.messages import MsgType
-            # Sussurro fixo (03/10/2026, pedido do usuário): depois de
-            # "/w Nome msg", qualquer texto PLANO (sem comando) continua
-            # indo pro MESMO alvo, até "/w OutroNome" trocar ou "/s"
-            # sair -- evita repetir "/w Nome" em toda mensagem de uma
-            # conversa. `_chat_whisper_target` é setado só dentro de
-            # `_try_handle_whisper_chat_command`, único ponto de escrita.
-            if self._chat_whisper_target:
-                self._net.send(MsgType.CHAT_SEND, {
-                    "text": text, "channel": "whisper",
-                    "target_name": self._chat_whisper_target,
-                })
+            # Modo FIXO (03/10/2026, pedido do usuário): depois de
+            # "/w Nome msg" ou "/p msg", qualquer texto PLANO (sem
+            # comando) continua indo pro MESMO alvo/grupo, até outro
+            # "/w"/"/p" trocar ou "/s" sair -- evita repetir o comando
+            # em toda mensagem de uma conversa. `_chat_sticky_mode` só é
+            # escrito dentro de `_try_handle_whisper_chat_command`/
+            # `_try_handle_group_chat_command`/`_try_handle_say_chat_command`.
+            if self._chat_sticky_mode is not None:
+                mode, value = self._chat_sticky_mode
+                if mode == "whisper":
+                    self._net.send(MsgType.CHAT_SEND, {
+                        "text": text, "channel": "whisper", "target_name": value,
+                    })
+                else:   # "party"
+                    self._net.send(MsgType.CHAT_SEND, {"text": text, "channel": "party"})
             else:
                 channel = "local" if self._chat_tab == "local" else "world"
                 self._net.send(MsgType.CHAT_SEND, {"text": text, "channel": channel})
@@ -133,14 +144,14 @@ class ChatHandlers:
         manda CHAT_SEND incompleto pro servidor) -- ainda assim
         consome o comando (não vira chat normal "/w" literal).
 
-        Sussurro FIXO (03/10/2026, pedido do usuário, mesma ideia do
-        WoW): um "/w Nome" com mensagem de verdade também grava
-        `_chat_whisper_target = Nome` -- enquanto esse campo estiver
-        setado, texto PLANO digitado depois (sem comando nenhum)
-        continua indo pro MESMO alvo (ver fallback em
-        `_send_chat_message`), até outro "/w OutroNome" trocar ou "/s"
-        sair (`_try_handle_say_chat_command`). Repetir "/w Nome" com o
-        MESMO nome de novo é inofensivo (reafirma o mesmo alvo)."""
+        Modo FIXO (03/10/2026, pedido do usuário, mesma ideia do WoW):
+        um "/w Nome" com mensagem de verdade também grava
+        `_chat_sticky_mode = ("whisper", Nome)` -- enquanto isso
+        estiver setado, texto PLANO digitado depois (sem comando
+        nenhum) continua indo pro MESMO alvo (ver fallback em
+        `_send_chat_message`), até outro "/w OutroNome"/"/p" trocar ou
+        "/s" sair (`_try_handle_say_chat_command`). Repetir "/w Nome"
+        com o MESMO nome de novo é inofensivo (reafirma o mesmo alvo)."""
         parts = text.split(None, 1)
         if not parts or parts[0].lower() != "/w":
             return False
@@ -151,7 +162,7 @@ class ChatHandlers:
                                      (255, 200, 80), None))
             return True
         target_name, message = name_and_msg[0], name_and_msg[1].strip()
-        self._chat_whisper_target = target_name
+        self._chat_sticky_mode = ("whisper", target_name)
         if self._net:
             from shared.messages import MsgType
             self._net.send(MsgType.CHAT_SEND, {
@@ -159,17 +170,43 @@ class ChatHandlers:
             })
         return True
 
+    def _try_handle_group_chat_command(self, text: str) -> bool:
+        """"/p" ou "/grupo", com ou sem mensagem (03/10/2026, pedido do
+        usuário -- mesma ideia do "/w", mas pro GRUPO inteiro, não uma
+        pessoa só). Servidor resolve quem está no grupo de verdade
+        (`server/session.py::_handle_chat`, `channel=="party"`) --
+        cliente não precisa saber quem são os membros, só mandar.
+
+        "/p" SOZINHO (sem mensagem) já é uma ação válida por si só --
+        diferente de "/w" sem nome (que é erro, falta o alvo), aqui não
+        falta nada: só liga o modo fixo de grupo, esperando o próximo
+        Enter mandar pra lá (mesmo comportamento do WoW)."""
+        parts = text.split(None, 1)
+        if not parts or parts[0].lower() not in ("/p", "/grupo"):
+            return False
+        self._chat_sticky_mode = ("party", None)
+        message = parts[1].strip() if len(parts) > 1 else ""
+        if not message:
+            self._chat_local.append(("Sistema", "Modo de chat de grupo ativado.",
+                                     (255, 200, 80), None))
+            return True
+        if self._net:
+            from shared.messages import MsgType
+            self._net.send(MsgType.CHAT_SEND, {"text": message, "channel": "party"})
+        return True
+
     def _try_handle_say_chat_command(self, text: str) -> bool:
         """"/s" ou "/s mensagem" (03/10/2026, pedido do usuário, mesma
-        ideia do WoW) -- sai do sussurro fixo (`_chat_whisper_target =
-        None`). Com mensagem junto, já manda ela no canal normal
-        (local/mundial, pela aba atual) na mesma tecla Enter, sem
-        precisar de um 2º envio; sem mensagem, só mostra a confirmação
-        local de que voltou ao chat normal."""
+        ideia do WoW) -- sai do modo fixo (`_chat_sticky_mode = None`),
+        sussurro OU grupo, não importa qual estava ativo. Com mensagem
+        junto, já manda ela no canal normal (local/mundial, pela aba
+        atual) na mesma tecla Enter, sem precisar de um 2º envio; sem
+        mensagem, só mostra a confirmação local de que voltou ao chat
+        normal."""
         parts = text.split(None, 1)
         if not parts or parts[0].lower() != "/s":
             return False
-        self._chat_whisper_target = None
+        self._chat_sticky_mode = None
         message = parts[1].strip() if len(parts) > 1 else ""
         if not message:
             self._chat_local.append(("Sistema", "Voltou ao chat normal.",
@@ -333,12 +370,18 @@ class ChatHandlers:
 
     def _try_handle_chat_name_click(self, mx: int, my: int, msg_area: "pygame.Rect") -> None:
         """Clicar no NOME de quem mandou uma mensagem (local OU mundial)
-        abre resposta pré-preenchida "/w Nome " (02/10/2026, pedido do
-        usuário — igual ao WoW: clicar no nick de quem te sussurrou
-        responde na hora). Mesma matemática de posicionamento de
-        `_draw_chat_log` (linha visível = `(my-msg_area.y)//line_h`,
-        recortada pelo scroll atual) — precisa ficar em sincronia com o
-        render, ou o clique acerta a linha errada."""
+        abre resposta pré-preenchida (02/10/2026, pedido do usuário —
+        igual ao WoW: clicar no nick de quem te sussurrou responde na
+        hora; 03/10/2026, estendido pra clicar numa mensagem de GRUPO
+        ligar o modo fixo de grupo em vez de sussurrar pra pessoa
+        específica). `reply_target` é `(mode, value)` -- `("whisper",
+        Nome)` pré-enche "/w Nome ", `("party", None)` pré-enche "/p "
+        (resposta vai pro GRUPO inteiro, não só quem clicou).
+
+        Mesma matemática de posicionamento de `_draw_chat_log` (linha
+        visível = `(my-msg_area.y)//line_h`, recortada pelo scroll
+        atual) — precisa ficar em sincronia com o render, ou o clique
+        acerta a linha errada."""
         tab = self._chat_tab
         if tab == "combat":
             return   # histórico de combate não tem remetente clicável
@@ -357,12 +400,17 @@ class ChatHandlers:
         _text, _color, reply_target, click_w = shown[idx]
         if not reply_target or click_w <= 0 or mx - msg_area.x > click_w:
             return
+        mode, value = reply_target
+        if mode == "party":
+            self._open_chat_input()
+            self._chat_text = "/p "
+            return
         from engine.components import CharacterStats
         cs = self.world.get_component(self.player_entity, CharacterStats)
-        if cs is not None and reply_target == cs.name:
+        if cs is not None and value == cs.name:
             return   # nunca sussurra pra si mesmo via clique
         self._open_chat_input()
-        self._chat_text = f"/w {reply_target} "
+        self._chat_text = f"/w {value} "
 
     def _handle_chat_scroll(self, event) -> bool:
         """Retorna True se o mouse está sobre a janela (consome o scroll)."""

@@ -3206,15 +3206,23 @@ class NetworkHandlers:
         # client/chat_handlers.py::_chat_tab_lines) diferem pra cada lado,
         # já que "sender" aqui é sempre QUEM MANDOU, nunca o destino.
         whisper_to = payload.get("to")
+        # reply_target é (mode, value) -- ("whisper", Nome) ou
+        # ("party", None) -- ver client/chat_handlers.py::
+        # _try_handle_chat_name_click pra o que cada um faz ao clicar.
         if channel == "whisper" and whisper_to:
             # "para Fulano" só, sem "Você sussurra" (03/10/2026, pedido
             # do usuário -- rótulo completo ficava grande demais no chat).
-            label, reply_target = f"para {whisper_to}", whisper_to
+            label, reply_target = f"para {whisper_to}", ("whisper", whisper_to)
         elif channel == "whisper":
-            label, reply_target = f"{sender} sussurra", sender
+            label, reply_target = f"{sender} sussurra", ("whisper", sender)
+        elif channel == "party":
+            # "grupo/Fulano" (03/10/2026, pedido do usuário, formato
+            # exato pedido) -- clicar liga o modo fixo de GRUPO, nunca
+            # sussurra só pra quem mandou (resposta é pro grupo todo).
+            label, reply_target = f"grupo/{sender}", ("party", None)
         else:
             label = sender
-            reply_target = sender if sender != "Sistema" else None
+            reply_target = ("whisper", sender) if sender != "Sistema" else None
         # Decisão do usuário: sussurro cai na aba LOCAL mesmo (não ganha
         # aba própria), só com cor diferente (payload já manda o azul
         # claro, ver server/session.py) pra chamar atenção.

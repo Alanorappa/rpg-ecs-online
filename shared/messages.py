@@ -780,6 +780,17 @@ def validate_c2s(msg_type: "MsgType", payload) -> "str | None":
 #                            remetente, nunca entrega depois.
 # }
 
+# ── C→S: CHAT_SEND (channel "party") ─────────────────────────────────────────
+# {
+#   "text":    str *
+#   "channel": str *     "party"
+# }
+# Entrega pra TODOS os membros do grupo do remetente (inclui o próprio
+# remetente — mesma mensagem pra todos, sem eco assimétrico como o
+# whisper), via WorldServer.get_party_members/get_session_id_for_player
+# (server/session.py::_handle_chat) — nunca passa por AOI/mapa, igual o
+# whisper. Sem grupo (ou grupo de 1): aviso de sistema só pro remetente.
+
 # ── S→C: CHAT_MESSAGE ────────────────────────────────────────────────────────
 # {
 #   "sender":  str *     nome do remetente
