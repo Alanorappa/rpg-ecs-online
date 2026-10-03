@@ -388,6 +388,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._chat_local: "_deque_chat" = _deque_chat(maxlen=500)
         self._chat_world: "_deque_chat" = _deque_chat(maxlen=500)
         self._chat_scroll: dict = {"local": 0, "world": 0, "combat": 0}  # linhas rolado (0 = mais recente)
+        # Sussurro fixo (03/10/2026, pedido do usuário, estilo WoW) --
+        # None = chat normal (local/mundial pela aba); com nome, texto
+        # PLANO digitado continua indo pro mesmo alvo até "/w OutroNome"
+        # trocar ou "/s" sair (ver client/chat_handlers.py).
+        self._chat_whisper_target: "str | None" = None
         self._chat_bs_hold_t:    float = 0.0    # hold-to-repeat do Backspace (ver chat_handlers.py)
         self._chat_bs_repeating: bool  = False
         self._current_map_file: str = MAP_FILES[0]

@@ -1180,16 +1180,38 @@ dentro da largura anotada, e — se não for o PRÓPRIO nome do jogador
 (`CharacterStats.name`, guard contra sussurrar pra si mesmo) — abre o
 campo de chat com `/w <reply_target> ` pré-preenchido.
 
-Testes: `tests/test_whisper_chat.py` (18) — roteamento server-side
+**Sussurro FIXO (03/10/2026, pedido do usuário logo depois, mesma
+ideia do WoW)**: `/w Nome msg` passou a gravar `self._chat_
+whisper_target = Nome` (`game.py`, novo campo, default `None`) —
+enquanto setado, qualquer texto PLANO (sem `/comando` nenhum) digitado
+depois continua indo pro MESMO alvo (`channel:"whisper"`), sem
+precisar repetir `/w Nome` em toda mensagem de uma conversa. Outro
+`/w OutroNome` troca o alvo; `/s` (sozinho) limpa o alvo e confirma
+localmente "Voltou ao chat normal"; `/s mensagem` limpa o alvo E já
+manda essa mensagem no canal normal (local/mundial pela aba atual) na
+mesma tecla Enter — mesmo padrão do WoW. Único ponto de ESCRITA de
+`_chat_whisper_target`: dentro de `_try_handle_whisper_chat_command`
+(nunca ativa com comando incompleto, ex: `/w Nome` sem mensagem) e
+`_try_handle_say_chat_command` (sempre limpa). Único ponto de LEITURA:
+o fallback de `_send_chat_message`, verificado ANTES de cair no
+canal normal — clicar no nome (mecanismo acima) e digitar `/w`
+manualmente alimentam o MESMO estado, então ambos ativam o sussurro
+fixo igual.
+
+Testes: `tests/test_whisper_chat.py` (27) — roteamento server-side
 (entrega certa por nome, case-insensitive, alvo offline avisa só o
 remetente, nunca usa AOI/broadcast pra whisper); parsing do comando
-cliente (válido, maiúsculo, sem mensagem, sem nome); composição do
-rótulo/`reply_target` nos 2 lados do whisper + mensagem normal +
-"Sistema"; clique no nome abre resposta, clique no próprio nome não
-faz nada, clique fora da região do nome não faz nada, aba Combate
-nunca é clicável. Revert-to-confirm feito em 2 pontos (match
-case-insensitive do servidor, bounds-check do X do clique) — os 2
-testes relevantes falharam como esperado antes de restaurar.
+cliente (válido, maiúsculo, sem mensagem, sem nome, grava/não-grava/
+troca o alvo fixo); `/s` sozinho e com mensagem, nas 2 abas; fluxo
+completo via `_send_chat_message` de verdade (`/w` → texto plano
+pro mesmo alvo → novo `/w` troca → `/s` sai → texto plano volta pro
+local); composição do rótulo/`reply_target` nos 2 lados do whisper +
+mensagem normal + "Sistema"; clique no nome abre resposta, clique no
+próprio nome não faz nada, clique fora da região do nome não faz
+nada, aba Combate nunca é clicável. Revert-to-confirm feito em 3
+pontos (match case-insensitive do servidor, bounds-check do X do
+clique, leitura do alvo fixo no fallback) — os 3 testes relevantes
+falharam como esperado antes de restaurar.
 
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 

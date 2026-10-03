@@ -96,10 +96,32 @@ class ChatHandlers:
         if text and self._try_handle_whisper_chat_command(text):
             self._close_chat_input()
             return
+        # "/s [mensagem]" — sai do modo "sussurro fixo" (03/10/2026,
+        # pedido do usuário, mesma ideia do WoW: "/s" sozinho só volta
+        # pro chat normal; "/s mensagem" já manda ESSA mensagem no
+        # canal normal, sem esperar outro Enter). Precisa vir ANTES do
+        # fallback abaixo, que é o único lugar que lê
+        # `_chat_whisper_target` pra decidir se o texto plano continua
+        # indo pro mesmo alvo.
+        if text and self._try_handle_say_chat_command(text):
+            self._close_chat_input()
+            return
         if text and self._net:
             from shared.messages import MsgType
-            channel = "local" if self._chat_tab == "local" else "world"
-            self._net.send(MsgType.CHAT_SEND, {"text": text, "channel": channel})
+            # Sussurro fixo (03/10/2026, pedido do usuário): depois de
+            # "/w Nome msg", qualquer texto PLANO (sem comando) continua
+            # indo pro MESMO alvo, até "/w OutroNome" trocar ou "/s"
+            # sair -- evita repetir "/w Nome" em toda mensagem de uma
+            # conversa. `_chat_whisper_target` é setado só dentro de
+            # `_try_handle_whisper_chat_command`, único ponto de escrita.
+            if self._chat_whisper_target:
+                self._net.send(MsgType.CHAT_SEND, {
+                    "text": text, "channel": "whisper",
+                    "target_name": self._chat_whisper_target,
+                })
+            else:
+                channel = "local" if self._chat_tab == "local" else "world"
+                self._net.send(MsgType.CHAT_SEND, {"text": text, "channel": channel})
         self._close_chat_input()
 
     def _try_handle_whisper_chat_command(self, text: str) -> bool:
@@ -109,7 +131,16 @@ class ChatHandlers:
         [comando, nome, resto_da_mensagem]. Sem mensagem (só "/w Nome")
         ou sem nome nenhum: mostra um aviso de USO só local (nunca
         manda CHAT_SEND incompleto pro servidor) -- ainda assim
-        consome o comando (não vira chat normal "/w" literal)."""
+        consome o comando (não vira chat normal "/w" literal).
+
+        Sussurro FIXO (03/10/2026, pedido do usuário, mesma ideia do
+        WoW): um "/w Nome" com mensagem de verdade também grava
+        `_chat_whisper_target = Nome` -- enquanto esse campo estiver
+        setado, texto PLANO digitado depois (sem comando nenhum)
+        continua indo pro MESMO alvo (ver fallback em
+        `_send_chat_message`), até outro "/w OutroNome" trocar ou "/s"
+        sair (`_try_handle_say_chat_command`). Repetir "/w Nome" com o
+        MESMO nome de novo é inofensivo (reafirma o mesmo alvo)."""
         parts = text.split(None, 1)
         if not parts or parts[0].lower() != "/w":
             return False
@@ -120,11 +151,34 @@ class ChatHandlers:
                                      (255, 200, 80), None))
             return True
         target_name, message = name_and_msg[0], name_and_msg[1].strip()
+        self._chat_whisper_target = target_name
         if self._net:
             from shared.messages import MsgType
             self._net.send(MsgType.CHAT_SEND, {
                 "text": message, "channel": "whisper", "target_name": target_name,
             })
+        return True
+
+    def _try_handle_say_chat_command(self, text: str) -> bool:
+        """"/s" ou "/s mensagem" (03/10/2026, pedido do usuário, mesma
+        ideia do WoW) -- sai do sussurro fixo (`_chat_whisper_target =
+        None`). Com mensagem junto, já manda ela no canal normal
+        (local/mundial, pela aba atual) na mesma tecla Enter, sem
+        precisar de um 2º envio; sem mensagem, só mostra a confirmação
+        local de que voltou ao chat normal."""
+        parts = text.split(None, 1)
+        if not parts or parts[0].lower() != "/s":
+            return False
+        self._chat_whisper_target = None
+        message = parts[1].strip() if len(parts) > 1 else ""
+        if not message:
+            self._chat_local.append(("Sistema", "Voltou ao chat normal.",
+                                     (255, 200, 80), None))
+            return True
+        if self._net:
+            from shared.messages import MsgType
+            channel = "local" if self._chat_tab == "local" else "world"
+            self._net.send(MsgType.CHAT_SEND, {"text": message, "channel": channel})
         return True
 
     def _handle_chat_key(self, event) -> None:

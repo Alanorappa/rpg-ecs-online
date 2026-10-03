@@ -170,6 +170,145 @@ class TestWhisperChatCommand(unittest.TestCase):
         self.assertTrue(consumed)
         eng._net.send.assert_not_called()
 
+    def test_comando_valido_grava_alvo_fixo(self):
+        """Sussurro FIXO (03/10/2026, pedido do usuário, estilo WoW)."""
+        eng = self._make_engine()
+        eng._chat_whisper_target = None
+        eng._try_handle_whisper_chat_command("/w Fulano oi")
+        self.assertEqual(eng._chat_whisper_target, "Fulano")
+
+    def test_sem_mensagem_nao_grava_alvo_fixo(self):
+        eng = self._make_engine()
+        eng._chat_whisper_target = None
+        eng._try_handle_whisper_chat_command("/w Fulano")
+        self.assertIsNone(eng._chat_whisper_target,
+                          "comando incompleto não deve ativar sussurro fixo")
+
+    def test_novo_w_troca_o_alvo_fixo(self):
+        eng = self._make_engine()
+        eng._chat_whisper_target = "Antigo"
+        eng._try_handle_whisper_chat_command("/w Novo oi")
+        self.assertEqual(eng._chat_whisper_target, "Novo")
+
+
+class TestSayChatCommand(unittest.TestCase):
+    """"/s" (03/10/2026, pedido do usuário, mesma ideia do WoW) -- sai
+    do sussurro fixo, opcionalmente mandando uma mensagem no canal
+    normal junto."""
+
+    def _make_engine(self, chat_tab: str = "local"):
+        from client.chat_handlers import ChatHandlers
+        from collections import deque
+
+        class _FakeEngine(ChatHandlers):
+            pass
+
+        eng = _FakeEngine()
+        eng._chat_local = deque(maxlen=500)
+        eng._chat_world = deque(maxlen=500)
+        eng._chat_tab = chat_tab
+        eng._chat_whisper_target = "Fulano"
+        eng._net = mock.Mock()
+        return eng
+
+    def test_texto_sem_barra_s_nao_e_consumido(self):
+        eng = self._make_engine()
+        self.assertFalse(eng._try_handle_say_chat_command("mensagem normal"))
+        self.assertEqual(eng._chat_whisper_target, "Fulano", "não deve alterar nada se não casou o comando")
+
+    def test_s_sozinho_limpa_alvo_e_nao_manda_nada(self):
+        eng = self._make_engine()
+        consumed = eng._try_handle_say_chat_command("/s")
+        self.assertTrue(consumed)
+        self.assertIsNone(eng._chat_whisper_target)
+        eng._net.send.assert_not_called()
+        self.assertEqual(len(eng._chat_local), 1)
+        self.assertEqual(eng._chat_local[0][0], "Sistema")
+
+    def test_s_com_mensagem_limpa_alvo_e_manda_no_canal_local(self):
+        eng = self._make_engine(chat_tab="local")
+        consumed = eng._try_handle_say_chat_command("/s oi pessoal")
+        self.assertTrue(consumed)
+        self.assertIsNone(eng._chat_whisper_target)
+        from shared.messages import MsgType
+        eng._net.send.assert_called_once_with(MsgType.CHAT_SEND,
+                                              {"text": "oi pessoal", "channel": "local"})
+
+    def test_s_com_mensagem_na_aba_mundial_manda_pro_mundial(self):
+        eng = self._make_engine(chat_tab="world")
+        eng._try_handle_say_chat_command("/s oi mundo")
+        from shared.messages import MsgType
+        eng._net.send.assert_called_once_with(MsgType.CHAT_SEND,
+                                              {"text": "oi mundo", "channel": "world"})
+
+
+class TestStickyWhisperViaSendChatMessage(unittest.TestCase):
+    """Integração via `_send_chat_message` de verdade -- confirma o
+    pedido central do usuário: depois de "/w Nome msg", texto PLANO
+    (sem comando) continua indo pro MESMO alvo, até outro "/w" trocar
+    ou "/s" sair."""
+
+    def _make_engine(self):
+        from client.chat_handlers import ChatHandlers
+        from collections import deque
+
+        class _FakeEngine(ChatHandlers):
+            # Stubs dos outros comandos de chat (party/arena/bg) --
+            # irrelevantes aqui, sempre "não consumido".
+            def _try_handle_party_chat_command(self, text): return False
+            def _try_handle_arena_chat_command(self, text): return False
+            def _try_handle_bg_forfeit_chat_command(self, text): return False
+            def _try_handle_bg_chat_command(self, text): return False
+
+        eng = _FakeEngine()
+        eng._chat_local  = deque(maxlen=500)
+        eng._chat_world  = deque(maxlen=500)
+        eng._chat_tab    = "local"
+        eng._chat_active = True
+        eng._chat_whisper_target = None
+        eng._net = mock.Mock()
+        return eng
+
+    def _send(self, eng, text: str) -> None:
+        eng._chat_text = text
+        eng._send_chat_message()
+
+    def test_fluxo_completo_w_depois_texto_plano_depois_s(self):
+        from shared.messages import MsgType
+        eng = self._make_engine()
+
+        self._send(eng, "/w Fulano oi")
+        eng._net.send.assert_called_with(MsgType.CHAT_SEND,
+                                         {"text": "oi", "channel": "whisper", "target_name": "Fulano"})
+
+        # Texto PLANO -- sem nenhum comando -- continua pro MESMO alvo.
+        self._send(eng, "como você está?")
+        eng._net.send.assert_called_with(MsgType.CHAT_SEND, {
+            "text": "como você está?", "channel": "whisper", "target_name": "Fulano",
+        })
+
+        # Troca de alvo com um novo "/w".
+        self._send(eng, "/w Outro oi")
+        eng._net.send.assert_called_with(MsgType.CHAT_SEND,
+                                         {"text": "oi", "channel": "whisper", "target_name": "Outro"})
+        self._send(eng, "tudo bem?")
+        eng._net.send.assert_called_with(MsgType.CHAT_SEND, {
+            "text": "tudo bem?", "channel": "whisper", "target_name": "Outro",
+        })
+
+        # "/s" sai do sussurro fixo -- texto plano seguinte volta pro local.
+        self._send(eng, "/s")
+        self.assertIsNone(eng._chat_whisper_target)
+        self._send(eng, "oi geral")
+        eng._net.send.assert_called_with(MsgType.CHAT_SEND, {"text": "oi geral", "channel": "local"})
+
+    def test_sem_nunca_ter_sussurrado_texto_plano_vai_pro_canal_normal(self):
+        from shared.messages import MsgType
+        eng = self._make_engine()
+        self._send(eng, "mensagem qualquer")
+        eng._net.send.assert_called_once_with(MsgType.CHAT_SEND,
+                                              {"text": "mensagem qualquer", "channel": "local"})
+
 
 # ── Cliente: composição do rótulo/reply_target ao receber CHAT_MESSAGE ──────
 
