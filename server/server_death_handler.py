@@ -555,13 +555,30 @@ class ServerDeathHandler:
                 from engine.utils import incr_char_stat as _incr_cst_mob
                 _incr_cst_mob(self.world, first_attacker_eid, "mobs_killed")
 
-            # 3b. Evento de quest "kill" — first-attacker é o dono do
-            # progresso (mesmo critério de dono do loot). Server-autoritativo
-            # — ver quest_logic.py/PROBLEMAS_ARQUITETURA.md.
+            # 3b. Evento de quest "kill" — compartilhado com o GRUPO
+            # inteiro do first-attacker, não só ele (03/10/2026, bug
+            # real relatado pelo usuário: matar mob só contava pra
+            # quest de quem bateu primeiro, nunca pro resto do grupo
+            # mesmo que o portador da quest estivesse no mesmo grupo).
+            # Antes disso, o comentário aqui dizia "mesmo critério de
+            # dono do loot" — mas o LOOT já compartilha com o grupo
+            # inteiro (get_party_members, ver loot condicional de quest
+            # em server/loot_processor.py::_resolve_conditional_loot_for/
+            # server/session.py linha ~3310), só o evento de kill nunca
+            # tinha o mesmo fan-out. Sem gate de distância/AOI de
+            # propósito (mesmo precedente do loot condicional de quest,
+            # que também não tem — diferente do XP, que usa
+            # PARTY_XP_SHARE_RADIUS_TILES; pedido do usuário foi
+            # explícito: conta "mesmo que o portador da quest não tenha
+            # participado da luta", sem mencionar restrição de posição).
+            # Server-autoritativo — ver quest_logic.py/PROBLEMAS_ARQUITETURA.md.
             if first_attacker_eid != -1 and identity:
                 from engine.quest_events import fire as _qfire_kill
-                _qfire_kill("kill", player_eid=first_attacker_eid,
-                            name=identity.name, race=identity.race, tier=tier)
+                _kill_recipients = self.world_server.get_party_members(first_attacker_eid) \
+                    or [first_attacker_eid]
+                for _kr_eid in _kill_recipients:
+                    _qfire_kill("kill", player_eid=_kr_eid,
+                                name=identity.name, race=identity.race, tier=tier)
 
             # 4. Posição do mob para registrar corpse — já lida antes do
             # bloco de XP (mob_tx/mob_ty), reaproveitada aqui.

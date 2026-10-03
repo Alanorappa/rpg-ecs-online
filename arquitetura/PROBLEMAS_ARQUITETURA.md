@@ -24156,6 +24156,54 @@ corrige a última sessão com lista de 2; código novo corrige as duas e
 nunca levanta.
 
 Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`) no mesmo
-commit do que estava em andamento (notificação por e-mail, §... ver
-`ARQUITETURA ONLINE.md` §21) — fix de servidor, sem jogador real
-afetado até agora além do próprio usuário testando.
+commit da notificação por e-mail em andamento (ver `ARQUITETURA
+ONLINE.md` §21) — fix de servidor, sem jogador real afetado até agora
+além do próprio usuário testando.
+
+## 225. Bug real — matar mob só contava pra quest de quem bateu primeiro, nunca pro resto do grupo (03/10/2026)
+
+**Sintoma relatado pelo usuário**: "quando qualquer um dos membros
+matar um mob de uma quest que um dos membros tem, conta para a quest,
+mesmo que o portador da quest não tenha participado da luta... eu
+achava que isso já estava correto e quando testei recentemente não
+estava funcionando." Usuário pediu pra investigar bem antes de
+assumir causa raiz.
+
+**Investigação**: `engine/quest_events.py::fire()` enfileira 1 evento
+com 1 `player_eid` só; `WorldServer._process_quest_events()`
+(`server/world_server.py`) aplica progresso SÓ a esse eid. Único
+chamador real de `fire("kill", ...)` é `server/server_death_handler.py`
+(`engine/world_systems.py:1111` existe mas nunca passa `player_eid`,
+cai no default -1 e é ignorado por `_process_quest_events` — código
+morto/caminho client-only, confirmado por grep, não é o que roda
+server-side) — disparava com `player_eid=first_attacker_eid` **só**,
+comentário no próprio código dizia "mesmo critério de dono do loot"
+(premissa errada: o loot JÁ compartilha com o grupo inteiro via
+`get_party_members`, ver `_resolve_conditional_loot_for`/`server/
+session.py` ~linha 3310, a quest "kill" nunca teve o mesmo fan-out).
+
+**Contraste que confirmou a causa raiz**: objetivo `collect_item`
+(chance de item de quest cair) JÁ funciona certo em grupo — manda
+`LOOT_AVAILABLE` personalizado pra TODOS os membros do grupo do
+first-attacker, não só ele, nenhum gate de distância. Só `kill`
+estava quebrado — exatamente o sintoma relatado ("matar mob" não
+funciona, mas o usuário não reclamou de "coletar item").
+
+**Fix**: `server/server_death_handler.py`, bloco do evento "kill" —
+fan-out pra `get_party_members(first_attacker_eid)` (mesmo padrão do
+collect_item), 1 evento por membro do grupo. Sem gate de distância/
+AOI de propósito — mesmo precedente do collect_item (diferente do XP,
+que usa `PARTY_XP_SHARE_RADIUS_TILES`); pedido do usuário foi
+explícito ("mesmo que não tenha participado da luta"), sem mencionar
+restrição de posição.
+
+**Teste**: `tests/test_quest_kill_party_credit.py` (6) — quest holder
+no grupo progride sem lutar; killer de verdade continua progredindo
+normal (regressão); os dois progridem juntos se ambos tiverem a
+mesma quest; objetivo já no count máximo não passa; estranho FORA do
+grupo não progride (controle negativo); grupo de 3 — o 3º membro
+(nem killer nem quem deu o kill) também progride. Revert-to-confirm
+feito (fan-out revertido pra só `first_attacker_eid`, 3 dos 6 testes
+falharam exatamente como esperado, restaurado).
+
+Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`).
