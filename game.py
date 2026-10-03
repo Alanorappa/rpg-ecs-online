@@ -382,8 +382,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._chat_text:    str = ""           # texto digitado enquanto o chat está focado
         self._chat_tab:     str = "local"      # aba ativa: "local" | "world" | "combat"
         from collections import deque as _deque_chat
-        self._chat_local: "_deque_chat" = _deque_chat(maxlen=500)  # (sender, text, color)
-        self._chat_world: "_deque_chat" = _deque_chat(maxlen=500)  # (sender, text, color)
+        # (label, text, color, reply_target) -- reply_target (02/10/2026)
+        # é quem clicar no nome (client/chat_handlers.py) deve sussurrar
+        # de volta; None pra mensagens de Sistema/sem alvo claro.
+        self._chat_local: "_deque_chat" = _deque_chat(maxlen=500)
+        self._chat_world: "_deque_chat" = _deque_chat(maxlen=500)
         self._chat_scroll: dict = {"local": 0, "world": 0, "combat": 0}  # linhas rolado (0 = mais recente)
         self._chat_bs_hold_t:    float = 0.0    # hold-to-repeat do Backspace (ver chat_handlers.py)
         self._chat_bs_repeating: bool  = False

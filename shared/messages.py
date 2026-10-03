@@ -293,7 +293,7 @@ class MsgType(str, Enum):
     LOOT_UPDATE        = "loot_update"     # S→C  outro membro do grupo sacou algo — sincroniza a cópia LOCAL (sem creditar)
 
     # ── Chat ──────────────────────────────────────────────────────
-    CHAT_SEND          = "chat_send"       # C→S  enviar mensagem
+    CHAT_SEND          = "chat_send"       # C→S  enviar mensagem — channel "whisper" exige target_name
     CHAT_MESSAGE       = "chat_message"    # S→C  mensagem recebida
 
     # ── Save ──────────────────────────────────────────────────────
@@ -767,12 +767,31 @@ def validate_c2s(msg_type: "MsgType", payload) -> "str | None":
 # Se não houver mudanças, o servidor pode omitir o pacote (otimização).
 
 
+# ── C→S: CHAT_SEND (channel "whisper") ───────────────────────────────────────
+# {
+#   "text":        str *
+#   "channel":     str *     "whisper"
+#   "target_name": str *     nome do personagem destino (único no banco,
+#                            ver server/auth.py::characters_name_lower_idx) —
+#                            busca entre sessões AUTENTICADAS agora, não
+#                            exige mesmo mapa/lugar. Sem fila offline (ver
+#                            server/session.py::_handle_chat) — alvo
+#                            desconectado só gera aviso de sistema pro
+#                            remetente, nunca entrega depois.
+# }
+
 # ── S→C: CHAT_MESSAGE ────────────────────────────────────────────────────────
 # {
 #   "sender":  str *     nome do remetente
 #   "text":    str *
-#   "channel": str *     "world" | "local" | "party" | "system"
+#   "channel": str *     "world" | "local" | "party" | "system" | "whisper"
 #   "color":   list      [R, G, B]
+#   "to":      str       SÓ no eco de volta pro remetente de um whisper
+#                        (channel "whisper") — presença deste campo é o
+#                        sinal de "esta é a CÓPIA DE SAÍDA, não a de
+#                        chegada" (client/network_handlers.py monta o
+#                        rótulo "Você sussurra para <to>" vs "<sender>
+#                        sussurra" a partir disso).
 # }
 
 # ── S→C: LOOT_AVAILABLE ──────────────────────────────────────────────────────

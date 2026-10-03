@@ -3200,8 +3200,24 @@ class NetworkHandlers:
         text    = payload.get("text", "")
         color   = tuple(payload.get("color", [220, 210, 150]))
         channel = payload.get("channel", "local")
-        target  = self._chat_world if channel == "world" else self._chat_local
-        target.append((sender, text, color))
+        # Sussurro (02/10/2026, pedido do usuário): "to" só existe no eco
+        # que volta pro PRÓPRIO remetente (server/session.py::_handle_chat)
+        # -- rótulo e alvo de resposta (clique no nome, ver
+        # client/chat_handlers.py::_chat_tab_lines) diferem pra cada lado,
+        # já que "sender" aqui é sempre QUEM MANDOU, nunca o destino.
+        whisper_to = payload.get("to")
+        if channel == "whisper" and whisper_to:
+            label, reply_target = f"Você sussurra para {whisper_to}", whisper_to
+        elif channel == "whisper":
+            label, reply_target = f"{sender} sussurra", sender
+        else:
+            label = sender
+            reply_target = sender if sender != "Sistema" else None
+        # Decisão do usuário: sussurro cai na aba LOCAL mesmo (não ganha
+        # aba própria), só com cor diferente (payload já manda o azul
+        # claro, ver server/session.py) pra chamar atenção.
+        target = self._chat_world if channel == "world" else self._chat_local
+        target.append((label, text, color, reply_target))
 
         entity_id = self._resolve_chat_sender_entity(payload.get("eid", -1), sender)
         if entity_id != -1:

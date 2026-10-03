@@ -1127,6 +1127,70 @@ propaga) — revert-to-confirm feito (try/except removido do `_run`
 interno, o teste de falha-nunca-propaga falhou como esperado,
 restaurado).
 
+### 22. Sussurro por nome ("/w Nome mensagem") + clicar no nome responde (02/10/2026)
+
+Pedido do usuário: mandar mensagem pra um player pelo nome, sem exigir
+mesmo mapa/lugar — mesmo comando do WoW (`/w`). Seguro buscar por nome
+porque nome de personagem é ÚNICO no banco inteiro desde
+`characters_name_lower_idx` (`server/auth.py`) — diferente do
+comentário já existente em `_handle_chat` sobre chat normal, que é
+sobre contas LEGADAS de antes dessa constraint.
+
+**Servidor** (`server/session.py::_handle_chat`, novo ramo
+`channel == "whisper"`): busca uma sessão AUTENTICADA cujo
+`display_name` bate (case-insensitive) com `target_name` do payload,
+entre TODAS as sessões conectadas (`self._sessions.values()`) — nunca
+passa por AOI/mapa, funciona com o alvo em qualquer lugar/instância.
+Achou → manda `CHAT_MESSAGE` pro destino (`channel: "whisper"`, cor
+azul clara `[150,210,255]`, pedido do usuário) + um ECO de volta pro
+remetente com campo extra `"to": <nome_do_destino>` (sinaliza "esta é
+a cópia de SAÍDA" pro cliente montar o rótulo certo). Não achou →
+aviso de "Sistema" só pro remetente ("X não está online"). **Sem fila
+offline de propósito** (decisão do usuário) — isso é papel do sistema
+de correio, mecanismo separado, não misturado aqui.
+
+**Cliente** — comando (`client/chat_handlers.py::
+_try_handle_whisper_chat_command`): `/w Nome mensagem` (nome é sempre
+1 palavra, `shared/character_names.py` não permite espaço) vira
+`CHAT_SEND {text, channel:"whisper", target_name}`; sem mensagem
+mostra aviso de uso 100% local, nunca manda payload incompleto.
+
+**Exibição** (decisão do usuário: cai na aba LOCAL mesmo, não ganha
+aba própria): `client/network_handlers.py::_handle_msg_chat_message`
+monta um rótulo diferente dependendo do lado — "`<sender>` sussurra"
+pra quem recebe, "Você sussurra para `<to>`" pro eco de volta — e
+grava junto um `reply_target` (quem um clique no nome deve
+sussurrar), tudo numa tupla `(label, text, color, reply_target)`
+(antes era só `(sender, text, color)`) guardada em `_chat_local`/
+`_chat_world`. Mensagem normal (não-whisper): `reply_target` = o
+próprio sender (ou `None` pra "Sistema", nunca clicável).
+
+**Clicar no nome responde** (pedido do usuário, estilo WoW — funciona
+pra QUALQUER mensagem com remetente claro, não só sussurro recebido,
+já que o mecanismo é o mesmo sem custo extra): `client/
+chat_handlers.py::_chat_tab_lines` quebra cada entrada em linhas
+(wrap) e anota, só na 1ª linha quebrada de cada entrada, a LARGURA em
+pixels do trecho antes do primeiro `": "` (o "nome" exibido) — nunca
+nas linhas de continuação de mensagem longa, que não repetem o nome.
+`_try_handle_chat_name_click` (novo, chamado por `_handle_chat_click`
+quando o clique cai dentro de `msg_area`) refaz a MESMA matemática de
+posicionamento de `_draw_chat_log` (linha visível a partir de scroll
+atual) pra achar a entrada clicada, confere se o X do clique cai
+dentro da largura anotada, e — se não for o PRÓPRIO nome do jogador
+(`CharacterStats.name`, guard contra sussurrar pra si mesmo) — abre o
+campo de chat com `/w <reply_target> ` pré-preenchido.
+
+Testes: `tests/test_whisper_chat.py` (18) — roteamento server-side
+(entrega certa por nome, case-insensitive, alvo offline avisa só o
+remetente, nunca usa AOI/broadcast pra whisper); parsing do comando
+cliente (válido, maiúsculo, sem mensagem, sem nome); composição do
+rótulo/`reply_target` nos 2 lados do whisper + mensagem normal +
+"Sistema"; clique no nome abre resposta, clique no próprio nome não
+faz nada, clique fora da região do nome não faz nada, aba Combate
+nunca é clicável. Revert-to-confirm feito em 2 pontos (match
+case-insensitive do servidor, bounds-check do X do clique) — os 2
+testes relevantes falharam como esperado antes de restaurar.
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```

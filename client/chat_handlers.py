@@ -88,11 +88,44 @@ class ChatHandlers:
         if text and self._try_handle_bg_chat_command(text):
             self._close_chat_input()
             return
+        # "/w Nome mensagem" — sussurro (02/10/2026, pedido do usuário,
+        # mesmo comando do WoW). Diferente dos comandos acima, SEMPRE
+        # vira um CHAT_SEND de verdade (só troca channel/target_name) —
+        # servidor resolve o alvo por nome, entrega em qualquer
+        # mapa/instância, sem exigir estar perto.
+        if text and self._try_handle_whisper_chat_command(text):
+            self._close_chat_input()
+            return
         if text and self._net:
             from shared.messages import MsgType
             channel = "local" if self._chat_tab == "local" else "world"
             self._net.send(MsgType.CHAT_SEND, {"text": text, "channel": channel})
         self._close_chat_input()
+
+    def _try_handle_whisper_chat_command(self, text: str) -> bool:
+        """"/w Nome mensagem" (02/10/2026, pedido do usuário) — nome é
+        sempre 1 palavra só (shared/character_names.py: só letras, sem
+        espaço), então `split(None, 2)` separa limpo em
+        [comando, nome, resto_da_mensagem]. Sem mensagem (só "/w Nome")
+        ou sem nome nenhum: mostra um aviso de USO só local (nunca
+        manda CHAT_SEND incompleto pro servidor) -- ainda assim
+        consome o comando (não vira chat normal "/w" literal)."""
+        parts = text.split(None, 1)
+        if not parts or parts[0].lower() != "/w":
+            return False
+        rest = parts[1] if len(parts) > 1 else ""
+        name_and_msg = rest.split(None, 1)
+        if len(name_and_msg) < 2 or not name_and_msg[1].strip():
+            self._chat_local.append(("Sistema", "uso: /w NomeDoPersonagem mensagem",
+                                     (255, 200, 80), None))
+            return True
+        target_name, message = name_and_msg[0], name_and_msg[1].strip()
+        if self._net:
+            from shared.messages import MsgType
+            self._net.send(MsgType.CHAT_SEND, {
+                "text": message, "channel": "whisper", "target_name": target_name,
+            })
+        return True
 
     def _handle_chat_key(self, event) -> None:
         """Só teclas de CONTROLE (Enter/Esc/Backspace) — a digitação de texto
@@ -180,16 +213,23 @@ class ChatHandlers:
 
     def _chat_tab_raw_entries(self, tab: str) -> list:
         if tab == "local":
-            return [(f"{s}: {t}", tuple(c)) for s, t, c in self._chat_local]
+            return [(f"{lbl}: {t}", tuple(c), rt) for lbl, t, c, rt in self._chat_local]
         elif tab == "world":
-            return [(f"[Mundial] {s}: {t}", tuple(c)) for s, t, c in self._chat_world]
+            return [(f"[Mundial] {lbl}: {t}", tuple(c), rt) for lbl, t, c, rt in self._chat_world]
         else:
-            return list(LOG.entries)
+            return [(text, color, None) for text, color in LOG.entries]
 
     def _chat_tab_lines(self, tab: str, max_px: int) -> list:
         """Linhas já quebradas (wrap) pra exibição — cacheado por aba,
         recalculado só quando o nº de entradas muda (novas mensagens),
-        não a cada frame."""
+        não a cada frame. Cada linha é (text, color, reply_target,
+        click_w) — `reply_target`/`click_w` só preenchidos na 1ª linha
+        quebrada de cada entrada, cobrindo só o trecho antes do
+        primeiro ": " (o "nome" exibido) — clicar ali abre resposta
+        pré-preenchida (02/10/2026, pedido do usuário, ver
+        `_try_handle_chat_name_click`). Linhas de continuação (mensagem
+        longa que quebrou em 2+ linhas) nunca repetem o nome, então
+        nunca são clicáveis."""
         cache = getattr(self, "_chat_line_cache", None)
         if cache is None:
             cache = {}
@@ -199,9 +239,14 @@ class ChatHandlers:
         if cached is not None and cached[0] == len(raw) and cached[2] == max_px:
             return cached[1]
         lines = []
-        for text, color in raw:
-            for line in wrap_text(text, self.font_sm, max_px):
-                lines.append((line, color))
+        for text, color, reply_target in raw:
+            for i, line in enumerate(wrap_text(text, self.font_sm, max_px)):
+                click_w = 0
+                if i == 0 and reply_target:
+                    colon = line.find(": ")
+                    if colon >= 0:
+                        click_w = self.font_sm.size(line[:colon])[0]
+                lines.append((line, color, reply_target if click_w else None, click_w))
         cache[tab] = (len(raw), lines, max_px)
         return lines
 
@@ -227,7 +272,43 @@ class ChatHandlers:
             self._open_chat_input()
             return True
 
+        if L["msg_area"].collidepoint(mx, my):
+            self._try_handle_chat_name_click(mx, my, L["msg_area"])
+
         return True  # clique em qualquer outro ponto da janela não vaza pro mundo
+
+    def _try_handle_chat_name_click(self, mx: int, my: int, msg_area: "pygame.Rect") -> None:
+        """Clicar no NOME de quem mandou uma mensagem (local OU mundial)
+        abre resposta pré-preenchida "/w Nome " (02/10/2026, pedido do
+        usuário — igual ao WoW: clicar no nick de quem te sussurrou
+        responde na hora). Mesma matemática de posicionamento de
+        `_draw_chat_log` (linha visível = `(my-msg_area.y)//line_h`,
+        recortada pelo scroll atual) — precisa ficar em sincronia com o
+        render, ou o clique acerta a linha errada."""
+        tab = self._chat_tab
+        if tab == "combat":
+            return   # histórico de combate não tem remetente clicável
+        line_h = self._u(UI.CHAT_LINE_H)
+        lines = self._chat_tab_lines(tab, msg_area.width)
+        visible = max(1, msg_area.height // line_h)
+        total = len(lines)
+        max_scroll = max(0, total - visible)
+        scroll = min(self._chat_scroll[tab], max_scroll)
+        end = total - scroll
+        start = max(0, end - visible)
+        shown = lines[start:end]
+        idx = (my - msg_area.y) // line_h
+        if not (0 <= idx < len(shown)):
+            return
+        _text, _color, reply_target, click_w = shown[idx]
+        if not reply_target or click_w <= 0 or mx - msg_area.x > click_w:
+            return
+        from engine.components import CharacterStats
+        cs = self.world.get_component(self.player_entity, CharacterStats)
+        if cs is not None and reply_target == cs.name:
+            return   # nunca sussurra pra si mesmo via clique
+        self._open_chat_input()
+        self._chat_text = f"/w {reply_target} "
 
     def _handle_chat_scroll(self, event) -> bool:
         """Retorna True se o mouse está sobre a janela (consome o scroll)."""
@@ -294,7 +375,7 @@ class ChatHandlers:
         end = total - scroll
         start = max(0, end - visible)
         shown = lines[start:end]
-        for i, (text, color) in enumerate(shown):
+        for i, (text, color, _reply_target, _click_w) in enumerate(shown):
             line_s = self.font_sm.render(text, False, color)
             surf.blit(line_s, (msg_area.x, msg_area.y + i * line_h))
 

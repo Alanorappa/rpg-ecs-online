@@ -1317,6 +1317,47 @@ class SessionManager:
                 "channel": "local", "color": [255, 200, 80],
             })
             return
+        # Sussurro (02/10/2026, pedido do usuário — "/w Nome msg", mesmo
+        # comando do WoW): entrega DIRETA a uma sessão autenticada pelo
+        # NOME DO PERSONAGEM, nunca passa por AOI/broadcast — funciona
+        # com o alvo em qualquer mapa/instância, exatamente o pedido
+        # ("sem precisar estar no mesmo lugar"). Seguro buscar por nome
+        # aqui porque nome de personagem é ÚNICO no banco inteiro desde
+        # `characters_name_lower_idx` (server/auth.py) — diferente do
+        # comentário abaixo sobre chat normal, que é sobre contas
+        # LEGADAS de antes dessa constraint existir. Sem fila offline de
+        # propósito (decisão do usuário) — alvo desconectado só gera
+        # aviso de sistema pro remetente, nunca entrega depois (isso é
+        # o papel do sistema de correio, mecanismo separado).
+        if channel == "whisper":
+            target_name = str(payload.get("target_name", "")).strip()
+            target_session = None
+            for s in self._sessions.values():
+                if s.authenticated and s.display_name.lower() == target_name.lower():
+                    target_session = s
+                    break
+            _WHISPER_COLOR = [150, 210, 255]   # azul bem claro, pedido do usuário
+            if target_session is None:
+                await session.send(MsgType.CHAT_MESSAGE, {
+                    "sender": "Sistema", "eid": -1,
+                    "text": f"{target_name} não está online.",
+                    "channel": "local", "color": [255, 200, 80],
+                })
+                return
+            await target_session.send(MsgType.CHAT_MESSAGE, {
+                "sender": session.display_name, "eid": session.entity_id,
+                "text": text, "channel": "whisper", "color": _WHISPER_COLOR,
+            })
+            # Eco pro próprio remetente ("to" presente -- client/
+            # network_handlers.py usa isso pra montar "Você sussurra
+            # para X" em vez de "X sussurra", já que o campo "sender"
+            # dos dois pacotes é sempre QUEM MANDOU, nunca o destino).
+            await session.send(MsgType.CHAT_MESSAGE, {
+                "sender": session.display_name, "eid": session.entity_id,
+                "text": text, "channel": "whisper", "color": _WHISPER_COLOR,
+                "to": target_session.display_name,
+            })
+            return
         # "eid" além de "sender": nome de personagem NÃO é único (duplicatas
         # legadas, ver PROBLEMAS_ARQUITETURA.md) — sem o eid, o cliente só
         # consegue posicionar o balão de fala comparando nomes, o que
