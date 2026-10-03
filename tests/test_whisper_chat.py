@@ -342,14 +342,17 @@ class TestWhisperMessageLabel(unittest.TestCase):
         self.assertEqual(reply_target, "Fulano")
         self.assertEqual(color, (150, 210, 255))
 
-    def test_eco_de_saida_mostra_voce_sussurra_para(self):
+    def test_eco_de_saida_mostra_para_fulano(self):
+        """03/10/2026, pedido do usuário -- rótulo completo ("Você
+        sussurra para Fulano") ficava grande demais no chat; só "para
+        Fulano" (reply_target continua o nome puro, sem mudança)."""
         eng = self._make_engine()
         eng._handle_msg_chat_message({
             "sender": "EuMesmo", "eid": 1, "text": "oi",
             "channel": "whisper", "color": [150, 210, 255], "to": "Fulano",
         })
         label, text, color, reply_target = eng._chat_local[0]
-        self.assertEqual(label, "Você sussurra para Fulano")
+        self.assertEqual(label, "para Fulano")
         self.assertEqual(reply_target, "Fulano")
 
     def test_mensagem_normal_local_reply_target_e_o_sender(self):

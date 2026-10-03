@@ -1158,7 +1158,8 @@ mostra aviso de uso 100% local, nunca manda payload incompleto.
 **Exibição** (decisão do usuário: cai na aba LOCAL mesmo, não ganha
 aba própria): `client/network_handlers.py::_handle_msg_chat_message`
 monta um rótulo diferente dependendo do lado — "`<sender>` sussurra"
-pra quem recebe, "Você sussurra para `<to>`" pro eco de volta — e
+pra quem recebe, "para `<to>`" pro eco de volta (03/10/2026, pedido do
+usuário — "Você sussurra para X" ficava grande demais no chat) — e
 grava junto um `reply_target` (quem um clique no nome deve
 sussurrar), tudo numa tupla `(label, text, color, reply_target)`
 (antes era só `(sender, text, color)`) guardada em `_chat_local`/

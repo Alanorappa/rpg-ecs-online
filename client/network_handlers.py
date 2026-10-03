@@ -3207,7 +3207,9 @@ class NetworkHandlers:
         # já que "sender" aqui é sempre QUEM MANDOU, nunca o destino.
         whisper_to = payload.get("to")
         if channel == "whisper" and whisper_to:
-            label, reply_target = f"Você sussurra para {whisper_to}", whisper_to
+            # "para Fulano" só, sem "Você sussurra" (03/10/2026, pedido
+            # do usuário -- rótulo completo ficava grande demais no chat).
+            label, reply_target = f"para {whisper_to}", whisper_to
         elif channel == "whisper":
             label, reply_target = f"{sender} sussurra", sender
         else:
