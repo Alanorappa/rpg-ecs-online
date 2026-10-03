@@ -1070,6 +1070,63 @@ rodar o servidor completo): script isolado em scratchpad usando
 `websockets.serve()`/`websockets.connect()` mínimo — handshake TLS
 real confirmado funcionando nos dois lados antes de tocar em produção.
 
+**Pacote do itch.io (02/10/2026, pedido do usuário, testado no `.exe`
+empacotado de verdade)**: `release_tools/build_client.ps1` passou a
+escrever também `ui_scale = 1.25` (bug real na 1ª versão — só setava
+`scale`, que controla o tamanho da JANELA; `ui_scale`, que controla o
+tamanho dos elementos de INTERFACE, é lido direto em `game.py`, FORA
+de `config.py::DEFAULTS`, e ficou de fora — usuário testou o `.exe` e
+confirmou que a interface continuava em 1x mesmo com `scale: 1.25`
+salvo) e `music_volume`/`sfx_volume = 0.1`. **F10 (God Mode) e F11
+(overlay de performance) agora exigem `self.is_gm`** (`game.py`,
+mesmo padrão já usado por F12) — antes abriam pra qualquer jogador
+(as ações de GM em si já eram rejeitadas pelo servidor sem
+`session.is_gm`, mas o painel ficava visível pra qualquer um).
+`-ServerHost` do build script precisa ser passado EXPLICITAMENTE
+quando o build não é feito na própria máquina do servidor — sem ele,
+o script descobre "o IP público de quem está rodando o build" via
+`api.ipify.org`, não o IP do servidor (achado real: 1ª tentativa sem
+o parâmetro gravou o IP da máquina de dev, não o do Hetzner).
+
+### 21. Notificação por e-mail de eventos de conta (02/10/2026)
+
+Pedido do usuário, pensando no lançamento no itch.io: avisar por
+e-mail quando (a) uma conta nova é criada, (b) um personagem novo é
+criado, (c) alguém loga. `server/notify.py` (novo) — ponto único
+`notify_async(subject, body)`, chamado nos 3 pontos de sucesso já
+existentes em `server/session.py` (`_handle_register`/`_handle_login`/
+`_handle_create_character`, logo depois de confirmar que a ação deu
+certo, nunca antes).
+
+Dispara via `smtplib` (stdlib, SMTP+TLS — sem dependência nova) dentro
+de `loop.run_in_executor()` — `smtplib` é bloqueante, nunca pode rodar
+direto numa coroutine (travaria o event loop single-thread pra TODOS
+os players conectados enquanto o SMTP responde, mesma classe de risco
+já documentada pra qualquer I/O bloqueante no projeto). Task
+registrada em `_pending_tasks` (set de módulo, mesmo motivo já
+catalogado em `PROBLEMAS_ARQUITETURA.md` §161 — sem referência forte o
+GC pode coletar a task no meio do envio) e qualquer falha de envio
+(SMTP fora do ar, credencial errada) é só logada, NUNCA propaga pro
+chamador — e-mail é sempre side-effect, nunca pode derrubar/atrasar um
+registro, login ou criação de personagem real.
+
+Configurado via env vars (`RPG_SMTP_HOST`/`RPG_SMTP_PORT`/
+`RPG_SMTP_USER`/`RPG_SMTP_PASS`/`RPG_NOTIFY_EMAIL_TO`), lidas DENTRO
+das funções (nunca módulo-level, mesmo motivo do TLS — testável sem
+reimportar o módulo) — mesmo padrão já usado por `RPG_DATABASE_URL`/
+`RPG_TLS_CERT`, setadas em `/opt/rpg_ecs_online/.env` + `systemctl
+restart rpg-server`. Sem elas (dev local), `notify_async` é no-op
+silencioso. Remetente: Gmail do usuário com senha de app (sem TLS
+próprio novo — o Gmail já fala TLS via `starttls()`).
+
+Testes: `tests/test_notify.py` (`_smtp_config`/`_configured` com
+env vazia/completa/faltando 1 chave; `_send_email_sync` monta e manda
+via `smtplib.SMTP` mockado; `notify_async` não cria task sem
+configuração, cria e executa quando configurado, falha de envio nunca
+propaga) — revert-to-confirm feito (try/except removido do `_run`
+interno, o teste de falha-nunca-propaga falhou como esperado,
+restaurado).
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```

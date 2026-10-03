@@ -673,6 +673,8 @@ class SessionManager:
         ok = await _auth_register(username, password)
         if ok:
             await session.send(MsgType.REGISTER_OK, {})
+            from server.notify import notify_async
+            notify_async("RPG Online - nova conta", f"Usuário: {username}")
         else:
             await session.send(MsgType.REGISTER_ERROR, {"reason": "username_taken"})
 
@@ -707,6 +709,8 @@ class SessionManager:
             "server_ts":  int(time.time() * 1000),
         })
         log.info(f"[Session] auth ok: {username!r}  chars={len(chars)}")
+        from server.notify import notify_async
+        notify_async("RPG Online - login", f"Usuário: {username}")
 
     async def _handle_move(self, session: Session, payload: dict, ts: int) -> None:
         if not session.authenticated:
@@ -2180,6 +2184,9 @@ class SessionManager:
         # Envia apenas CHARACTER_CREATED com dados do personagem.
         # O cliente volta à lista de seleção; o spawn ocorre só ao clicar "Jogar".
         await session.send(MsgType.CHARACTER_CREATED, {"char": dict(char_data)})
+        from server.notify import notify_async
+        notify_async("RPG Online - novo personagem",
+                     f"Usuário: {session.username}\nPersonagem: {name}\nClasse: {class_id}")
 
     async def _handle_suggest_name(self, session: Session,
                                    payload: dict, ts: int = 0) -> None:
