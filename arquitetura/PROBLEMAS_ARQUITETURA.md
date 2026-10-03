@@ -24092,3 +24092,70 @@ depois da instância já ter sido descarregada. Bounded/autolimpa
 sozinho, nunca visível pro jogador (nenhum cliente está na AOI de uma
 instância já descarregada) — mencionado ao usuário, não é o bug
 relatado, correção fica a critério dele.
+
+## 224. Bug real — `loot_request` crashava com `UnboundLocalError: s` quando o corpse esvaziava sem ninguém na AOI (02/10/2026)
+
+**Sintoma relatado** (achado pelo usuário no log de produção, sem
+pedir investigação — "ERRO em handler loot_request: local variable 's'
+referenced before assignment"): `SessionManager.on_message`
+(`server/session.py:652-658`) captura qualquer exceção de handler
+genericamente e devolve `MsgType.ERROR` ao cliente em vez de deixar a
+conexão cair — por isso o sintoma nunca apareceu como crash de
+verdade, só como um `ERROR` espúrio chegando depois do saque.
+
+**Causa raiz**: `_handle_loot_request`, no trecho que declara um
+corpse REALMENTE vazio e manda `ENTITY_DESPAWN` pra quem está na AOI:
+
+```python
+for s in self._sessions_in_aoi(corpse_data.get("tx", 0),
+                               corpse_data.get("ty", 0),
+                               corpse_data.get("map")):
+    await s.send(MsgType.ENTITY_DESPAWN, despawn_payload)
+s.known_eids.discard(-corpse_id)   # MESMA indentação do for -- fora do loop
+```
+
+`s.known_eids.discard(...)` estava na MESMA indentação do `for`, não
+do `await s.send(...)` dentro dele — ou seja, rodava só UMA vez, DEPOIS
+do loop, usando o que quer que `s` tivesse valido na ÚLTIMA iteração.
+Dois problemas, um deles o crash relatado:
+1. Se `_sessions_in_aoi(...)` devolve vazio (ninguém perto do tile do
+   corpse no instante exato em que ele esvazia — cenário comum: quem
+   sacou já tinha se afastado, ou o resto do grupo saiu da área), o
+   loop nunca roda nenhuma vez, `s` nunca é atribuída, e a linha
+   seguinte explode com `UnboundLocalError`.
+2. Mesmo com o loop rodando (≥1 sessão), só a ÚLTIMA sessão da
+   iteração tinha `known_eids` corrigido — as outras ficavam com o eid
+   negativo "fantasma" preso em `known_eids` pra sempre (apesar de já
+   terem recebido o `ENTITY_DESPAWN` de verdade via `send()` — a
+   inconsistência era só na contabilidade server-side de "o que esta
+   sessão já sabe", não no que o cliente via na tela).
+
+Confirmado por comparação direta com o par simétrico já correto no
+mesmo arquivo (`server/session.py` ~linha 3231-3233, ENTITY_SPAWN):
+```python
+for s in self._sessions_in_aoi(...):
+    await s.send(MsgType.ENTITY_SPAWN, spawn_payload)
+    s.known_eids.add(-corpse_id)   # DENTRO do loop, 1x por sessão
+```
+
+**Fix**: mover `s.known_eids.discard(-corpse_id)` pra dentro do loop,
+mesma indentação de `await s.send(...)` — 1 linha.
+
+**Teste**: `tests/test_session.py::TestLootRequestDespawnBroadcast` —
+sem ninguém na AOI não gera `MsgType.ERROR` (reproduz o sintoma exato
+relatado); com 2 sessões na AOI, as DUAS têm o eid fantasma removido
+de `known_eids`, não só a última. **Não executável neste ambiente**
+(sem Postgres local disponível — mesma limitação já documentada pro
+resto da suíte nesta sessão; os testes chegam a tentar a conexão real
+com o banco via `fake_login`, confirmado que o único erro é
+`ConnectionRefusedError`, não um bug na escrita do teste). Mecanismo
+confirmado isoladamente, fora da suíte, com um script mínimo
+reproduzindo só a forma do bug (sem SessionManager/DB): código antigo
+levanta a MESMA mensagem de erro relatada com lista vazia, e só
+corrige a última sessão com lista de 2; código novo corrige as duas e
+nunca levanta.
+
+Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`) no mesmo
+commit do que estava em andamento (notificação por e-mail, §... ver
+`ARQUITETURA ONLINE.md` §21) — fix de servidor, sem jogador real
+afetado até agora além do próprio usuário testando.

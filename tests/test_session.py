@@ -822,6 +822,74 @@ class TestPartyLootSync(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(get_msgs_of_type(fw_a, MsgType.LOOT_RESULT)), 1)
 
 
+class TestLootRequestDespawnBroadcast(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
+    """Bug real (02/10/2026, relatado pelo usuário com traceback de
+    produção): `ERRO em handler loot_request: local variable 's'
+    referenced before assignment`. Causa: ao declarar um corpse
+    REALMENTE vazio, `s.known_eids.discard(-corpse_id)` estava FORA
+    do loop `for s in self._sessions_in_aoi(...)` (mesma indentação
+    do `for`, não do `await s.send(...)` dentro dele) — com o loop
+    vazio (nenhuma sessão na AOI do tile do corpse naquele instante),
+    `s` nunca é atribuída e a linha seguinte explode;
+    `SessionManager.on_message` captura a exceção genericamente (não
+    derruba a conexão), mas manda `MsgType.ERROR` pro cliente em vez
+    do fluxo normal. Mesmo quando o loop TEM sessões, só a ÚLTIMA da
+    iteração tinha `known_eids` corrigido — as outras ficavam com o
+    eid negativo "fantasma" preso. Fix: mesma indentação de `await
+    s.send(...)`, mesmo padrão já usado no par simétrico
+    (ENTITY_SPAWN/`known_eids.add`, `server/session.py` ~linha 3231-3233)."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    def _make_corpse(self, owner_eid: int, coins: int = 10, items: list = None) -> int:
+        cid = self.ws_server._next_corpse_id
+        self.ws_server._next_corpse_id += 1
+        self.ws_server._corpses[cid] = {
+            "tx": 130, "ty": 374, "owner_eid": owner_eid,
+            "items": items or [], "coins": coins,
+            "timer": 120.0, "map": self.ws_server._map_file,
+        }
+        return cid
+
+    async def test_sem_ninguem_no_aoi_nao_gera_erro(self):
+        from shared.messages import encode
+        import unittest.mock as mock
+        session_a, fw_a = await fake_login(self.mgr, "s1", "user_despawn_a", 130, 374)
+        cid = self._make_corpse(owner_eid=session_a.entity_id)
+
+        with mock.patch.object(self.mgr, "_sessions_in_aoi", return_value=[]):
+            await self.mgr.on_message(session_a, encode(
+                MsgType.LOOT_REQUEST, {"corpse_id": cid, "take": "gold"}))
+
+        self.assertEqual(len(get_msgs_of_type(fw_a, MsgType.ERROR)), 0,
+                         "sem ninguém na AOI do corpse, o saque não pode virar server_error")
+        self.assertEqual(len(get_msgs_of_type(fw_a, MsgType.LOOT_RESULT)), 1,
+                         "o saque em si deve ter sido processado e confirmado normalmente")
+
+    async def test_despawn_remove_known_eids_de_todas_as_sessoes_no_aoi(self):
+        from shared.messages import encode
+        session_a, fw_a = await fake_login(self.mgr, "s1", "user_despawn_b", 130, 374)
+        session_b, fw_b = await fake_login(self.mgr, "s2", "user_despawn_c", 131, 374)
+        cid = self._make_corpse(owner_eid=session_a.entity_id)
+
+        # Os dois já "conhecem" o corpse (mesmo estado de quem recebeu
+        # ENTITY_SPAWN/LOOT_AVAILABLE antes) -- é exatamente esse
+        # estado que precisa ser limpo quando o corpse esvazia de verdade.
+        session_a.known_eids.add(-cid)
+        session_b.known_eids.add(-cid)
+
+        await self.mgr.on_message(session_a, encode(
+            MsgType.LOOT_REQUEST, {"corpse_id": cid, "take": "gold"}))
+
+        self.assertEqual(len(get_msgs_of_type(fw_a, MsgType.ERROR)), 0)
+        self.assertNotIn(-cid, session_a.known_eids,
+                         "quem sacou deveria ter o eid fantasma removido")
+        self.assertNotIn(-cid, session_b.known_eids,
+                         "QUALQUER outra sessão na AOI também deveria ter o eid fantasma removido -- "
+                         "bug real: só a ÚLTIMA sessão da iteração era corrigida")
+
+
 class TestHarvestableEmptyNaoDisparaDespawnGenerico(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     """Bug real relatado pelo usuário 25/07/2026: esvaziar uma caixa de
     harvestable removia a entidade da tela de QUALQUER jogador no AOI

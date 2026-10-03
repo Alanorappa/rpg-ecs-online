@@ -1852,7 +1852,7 @@ class SessionManager:
                                                corpse_data.get("ty", 0),
                                                corpse_data.get("map")):
                     await s.send(MsgType.ENTITY_DESPAWN, despawn_payload)
-                s.known_eids.discard(-corpse_id)
+                    s.known_eids.discard(-corpse_id)
 
     _UNSTUCK_CD = 60.0  # segundos
 
