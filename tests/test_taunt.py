@@ -125,5 +125,80 @@ class TestTauntPlayerPvP(unittest.TestCase):
                          "taunt deveria liberar na hora com o taunter morto/inválido")
 
 
+class TestBradoProvocativoDanoEnraged(unittest.TestCase):
+    """Bug real relatado pelo usuário (03/10/2026): o talento cav_provocacao
+    promete +5% dano causado / +10% dano recebido pelo provocado
+    (content/talent_data.py), e engine/world_systems.py::
+    _resolve_damage_modifiers já lia esse bônus de um status "enraged" --
+    mas _skill_brado_provocativo nunca aplicava "enraged", só "taunted"
+    (o CC). O bônus de dano nunca disparava, mesmo com o ícone "Provocado"
+    aparecendo certo. Fix: aplica os 2 efeitos juntos, com durações
+    INDEPENDENTES (decisão do usuário) -- "taunted" (CC) expira em 3s,
+    "enraged" (dano) continua até os 10s do talento."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.caster = spawn_player(self.ws, "brado_dmg_c", 130, 374, class_id="guerreiro")
+        authorize_skill(self.ws, self.caster, "brado_provocativo")
+        self.victim = spawn_player(self.ws, "brado_dmg_v", 132, 374, class_id="mago")
+        self.assertIsNone(self.ws.request_duel(self.caster, self.victim))
+        self.ws.respond_duel_invite(self.victim, accept=True)
+
+    def test_enraged_aplicado_junto_com_taunted(self):
+        _cast_brado(self.ws, self.caster)
+        sfx = self.ws.world.get_component(self.victim, StatusEffects)
+        self.assertTrue(sfx.has("taunted"))
+        self.assertTrue(sfx.has("enraged"), "enraged deveria ser aplicado junto do taunted")
+
+    def test_enraged_sobrevive_ao_fim_do_taunted_mas_expira_em_10s(self):
+        _cast_brado(self.ws, self.caster)
+        for _ in range(70):  # > 3s -- taunted (CC) já devia ter expirado
+            self.ws._tick(0.05)
+        sfx_mid = self.ws.world.get_component(self.victim, StatusEffects)
+        self.assertFalse(sfx_mid.has("taunted"), "taunted (CC) deveria ter expirado em 3s")
+        self.assertTrue(sfx_mid.has("enraged"), "enraged (dano) deveria continuar até 10s")
+
+        for _ in range(140):  # mais 7s (total ~10.5s) -- agora enraged também expira
+            self.ws._tick(0.05)
+        sfx_end = self.ws.world.get_component(self.victim, StatusEffects)
+        self.assertFalse(sfx_end.has("enraged"), "enraged deveria ter expirado em 10s")
+
+    def test_enraged_aumenta_dano_recebido_em_10pct(self):
+        """Unidade direta em _resolve_damage_modifiers (já existia antes
+        deste fix, nunca disparava por falta de quem aplicasse "enraged")
+        -- confirma que o alvo provocado recebe +10% de qualquer fonte."""
+        from engine.world_systems import CombatSystem
+        from engine.core_systems import apply_effect
+        cs_sys = CombatSystem(self.ws.world, is_server=True)
+        base_dmg = cs_sys._resolve_damage_modifiers(
+            self.caster, self.victim, 100.0, "hit",
+            apply_armor=False, damage_type="physical_fixed",
+            attacker_is_player=True, target_is_player=True)
+        self.assertEqual(base_dmg, 100)
+
+        apply_effect(self.ws.world, self.victim, "enraged", 10.0)
+        buffed_dmg = cs_sys._resolve_damage_modifiers(
+            self.caster, self.victim, 100.0, "hit",
+            apply_armor=False, damage_type="physical_fixed",
+            attacker_is_player=True, target_is_player=True)
+        self.assertEqual(buffed_dmg, 110)
+
+    def test_enraged_aumenta_dano_causado_em_5pct(self):
+        """Simétrico ao teste acima: o PRÓPRIO provocado causa +5% de
+        dano ao atacar (o único alvo que ele pode atacar enquanto
+        taunted é o taunter, mas o bônus vale mesmo depois do CC
+        expirar, enquanto "enraged" ainda estiver ativo)."""
+        from engine.world_systems import CombatSystem
+        from engine.core_systems import apply_effect
+        cs_sys = CombatSystem(self.ws.world, is_server=True)
+        apply_effect(self.ws.world, self.victim, "enraged", 10.0)
+        # agora o VICTIM ataca o CASTER -- victim é o atacante enraged
+        dmg = cs_sys._resolve_damage_modifiers(
+            self.victim, self.caster, 100.0, "hit",
+            apply_armor=False, damage_type="physical_fixed",
+            attacker_is_player=True, target_is_player=True)
+        self.assertEqual(dmg, 105)
+
+
 if __name__ == "__main__":
     unittest.main()

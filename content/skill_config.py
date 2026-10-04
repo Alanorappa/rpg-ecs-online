@@ -141,8 +141,16 @@ SKILL_CATALOG: dict[str, dict] = {
         "needs_target":     False,
         "class_id":         "guerreiro",
         "effects":          {"impact": {"sound": "skill_brado_provocativo"}},
+        # "duration" (3s) = só o CC ("taunted" — força a andar/atacar o
+        # taunter). "enraged_duration" (10s) = o debuff/buff de dano
+        # (+5% causado / +10% recebido, ver engine/world_systems.py::
+        # _resolve_damage_modifiers) — dura mais que o CC de propósito
+        # (decisão do usuário, 03/10/2026): o alvo some de perto depois
+        # dos 3s mas continua "enraivecido" (mais fácil de matar, bate
+        # mais forte) pelos 10s inteiros do talento cav_provocacao.
         "params": {"radius_tiles": 3,
-                   "duration": 3.0},
+                   "duration": 3.0,
+                   "enraged_duration": 10.0},
     },
     "punho_no_queixo": {
         "name":             "Punho no Queixo",

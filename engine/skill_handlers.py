@@ -990,11 +990,23 @@ class SkillHandlers:
         `magnitude`. MOBS: força `AIControlled.state="CHASING"` na hora —
         `TauntSystem` não pilota mobs (não precisa: a RETENÇÃO de alvo já
         existente em `EnemyAISystem` mantém o mob preso no taunter
-        enquanto ele for válido, sem precisar de nenhum guard novo)."""
+        enquanto ele for válido, sem precisar de nenhum guard novo).
+
+        Bug real relatado pelo usuário (03/10/2026): o talento
+        `cav_provocacao` promete +5% dano causado / +10% dano recebido
+        pelo provocado (texto em content/talent_data.py), e
+        `_resolve_damage_modifiers` (engine/world_systems.py) já lia esse
+        bônus — mas de um status chamado `"enraged"`, nunca aplicado por
+        este handler (só `"taunted"` era aplicado, que é só o CC). O
+        bônus de dano nunca disparava. Fix: aplica os 2 efeitos juntos,
+        com durações INDEPENDENTES (decisão do usuário) — `"taunted"`
+        (CC) expira em 3s, `"enraged"` (dano) continua até os 10s do
+        talento."""
         from engine.components import AIControlled as _AIC_BP
         from engine.faction_system import can_engage as _can_engage_bp
         _radius_bp   = skill.params.get("radius_tiles", 3)
         _duration_bp = skill.params.get("duration", 3.0)
+        _enraged_duration_bp = skill.params.get("enraged_duration", 10.0)
         pl_x, pl_y = tile_move.current_tile_x, tile_move.current_tile_y
         taunted = 0
         for eid, etm, ecs in self.world.get_entities_with(TileMovement, CombatStats):
@@ -1011,6 +1023,7 @@ class SkillHandlers:
                 continue
             apply_effect(self.world, eid, "taunted", _duration_bp,
                         magnitude=float(self.player_entity_id))
+            apply_effect(self.world, eid, "enraged", _enraged_duration_bp)
             _ai_bp = self.world.get_component(eid, _AIC_BP)
             if _ai_bp:
                 _ai_bp.state      = "CHASING"

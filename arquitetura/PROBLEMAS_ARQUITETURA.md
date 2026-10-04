@@ -24207,3 +24207,66 @@ feito (fan-out revertido pra só `first_attacker_eid`, 3 dos 6 testes
 falharam exatamente como esperado, restaurado).
 
 Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`).
+
+## 226. Bug real — Brado Provocativo nunca aumentava dano (talento prometia, código nunca aplicava) (03/10/2026)
+
+**Sintoma relatado pelo usuário**: usou Brado Provocativo num duelo
+PvP e pareceu não afetar o oponente; testando contra mobs depois, o
+ícone "Provocado" aparecia certo ao lado da barra de HP, mas o dano
+causado ao mob não aumentava os 10% esperados, e o dano que o mob
+causava de volta também não subia os 5% esperados.
+
+**Investigação**: `content/talent_data.py::cav_provocacao` promete no
+texto "+5% dano causado, +10% dano recebido" por quem é provocado.
+`engine/world_systems.py::CombatSystem._resolve_damage_modifiers`
+(linha ~928) JÁ tinha o código pra isso: `if _sfx_target.has("enraged"):
+dmg *= 1.10` / `if _sfx_att.has("enraged"): dmg *= 1.05`. Só que
+`engine/skill_handlers.py::_skill_brado_provocativo` nunca aplicava o
+status `"enraged"` — só `"taunted"` (o CC que força o alvo a andar/
+atacar o taunter). Ou seja: o código de dano sempre existiu, mas
+nunca disparava, porque nada aplicava o status que ele lia. Clássico
+gap de wiring entre 2 peças escritas em sessões diferentes (CC em
+23/07/2026, bônus de dano referenciado no texto do talento desde
+então) que nunca foram conectadas — e sem teste algum cobrindo o
+bônus (`tests/test_taunt.py` só testava o CC).
+
+A parte do duelo (debuff "não apareceu") não foi confirmada como bug
+separado — mais provável é o oponente estar fora do raio de 3 tiles
+da skill (o jogo avisaria "Nenhum inimigo no raio" nesse caso) ou o
+usuário ter notado a falta do bônus de dano e generalizado como "não
+afetou". Sincronização de StatusEffects pra players remotos em PvP já
+foi confirmada funcionando (`client/remote_entity_handlers.py::
+_sync_mob_effects` busca mob OU player remoto pelo mesmo eid).
+
+**Decisão do usuário**: "taunted" (CC — forçado a atacar) e "enraged"
+(dano) têm durações INDEPENDENTES — CC continua 3s, dano continua os
+10s cheios do talento (o alvo pode parar de ser perseguido mas continua
+"enraivecido"/fácil de matar pelo resto da duração).
+
+**Fix**: `content/skill_config.py` ganhou `"enraged_duration": 10.0`
+(mantendo `"duration": 3.0` só pro CC); `_skill_brado_provocativo`
+agora chama `apply_effect(..., "enraged", _enraged_duration_bp)` junto
+com o `apply_effect(..., "taunted", ...)` já existente.
+
+**Teste**: `tests/test_taunt.py::TestBradoProvocativoDanoEnraged` (4) —
+enraged aplicado junto com taunted; enraged sobrevive ao fim do taunted
+(>3s) mas expira em ~10s; unidade direta em `_resolve_damage_modifiers`
+confirmando +10% dano recebido e +5% dano causado pelo provocado.
+Revert-to-confirm feito (removida a chamada de `apply_effect("enraged")`,
+os 2 testes que dependem dela falharam exatamente como esperado,
+restaurado).
+
+**Achado fora de escopo, reportado e NÃO corrigido agora**: ao ler
+`CombatSystem.deal_damage` (`engine/world_systems.py` ~linha 732-777)
+pra entender onde o bônus entra, percebi que o branch `pre_outcome`
+(usado por flechas que já resolveram miss visualmente) chama
+`_resolve_damage_modifiers` DUAS VEZES — uma dentro do próprio branch
+(linha ~748, reatribuindo `calculated_damage`) e outra incondicional
+mais abaixo (linha ~773, sempre executada pros 2 branches). Isso
+dobraria armadura/Foco Mortal/o bônus de "enraged" novo especificamente
+pra ataques físicos à distância com outcome pré-rolado — nunca
+confirmei o impacto real em jogo (não testei), só achei lendo o código
+por causa deste fix. Fica registrado aqui pro usuário decidir se quer
+que eu investigue/corrija numa rodada própria.
+
+Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`).
