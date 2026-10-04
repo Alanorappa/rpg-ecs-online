@@ -52,6 +52,8 @@ class MsgType(str, Enum):
     PORTAL_ENTER_REQ   = "portal_enter_req"  # C→S  {portal_id, dest_index} — pedido de entrar no portal com o destino já escolhido
     PORTAL_CAST_START  = "portal_cast_start" # S→C  {portal_id, dest_index, duration} — confirma o cast (cliente já mostrou local ao clicar, só passa a valer com esta confirmação)
     PORTAL_CAST_CANCEL = "portal_cast_cancel" # S→C  {reason} — cast interrompido (hoje só "moved", mas genérico pra motivo futuro)
+    PORTAL_CAST_BEGIN  = "portal_cast_begin" # S→C (AOI, 03/10/2026) {eid, duration} — aviso pra QUEM ESTÁ PRÓXIMO (nunca pro próprio caster, que já tem PORTAL_CAST_START privado) poder espelhar som posicional + animação "entrando no portal" na entidade remota — sem isso, só o caster via/ouvia o efeito
+    PORTAL_CAST_ABORT  = "portal_cast_abort" # S→C (AOI, 03/10/2026) {eid} — par de PORTAL_CAST_BEGIN: o cast observado foi cancelado antes do tempo (o próprio caster já recebe PORTAL_CAST_CANCEL privado)
 
     # Animação do TILE do portal (01/10/2026, pedido do usuário) — evento,
     # não relógio: diferente de luz noturna de poste (sempre ligada por

@@ -2433,6 +2433,22 @@ class SessionManager:
             "dest_index": dest_index,
             "duration":   self.world_server.PORTAL_CAST_DURATION_S,
         })
+        # Aviso pra quem está PRÓXIMO (03/10/2026, bug real relatado pelo
+        # usuário: só o próprio caster ouvia o som/via a animação do
+        # personagem entrando no portal — PORTAL_CAST_START acima é
+        # privado de propósito, nunca chega a mais ninguém). Broadcast
+        # AOI de origin_eid=caster já exclui ninguém — o cliente local
+        # ignora este evento quando eid==_my_eid (já tem seu próprio
+        # estado via PORTAL_CAST_START), mesmo padrão de
+        # skip_local_caster já usado por SKILL_EFFECT.
+        _pcb_tx, _pcb_ty = self.world_server.get_tile_pos(session.session_id)
+        _pcb_map = self.world_server.get_entity_map(session.entity_id)
+        for s in self._sessions_in_aoi(_pcb_tx, _pcb_ty, _pcb_map,
+                                       origin_eid=session.entity_id):
+            await s.send(MsgType.PORTAL_CAST_BEGIN, {
+                "eid":      session.entity_id,
+                "duration": self.world_server.PORTAL_CAST_DURATION_S,
+            })
 
     async def _handle_duel_request(self, session: Session, payload: dict, ts: int) -> None:
         """Botão "Duelar" do modal de interação com player."""
@@ -3676,9 +3692,19 @@ class SessionManager:
             for _prtc in self.world_server.consume_portal_cast_cancel_events():
                 _prtc_sid  = self.world_server.get_session_id_for_player(_prtc["eid"])
                 _prtc_sess = self._sessions.get(_prtc_sid) if _prtc_sid else None
-                if not (_prtc_sess and _prtc_sess.authenticated):
-                    continue
-                await _prtc_sess.send(MsgType.PORTAL_CAST_CANCEL, {"reason": _prtc["reason"]})
+                if _prtc_sess and _prtc_sess.authenticated:
+                    await _prtc_sess.send(MsgType.PORTAL_CAST_CANCEL, {"reason": _prtc["reason"]})
+                # Par de PORTAL_CAST_BEGIN (03/10/2026) — avisa quem estava
+                # observando esse cast pra limpar o espelho local (ver
+                # broadcast de PORTAL_CAST_BEGIN acima, mesmo padrão
+                # origin_eid=caster). Independente de `_prtc_sess` existir
+                # — o cancelamento é real mesmo que o caster já tenha
+                # desconectado no meio do cast.
+                _prtc_tx, _prtc_ty = self.world_server.get_tile_pos(_prtc_sid) if _prtc_sid else (0, 0)
+                _prtc_map = self.world_server.get_entity_map(_prtc["eid"])
+                for s in self._sessions_in_aoi(_prtc_tx, _prtc_ty, _prtc_map,
+                                               origin_eid=_prtc["eid"]):
+                    await s.send(MsgType.PORTAL_CAST_ABORT, {"eid": _prtc["eid"]})
 
             # Animação do TILE do portal (01/10/2026) — diferente do
             # PORTAL_CAST_CANCEL acima (privado, só pro dono do cast),

@@ -24315,3 +24315,58 @@ que os 2 efeitos aparecem juntos no nameplate. Revert-to-confirm
 taunt/combate completa (68 testes) passando.
 
 Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`).
+
+## 228. Bug real — som e animação de usar o portal só existiam pro próprio caster (03/10/2026)
+
+**Sintoma relatado pelo usuário**: "quando o player usa o portal, o
+efeito do sonoro não está sendo emitido, e nem o efeito do sprite do
+player está aparecendo para o player remoto". Confirmado por pergunta
+direta: o próprio caster ouve/vê normal — só quem está observando de
+fora não recebe nada.
+
+**Causa raiz**: `PORTAL_CAST_START` (`server/session.py`) é enviado só
+pro `session` que pediu (`await session.send(...)`, nunca broadcast).
+`client/portal_handlers.py::_update_portal_sfx`/`_update_portal_char_anim`
+só leem `self._portal_cast_active` — estado 100% local do PRÓPRIO
+jogador. Sem nenhuma mensagem avisando quem está por perto, o cliente
+de um observador nunca tem motivo pra tocar som nem animar a entidade
+remota. Diferente da animação do TILE do portal em si
+(`PORTAL_ANIM_START`/`STOP`/`ARRIVE`), que já é broadcast por AOI desde
+01/10/2026 — só o personagem ficou de fora.
+
+**Fix** (ver `arquitetura/ARQUITETURA ONLINE.md`, seção de portais,
+pra desenho completo): 2 mensagens novas, `PORTAL_CAST_BEGIN`/
+`PORTAL_CAST_ABORT` (S→C, broadcast AOI, pares de `PORTAL_CAST_START`/
+`CANCEL`), + `PortalHandlers._update_remote_portal_casts` no cliente,
+espelhando som posicional e animação "portal_in" na entidade remota.
+2 funções de módulo novas (`_begin_portal_in_anim`/`_clear_portal_in_anim`)
+extraídas do código que já existia só pro caster local, reusadas
+pelos 2 caminhos — nenhuma lógica duplicada.
+
+**Bug real pego pelo próprio teste, antes de ir pra produção**: a
+propriedade `_remote_portal_casts` (copiando o padrão `getattr(...)
+or {}` de `portal_tiles`) nunca persistia nenhuma mutação em lugar —
+dict vazio é "falsy" em Python, então `or {}` sempre devolvia um dict
+NOVO descartável assim que o guardado ficava vazio. `portal_tiles`
+nunca teve esse problema porque é sempre reatribuído por inteiro
+(nunca `self.portal_tiles[x] = y`); qualquer propriedade nova que
+mute dict/lista em lugar precisa inicializar e CACHEAR no primeiro
+acesso (`if ... is None: self._x_val = {}`), nunca `or {}`. Lição
+pra qualquer propriedade lazy futura do mesmo padrão.
+
+**Teste**: `tests/test_portal_remote_mirror.py` (10, fixture mínima de
+`PortalHandlers` mesmo padrão de `tests/test_client_ui.py`) — cobre
+handler de rede dos 2 eventos novos + `_update_remote_portal_casts`
+(SFX no instante certo, animação só no último segundo, remoção ao
+completar/ao a entidade sair do AOI, abort limpa tracking+animação).
+Revert-to-confirm feito (reintroduzido o `or {}` quebrado, 4 de 10
+testes falharam exatamente como esperado, restaurado). Regressão:
+`tests/test_portal.py`/`tests/test_character_animation.py`/
+`tests/test_client_ui.py` completos continuam passando.
+
+**Fora de escopo, não implementado**: animação de CHEGADA
+("portal_out") pra quem já está no mapa de destino vendo outro
+jogador materializar — pedido do usuário foi só sobre o lado do
+cast/origem.
+
+Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`).

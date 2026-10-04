@@ -183,6 +183,54 @@ def _find_portal_anim_anchor(object_matrix: list, gate_x: int, gate_y: int) -> "
     return best if best is not None else (gate_x, gate_y)
 
 
+def _begin_portal_in_anim(tm, class_id: "str | None", remaining_s: float,
+                          hold_last_frame: bool = True) -> None:
+    """Liga "portal_in" esticado pra caber em `remaining_s` segundos —
+    PONTO ÚNICO compartilhado entre o caster local
+    (`PortalHandlers._update_portal_char_anim`) e o espelho pra
+    observadores remotos (`_update_remote_portal_casts`, 03/10/2026,
+    bug real relatado pelo usuário: só o caster via a animação, nunca
+    quem estava por perto) — nunca duplicar esta conta nos 2 lugares.
+
+    `hold_last_frame=True` (padrão, usado pro caster local) segura na
+    última frame até o ZONE_CHANGE real chegar (latência de rede/tick
+    do servidor sempre deixa uma folga pequena — sem isso, 1 frame de
+    idle aparece antes da troca de mapa). `False` (observador remoto)
+    deixa o ciclo esticado terminar e voltar pro idle sozinho — a
+    folga de 1 frame é imperceptível pra quem só está observando, e
+    sem isso a pose ficaria PRESA pra sempre se o personagem continuar
+    visível depois (ex: teleporte dentro do mesmo mapa)."""
+    remaining_ms = max(1.0, remaining_s) * 1000.0
+    frame_ms = 0
+    if class_id:
+        from engine.character_animation import _frames_for as _cframes_for
+        n_frames = len(_cframes_for(class_id, "portal_in", tm.facing))
+        if n_frames > 0:
+            frame_ms = max(1, round(remaining_ms / n_frames))
+    tm.anim_attack_state            = "portal_in"
+    tm.anim_attack_started_ms       = pygame.time.get_ticks()
+    tm.anim_attack_frame_ms         = frame_ms  # 0 = usa DEFAULT_FRAME_MS
+    tm.anim_attack_loop_duration_ms = 0
+    tm.anim_attack_hold_last_frame  = hold_last_frame
+
+
+def _clear_portal_in_anim(tm) -> None:
+    """Desliga "portal_in" se estiver ativo — PONTO ÚNICO compartilhado
+    entre `_cancel_portal_cast_local` (caster) e o cancelamento
+    observado remotamente (`_handle_msg_portal_cast_abort`)."""
+    if tm is not None and tm.anim_attack_state == "portal_in":
+        tm.anim_attack_state = ""
+        # anim_attack_loop_duration_ms também precisa zerar aqui —
+        # trigger_attack_anim's _attack_loop_still_active (engine/
+        # character_animation.py) só olha esse campo + started_ms,
+        # NUNCA anim_attack_state. Sem isso, cancelar o cast ANTES do
+        # tempo deixava esse campo "vivo" até os 5s originais
+        # passarem sozinhos, bloqueando golpe novo o tempo todo (bug
+        # real: "estragou as animações de ataque", 01/10/2026).
+        tm.anim_attack_loop_duration_ms = 0
+        tm.anim_attack_hold_last_frame  = False
+
+
 class PortalHandlers:
 
     # ── Estado (lazy — GameEngine não precisa de __init__ extra, mesmo
@@ -198,6 +246,33 @@ class PortalHandlers:
     @portal_tiles.setter
     def portal_tiles(self, value: dict) -> None:
         self._portal_tiles_val = value
+
+    @property
+    def _remote_portal_casts(self) -> dict:
+        """eid (servidor) -> {"elapsed","duration","sfx_channel","char_anim_triggered"}
+        — espelho, pra jogadores OBSERVANDO de fora, do que `_portal_cast_active`
+        já faz pro próprio caster (03/10/2026, bug real relatado pelo
+        usuário: ninguém além do caster ouvia o som/via a animação).
+        Populado por `_handle_msg_portal_cast_begin`, atualizado todo
+        frame em `_update_remote_portal_casts` (chamado de
+        `_update_portal_state`). Nunca contém `self._my_eid` — o próprio
+        caster já tem seu caminho privado via `_portal_cast_active`.
+
+        NUNCA `getattr(...) or {}` aqui (padrão usado por `portal_tiles`
+        acima) — aquele idioma só é seguro pra propriedade sempre
+        REATRIBUÍDA por inteiro; esta é mutada em LUGAR (`self.
+        _remote_portal_casts[eid] = ...`/`.pop(...)`), e dict vazio é
+        "falsy" em Python — `or {}` devolveria um dict NOVO descartável
+        a cada chamada assim que o dict guardado ficasse vazio, fazendo
+        qualquer mutação em lugar desaparecer na hora (bug real pego
+        pelo próprio teste novo, 03/10/2026, antes de ir pra produção)."""
+        if getattr(self, "_remote_portal_casts_val", None) is None:
+            self._remote_portal_casts_val = {}
+        return self._remote_portal_casts_val
+
+    @_remote_portal_casts.setter
+    def _remote_portal_casts(self, value: dict) -> None:
+        self._remote_portal_casts_val = value
 
     @property
     def _portal_modal_open(self):
@@ -361,6 +436,7 @@ class PortalHandlers:
         self._portal_shake_fade_elapsed = None
         self._portal_sfx_channel = None
         self._portal_char_anim_triggered = False
+        self._remote_portal_casts = {}
 
     # ── Update por frame (chamado de game.py, perto da detecção de
     # transição de cavernas) ──────────────────────────────────────────────
@@ -368,6 +444,12 @@ class PortalHandlers:
     def _update_portal_state(self, dt: float) -> None:
         from engine.components import TileMovement as _TMPortalUp
         tm = self.world.get_component(self.player_entity, _TMPortalUp)
+
+        # Espelho pra quem está observando OUTRO jogador castar (03/10/2026)
+        # — totalmente independente do cast do jogador LOCAL abaixo, por
+        # isso roda incondicionalmente aqui, antes de qualquer `return`
+        # do bloco local.
+        self._update_remote_portal_casts(dt)
 
         if self._portal_cast_active is not None:
             # Movimento cancela o cast LOCALMENTE na hora (feedback
@@ -470,6 +552,59 @@ class PortalHandlers:
             return
         self._portal_sfx_channel = SOUNDS.play("portal")
 
+    def _update_remote_portal_casts(self, dt: float) -> None:
+        """Espelho de `_update_portal_sfx`/`_update_portal_char_anim` pra
+        jogadores OBSERVANDO outro player castar portal (03/10/2026, bug
+        real relatado pelo usuário: som e animação só existiam pro
+        próprio caster — `PORTAL_CAST_START` é privado de propósito).
+        Itera `self._remote_portal_casts` (populado por
+        `_handle_msg_portal_cast_begin`, nunca contém `self._my_eid`).
+
+        Entrada remove sozinha quando: (a) a entidade saiu do AOI/mapa
+        local (ENTITY_DESPAWN já limpa `_remote_players`, detectado aqui
+        por `local_eid is None` — sem handler dedicado de despawn), ou
+        (b) o cast local alcança a duração cheia (conclusão natural —
+        não precisamos de nenhum evento do servidor pra saber disso,
+        a duração já veio em PORTAL_CAST_BEGIN)."""
+        if not self._remote_portal_casts:
+            return
+        from engine.components import TileMovement as _TMRemotePortal, RemoteControlled as _RCRemotePortal
+        from engine.components import Position as _PosRemotePortal
+        _lx, _ly = self._player_world_pos()
+        _done = []
+        for eid, cast in self._remote_portal_casts.items():
+            local_eid = self._remote_players.get(eid)
+            if local_eid is None:
+                _done.append(eid)
+                continue
+            cast["elapsed"] += dt
+
+            if not cast["sfx_played"] and cast["elapsed"] >= _PORTAL_SFX_START_S:
+                cast["sfx_played"] = True
+                pos = self.world.get_component(local_eid, _PosRemotePortal)
+                if pos is not None:
+                    SOUNDS.play_random_at(["portal"], pos.x, pos.y, _lx, _ly)
+
+            if not cast["char_anim_triggered"]:
+                remaining = cast["duration"] - cast["elapsed"]
+                if remaining <= _PORTAL_CHAR_ANIM_START_S:
+                    cast["char_anim_triggered"] = True
+                    tm = self.world.get_component(local_eid, _TMRemotePortal)
+                    if tm is not None:
+                        rc = self.world.get_component(local_eid, _RCRemotePortal)
+                        class_id = rc.class_id if rc else None
+                        # hold_last_frame=False (diferente do caster local)
+                        # — sem ZONE_CHANGE pra limpar explicitamente nesta
+                        # ponta, deixar o ciclo esticado terminar sozinho é
+                        # mais seguro que segurar a pose pra sempre.
+                        _begin_portal_in_anim(tm, class_id, remaining,
+                                             hold_last_frame=False)
+
+            if cast["elapsed"] >= cast["duration"]:
+                _done.append(eid)
+        for eid in _done:
+            self._remote_portal_casts.pop(eid, None)
+
     def _update_portal_char_anim(self, tm) -> None:
         """Liga a animação "portal_in" quando o cast ativo entra no
         último `_PORTAL_CHAR_ANIM_START_S` segundo (02/10/2026, pedido
@@ -500,31 +635,12 @@ class PortalHandlers:
         # pro histórico completo -- relógio de parede deixava
         # anim_attack_started_ms permanentemente "no passado" em
         # relação aos ticks do pygame, bloqueando golpe novo pra sempre).
+        # `hold_last_frame=True` (padrão) — segura na ÚLTIMA frame até o
+        # ZONE_CHANGE real chegar (latência de rede/tick do servidor
+        # sempre deixa uma folga pequena). `_trigger_portal_out_if_pending`/
+        # `_cancel_portal_cast_local` limpam isso quando o evento real chega.
         class_id = self._portal_local_class_id()
-        remaining_ms = max(1.0, remaining) * 1000.0
-        # ESTICA via frame_ms (duração do CICLO), NUNCA via
-        # anim_attack_loop_duration_ms (repetiria o ciclo -- errado pra
-        # um dissolver ÚNICO). n_frames × frame_ms já bate com o
-        # restante real do cast -- a última frame (quase invisível) é a
-        # que fica na tela até o ZONE_CHANGE trocar de cena.
-        frame_ms = 0
-        if class_id:
-            from engine.character_animation import _frames_for as _cframes_for
-            n_frames = len(_cframes_for(class_id, "portal_in", tm.facing))
-            if n_frames > 0:
-                frame_ms = max(1, round(remaining_ms / n_frames))
-        tm.anim_attack_state          = "portal_in"
-        tm.anim_attack_started_ms     = pygame.time.get_ticks()
-        tm.anim_attack_frame_ms       = frame_ms  # 0 = usa DEFAULT_FRAME_MS
-        tm.anim_attack_loop_duration_ms = 0
-        # Segura na ÚLTIMA frame quando o ciclo "esticado" terminar, em
-        # vez de voltar pro idle (bug real já corrigido 02/10/2026: 1
-        # frame de idle perceptível antes do ZONE_CHANGE chegar de
-        # verdade -- latência de rede + granularidade de tick do
-        # servidor sempre deixam uma folga pequena).
-        # `_trigger_portal_out_if_pending`/`_cancel_portal_cast_local`
-        # limpam esta flag quando o evento real chega.
-        tm.anim_attack_hold_last_frame = True
+        _begin_portal_in_anim(tm, class_id, remaining)
 
     def _cancel_portal_cast_local(self, stop_shake: bool = True) -> None:
         """`stop_shake=True` (padrão, usado pelo cancelamento por
@@ -555,17 +671,7 @@ class PortalHandlers:
         self._portal_sfx_channel = None
         from engine.components import TileMovement as _TMPortalC
         tm = self.world.get_component(self.player_entity, _TMPortalC)
-        if tm is not None and tm.anim_attack_state == "portal_in":
-            tm.anim_attack_state = ""
-            # anim_attack_loop_duration_ms também precisa zerar aqui —
-            # trigger_attack_anim's _attack_loop_still_active (engine/
-            # character_animation.py) só olha esse campo + started_ms,
-            # NUNCA anim_attack_state. Sem isso, cancelar o cast ANTES do
-            # tempo deixava esse campo "vivo" até os 5s originais
-            # passarem sozinhos, bloqueando golpe novo o tempo todo (bug
-            # real: "estragou as animações de ataque", 01/10/2026).
-            tm.anim_attack_loop_duration_ms = 0
-            tm.anim_attack_hold_last_frame  = False
+        _clear_portal_in_anim(tm)
 
     def _portal_local_class_id(self) -> "str | None":
         """`CharacterStats.class_id` do jogador LOCAL, ou None se
@@ -704,8 +810,44 @@ class PortalHandlers:
         """Servidor cancelou o cast (moveu, ou qualquer motivo futuro) —
         idempotente: se o cliente já tinha cancelado localmente (caso
         comum, o cancelamento local roda 1 frame antes da confirmação
-        de rede chegar), isto só confirma o estado que já era."""
+        de rede chegar), isto só confirma o estado que era."""
         self._cancel_portal_cast_local()
+
+    # ── Handlers de rede — espelho pra OBSERVADORES (03/10/2026) ────────────
+    # Diferente dos 2 acima (sobre O PRÓPRIO cast do jogador local,
+    # privado), estes 2 são broadcast por AOI — chegam pra qualquer sessão
+    # perto do CASTER (nunca pro caster em si, ver skip de eid==_my_eid).
+
+    def _handle_msg_portal_cast_begin(self, payload: dict) -> None:
+        """Outro jogador começou um cast de portal e está dentro do meu
+        AOI — registra em `self._remote_portal_casts` pra
+        `_update_remote_portal_casts` espelhar som+animação a cada
+        frame. `eid == self._my_eid` nunca deveria acontecer na prática
+        (`_sessions_in_aoi` inclui a origem, mas eu já tenho meu próprio
+        caminho via `PORTAL_CAST_START`) — guard defensivo, mesmo
+        princípio de `skip_local_caster` já usado por SKILL_EFFECT."""
+        eid = payload.get("eid", -1)
+        if eid == self._my_eid:
+            return
+        self._remote_portal_casts[eid] = {
+            "elapsed":            0.0,
+            "duration":           float(payload.get("duration", _DEFAULT_PORTAL_CAST_DURATION_S)),
+            "sfx_played":         False,
+            "char_anim_triggered": False,
+        }
+
+    def _handle_msg_portal_cast_abort(self, payload: dict) -> None:
+        """Cast observado foi cancelado antes do tempo (o outro jogador
+        se moveu) — remove do tracking e desliga a animação "portal_in"
+        se ela já tinha ligado (só possível se o cancelamento aconteceu
+        bem no último segundo do cast)."""
+        eid = payload.get("eid", -1)
+        self._remote_portal_casts.pop(eid, None)
+        local_eid = self._remote_players.get(eid)
+        if local_eid is not None:
+            from engine.components import TileMovement as _TMPortalAbort
+            tm = self.world.get_component(local_eid, _TMPortalAbort)
+            _clear_portal_in_anim(tm)
 
     # ── Handlers de rede — animação do TILE do portal (01/10/2026) ──────────
     # Diferente dos 2 acima (sobre O PRÓPRIO cast do jogador local, privado),

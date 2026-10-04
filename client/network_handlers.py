@@ -3303,6 +3303,8 @@ NetworkHandlers._NET_DISPATCH_NAMES = {
     MsgType.ZONE_CHANGE: "_handle_msg_zone_change",
     MsgType.PORTAL_CAST_START: "_handle_msg_portal_cast_start",
     MsgType.PORTAL_CAST_CANCEL: "_handle_msg_portal_cast_cancel",
+    MsgType.PORTAL_CAST_BEGIN: "_handle_msg_portal_cast_begin",
+    MsgType.PORTAL_CAST_ABORT: "_handle_msg_portal_cast_abort",
     MsgType.PORTAL_ANIM_START: "_handle_msg_portal_anim_start",
     MsgType.PORTAL_ANIM_STOP: "_handle_msg_portal_anim_stop",
     MsgType.PORTAL_ANIM_ARRIVE: "_handle_msg_portal_anim_arrive",

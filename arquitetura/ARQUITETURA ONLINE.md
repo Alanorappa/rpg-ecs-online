@@ -908,6 +908,71 @@ test_assets_reais_de_portal_in_out_existem_e_tem_frames` atualizado
 pro frame count real novo (8/8, antes 35/12) — revert-to-confirm feito
 (disparo desativado, 6 testes falharam como esperado, restaurado).
 
+**Som + animação do CASTER broadcast pra observadores (03/10/2026, bug
+real relatado pelo usuário: o próprio caster ouvia/via tudo normal,
+mas quem estava só OBSERVANDO não ouvia o som nem via a animação
+"entrando no portal")** — causa raiz: `PORTAL_CAST_START` (S→C) é
+privado de propósito (só o dono do cast), e tanto `_update_portal_sfx`
+quanto `_update_portal_char_anim` só liam `self._portal_cast_active`
+(estado client-only do PRÓPRIO jogador) — nada no protocolo avisava
+quem estava perto.
+
+- **Protocolo novo** (`shared/messages.py`): `PORTAL_CAST_BEGIN` (S→C,
+  AOI, `{eid, duration}`) — par de `PORTAL_CAST_START`, broadcast via
+  `SessionManager._sessions_in_aoi(tx, ty, map_file, origin_eid=caster)`
+  (inclui o próprio caster também, por como `_sessions_in_aoi` sempre
+  funciona — o cliente ignora quando `eid == self._my_eid`, mesmo
+  princípio de `skip_local_caster` já usado por `SKILL_EFFECT`).
+  `PORTAL_CAST_ABORT` (S→C, AOI, `{eid}`) — par de `PORTAL_CAST_CANCEL`,
+  mesmo broadcast, avisa quem estava observando que o cast terminou
+  antes do tempo. Handler `_handle_portal_enter_req` (`server/
+  session.py`) manda os dois junto dos privados já existentes; o dreno
+  de `consume_portal_cast_cancel_events()` manda `PORTAL_CAST_ABORT`
+  junto do `PORTAL_CAST_CANCEL` privado.
+- **Cliente** (`client/portal_handlers.py::PortalHandlers`): novo dict
+  `self._remote_portal_casts: dict[eid, {elapsed, duration, sfx_played,
+  char_anim_triggered}]`, populado por `_handle_msg_portal_cast_begin`
+  e espelhado a cada frame por `_update_remote_portal_casts` (chamado
+  de `_update_portal_state`, incondicional — roda mesmo quando o
+  jogador LOCAL não está castando nada). SFX positional via
+  `SOUNDS.play_random_at(["portal"], ...)` no mesmo instante
+  (`_PORTAL_SFX_START_S`); animação via 2 funções de MÓDULO extraídas
+  do código que já existia pro caster local — `_begin_portal_in_anim(tm,
+  class_id, remaining_s, hold_last_frame)`/`_clear_portal_in_anim(tm)`
+  — PONTO ÚNICO reusado por `_update_portal_char_anim`/
+  `_cancel_portal_cast_local` (caster) E pelo espelho remoto, nunca
+  duplicar essa conta de novo. Diferença intencional: o espelho remoto
+  usa `hold_last_frame=False` (diferente do caster local, que usa
+  `True`) — sem nenhum `ZONE_CHANGE` chegando nesta ponta pra desligar
+  o hold explicitamente, deixar o ciclo esticado terminar sozinho é
+  mais seguro que arriscar prender a pose pra sempre (ex: teleporte
+  dentro do mesmo mapa, entidade continua visível depois). Entrada do
+  dict remove sozinha quando a entidade sai do AOI local (`local_eid is
+  None`, sem handler de despawn dedicado) ou ao cruzar a duração cheia.
+- **Bug real pego pelo próprio teste antes de ir pra produção**: a
+  propriedade `_remote_portal_casts` (padrão `getattr(...) or {}`,
+  copiado de `portal_tiles`) quebrava porque dict vazio é "falsy" em
+  Python — `or {}` devolvia um dict NOVO descartável a cada acesso
+  assim que o dict guardado ficasse vazio, fazendo qualquer mutação em
+  lugar (`self._remote_portal_casts[eid] = ...`) desaparecer na hora.
+  `portal_tiles` nunca teve esse problema porque é sempre REATRIBUÍDO
+  por inteiro, nunca mutado em lugar — propriedade nova que muta
+  dict/lista em lugar precisa inicializar e CACHEAR no primeiro acesso
+  (`if ... is None: self._x_val = {}`), nunca `or {}`.
+- **Fora de escopo, não implementado**: animação de CHEGADA
+  ("portal_out") pra quem já está no mapa de destino vendo outro
+  jogador materializar — o pedido do usuário foi só sobre o cast
+  (lado da origem); quem está no destino hoje só vê o jogador aparecer
+  normal, igual qualquer outro `ENTITY_SPAWN`.
+- Testes: `tests/test_portal_remote_mirror.py` (10, handlers de rede +
+  `_update_remote_portal_casts` com fixture mínima de `PortalHandlers`,
+  mesmo padrão de `tests/test_client_ui.py`) — revert-to-confirm feito
+  (reintroduzindo o `or {}` quebrado, 4 dos 10 testes falharam
+  exatamente como esperado, restaurado). Regressão: `tests/test_portal.py`
+  + `tests/test_character_animation.py` + `tests/test_client_ui.py`
+  completos continuam passando (os 2 helpers extraídos preservam o
+  comportamento do caster local byte a byte).
+
 **Âncora de desenho de personagem passa a ser pela BASE do frame, não
 mais um offset fixo a partir do topo (02/10/2026, bug real relatado
 pelo usuário)**: `engine/character_animation.py::character_anchor_
