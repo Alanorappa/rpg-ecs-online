@@ -40,6 +40,21 @@ class TestFilterNameplateEffects(unittest.TestCase):
         result = _filter_nameplate_effects(sfx)
         self.assertEqual(len(result), 1)
 
+    def test_enraged_e_taunted_aparecem_juntos_no_nameplate(self):
+        """Bug real relatado pelo usuário (03/10/2026): "enraged" (bônus
+        de dano do Brado Provocativo, is_buff=True até esta correção)
+        nunca aparecia sobre mob/oponente de PvP -- buff bar só mostra
+        pro jogador LOCAL, nameplate só mostra is_buff=False. Com
+        is_buff=True, o único ícone visível no alvo provocado era
+        "taunted" (3s) -- o bônus de dano real (10s) nunca tinha
+        representação visual em quem estava sendo observado."""
+        sfx = StatusEffects()
+        sfx.effects["taunted"] = ActiveEffect(effect_type="taunted", duration=3.0)
+        sfx.effects["enraged"] = ActiveEffect(effect_type="enraged", duration=10.0)
+        result = _filter_nameplate_effects(sfx)
+        _types = {e.effect_type for e in result}
+        self.assertEqual(_types, {"taunted", "enraged"})
+
 
 if __name__ == "__main__":
     unittest.main()

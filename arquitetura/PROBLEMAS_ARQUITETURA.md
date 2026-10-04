@@ -24270,3 +24270,48 @@ por causa deste fix. Fica registrado aqui pro usuário decidir se quer
 que eu investigue/corrija numa rodada própria.
 
 Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`).
+
+## 227. Bug real — ícone do debuff de Brado Provocativo só aparecia 3s (classificação errada de is_buff) (03/10/2026)
+
+**Sintoma relatado pelo usuário**, no mesmo dia e logo depois do fix
+do §226: "o ícone do debuff está ficando somente 3 segundos, ele deve
+ficar durante os 10 segundos de debuff" — ou seja, mesmo depois do
+§226 ligar o bônus de dano por 10s, nenhum ícone correspondente
+aparecia no alvo além do "Provocado" (taunted), que some em 3s.
+
+**Causa raiz**: `content/status_effects_data.py::EFFECT_DEFS["enraged"]`
+tinha `is_buff=True`. Dois filtros de UI já existentes (criados
+31/08/2026, antes de "enraged" ter qualquer produtor real — ver §11
+("enraged"/"haste"/"regen" eram entradas órfãs) tratam `is_buff` como
+roteamento exclusivo:
+- `ui/render_system.py::_filter_nameplate_effects` — nameplate (acima
+  da cabeça de mob/jogador, local OU remoto) só mostra `is_buff=False`.
+- `ui/buff_bar.py` — a barra de buff só mostra `is_buff=True`, e só
+  pro jogador LOCAL (nunca desenha buff de outra entidade).
+
+Com `is_buff=True`, "enraged" nunca aparecia em lugar nenhum quando
+aplicado a um MOB ou a um OPONENTE de duelo — não é "jogador local",
+então a buff bar nunca o desenha; e por ser `is_buff=True`, o
+nameplate também o exclui de propósito. Resultado: o único ícone
+visível em quem foi provocado era "taunted" (debuff puro, 3s) — o
+bônus de dano de 10s do §226 ficava sem nenhuma representação visual
+em QUEM o jogador está de fato olhando (o alvo).
+
+**Fix**: `EFFECT_DEFS["enraged"].is_buff` → `False`. O efeito é
+mecanicamente misto (+5% causado / +10% recebido), mas o sinal visual
+relevante é sempre no ALVO provocado — mesma categoria de "taunted".
+Efeito colateral identificado e aceito (não é regressão, é
+consequência correta da reclassificação): `engine/skill_handlers.py`
+(~linha 1288, Bloco de Gelo) remove todo efeito `not is_buff` ao
+ativar — um mago que leva Brado Provocativo e usa Bloco de Gelo agora
+também limpa "enraged" (antes só limpava "taunted") — coerente com o
+Bloco de Gelo ser uma bolha de imunidade.
+
+**Teste**: `tests/test_nameplate_buff_filter.py::
+test_enraged_e_taunted_aparecem_juntos_no_nameplate` (novo) — confirma
+que os 2 efeitos aparecem juntos no nameplate. Revert-to-confirm
+(`is_buff` de volta pra `True`, o teste novo falhou exatamente com
+"enraged" faltando no conjunto, restaurado). Suíte de buff/nameplate/
+taunt/combate completa (68 testes) passando.
+
+Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`).

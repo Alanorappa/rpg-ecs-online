@@ -60,7 +60,17 @@ EFFECT_DEFS: dict[str, EffectDef] = {
     "bleed":  EffectDef("Sangramento",  (200,  30,  30), False, 1.0),
     "burn":   EffectDef("Queimadura",   (255, 120,   0), False, 3.0),
     # ── Buffs ────────────────────────────────────────────────────────────────
-    "enraged":         EffectDef("Enfurecido",      (255,  80,   0), True,  0.0),
+    # is_buff=False (03/10/2026, corrigido -- era True): o efeito É
+    # mecanicamente misto (+5% dano causado / +10% dano recebido, ver
+    # engine/world_systems.py::_resolve_damage_modifiers), mas o sinal
+    # visual que importa é no ALVO provocado (Brado Provocativo) -- e
+    # nameplate (ui/render_system.py::_filter_nameplate_effects) só
+    # mostra is_buff=False; buff bar (ui/buff_bar.py) só mostra
+    # is_buff=True e É EXCLUSIVA DO JOGADOR LOCAL. Com True, o ícone
+    # nunca aparecia sobre mob/oponente de PvP (só "taunted" aparecia,
+    # e só durante os 3s do CC) -- exatamente o bug relatado pelo
+    # usuário ("ícone fica só 3s, deveria ficar os 10s do debuff").
+    "enraged":         EffectDef("Enfurecido",      (255,  80,   0), False, 0.0),
     "elemental_lapse": EffectDef("Lapso Elemental", (255, 100, 200), False, 1.0),  # tick: auto-burn
     "exhaustion":      EffectDef("Exaustão",        (200, 140,  60), False, 0.0),  # rastreia stacks
     "haste":   EffectDef("Acelerado",   (100, 220, 255), True,  0.0),
