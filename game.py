@@ -3089,11 +3089,20 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     # explícita é o ÚNICO jeito de garantir fog fresco indo
                     # pro servidor por este caminho de saída.
                     self._send_save_state()
+                    self._save_config()      # persiste layout da hotbar ao sair (03/10/2026,
+                                             # bug real: só pygame.QUIT fazia isso, "Sair do
+                                             # jogo"/"Deslogar" pelo menu nunca gravavam a
+                                             # hotbar em config.json — skill nova (ex: recompensa
+                                             # de quest) sumia da barra no próximo login porque
+                                             # _apply_hotbar_config só reinsere skill aprendida
+                                             # ausente quando já existe ALGUM hotbar salvo pro
+                                             # personagem; personagem novo nunca tinha nenhum)
                 elif action == "logout":
                     self._show_pause     = False
                     self._pause_submenu  = ""
                     self._pending_logout = True
                     self._send_save_state()  # ver comentário em "quit" acima
+                    self._save_config()      # ver comentário em "quit" acima
                 elif action == "resume":
                     self._show_pause    = False
                     self._pause_submenu = ""
@@ -3542,59 +3551,72 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             cb_data = data.get("consumable_bar")
 
         # ── Skills hotbar ────────────────────────────────────────────────
-        if hb:
-            ps = self.world.get_component(self.player_entity, PlayerSkills)
-            if ps:
-                saved_slots    = hb.get("slots",    [])
-                saved_keybinds = hb.get("keybinds", [])
+        # NUNCA gatear o bloco inteiro em "if hb:" (03/10/2026, bug real:
+        # skill aprendida por recompensa de quest desaparecia da hotbar no
+        # próximo login de personagem NOVO) — sem nenhum hotbar salvo ainda
+        # (`hb is None`, char nunca teve config.json gravado), o fallback de
+        # "reinserir skill aprendida ausente" abaixo NUNCA rodava, porque
+        # estava todo dentro deste gate. `hb or {}` deixa `saved_slots`/
+        # `saved_keybinds` vazios nesse caso (nada pra restaurar), mas o
+        # restante da função continua e PREENCHE a hotbar com qualquer
+        # skill de talento/aprendida ainda sem slot — mesmo comportamento
+        # de segurança que já existia pra "config com hotbar salvo mas
+        # faltando uma skill nova", agora também cobre "sem config salvo
+        # nenhum".
+        ps = self.world.get_component(self.player_entity, PlayerSkills)
+        if ps:
+            hb_data = hb or {}
+            saved_slots    = hb_data.get("slots",    [])
+            saved_keybinds = hb_data.get("keybinds", [])
 
-                talent_skills = [s for s in ps.skills if s and getattr(s, "talent_id", None)]
-                new_skills: list = [None] * NUM_SLOTS
-                for i in range(NUM_SLOTS):
-                    sid = saved_slots[i] if i < len(saved_slots) else None
-                    if sid is None:
-                        continue
-                    ts = next((t for t in talent_skills if t.skill_id == sid), None)
-                    if ts:
-                        new_skills[i] = ts
-                    elif sid in SKILL_CATALOG and sid in ps.learned_skill_ids:
-                        new_skills[i] = PlayerSkills._make_skill(sid, SKILL_CATALOG)
+            talent_skills = [s for s in ps.skills if s and getattr(s, "talent_id", None)]
+            new_skills: list = [None] * NUM_SLOTS
+            for i in range(NUM_SLOTS):
+                sid = saved_slots[i] if i < len(saved_slots) else None
+                if sid is None:
+                    continue
+                ts = next((t for t in talent_skills if t.skill_id == sid), None)
+                if ts:
+                    new_skills[i] = ts
+                elif sid in SKILL_CATALOG and sid in ps.learned_skill_ids:
+                    new_skills[i] = PlayerSkills._make_skill(sid, SKILL_CATALOG)
 
-                # Talent skills que não estavam salvas no config (ex: desbloqueadas após
-                # último save) precisam ser reinseridas no primeiro slot livre.
-                placed_ids = {s.skill_id for s in new_skills if s}
-                for ts in talent_skills:
-                    if ts.skill_id not in placed_ids:
+            # Talent skills que não estavam salvas no config (ex: desbloqueadas após
+            # último save) precisam ser reinseridas no primeiro slot livre.
+            placed_ids = {s.skill_id for s in new_skills if s}
+            for ts in talent_skills:
+                if ts.skill_id not in placed_ids:
+                    try:
+                        idx = new_skills.index(None)
+                        new_skills[idx] = ts
+                    except ValueError:
+                        new_skills.append(ts)
+                    placed_ids.add(ts.skill_id)
+
+            # Skills aprendidas (trainer/etc.) ausentes do config — reinserir.
+            # Garante que skills aprendidas durante a sessão anterior (sem save
+            # da config naquele momento, ou sem config nenhum ainda — personagem
+            # novo) não desapareçam da hotbar.
+            for sid in ps.learned_skill_ids:
+                if sid not in placed_ids and sid in SKILL_CATALOG:
+                    sk = PlayerSkills._make_skill(sid, SKILL_CATALOG)
+                    if sk:
                         try:
                             idx = new_skills.index(None)
-                            new_skills[idx] = ts
+                            new_skills[idx] = sk
                         except ValueError:
-                            new_skills.append(ts)
-                        placed_ids.add(ts.skill_id)
+                            new_skills.append(sk)
+                        placed_ids.add(sid)
 
-                # Skills aprendidas (trainer/etc.) ausentes do config — reinserir.
-                # Garante que skills aprendidas durante a sessão anterior (sem save
-                # da config naquele momento) não desapareçam da hotbar.
-                for sid in ps.learned_skill_ids:
-                    if sid not in placed_ids and sid in SKILL_CATALOG:
-                        sk = PlayerSkills._make_skill(sid, SKILL_CATALOG)
-                        if sk:
-                            try:
-                                idx = new_skills.index(None)
-                                new_skills[idx] = sk
-                            except ValueError:
-                                new_skills.append(sk)
-                            placed_ids.add(sid)
+            ps.skills = new_skills
 
-                ps.skills = new_skills
+            for i in range(min(len(saved_keybinds), NUM_SLOTS)):
+                ps.keybinds[i] = saved_keybinds[i]
 
-                for i in range(min(len(saved_keybinds), NUM_SLOTS)):
-                    ps.keybinds[i] = saved_keybinds[i]
-
-                if _HSD_ON_ahc:
-                    _after_ahc = {s.skill_id: i for i, s in enumerate(ps.skills) if s}
-                    HSD.log("APPLY_HOTBAR_CONFIG_DONE", after=_after_ahc,
-                            learned=sorted(ps.learned_skill_ids), saved_slots=saved_slots)
+            if _HSD_ON_ahc:
+                _after_ahc = {s.skill_id: i for i, s in enumerate(ps.skills) if s}
+                HSD.log("APPLY_HOTBAR_CONFIG_DONE", after=_after_ahc,
+                        learned=sorted(ps.learned_skill_ids), saved_slots=saved_slots)
 
         # ── Consumable bar ────────────────────────────────────────────────
         if cb_data:

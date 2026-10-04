@@ -24370,3 +24370,74 @@ jogador materializar — pedido do usuário foi só sobre o lado do
 cast/origem.
 
 Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`).
+
+## 229. Bug real — skill ganha por recompensa de quest desaparecia da hotbar no próximo login (03-04/10/2026)
+
+**Sintoma relatado pelo usuário**: cria personagem novo, ganha "Golpe
+Poderoso" ao completar uma quest, a skill vai pra barra de ações —
+relogou o personagem e a skill some da barra (continua "aprendida",
+só não aparece em nenhum slot).
+
+**Causa raiz dupla** (as 2 juntas produzem o sintoma; a 1ª é o
+gatilho real, a 2ª é um buraco de segurança que já existia por trás):
+
+1. **`game.py` — "Sair do jogo"/"Deslogar" pelo menu de pausa nunca
+   chamavam `_save_config()`.** Só `pygame.QUIT` (botão X da janela)
+   fazia as 2 chamadas (`_send_save_state()` + `_save_config()`); os
+   2 botões do menu (as ações `"quit"`/`"logout"`) só chamavam
+   `_send_save_state()` — o comentário já dizia "mesmo padrão já
+   usado pelo fechamento via botão X", mas só copiou a metade que
+   manda pro servidor, nunca a que grava `config.json` localmente
+   (onde o LAYOUT da hotbar vive — "learned" vai pro servidor, mas o
+   layout é tratado como UI local de propósito, ver comentário em
+   `client/save_sync_handlers.py`). Resultado: usar o menu pra
+   sair/relogar (o caminho normal, não fechar a janela) nunca
+   persistia a hotbar em disco.
+
+2. **`game.py::_apply_hotbar_config` — o fallback que reinsere skill
+   aprendida ausente só rodava dentro de `if hb:`.** Mesmo COM o
+   fix #1, um personagem RECÉM-CRIADO nunca teve nenhum hotbar salvo
+   ainda (`hb is None`) — e o bloco inteiro que reinsere qualquer
+   skill de `learned_skill_ids` sem slot (comentário da própria
+   função: "Garante que skills aprendidas... não desapareçam da
+   hotbar") ficava pulado justamente nesse caso, porque estava todo
+   dentro do `if hb:`. A rede de segurança só cobria "config salvo
+   mas faltando uma skill nova", nunca "sem config nenhum salvo".
+
+**Fix**: (1) `_save_config()` adicionado nas 2 ações do menu, mesmo
+padrão do `pygame.QUIT`. (2) `_apply_hotbar_config` reestruturado —
+`hb_data = hb or {}` em vez de gatear o bloco inteiro em `if hb:`;
+sem nenhum slot salvo (`saved_slots=[]`), o restante da função já
+preenche a hotbar do zero com qualquer skill de talento/aprendida
+ainda sem lugar — mesmo mecanismo que já existia, agora também
+cobre "sem config nenhum ainda".
+
+**Teste**: `tests/test_hotbar_bg_leak.py::TestApplyHotbarConfigSemConfigSalvo`/
+`TestApplyHotbarConfigComConfigSalvo` (4, fixture mínima com o método
+real de `GameEngine`, `config.load` mockado — nunca toca o
+config.json de verdade) — skill aprendida sem config nenhum entra na
+hotbar; sem skill aprendida a hotbar continua vazia (controle
+negativo); layout salvo continua restaurado no slot certo
+(regressão); skill nova ausente de um config JÁ salvo continua
+reinserida (regressão do comportamento antigo). Revert-to-confirm
+feito (gate `if not hb: return` reintroduzido, o teste principal
+falhou exatamente como esperado, restaurado). Suíte completa de
+`test_hotbar_bg_leak.py`/`test_client_ui.py` sem regressão (12
+falhas em `test_hotbar_bg_leak.py` são o `ConnectionRefusedError` do
+Postgres local indisponível, confirmado — nenhuma toca
+`_apply_hotbar_config`).
+
+**Não testado automaticamente**: a chamada nova de `_save_config()`
+nas ações `"quit"`/`"logout"` do menu — está dentro do loop de evento
+gigante de `GameEngine.run()`, sem método isolável sem refatoração
+maior (fora de escopo deste fix). Verificado por leitura comparando
+com o padrão idêntico já usado por `pygame.QUIT`; validação real é
+manual (usuário aprende skill, sai pelo menu "Deslogar", relogar e
+confirmar que a skill continua na barra).
+
+Fix 100% client-side (`game.py`) — nenhum arquivo de `server/` mudou,
+então **sem deploy no Hetzner** (nada lá seria afetado). Só entra em
+vigor pro jogador num `.exe` buildado DEPOIS deste commit — o pacote
+`RPG_Online_v0.48.0.zip` gerado antes deste fix (mesma sessão, pedido
+anterior) NÃO o contém; precisa de rebuild antes do próximo upload
+no itch.io.

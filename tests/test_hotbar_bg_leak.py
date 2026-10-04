@@ -964,5 +964,112 @@ class TestInventoryPersistedFromLiveECS(AuthPoolCleanupMixin, unittest.IsolatedA
         self.assertEqual(merged["inventory"][0]["name"], real_item.name)
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# 6) Fase 13 (03/10/2026) — skill de recompensa de quest desaparecia da
+#    hotbar no PRÓXIMO login de personagem NOVO. Causa raiz dupla:
+#    (a) game.py — "Sair do jogo"/"Deslogar" pelo menu de pausa chamavam
+#        _send_save_state() mas NUNCA _save_config() (só pygame.QUIT, o
+#        botão X da janela, fazia as 2 coisas) — a hotbar NUNCA era
+#        persistida em config.json por esse caminho de saída, então
+#        personagem sem NENHUM hotbar salvo ainda (caso de personagem
+#        novo) continuava sem nenhum no próximo login.
+#    (b) game.py::_apply_hotbar_config — mesmo sem (a), o fallback que
+#        reinsere skill aprendida ausente ("Skills aprendidas... ausentes
+#        do config — reinserir") só rodava dentro de `if hb:` — sem NENHUM
+#        hotbar salvo (`hb is None`, igual a um personagem recém-criado),
+#        o fallback inteiro era pulado, mesmo a skill estando corretamente
+#        em `learned_skill_ids` (sincronizado do servidor).
+# ─────────────────────────────────────────────────────────────────────────
+
+class _ApplyHotbarConfigFixture:
+    """Só o suficiente pra exercitar GameEngine._apply_hotbar_config
+    isolado (mesmo padrão de _SaveConfigFixture acima)."""
+    def __init__(self, world, player_entity):
+        self.world         = world
+        self.player_entity = player_entity
+
+
+def _make_apply_hotbar_config_fixture():
+    from engine.world import World
+    from engine.components import PlayerSkills
+    from game import GameEngine as _GE
+
+    world = World()
+    eid = world.create_entity()
+    world.add_component(eid, PlayerSkills())
+
+    fx = _ApplyHotbarConfigFixture(world, eid)
+    _ApplyHotbarConfigFixture._apply_hotbar_config = _GE._apply_hotbar_config
+    return fx, world.get_component(eid, PlayerSkills)
+
+
+class TestApplyHotbarConfigSemConfigSalvo(unittest.TestCase):
+    """`hb is None` (personagem nunca teve config.json gravado) — o caso
+    exato de um personagem recém-criado logando por qualquer caminho que
+    não seja fechar a janela direto (ver fix em game.py, ação "quit"/
+    "logout" do menu de pausa)."""
+
+    def test_skill_aprendida_sem_config_nenhum_ainda_entra_na_hotbar(self):
+        fx, ps = _make_apply_hotbar_config_fixture()
+        ps.learned_skill_ids.add("golpe_poderoso")
+        # Simula o estado exato do bug: skill SINCRONIZADA (learned_skill_ids)
+        # mas AINDA não colocada em nenhum slot (ps.skills todo None) --
+        # é isso que _apply_hotbar_config precisa corrigir sozinho.
+
+        fake_cfg = _FakeCfgFile({})   # sem NENHUM hotbar salvo pra "TestChar"
+        import unittest.mock as _mock
+        with _mock.patch("config.load", fake_cfg.load):
+            fx._apply_hotbar_config(new_character=True, char_name="TestChar")
+
+        placed = {s.skill_id for s in ps.skills if s}
+        self.assertIn("golpe_poderoso", placed,
+            "skill aprendida (ex: recompensa de quest) deveria entrar na "
+            "hotbar mesmo sem NENHUM config salvo ainda")
+
+    def test_sem_skill_aprendida_hotbar_continua_vazia(self):
+        """Controle negativo -- não inventa skill nenhuma do nada."""
+        fx, ps = _make_apply_hotbar_config_fixture()
+        fake_cfg = _FakeCfgFile({})
+        import unittest.mock as _mock
+        with _mock.patch("config.load", fake_cfg.load):
+            fx._apply_hotbar_config(new_character=True, char_name="TestChar")
+        self.assertTrue(all(s is None for s in ps.skills))
+
+
+class TestApplyHotbarConfigComConfigSalvo(unittest.TestCase):
+    """Regressão: comportamento já existente (hotbar salva de verdade)
+    continua intacto depois do fix."""
+
+    def test_layout_salvo_e_restaurado_no_slot_certo(self):
+        fx, ps = _make_apply_hotbar_config_fixture()
+        ps.learned_skill_ids.add("golpe_poderoso")
+
+        fake_cfg = _FakeCfgFile({"characters": {"TestChar": {
+            "hotbar": {"slots": [None, None, "golpe_poderoso", None], "keybinds": []},
+        }}})
+        import unittest.mock as _mock
+        with _mock.patch("config.load", fake_cfg.load):
+            fx._apply_hotbar_config(new_character=False, char_name="TestChar")
+
+        self.assertEqual(ps.skills[2].skill_id, "golpe_poderoso")
+
+    def test_skill_nova_ausente_do_config_salvo_ainda_e_reinserida(self):
+        """Mesmo com ALGUM hotbar salvo (caso que já funcionava antes do
+        fix), uma skill aprendida DEPOIS daquele save e ausente dele
+        continua sendo reinserida — não deve regressar."""
+        fx, ps = _make_apply_hotbar_config_fixture()
+        ps.learned_skill_ids.update({"golpe_poderoso", "interceptar"})
+
+        fake_cfg = _FakeCfgFile({"characters": {"TestChar": {
+            "hotbar": {"slots": [None, "golpe_poderoso", None, None], "keybinds": []},
+        }}})
+        import unittest.mock as _mock
+        with _mock.patch("config.load", fake_cfg.load):
+            fx._apply_hotbar_config(new_character=False, char_name="TestChar")
+
+        placed = {s.skill_id for s in ps.skills if s}
+        self.assertEqual(placed, {"golpe_poderoso", "interceptar"})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
