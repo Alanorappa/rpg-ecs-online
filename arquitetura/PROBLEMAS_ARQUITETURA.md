@@ -24441,3 +24441,77 @@ vigor pro jogador num `.exe` buildado DEPOIS deste commit — o pacote
 `RPG_Online_v0.48.0.zip` gerado antes deste fix (mesma sessão, pedido
 anterior) NÃO o contém; precisa de rebuild antes do próximo upload
 no itch.io.
+
+## 230. Bug real — reconectar NO MEIO do jogo nunca re-selecionava o personagem, cliente ficava "zumbi" (03/10/2026)
+
+**Sintoma relatado pelo usuário**: quando o servidor cai, aparece
+"Reconectando" na tela; depois de "reconectar", o jogo comporta-se
+como se estivesse offline — personagem chega perto de um mob e ele
+não agroa.
+
+**Causa raiz**: `client/network.py::NetworkClient._connect_and_run`
+já reconecta o socket com backoff exponencial E reenvia `LOGIN`
+sozinho (credenciais salvas) — mas isso só refaz a PRIMEIRA metade do
+fluxo de autenticação. O servidor responde com `AUTH_OK` (conta
+autenticada, ainda sem personagem escolhido) — e NADA no cliente
+reenviava `SELECT_CHARACTER` depois disso. Esse passo só existia no
+fluxo de login/seleção INICIAL (`ui/login_screen.py`, loop próprio,
+roda ANTES do `GameEngine` existir) — nunca foi replicado pra uma
+reconexão NO MEIO de uma sessão já em andamento. `MsgType.AUTH_OK`
+nem tinha entrada em `NetworkHandlers._NET_DISPATCH_NAMES` — durante
+a gameplay, a mensagem chegava e era silenciosamente descartada por
+`_handle_net_message` (`name = self._NET_DISPATCH_NAMES.get(msg_type)`
+→ `None` → no-op).
+
+Sem `SELECT_CHARACTER`, a sessão nova no servidor nunca virava uma
+entidade no mundo de novo — zero `AOI_UPDATE`/`COMBAT_RESULT` chegava
+pro cliente dali em diante, mesmo com o socket mostrando "conectado".
+O jogo não travava de verdade porque `game.py::run()` já tinha um
+timeout de 30s (`_loading_timeout`) que, sem nada acontecer, desiste
+e libera a tela mesmo assim — comentário literal no código: "entra no
+jogo com personagem padrão". Esse fallback sempre existiu como rede
+de segurança pra UM caso bem mais raro (timeout de rede genérico),
+mas na prática era o ÚNICO caminho que desbloqueava QUALQUER
+reconexão no meio do jogo — nunca havia um caminho de sucesso real,
+só esse fallback degradado disfarçado de "reconectou".
+
+**Fix**: `_handle_msg_login_ok` passa a guardar
+`self._selected_char_id` (o id do personagem, já presente no payload
+`char`). Novo handler `_handle_msg_auth_ok`, registrado em
+`_NET_DISPATCH_NAMES`, reenvia `SELECT_CHARACTER{char_id}`
+automaticamente sempre que esse id já existir — o próprio sinal de
+"isto é uma reconexão no meio do jogo", já que o login inicial nunca
+passa por este dispatch (`ui/login_screen.py` tem seu próprio loop,
+`GameEngine` nem existe ainda nesse momento). A resposta
+(`LOGIN_OK` de verdade) cai no `_handle_msg_login_ok` já existente,
+que já faz toda a resincronização correta (posição, HP, hotbar,
+remote players limpos) — o timeout de 30s deixa de ser o único
+caminho de desbloqueio, só continua como rede de segurança última.
+
+**Teste**: `tests/test_mid_session_reconnect.py` (6) — reenvia
+`SELECT_CHARACTER` com o id guardado; não reenvia nada sem id
+guardado (guard defensivo); não reenvia com id negativo; não crasha
+sem `self._net`; `AUTH_OK` de fato mapeado no dispatch; o dispatch
+genérico (`_handle_net_message`) chama o handler de verdade, não só
+a função isolada. Revert-to-confirm feito (`if False and ...`
+desativando o reenvio, os 2 testes que dependem dele falharam
+exatamente como esperado, restaurado). Regressão:
+`tests/test_client_ui.py` (239) e
+`tests/test_main_reconnect_login_fallback.py` (5, fluxo de reconexão
+relacionado mas diferente — "Deslogar"/dev fast-path, ANTES do jogo
+começar) sem quebra.
+
+**Não testado automaticamente**: o fluxo fim-a-fim de verdade (matar
+o processo do servidor com o cliente em jogo, esperar o backoff
+reconectar, confirmar que mob volta a agroar) — precisa de um
+servidor real subindo/caindo; `_handle_msg_login_ok` em si (onde
+`_selected_char_id` é guardado) também não ganhou teste dedicado,
+função já grande e sem cobertura prévia nenhuma, fora de escopo
+refatorar isso agora só para testar 1 linha nova. Validação real é
+manual: usuário mata o servidor (ou desliga a rede) com o jogo
+aberto, espera reconectar, confirma que mob agroa normalmente de
+novo.
+
+100% client-side (`client/network_handlers.py`) — sem deploy no
+Hetzner. Precisa de rebuild do `.exe` antes do próximo upload no
+itch.io (mesmo caveat do §229 — ainda não rebuildado nesta sessão).

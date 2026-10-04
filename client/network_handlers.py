@@ -152,6 +152,14 @@ class NetworkHandlers:
         # _restore_save_state só restaura learned_skill_ids; posicionamento é UI.
         self._logged_char_name = char.get("name", "")
         self._apply_hotbar_config(char_name=self._logged_char_name)
+        # Guarda o id do personagem (03/10/2026) — usado por
+        # _handle_msg_auth_ok pra re-selecionar automaticamente depois de
+        # uma reconexão NO MEIO do jogo (ver docstring lá: sem isso, o
+        # cliente reconectava a CONTA mas nunca voltava a pedir o
+        # personagem, e a sessão nova no servidor nunca virava uma
+        # entidade real no mundo — AOI/combate nunca mais chegavam,
+        # mesmo com o socket "conectado").
+        self._selected_char_id = char.get("id", -1)
         # Define HP DEPOIS dos modifiers (max_hp já inclui bônus de equipamento)
         if cs and srv_hp > 0:
             cs.current_hp = min(srv_hp, cs.max_hp)
@@ -171,6 +179,33 @@ class NetworkHandlers:
     def _handle_msg_login_error(self, payload: dict) -> None:
         print(f"[Client] login erro: {payload.get('reason')}")
         self._server_ready = True  # sai da loading screen mesmo com erro
+
+    def _handle_msg_auth_ok(self, payload: dict) -> None:
+        """Bug real relatado pelo usuário (03/10/2026): quando a conexão
+        cai NO MEIO do jogo, `client/network.py::NetworkClient` reconecta
+        o socket e reenvia LOGIN sozinho (credenciais salvas) — o
+        servidor autentica de novo e manda AUTH_OK, mas NADA reenviava
+        SELECT_CHARACTER depois disso. Sem reselecionar, a sessão nova
+        no servidor nunca virava uma entidade no mundo de novo — o
+        cliente ficava com o socket "conectado" mas zero AOI_UPDATE/
+        COMBAT_RESULT chegando (mob nunca mais agroava, outros players
+        congelados), até o timeout de 30s de `game.py::run()` desistir e
+        liberar a tela mesmo sem sincronizar nada de verdade ("entra no
+        jogo com personagem padrão").
+
+        AUTH_OK só chega aqui (via `_NET_DISPATCH_NAMES`, dispatch da
+        gameplay) DEPOIS que o jogo já começou uma vez — o fluxo de
+        login/seleção de personagem inicial usa seu próprio loop
+        separado (`ui/login_screen.py`), nunca passa por
+        `GameEngine`/`NetworkHandlers`. `self._selected_char_id` só
+        existe depois do 1º `LOGIN_OK` (ver `_handle_msg_login_ok`), que
+        é exatamente a garantia de que isto é uma reconexão NO MEIO do
+        jogo, não o login normal."""
+        char_id = getattr(self, "_selected_char_id", -1)
+        if char_id >= 0 and self._net:
+            from shared.messages import MsgType as _MT_reauth
+            print(f"[Client] reconectado — re-selecionando personagem {char_id}")
+            self._net.send(_MT_reauth.SELECT_CHARACTER, {"char_id": char_id})
 
     def _handle_msg_world_state(self, payload: dict) -> None:
         for ent in payload.get("entities", []):
@@ -3268,6 +3303,7 @@ class NetworkHandlers:
 NetworkHandlers._NET_DISPATCH_NAMES = {
     MsgType.LOGIN_OK: "_handle_msg_login_ok",
     MsgType.LOGIN_ERROR: "_handle_msg_login_error",
+    MsgType.AUTH_OK: "_handle_msg_auth_ok",
     MsgType.WORLD_STATE: "_handle_msg_world_state",
     MsgType.ENTITY_SPAWN: "_handle_msg_entity_spawn",
     MsgType.PLAYER_LIGHT_UPDATE: "_handle_msg_player_light_update",
