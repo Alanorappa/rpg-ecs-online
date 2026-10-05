@@ -209,7 +209,7 @@ Esses atributos existem na classe `Skill.__init__` (`fail_flash_timer` está lá
 | `NPC(name, level, profession)` | dados de NPC genérico | base para Merchant, QuestGiver, Trainer, Blacksmith |
 | `Merchant(shop_id)` | referência ao shop em `merchant_data.SHOPS` | |
 | `QuestGiver(quest_ids[], turn_in_ids[])` | quests disponíveis | |
-| `Trainer(class_id)` | classe de habilidades ensinadas | |
+| `Trainer(class_id, unlock_quest_id)` | classe de habilidades ensinadas | `unlock_quest_id` (04/10/2026) — "" = sem trava (sempre liberado); com valor, treino só vira opção após `unlock_quest_id` em `QuestLog.completed` (`engine.quest_logic.has_unlocked`, mesmo mecanismo de `content/merchant_data.py::SHOPS[...]["unlock_quest_id"]` pra loja) |
 | `Blacksmith(shop_id)` | ferreiro com crafting | |
 | `Mailbox()` | marcador vazio (25/09/2026) | NPC "Caixa de Correio" — `create_mailbox()`. Sem campos, diferente de Merchant/shop_id: não existe catálogo por instância, toda caixa dá acesso ao MESMO inbox do personagem. Ver `ARQUITETURA ONLINE.md` §17 |
 | `QuestLog(active{qid→progresso[]}, completed{qid})` | estado de quests do jogador | |

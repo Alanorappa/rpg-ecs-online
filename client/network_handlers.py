@@ -2564,6 +2564,58 @@ class NetworkHandlers:
         LOG.add(f"Aprendido: {name} (recompensa de quest)", (230, 210, 120))
         SOUNDS.play_ui("loot_item")
 
+    _TRAIN_FAIL_REASONS = {
+        "class":             "Classe errada para essa habilidade.",
+        "locked":            None,  # sem mensagem (04/10/2026) — ver abaixo
+        "already_learned":   None,  # no-op silencioso, já aprendida
+        "invalid_trainer":   "Treinador inválido.",
+        "invalid_skill":     "Habilidade inválida.",
+        "no_player_skills":  "Erro ao treinar — tente novamente.",
+        "not_logged_in":     None,
+    }
+
+    def _handle_msg_train_skill_result(self, payload: dict) -> None:
+        """Resposta a TRAIN_SKILL_REQUEST (04/10/2026 — antes, treinar era
+        100% client-trusted; `WorldServer.process_train_skill` agora é
+        quem decide de verdade). `"reason": "locked"` não mostra
+        mensagem nenhuma de propósito (pedido do usuário) — o player só
+        vê o fluxo de quest normal (`ui/trainer_system.py::_open_menu`
+        já prioriza quest completável/disponível sobre o menu de
+        assunto, e `_compute_options` nem lista "Treinamento" enquanto
+        travado — nunca chega a mandar este request pra começo). Os
+        casos "level"/"insufficient_gold" já mostram feedback
+        INSTANTÂNEO client-side antes de mandar o request
+        (`_do_learn`) — só chegam aqui se alguém adulterar o cliente,
+        daí a mensagem genérica de fallback."""
+        if not payload.get("success"):
+            reason = payload.get("reason", "")
+            msg = self._TRAIN_FAIL_REASONS.get(reason, "Não foi possível aprender.")
+            if msg:
+                LOG.add(msg, (200, 60, 60))
+            return
+
+        from engine.components import PlayerSkills as _PS_tsr, Wallet as _W_tsr
+        from content.skill_config import SKILL_CATALOG as _SC_tsr
+        skill_id = payload.get("skill_id", "")
+        name     = payload.get("name", skill_id)
+        ps     = self.world.get_component(self.player_entity, _PS_tsr)
+        wallet = self.world.get_component(self.player_entity, _W_tsr)
+        if wallet is not None and "new_gold" in payload:
+            wallet.gold = int(payload["new_gold"])
+        if not ps or skill_id in ps.learned_skill_ids:
+            return
+        ps.learned_skill_ids.add(skill_id)
+        new_sk = _PS_tsr._make_skill(skill_id, _SC_tsr)
+        if new_sk is not None:
+            from ui.skill_slot_prefs import preferred_slot_for_skill as _psfs_tsr
+            idx = _psfs_tsr(self.world, self.player_entity, ps, skill_id)
+            if idx is not None:
+                ps.skills[idx] = new_sk
+            else:
+                ps.skills.append(new_sk)
+        LOG.add(f"Aprendido: {name}", (220, 180, 50))
+        SOUNDS.play_ui("loot_item")
+
     def _handle_msg_loot_result(self, payload: dict) -> None:
         """Resposta ao LOOT_REQUEST (ui/systems.py::LootSystem, via
         _online_loot_requester — bug real relatado pelo usuário
@@ -3363,6 +3415,7 @@ NetworkHandlers._NET_DISPATCH_NAMES = {
     MsgType.MAIL_CLAIM_RESULT: "_handle_msg_mail_claim_result",
     MsgType.CRAFT_RESULT: "_handle_msg_craft_result",
     MsgType.RECYCLE_RESULT: "_handle_msg_recycle_result",
+    MsgType.TRAIN_SKILL_RESULT: "_handle_msg_train_skill_result",
     MsgType.PONG: "_handle_msg_pong",
     MsgType.ZONE_CHANGE: "_handle_msg_zone_change",
     MsgType.PORTAL_CAST_START: "_handle_msg_portal_cast_start",

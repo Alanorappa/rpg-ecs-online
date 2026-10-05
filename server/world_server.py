@@ -1094,10 +1094,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         for col, row, name, shop_id, lvl, prof in spawn_points.get("blacksmiths", []):
             _csn_blacksmith(self.world, col, row, name=name,
                            shop_id=shop_id, level=lvl, profession=prof)
-        for col, row, name, class_id, quest_ids, turn_in_ids, lvl, prof in spawn_points.get("trainers", []):
+        for col, row, name, class_id, quest_ids, turn_in_ids, lvl, prof, unlock_qid in spawn_points.get("trainers", []):
             _csn_trainer(self.world, col, row, name=name,
                         class_id=class_id, quest_ids=quest_ids, turn_in_ids=turn_in_ids,
-                        level=lvl, profession=prof)
+                        level=lvl, profession=prof, unlock_quest_id=unlock_qid)
 
     def _create_harvestables_for_map(self, spawn_points: dict, map_key: str) -> None:
         """Cria itens de mapa saqueáveis (planta/pergaminho/ferramenta —
@@ -3461,6 +3461,19 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if eid is None:
             return {"success": False, "reason": "not_logged_in"}
 
+        # 0. Trava de quest por loja (04/10/2026, pedido do usuário) —
+        # autoritativo: checa ANTES de qualquer outra coisa, mesmo
+        # critério usado pro cliente decidir se mostra a loja
+        # (ui/shop_system.py), nunca duplicado (quest_logic.has_unlocked).
+        from content.merchant_data import SHOPS as _SHOPS_unlock
+        _unlock_qid = _SHOPS_unlock.get(shop_id, {}).get("unlock_quest_id", "")
+        if _unlock_qid:
+            from engine.components import QuestLog as _QL_shop_unlock
+            import engine.quest_logic as _qlogic_shop_unlock
+            _ql_shop = self.world.get_component(eid, _QL_shop_unlock)
+            if not _qlogic_shop_unlock.has_unlocked(_ql_shop, _unlock_qid):
+                return {"success": False, "reason": "locked"}
+
         # 1. Valida catálogo — usa cache pré-construído (sem instanciar factories)
         if item_id:
             shop_idx = self._shop_item_cache.get(shop_id)
@@ -3543,6 +3556,74 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "new_gold": wallet.gold,
             "price":    total_cost,
         }
+
+    def process_train_skill(self, session_id: str, npc_id: int, skill_id: str) -> dict:
+        """Processa treino de skill num treinador — autoritativo no
+        servidor (04/10/2026, pedido do usuário). ANTES disso, treinar
+        era 100% client-trusted (`ui/trainer_system.py::_do_learn`
+        mutava `learned_skill_ids`/`Wallet.gold` locais direto, sem
+        nenhuma mensagem de rede — mesma classe de débito já corrigida
+        pra loja/forja, nunca pra treino). Repete TODAS as checagens que
+        o cliente já fazia (nunca confia nelas) + a trava de quest nova
+        (`Trainer.unlock_quest_id`).
+
+        Retorna {success, skill_id?, name?, new_gold?, reason?} — mesmo
+        formato de `process_shop_buy`."""
+        from engine.components import (Wallet as _TrWallet, CharacterStats as _TrChar,
+                                       PlayerSkills as _TrPS, Trainer as _TrComp,
+                                       QuestLog as _TrQL)
+        import engine.quest_logic as _tr_qlogic
+        from content.skill_config import (SKILL_CATALOG, SKILL_LEVEL_REQUIREMENTS,
+                                          SKILL_COSTS)
+
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return {"success": False, "reason": "not_logged_in"}
+
+        tr = self.world.get_component(npc_id, _TrComp)
+        if tr is None:
+            return {"success": False, "reason": "invalid_trainer"}
+
+        if skill_id not in SKILL_CATALOG:
+            return {"success": False, "reason": "invalid_skill"}
+
+        char = self.world.get_component(eid, _TrChar)
+        if char is None or char.class_id != tr.class_id:
+            return {"success": False, "reason": "class"}
+
+        ql = self.world.get_component(eid, _TrQL)
+        if not _tr_qlogic.has_unlocked(ql, tr.unlock_quest_id):
+            return {"success": False, "reason": "locked"}
+
+        ps = self.world.get_component(eid, _TrPS)
+        if ps is None:
+            return {"success": False, "reason": "no_player_skills"}
+        if skill_id in ps.learned_skill_ids:
+            return {"success": False, "reason": "already_learned"}
+
+        req = SKILL_LEVEL_REQUIREMENTS.get(skill_id, 99)
+        if char.level < req:
+            return {"success": False, "reason": "level", "required": req}
+
+        cost   = SKILL_COSTS.get(skill_id, 9999)
+        wallet = self.world.get_component(eid, _TrWallet)
+        if wallet is None or wallet.gold < cost:
+            return {"success": False, "reason": "insufficient_gold",
+                    "required": cost, "available": wallet.gold if wallet else 0}
+
+        wallet.gold -= cost
+        ps.learned_skill_ids.add(skill_id)
+        new_sk = _TrPS._make_skill(skill_id, SKILL_CATALOG)
+        if new_sk is not None:
+            try:
+                idx = ps.skills.index(None)
+                ps.skills[idx] = new_sk
+            except ValueError:
+                ps.skills.append(new_sk)
+
+        entry = SKILL_CATALOG.get(skill_id, {})
+        name  = entry.get("name", skill_id) if isinstance(entry, dict) else skill_id
+        return {"success": True, "skill_id": skill_id, "name": name, "new_gold": wallet.gold}
 
     # ---- sell ratio igual ao ShopSystem do cliente ----
     _SELL_RATIO = 0.4

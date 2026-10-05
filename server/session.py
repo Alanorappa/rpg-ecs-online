@@ -1002,6 +1002,20 @@ class SessionManager:
         result = self.world_server.recycle_item(session.session_id, inv_index)
         await session.send(MsgType.RECYCLE_RESULT, result)
 
+    async def _handle_train_skill_request(self, session: Session, payload: dict, ts: int) -> None:
+        """Processa treino de skill num treinador — 04/10/2026, pedido do
+        usuário (trava de quest por NPC + autoridade real no servidor;
+        antes disso treinar era 100% client-trusted, mesma classe de
+        débito já corrigida pra loja/forja). `npc_id` identifica QUAL
+        treinador (classe + trava de quest são dele), mesmo padrão de
+        `inv_index` em `_handle_recycle_request` acima."""
+        if not session.authenticated:
+            return
+        npc_id   = int(payload.get("npc_id", -1))
+        skill_id = str(payload.get("skill_id", ""))
+        result = self.world_server.process_train_skill(session.session_id, npc_id, skill_id)
+        await session.send(MsgType.TRAIN_SKILL_RESULT, result)
+
     # ── Correio (25/09/2026) ──────────────────────────────────────────
     # Ver server/mail_processor.py::MailProcessorMixin — este bloco só
     # decodifica payload/valida sessão e despacha, mesmo padrão fino de
@@ -2800,6 +2814,7 @@ class SessionManager:
         MsgType.SELL_REQUEST:      _handle_sell_request,
         MsgType.CRAFT_REQUEST:      _handle_craft_request,
         MsgType.RECYCLE_REQUEST:    _handle_recycle_request,
+        MsgType.TRAIN_SKILL_REQUEST: _handle_train_skill_request,
         MsgType.MAIL_OPEN_INBOX:    _handle_mail_open_inbox,
         MsgType.MAIL_OPEN_ITEM:     _handle_mail_open_item,
         MsgType.MAIL_SEND:          _handle_mail_send,

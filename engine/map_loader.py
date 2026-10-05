@@ -347,7 +347,11 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
              tuple(t.get("quest_ids", [])),
              tuple(t.get("turn_in_ids", [])),
              t.get("level", 1),
-             t.get("profession", "Treinador"))
+             t.get("profession", "Treinador"),
+             # Trava de quest (04/10/2026) — "" = sem trava, comportamento
+             # de sempre. Ver content/merchant_data.py (mesma ideia pra
+             # loja) e engine.quest_logic.has_unlocked.
+             t.get("unlock_quest_id", ""))
             for t in data["trainers"]
         ]
 

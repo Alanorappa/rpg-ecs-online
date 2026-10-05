@@ -671,6 +671,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._quest_system._net = self._net
         # ShopSystem: envia BUY_REQUEST ao servidor (gold/inventário server-autoritativos)
         self._shop_system._net = self._net
+        # TrainerSystem: envia TRAIN_SKILL_REQUEST ao servidor (04/10/2026 —
+        # antes, treinar era 100% local/client-trusted, igual loja era antes
+        # do débito A4; agora ouro/nível/classe/trava de quest são validados
+        # no servidor, mesmo padrão de ShopSystem/BlacksmithSystem acima)
+        self._trainer_system._net = self._net
         # MailSystem: envia MAIL_* ao servidor (banco é a fonte de verdade
         # do inbox, entrega assíncrona — ver server/mail_processor.py)
         self._mail_system._net = self._net
@@ -843,10 +848,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 create_blacksmith(self.world, col, row, name=name,
                                   shop_id=shop_id, level=lvl, profession=prof)
 
-            for col, row, name, class_id, quest_ids, turn_in_ids, lvl, prof in spawn_points.get("trainers", []):
+            for col, row, name, class_id, quest_ids, turn_in_ids, lvl, prof, unlock_qid in spawn_points.get("trainers", []):
                 create_trainer(self.world, col, row, name=name,
                                class_id=class_id, quest_ids=quest_ids, turn_in_ids=turn_in_ids,
-                               level=lvl, profession=prof)
+                               level=lvl, profession=prof, unlock_quest_id=unlock_qid)
 
     def _build_transition_tiles(self, spawn_points: dict):
         self.transition_tiles = {}

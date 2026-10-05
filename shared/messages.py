@@ -246,6 +246,8 @@ class MsgType(str, Enum):
     CRAFT_RESULT       = "craft_result"      # S→C  {success, reason, item, new_gold}
     RECYCLE_REQUEST    = "recycle_request"   # C→S  {inv_index} — débito A4 (11/08/2026)
     RECYCLE_RESULT     = "recycle_result"    # S→C  {success, reason, materials, new_gold}
+    TRAIN_SKILL_REQUEST = "train_skill_request"  # C→S  {npc_id, skill_id} — 04/10/2026, antes treinar era 100% client-trusted
+    TRAIN_SKILL_RESULT  = "train_skill_result"   # S→C  {success, skill_id, name, new_gold} | {success:False, reason}
 
     # ── Correio (25/09/2026, NPC "Caixa de Correio") ────────────────
     # Entrega de anexo reaproveita canais JÁ existentes em vez de duplicar:
@@ -400,6 +402,7 @@ C2S_REQUIRED: dict = {
     MsgType.SELL_REQUEST:       {"item_name": str},
     MsgType.CRAFT_REQUEST:      {"recipe_id": str},
     MsgType.RECYCLE_REQUEST:    {"inv_index": _NUM},
+    MsgType.TRAIN_SKILL_REQUEST: {"npc_id": _NUM, "skill_id": str},
     MsgType.MAIL_OPEN_ITEM:     {"mail_id": _NUM},
     MsgType.MAIL_SEND:          {"to_name": str},
     MsgType.MAIL_CLAIM_ITEM:    {"mail_id": _NUM, "item_index": _NUM},

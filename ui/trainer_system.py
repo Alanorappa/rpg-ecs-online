@@ -21,7 +21,6 @@ from content.skill_config import (SKILL_CATALOG, SKILL_LEVEL_REQUIREMENTS, SKILL
                           NUM_SLOTS, SKILL_ORDER_BY_CLASS)
 from ui.icon_manager import ICONS
 from ui.combat_log import LOG
-from engine.quest_events import fire as quest_fire
 from ui.ui_scale_mixin import UIScaleMixin
 from ui.ui_sizes import UI
 from ui.npc_interaction import walk_to_npc, suppress_chase
@@ -94,6 +93,9 @@ class TrainerSystem(UIScaleMixin, System):
 
         self._right_click_consumed: bool = False
         self._open_cooldown: float = 0.0
+        # Envia TRAIN_SKILL_REQUEST ao servidor (04/10/2026) — setado de
+        # fora (game.py), mesmo padrão de ShopSystem/BlacksmithSystem._net.
+        self._net = None
 
         # Rects armazenados no render para hit-test
         self._menu_rects:  dict = {}
@@ -267,12 +269,21 @@ class TrainerSystem(UIScaleMixin, System):
         objetivo pendente é justamente "falar com ESTE NPC" não conta como
         completável ainda (o talk_to_npc só é aplicado de verdade quando o
         diálogo de quest abre), e cai como "em progresso" por engano."""
-        from engine.components import CharacterStats
+        from engine.components import CharacterStats, QuestLog
         options = []
         cs = self.world.get_component(self.player_entity, CharacterStats)
         tr = self.world.get_component(eid, Trainer)
         tr_class = tr.class_id if tr else "guerreiro"
-        if cs and cs.class_id == tr_class:
+        # Trava de quest (04/10/2026, pedido do usuário) — treino só entra
+        # como opção depois que Trainer.unlock_quest_id estiver completo.
+        # Sem isso virar opção, _open_menu abaixo já prioriza quest
+        # disponível/completável sozinho (nenhuma mudança necessária lá) —
+        # é por isso que nenhuma mensagem de "bloqueado" é preciso: o
+        # player só vê o fluxo de quest, igual sempre foi pra NPC que só
+        # tem quest pra oferecer.
+        ql = self.world.get_component(self.player_entity, QuestLog)
+        _unlocked = quest_logic.has_unlocked(ql, tr.unlock_quest_id if tr else "")
+        if cs and cs.class_id == tr_class and _unlocked:
             options.append(("treinamento", "Treinamento"))
         if (quest_logic.get_available_quests(self.world, self.player_entity, eid) or
                 quest_logic.get_completable_quests(self.world, self.player_entity, eid, self._tr_name) or
@@ -336,6 +347,13 @@ class TrainerSystem(UIScaleMixin, System):
         self._open_cooldown = 0.2
 
     def _do_learn(self, skill_id: str):
+        """Pedido de treino (04/10/2026 — antes era 100% local/client-
+        trusted; ouro/skill concedidos de verdade só depois da
+        confirmação do servidor, ver `_handle_msg_train_skill_result`,
+        client/network_handlers.py). As checagens abaixo continuam
+        client-side pra feedback INSTANTÂNEO nos casos óbvios (mesma
+        mensagem de sempre) — o servidor repete TODAS elas de propósito
+        (`WorldServer.process_train_skill`), nunca confia só nisto."""
         ps     = self._player_skills()
         wallet = self._player_wallet()
         if not ps or not wallet:
@@ -364,35 +382,12 @@ class TrainerSystem(UIScaleMixin, System):
             )
             return
 
-        # Deduz custo e registra skill como aprendida
-        wallet.gold -= cost
-        ps.learned_skill_ids.add(skill_id)
-
-        # Cria objeto Skill e insere no slot preferido do jogador (25/08/2026
-        # — mesma preferência configurada dentro ou fora da BG, ver
-        # ui/skill_slot_prefs.py::preferred_slot_for_skill), ou no primeiro
-        # slot vazio se não houver preferência (ou o slot preferido já
-        # estiver ocupado). TrainerSystem é um objeto separado do
-        # GameEngine (sem referência de volta) — por isso a função é
-        # importada, não um método `self.` (crash real relatado pelo
-        # usuário quando ela ainda vivia só em GameEngine, 26/08/2026).
-        new_skill = ps._make_skill(skill_id, SKILL_CATALOG)
-        if new_skill:
-            from ui.skill_slot_prefs import preferred_slot_for_skill
-            idx = preferred_slot_for_skill(self.world, self.player_entity, ps, skill_id)
-            if idx is not None:
-                ps.skills[idx] = new_skill
-            else:
-                ps.skills.append(new_skill)
-
-        entry = SKILL_CATALOG.get(skill_id, {})
-        name  = entry.get("name", skill_id) if isinstance(entry, dict) else skill_id
-        LOG.add(f"Aprendido: {name} (-{cost}g)", _COL_GOLD)
-
-        quest_fire("learn_skill", skill_id=skill_id)
-
-        from engine.save_system import request_autosave
-        request_autosave()
+        if not self._net:
+            return
+        from shared.messages import MsgType as _MTtrain
+        self._net.send(_MTtrain.TRAIN_SKILL_REQUEST, {
+            "npc_id": self._tr_eid, "skill_id": skill_id,
+        })
 
     # ------------------------------------------------------------------
     # render_world() — indicador sobre NPC

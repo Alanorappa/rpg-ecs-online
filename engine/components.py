@@ -1475,6 +1475,14 @@ class Blacksmith:
 class Trainer:
     """Capacidade de treinador de classe — ensina skills a preço. Combine com NPC."""
     class_id: str = "guerreiro"   # identificador da classe ensinada
+    # Trava de quest (04/10/2026, pedido do usuário) — "" = sem trava
+    # (sempre liberado, comportamento de sempre). Com valor, o treino só
+    # aparece como opção depois que `unlock_quest_id` estiver em
+    # QuestLog.completed (ver engine.quest_logic.has_unlocked) — ponto
+    # único de verdade consultado tanto pelo menu do cliente
+    # (ui/trainer_system.py::_compute_options) quanto pelo servidor
+    # (WorldServer.process_train_skill), nunca duplicado.
+    unlock_quest_id: str = ""
 
 
 @dataclass

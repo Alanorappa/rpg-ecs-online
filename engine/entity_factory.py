@@ -633,18 +633,23 @@ def create_blacksmith(world: World, tile_x: int, tile_y: int,
 def create_trainer(world: World, tile_x: int, tile_y: int,
                    name: str = "Treinador", class_id: str = "guerreiro",
                    quest_ids: tuple = (), turn_in_ids: tuple = (),
-                   level: int = 1, profession: str = "Treinador") -> int:
+                   level: int = 1, profession: str = "Treinador",
+                   unlock_quest_id: str = "") -> int:
     """NPC treinador de classe, com combate genérico NA MESMA classe que
     ensina (Fase 1, pedido do usuário: "o treinador do guerreiro luta
     como guerreiro") — ver create_merchant docstring pro racional
-    completo. Pode acumular QuestGiver opcionalmente."""
+    completo. Pode acumular QuestGiver opcionalmente.
+
+    `unlock_quest_id` (04/10/2026) — "" (padrão) = treino sempre
+    liberado; com valor, só aparece como opção depois que o player
+    completar essa quest (engine.quest_logic.has_unlocked)."""
     race = _service_npc_race_for_class(class_id)
     eid = _build_combat_entity(
         world, tile_x, tile_y, ENEMY_MELEE_ATTACK_RANGE, False, "normal",
         race, "", level, _SERVICE_NPC_FACTION, identity_name=name)
     world.add_component(eid, Renderable(color=(80, 140, 220), width=PLAYER_SIZE, height=PLAYER_SIZE))
     world.add_component(eid, NPC(name=name, level=level, profession=profession))
-    world.add_component(eid, Trainer(class_id=class_id))
+    world.add_component(eid, Trainer(class_id=class_id, unlock_quest_id=unlock_quest_id))
     if quest_ids:
         world.add_component(eid, QuestGiver(quest_ids=tuple(quest_ids),
                                             turn_in_ids=tuple(turn_in_ids) or tuple(quest_ids)))

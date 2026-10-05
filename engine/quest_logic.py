@@ -380,6 +380,24 @@ def quests_claimed_for_turn_in(world) -> set:
     return claimed
 
 
+def has_unlocked(ql, unlock_quest_id: str) -> bool:
+    """True se o serviço de NPC (loja/treinador) travado por
+    `unlock_quest_id` já pode ser usado — 04/10/2026, pedido do usuário
+    ("trava de loja/treinador até completar quest do NPC"). `""`/None =
+    sem trava (todo serviço sem `unlock_quest_id` configurado continua
+    liberado, comportamento de sempre). Ponto único de verdade — usado
+    tanto pelo cliente (`ui/trainer_system.py::_compute_options`,
+    `ui/shop_system.py`) quanto pelo servidor
+    (`WorldServer.process_shop_buy`/`process_train_skill`), sempre
+    contra `QuestLog.completed` — nunca `active` (precisa ter
+    TERMINADO a quest, não só aceito)."""
+    if not unlock_quest_id:
+        return True
+    if ql is None:
+        return False
+    return unlock_quest_id in ql.completed
+
+
 def turn_in_ids_for(world, giver) -> tuple:
     """ids que ESTE giver aceita pra entrega — turn_in_ids explícito se
     houver; senão (fallback pra quests simples de 1 NPC só) quest_ids,

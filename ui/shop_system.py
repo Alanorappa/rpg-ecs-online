@@ -40,6 +40,7 @@ from ui.npc_interaction import walk_to_npc, suppress_chase
 from content.merchant_data import SHOPS, INSTANCE_SHOP_STOCK_BY_CLASS
 from content.item_table import RARITY_COLORS as _SHARED_RARITY_COLORS
 from engine.quest_events import fire as quest_fire
+import engine.quest_logic as quest_logic
 
 # Lookup reverso skill_id → (talent_id, min_points) — fonte única em
 # world_systems (_TALENT_SKILL_REQS, usado também por is_skill_authorized
@@ -147,6 +148,41 @@ class ShopSystem(UIScaleMixin, System):
         SH = self.world_surf.get_height()
         return get_camera_offset(self.world, SW, SH)
 
+    def _shop_unlock_quest_id(self, eid: int) -> str:
+        m = self.world.get_component(eid, Merchant)
+        if m is None:
+            return ""
+        return SHOPS.get(m.shop_id, {}).get("unlock_quest_id", "")
+
+    def _try_open_merchant(self, eid: int) -> None:
+        """Abre a loja, OU — se travada por quest (04/10/2026, pedido do
+        usuário) — pede pro QuestDialogSystem abrir no lugar, mesmo
+        `NPCInteractionRequest` que BlacksmithSystem já usa pra "abrir
+        outro System de NPC" (ver docstring do componente). Sem nenhuma
+        mensagem de bloqueio de propósito: o player só vê o fluxo de
+        quest normal — igual qualquer NPC que só tem quest pra oferecer
+        ainda. `ui/trainer_system.py::_open_menu` já faz exatamente essa
+        priorização pro treinador; aqui replica pra loja, que não tem
+        menu de assunto intermediário (abre direto)."""
+        from engine.components import QuestLog as _QL_shop
+        unlock_qid = self._shop_unlock_quest_id(eid)
+        ql = self.world.get_component(self.player_entity, _QL_shop)
+        if quest_logic.has_unlocked(ql, unlock_qid):
+            self.open_merchant_id     = eid
+            self._pending_merchant_id = -1
+            self._shop_scroll = 0
+            self._bag_scroll  = 0
+            self._open_cooldown = 0.5
+            _m = self.world.get_component(eid, Merchant)
+            if _m:
+                _npc = self.world.get_component(eid, NPC)
+                quest_fire("talk_to_npc", npc_name=_npc.name if _npc else "Comerciante")
+        else:
+            self._pending_merchant_id = -1
+            self.world.add_component(self.player_entity, NPCInteractionRequest(
+                kind="open_quest_dialog", target_eid=eid))
+            self._open_cooldown = 0.3
+
     # ------------------------------------------------------------------
     # Update — detecção de clique no mundo
     # ------------------------------------------------------------------
@@ -161,7 +197,10 @@ class ShopSystem(UIScaleMixin, System):
         # Systems.
         _npc_req = self.world.get_component(self.player_entity, NPCInteractionRequest)
         if _npc_req is not None and _npc_req.kind == "open_shop":
-            self.open_for(_npc_req.target_eid)
+            # _try_open_merchant (não open_for direto) — respeita a trava
+            # de quest mesmo vindo de outro System (ex: "Negociar" do
+            # BlacksmithSystem), 04/10/2026.
+            self._try_open_merchant(_npc_req.target_eid)
             self.world.remove_component(self.player_entity, NPCInteractionRequest)
 
         self._right_click_consumed = False
@@ -176,21 +215,15 @@ class ShopSystem(UIScaleMixin, System):
                 # Merchant não existe mais
                 self._pending_merchant_id = -1
             elif pt and self._cheby(pt, mt) <= 1:
-                # Chegou — para o auto-move e abre a loja
+                # Chegou — para o auto-move e abre a loja (ou redireciona
+                # pra quest, se travada — ver _try_open_merchant)
                 auto = self.world.get_component(self.player_entity, PlayerAutoMove)
                 if auto:
                     auto.active        = False
                     auto.path          = []
                     auto.ground_target = None
-                self.open_merchant_id     = self._pending_merchant_id
-                self._pending_merchant_id = -1
-                self._shop_scroll = 0
-                self._bag_scroll  = 0
-                self._open_cooldown = 0.5
-                _m = self.world.get_component(self.open_merchant_id, Merchant)
-                if _m:
-                    _npc = self.world.get_component(self.open_merchant_id, NPC)
-                    quest_fire("talk_to_npc", npc_name=_npc.name if _npc else "Comerciante")
+                _arrived_eid = self._pending_merchant_id
+                self._try_open_merchant(_arrived_eid)
 
         if not events:
             return
@@ -221,17 +254,10 @@ class ShopSystem(UIScaleMixin, System):
                         pt = self._player_tile()
                         mt = self._merchant_tile(eid)
                         if pt and mt and self._cheby(pt, mt) <= 1:
-                            # Já adjacente — abre direto
+                            # Já adjacente — abre direto (ou redireciona
+                            # pra quest, se travada — _try_open_merchant)
                             suppress_chase(self.world, self.player_entity)
-                            self.open_merchant_id     = eid
-                            self._pending_merchant_id = -1
-                            self._shop_scroll = 0
-                            self._bag_scroll  = 0
-                            self._open_cooldown = 0.5
-                            _m2 = self.world.get_component(eid, Merchant)
-                            if _m2:
-                                _npc2 = self.world.get_component(eid, NPC)
-                                quest_fire("talk_to_npc", npc_name=_npc2.name if _npc2 else "Comerciante")
+                            self._try_open_merchant(eid)
                         else:
                             # Inicia caminhada até tile adjacente
                             self._pending_merchant_id = eid
