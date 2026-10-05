@@ -24692,3 +24692,58 @@ antes do fix — `'detail' != 'turnin'` —, restaurado). Regressão:
 
 100% client-side (`ui/quest_system.py`) — sem deploy no Hetzner.
 Precisa de rebuild do `.exe` antes do próximo upload no itch.io.
+
+## 234. Bug real — `Trainer.unlock_quest_id` configurado no servidor nunca chegava ao cliente (05/10/2026)
+
+**Sintoma relatado pelo usuário**: configurou a trava de quest nova
+(ver feature do dia anterior, `ARQUITETURA ONLINE.md`) no Avido Faseo
+— `unlock_quest_id="merchant_greeting"` no `map_1_entities.json` — e
+testou em jogo sem ter completado a quest. O menu continuou mostrando
+"Treinamento" como opção liberada, igual antes da trava existir.
+
+**Causa raiz**: NPCs de serviço (treinador/mercador/etc.) não são
+entidades locais do cliente — chegam pela rede, mesmo caminho de
+spawn de qualquer mob (`WorldServer._build_mob_spawn_payload`, única
+função que monta esse payload, usada pelos 3 pontos de descoberta:
+WORLD_STATE/ENTITY_SPAWN/AOI_UPDATE). Essa função já incluía
+`payload["class_id"] = _train.class_id` quando a entidade tinha
+`Trainer`, mas NUNCA incluía `unlock_quest_id` — campo adicionado no
+dia anterior, só nesta MESMA função é que esqueci de propagar. O
+cliente (`client/remote_entity_handlers.py::_spawn_remote_mob`)
+reconstrói um `Trainer` local a partir só do que o payload mandou —
+sem o campo, sempre recebia o default `""` (sem trava nenhuma), não
+importa o que o servidor (autoritativo de verdade) tivesse
+configurado. `ui/trainer_system.py::_compute_options` (quem decide
+mostrar "Treinamento" no menu) só consulta essa cópia LOCAL, nunca o
+servidor direto — daí o menu mentir pro jogador mesmo com a trava
+real funcionando por trás (uma tentativa de treinar de verdade já
+seria recusada por `process_train_skill`, só que o jogador nunca
+chegava a tentar, porque o botão nem avisava que estava bloqueado).
+
+Mesma classe de bug já catalogada várias vezes neste arquivo ("campo
+novo esquecido num dos vários pontos que reconstroem/sincronizam
+dado") — aqui achado e corrigido no MESMO dia em que o campo nasceu,
+antes de qualquer jogador real notar (a loja não tem esse problema:
+`SHOPS[...]["unlock_quest_id"]` é conteúdo ESTÁTICO que o cliente já
+importa direto de `content/merchant_data.py`, sem precisar de sync —
+só o Trainer, que é dado POR INSTÂNCIA, precisava do campo novo no
+payload de rede).
+
+**Fix**: `_build_mob_spawn_payload` passa a incluir
+`payload["trainer_unlock_quest_id"]` quando o Trainer tem a trava
+configurada (mesmo padrão condicional de `shop_id`/`quest_ids`
+logo ali do lado); `_spawn_remote_mob` lê esse campo e repassa pro
+`Trainer(...)` reconstruído localmente.
+
+**Teste**: `tests/test_service_npcs.py` (2, servidor — payload inclui/
+omite o campo conforme a trava existir) + `tests/test_client_ui.py`
+(1, cliente — `_spawn_remote_mob` aplica o campo no `Trainer` local).
+Revert-to-confirm feito nos 2 lados (servidor e cliente,
+separadamente — cada um reproduziu o sintoma exato isolado).
+Regressão: `test_service_npcs.py`/`test_client_ui.py`/
+`test_npc_service_unlock.py`/`test_faction.py` (331 testes) sem
+quebra.
+
+Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`) — fix
+também precisa de rebuild do `.exe` (metade client-side) antes do
+próximo upload no itch.io.

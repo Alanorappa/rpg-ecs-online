@@ -3112,6 +3112,20 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         _train = self.world.get_component(eid, _Trainpay)
         if _train is not None:
             payload["class_id"] = _train.class_id
+            # Trava de quest (04/10/2026) — faltava aqui: SHOPS[...]
+            # ["unlock_quest_id"] (loja) é conteúdo ESTÁTICO, o cliente já
+            # importa o mesmo content/merchant_data.py direto, sem precisar
+            # de sync. Trainer.unlock_quest_id é dado POR INSTÂNCIA (só o
+            # servidor sabe), igual class_id logo acima — sem mandar aqui,
+            # o cliente reconstruía o Trainer remoto sempre com o default
+            # "" (sem trava nenhuma, mesmo com o servidor configurado
+            # certo) — bug real relatado pelo usuário: menu mostrava
+            # "Treinamento" mesmo sem completar a quest, porque a UI (que
+            # decide o que MOSTRAR) só conhece o espelho local incompleto;
+            # o servidor (process_train_skill) já recusaria a compra de
+            # qualquer forma, mas o jogador nunca chegava a tentar.
+            if _train.unlock_quest_id:
+                payload["trainer_unlock_quest_id"] = _train.unlock_quest_id
         _qg = self.world.get_component(eid, _QGpay)
         if _qg is not None:
             payload["quest_ids"]    = list(_qg.quest_ids)

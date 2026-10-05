@@ -2861,6 +2861,27 @@ def test_spawn_remote_mob_de_trainer_anexa_trainer_com_class_id():
     assert trainer is not None and trainer.class_id == "mago"
 
 
+def test_spawn_remote_mob_de_trainer_travado_anexa_unlock_quest_id():
+    """Bug real relatado pelo usuário (05/10/2026): configurou a trava no
+    servidor (Avido Faseo), mas o menu continuava liberado. Causa raiz:
+    _spawn_remote_mob nunca lia "trainer_unlock_quest_id" do payload,
+    então o Trainer remoto sempre nascia com unlock_quest_id="" (default),
+    mesmo com o campo presente no payload (ver _build_mob_spawn_payload)."""
+    from engine.components import Trainer
+    fx = _make_net_fixture()
+    fx._handle_msg_entity_spawn({
+        "eid": 97, "kind": "enemy", "tx": 5, "ty": 5,
+        "race": "Humanoide", "entity_class": "Warrior",
+        "hp": 40, "hp_max": 40, "level": 60, "faction": "civis",
+        "name": "Avido Faseo", "profession": "Treinador", "class_id": "guerreiro",
+        "trainer_unlock_quest_id": "merchant_greeting",
+    })
+    local_eid = fx._remote_mobs[97]
+    trainer = fx.world.get_component(local_eid, Trainer)
+    assert trainer is not None
+    assert trainer.unlock_quest_id == "merchant_greeting"
+
+
 def _find_cosmetic_projectile(fx):
     """Único projétil visual cosmético (target_server_id=-3) na lista do
     PlayerProjectileSystem (fora do ECS desde 15/09/2026, item 9)."""

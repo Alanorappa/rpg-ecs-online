@@ -947,7 +947,16 @@ class RemoteEntityHandlers:
         _class_id = data.get("class_id")
         if _class_id is not None:
             from engine.components import Trainer as _TrainSpawn
-            self.world.add_component(local_eid, _TrainSpawn(class_id=_class_id))
+            # trainer_unlock_quest_id (04/10/2026) — faltava aqui: sem
+            # isso, o espelho local SEMPRE nascia com unlock_quest_id=""
+            # (default), mesmo o servidor tendo a trava real configurada
+            # — a UI que decide mostrar "Treinamento" (ui/trainer_system.py
+            # ::_compute_options) só olha esta cópia local, nunca o
+            # servidor direto. Bug real relatado pelo usuário: menu
+            # mostrava "Treinamento" mesmo sem completar a quest exigida.
+            self.world.add_component(local_eid, _TrainSpawn(
+                class_id=_class_id,
+                unlock_quest_id=data.get("trainer_unlock_quest_id", "")))
         if data.get("quest_ids") is not None:
             from engine.components import QuestGiver as _QGSpawn
             self.world.add_component(local_eid, _QGSpawn(
