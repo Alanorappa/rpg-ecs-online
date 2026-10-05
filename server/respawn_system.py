@@ -165,6 +165,21 @@ class RespawnMixin:
         from engine.components import Channeling as _Chan
         self.world.remove_component(player_eid, _Chan)
 
+        # Cancela Fatiador de Corpos ativo (04/10/2026, bug real relatado
+        # pelo usuário: a skill continuava causando dano/som depois do
+        # personagem morrer) — mesma classe de bug do Channeling acima
+        # ("evita dano AoE pós-morte"), só que `fatiador_timer` é um campo
+        # bespoke em CharacterStats (não usa o componente genérico
+        # Channeling), então nunca foi pego pela limpeza acima.
+        # `WorldServer._tick`'s loop de Fatiador (ver world_server.py,
+        # bloco "Fatiador de Corpos: ticks subsequentes ao cast") só olha
+        # `fatiador_timer > 0` pra decidir se continua — nunca checava se
+        # o CASTER ainda estava vivo; zerar aqui corta o canal na próxima
+        # iteração do loop, igual a qualquer cast interrompido por morte.
+        _char_fat = self.world.get_component(player_eid, CharacterStats)
+        if _char_fat is not None:
+            _char_fat.fatiador_timer = 0.0
+
         # Cancela spells em voo / com cast_time pendente — evita flechas
         # "fantasma" que acertam mobs após o respawn do player. Filtra tanto
         # pelo caster (player_eid) quanto pelo alvo (target_id), pois flechas

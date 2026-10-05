@@ -62,6 +62,65 @@ class TestFatiadorTickIntervalDoCatalogo(unittest.TestCase):
         self.assertAlmostEqual(char.fatiador_timer, params["duration"], delta=0.06)
 
 
+class TestFatiadorParaDeVerdadeAoMorrer(unittest.TestCase):
+    """Bug real relatado pelo usuário (04/10/2026): a skill continuava
+    causando dano/som depois do personagem morrer. Causa raiz:
+    `WorldServer._tick`'s loop de ticks subsequentes ao cast (bloco
+    "Fatiador de Corpos: ticks..." em server/world_server.py) só olhava
+    `fatiador_timer > 0`, nunca se o CASTER ainda estava vivo — mesma
+    classe de bug já corrigida uma vez pro Channeling genérico
+    ("Cancela Channeling ativo (evita dano AoE pós-morte)",
+    server/respawn_system.py), só que `fatiador_timer` é um campo bespoke
+    em CharacterStats, nunca usa o componente Channeling, e por isso
+    nunca foi tocado por aquela limpeza."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.warrior = spawn_player(self.ws, "fat_death", 130, 374, class_id="guerreiro")
+        authorize_skill(self.ws, self.warrior, "fatiador_de_corpos")
+
+    def test_morte_zera_fatiador_timer(self):
+        char = self.ws.world.get_component(self.warrior, CharacterStats)
+        char.fatiador_timer = 5.0
+        char.fatiador_tick  = 1.0
+
+        self.ws._handle_player_death(self.warrior)
+
+        self.assertEqual(char.fatiador_timer, 0.0,
+            "fatiador_timer deveria zerar na morte, igual ao Channeling genérico")
+
+    def test_nao_causa_mais_dano_em_mob_proximo_apos_morrer(self):
+        char = self.ws.world.get_component(self.warrior, CharacterStats)
+        char.fatiador_timer = 5.0
+        char.fatiador_tick  = 1.0
+
+        mob = create_enemy(self.ws.world, 131, 374, faction="monstros_hostis")
+        mob_cs = self.ws.world.get_component(mob, CombatStats)
+        hp_before = mob_cs.current_hp
+
+        self.ws._handle_player_death(self.warrior)
+        run_ticks(self.ws, 30)   # > 1 tick_interval (1.0s a 0.05s/tick)
+
+        self.assertEqual(mob_cs.current_hp, hp_before,
+            "mob não deveria receber dano do Fatiador depois do caster morrer")
+
+    def test_controle_sem_morte_continua_causando_dano(self):
+        """Regressão -- sem a morte, o Fatiador continua funcionando
+        normalmente (a correção não desliga o canal sempre)."""
+        char = self.ws.world.get_component(self.warrior, CharacterStats)
+        char.fatiador_timer = 5.0
+        char.fatiador_tick  = 1.0
+
+        mob = create_enemy(self.ws.world, 131, 374, faction="monstros_hostis")
+        mob_cs = self.ws.world.get_component(mob, CombatStats)
+        hp_before = mob_cs.current_hp
+
+        run_ticks(self.ws, 30)
+
+        self.assertLess(mob_cs.current_hp, hp_before,
+            "setup inválido -- sem morte, o Fatiador deveria ter causado dano")
+
+
 class TestFatiadorClienteNaoAplicaDanoLocal(unittest.TestCase):
     """Cliente: SkillSystem.update() decrementa o timer (pra UI) mas nunca
     mais chama _fatiador_aoe_tick — prova sintética com alvo local que a
