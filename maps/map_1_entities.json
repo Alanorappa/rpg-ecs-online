@@ -155,7 +155,8 @@
       "level": 60,
       "profession": "Guerreiro Veterano",
       "quest_ids": ["prova_valor", "first_blood", "merchant_greeting", "primeiros_golpes"],
-      "turn_in_ids": ["bem_vindo_guerreiro","prova_valor", "first_blood", "merchant_greeting", "primeiros_golpes"]
+      "turn_in_ids": ["bem_vindo_guerreiro","prova_valor", "first_blood", "merchant_greeting", "primeiros_golpes"],
+      "unlock_quest_id": "merchant_greeting"
     },
     {
       "x": 119,
