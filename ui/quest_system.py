@@ -571,7 +571,29 @@ class QuestDialogSystem(UIScaleMixin, System):
                         self._dialog_selected_qid = qid
                         self._detail_scroll        = 0
                         self._turnin_chosen_item   = None
-                        self._dialog_state = "turnin" if self._qs.can_turn_in(qid) else "detail"
+                        # Bug real relatado pelo usuário (05/10/2026):
+                        # clicar numa quest completável-por-talk_to_npc
+                        # (ex: "bem_vindo_guerreiro", único objetivo é
+                        # falar com o NPC) dentro da LISTA (len(total)>1
+                        # — o NPC tem outra quest disponível além dela,
+                        # ex: "merchant_greeting") abria o diálogo de
+                        # ACEITAR de novo em vez de ENTREGAR.
+                        # self._qs.can_turn_in(qid) só olha o progresso
+                        # bruto de ql.active — online, _process_talk_to_npc
+                        # (chamado em _open_dialog, ANTES da lista existir)
+                        # é no-op de propósito (nunca muta QuestLog sem o
+                        # servidor confirmar), então o objetivo talk_to_npc
+                        # nunca aparece "de verdade" completo aqui. O MESMO
+                        # problema que _open_dialog já resolve pra `comp`
+                        # (usa _get_completable_quests com pending_npc_name,
+                        # que cai em can_turn_in_after_talk) nunca era
+                        # refeito aqui — precisa do MESMO critério, não do
+                        # can_turn_in cru.
+                        from engine.components import NPC as _NPCclick
+                        _npc_c_click = self.world.get_component(self._dialog_npc_id, _NPCclick)
+                        _npc_name_click = _npc_c_click.name if _npc_c_click else ""
+                        _comp_click = self._get_completable_quests(self._dialog_npc_id, _npc_name_click)
+                        self._dialog_state = "turnin" if qid in _comp_click else "detail"
                         return
 
             elif self._dialog_state == "detail":

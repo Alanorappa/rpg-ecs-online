@@ -24635,3 +24635,60 @@ dano de um guerreiro morto — restaurado). Suíte de combate/arena/BG
 
 Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`) — fix é
 server-side (`server/respawn_system.py`).
+
+## 233. Bug real — entregar "bem_vindo_guerreiro" com Avido Faseo reabria o diálogo de ACEITAR em vez de ENTREGAR (05/10/2026)
+
+**Sintoma relatado pelo usuário**: pegou "bem_vindo_guerreiro" com
+Caterina Alisarf (objetivo único: falar com Avido Faseo) e foi
+entregar com Avido Faseo — clicar na quest abria o diálogo de aceitar
+de novo, não o de entrega. Detalhe que confirmou a causa raiz: Avido
+Faseo também oferece outra quest própria ("merchant_greeting") — se o
+player já tivesse essa outra quest ativa ANTES, o bug desaparecia.
+
+**Investigação**: `QuestDialogSystem._open_dialog` monta `total = comp
++ avail` e decide o estado do diálogo pelo TAMANHO dessa lista — com
+só 1 item (`len(total)==1`), abre direto no estado certo (`"turnin"`
+se completável, `"detail"` se disponível), usando
+`_get_completable_quests(npc_id, pending_npc_name)` — que já lida
+corretamente com quest completável só por `talk_to_npc` (via
+`can_turn_in_after_talk`, que simula o efeito do talk SEM mutar o
+`QuestLog`, porque online o cliente nunca pode confirmar esse
+objetivo por conta própria — só o servidor). Com 2+ itens (Avido
+Faseo tendo "merchant_greeting" disponível AO LADO de
+"bem_vindo_guerreiro" completável), o diálogo abre em estado `"list"`
+em vez de ir direto — e o handler de CLIQUE dentro dessa lista
+(`handle_events`, bloco `_dialog_state == "list"`) decidia "turnin"
+vs "detail" chamando `self._qs.can_turn_in(qid)` — a versão CRUA, que
+só olha o progresso bruto salvo em `QuestLog.active`, sem o
+tratamento especial de `talk_to_npc` que `_get_completable_quests`
+(usado só pra MONTAR a lista, nunca reusado no clique) já tinha.
+Resultado: `can_turn_in` cru sempre devolvia `False` pra essa quest
+específica (o objetivo nunca é mutado de verdade no cliente online),
+o clique caía no fallback `"detail"` (aceitar) — mesmo a quest já
+estando na lista como completável.
+
+Com "merchant_greeting" já ativo antes (removido de `avail`, já que
+`get_available_quests` filtra quest já em `ql.active`), `total` tinha
+só 1 item, pulava a lista inteira, e caía no branch que já usava a
+checagem certa desde sempre — por isso o bug só aparecia com a quest
+extra disponível, exatamente como o usuário descreveu.
+
+**Fix**: o clique na lista agora recalcula com
+`self._get_completable_quests(self._dialog_npc_id, npc_name)` — MESMO
+critério usado pra montar a lista — em vez de `self._qs.can_turn_in(qid)`
+cru.
+
+**Teste**: `tests/test_quest_dialog_list_turnin_click.py` (4, novo) —
+reproduz o cenário exato (Avido Faseo com quest completável-por-talk
++ outra disponível, diálogo abre em "list", clicar na completável
+abre "turnin"; controle: clicar na disponível continua abrindo
+"detail"; controle: sem a quest extra, pula a lista e já vai direto
+pro "turnin" certo). Revert-to-confirm feito (`can_turn_in` cru
+restaurado temporariamente, o teste principal falhou exatamente como
+antes do fix — `'detail' != 'turnin'` —, restaurado). Regressão:
+`tests/test_quest_split_npc.py`/`test_quest_talk_completable_priority.py`/
+`test_quest_reward_ui.py`/`test_quest_logic.py`/`test_client_ui.py`
+(35+247 testes) sem quebra.
+
+100% client-side (`ui/quest_system.py`) — sem deploy no Hetzner.
+Precisa de rebuild do `.exe` antes do próximo upload no itch.io.
