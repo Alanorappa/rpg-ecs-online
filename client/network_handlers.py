@@ -1210,6 +1210,22 @@ class NetworkHandlers:
                     "level":    sp.get("level", 1),
                     "kind":     kind,
                     **({"faction": sp["faction"]} if "faction" in sp else {}),
+                    # Luz de item já acesa (04/10/2026, bug real relatado pelo
+                    # usuário: jogador remoto com lampião ligado "apagava" pro
+                    # observador sempre que saía e voltava pro AOI, ou numa
+                    # troca de mapa) — o servidor já manda esses 4 campos aqui
+                    # (WorldServer.player_light_field, ver server/session.py
+                    # ~linha 4169), mas este dict (o caminho MAIS COMUM de
+                    # descoberta — "spawned" do AOI_UPDATE de cada tick) nunca
+                    # os repassava pra _spawn_remote_player_entity, mesmo já
+                    # existindo o mesmo tratamento em _handle_msg_entity_spawn
+                    # (ENTITY_SPAWN, usado só por ENTRADAS pontuais fora do
+                    # sweep por tick) — os 2 deveriam sempre ter paridade.
+                    **({"light_active": True,
+                        "light_item_id": sp.get("light_item_id", ""),
+                        "light_intensity_pct": sp.get("light_intensity_pct", 0),
+                        "light_radius_tiles": sp.get("light_radius_tiles", 0)}
+                       if sp.get("light_active") else {}),
                 })
         for m in payload.get("moved", []):
             eid = m.get("eid", -1)
@@ -1796,20 +1812,32 @@ class NetworkHandlers:
             # REAL (errado), às vezes silenciosamente descartado se a bag
             # real já estivesse cheia. Substituição COMPLETA (replace, não
             # merge incremental) — mesmo espírito de TRADE_STATE, nunca
-            # otimista. Reconstrução via self._item_from_data (mesmo
-            # formato de BUY_RESULT/TRADE_STATE).
+            # otimista. Reconstrução via self._restore_item (04/10/2026 —
+            # era self._item_from_data, mesmo formato "raw" de BUY_RESULT/
+            # TRADE_STATE, até virar um bug real relatado pelo usuário:
+            # lampião ligado entrando/saindo da BG "esquecia" que tinha
+            # light_source — WorldServer._item_data_from_obj nunca serializa
+            # esse campo [nem outros fora da lista fixa de atributos de
+            # combate], então _item_from_data reconstrói um Item sem ele, o
+            # ícone mostra "apagado" e o clique cai no fallback de equipar em
+            # vez de alternar a luz. _restore_item tenta o CATÁLOGO primeiro
+            # por item_id — pega qualquer campo novo/futuro de propósito,
+            # sem precisar listar campo por campo aqui — e só cai pro
+            # _item_from_data "raw" de sempre quando o item não existe no
+            # catálogo local (item de loja/instância sem equivalente, mesmo
+            # fallback de sempre, comportamento preservado).
             if "inv_snapshot" in payload:
                 from engine.components import Inventory as _InvSync
                 _inv_sync = self.world.get_component(self.player_entity, _InvSync)
                 if _inv_sync is not None:
-                    _inv_sync.items = [self._item_from_data(d) for d in payload["inv_snapshot"]]
+                    _inv_sync.items = [self._restore_item(d) for d in payload["inv_snapshot"]]
                     _inv_sync.max_slots = int(payload.get("inv_max_slots", _inv_sync.max_slots))
             if "equip_snapshot" in payload:
                 from engine.components import Equipment as _EqSync
                 _eq_sync = self.world.get_component(self.player_entity, _EqSync)
                 if _eq_sync is not None:
                     _eq_sync.slots = {
-                        slot: (self._item_from_data(d) if d else None)
+                        slot: (self._restore_item(d) if d else None)
                         for slot, d in payload["equip_snapshot"].items()
                     }
                     # Bug real relatado pelo usuário (03/08/2026, "jungo"):

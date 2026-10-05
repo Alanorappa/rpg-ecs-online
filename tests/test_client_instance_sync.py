@@ -100,6 +100,83 @@ class TestInstanceInventorySyncSendsSaveState(unittest.TestCase):
         self.assertEqual(self.client._net.sent, [])
 
 
+class TestInstanceInventorySyncPreservaLightSource(unittest.TestCase):
+    """Bug real relatado pelo usuário (04/10/2026): lampião ligado entrando/
+    saindo da BG ficava com o ícone "apagado" e clicar não fazia nada —
+    só voltava a funcionar relogando. Causa raiz: `inv_snapshot`/
+    `equip_snapshot` reconstruíam o Item via `self._item_from_data`
+    (formato "raw" de BUY_RESULT/TRADE_STATE) — `WorldServer.
+    _item_data_from_obj` (server, serializador) nunca inclui
+    `light_source` no dict (campo fora da lista fixa de atributos de
+    combate que esse serializador conhece), então o Item reconstruído
+    no cliente nascia com `light_source=None`, mesmo sendo o MESMO
+    lampião de antes. Sem `light_source`, o ícone cai no estado "apagado"
+    (`client/inventory_handlers.py` exige `item.light_source` truthy pra
+    mostrar aceso) e o clique nem chama `_toggle_item_light` (cai no
+    fallback de equipar em vez disso). Fix: `self._restore_item` no lugar
+    de `self._item_from_data` -- tenta o CATÁLOGO primeiro por item_id
+    (mesmo padrão já usado pelo save/load normal de personagem), que
+    preserva QUALQUER campo do catálogo atual, não só os que o
+    serializador lista manualmente."""
+
+    def setUp(self):
+        self.world = World()
+        self.eid = self.world.create_entity()
+        self.world.add_component(self.eid, PlayerControlled())
+        self.world.add_component(self.eid, Inventory(items=[], max_slots=20))
+        self.world.add_component(self.eid, Equipment())
+        self.world.add_component(self.eid, Wallet(gold=0))
+        self.client = FakeClient(self.world, self.eid)
+
+    def test_inv_snapshot_restaura_light_source_do_lampiao(self):
+        self.client._handle_msg_stats_update({
+            "eid": self.eid,
+            "inv_snapshot": [{"item_id": "lampiao", "name": "Lampião",
+                             "item_type": "ferramenta", "slot": "",
+                             "rarity": "common", "value": 15, "stack": 1,
+                             "max_stack": 1}],
+            "inv_max_slots": 20,
+        })
+        inv = self.world.get_component(self.eid, Inventory)
+        self.assertEqual(len(inv.items), 1)
+        self.assertIsNotNone(inv.items[0].light_source,
+            "lampião reconstruído do snapshot deveria manter light_source")
+        self.assertEqual(inv.items[0].light_source.get("radius_tiles"), 7)
+
+    def test_equip_snapshot_tambem_usa_restore_item(self):
+        """Mesma correção, caminho de equipamento -- qualquer item
+        futuro com campo exclusivo do catálogo (não só light_source)
+        se beneficia igual."""
+        self.client._handle_msg_stats_update({
+            "eid": self.eid,
+            "equip_snapshot": {"mainhand": {
+                "item_id": "iron_sword", "name": "Espada de Ferro",
+                "item_type": "weapon", "slot": "mainhand",
+                "rarity": "common", "value": 10, "stack": 1, "max_stack": 1,
+            }},
+        })
+        equip = self.world.get_component(self.eid, Equipment)
+        self.assertIsNotNone(equip.slots.get("mainhand"))
+        self.assertEqual(equip.slots["mainhand"].item_id, "iron_sword")
+
+    def test_item_sem_catalogo_cai_no_fallback_raw(self):
+        """Item de loja/instância sem equivalente no catálogo local
+        continua funcionando pelo caminho antigo (_item_from_data) --
+        _restore_item só tenta o catálogo PRIMEIRO, nunca substitui o
+        fallback."""
+        self.client._handle_msg_stats_update({
+            "eid": self.eid,
+            "inv_snapshot": [{"item_id": "item_instancia_sem_catalogo",
+                             "name": "Item de Instância", "item_type": "misc",
+                             "slot": "", "rarity": "common", "value": 1,
+                             "stack": 1, "max_stack": 1}],
+            "inv_max_slots": 6,
+        })
+        inv = self.world.get_component(self.eid, Inventory)
+        self.assertEqual(len(inv.items), 1)
+        self.assertEqual(inv.items[0].name, "Item de Instância")
+
+
 class TestInstanceTalentAllocatedSync(unittest.TestCase):
     """Bug real relatado pelo usuário (02/08/2026): "os pontos de talento
     parecem acumular, mesmo eu usando" — o TalentTree.allocated local

@@ -1223,6 +1223,45 @@ def test_aoi_update_spawned_propaga_level_do_player_remoto():
     assert rc.level == 4, "AOI_UPDATE (spawned) deveria propagar o level pro RemoteControlled"
 
 
+def test_aoi_update_spawned_propaga_luz_de_item_do_player_remoto():
+    """Bug real relatado pelo usuário (04/10/2026): jogador remoto com
+    lampião ligado "apagava" pra quem observa sempre que saía e voltava
+    pro AOI (ou numa troca de mapa) — o caminho de descoberta MAIS
+    COMUM (este, "spawned" do AOI_UPDATE de cada tick) nunca repassava
+    os campos de luz que o servidor já manda (WorldServer.
+    player_light_field), mesmo _handle_msg_entity_spawn já tratando
+    isso certo há mais de 1 semana."""
+    from engine.components import PlayerLightSource
+    fx = _make_net_fixture()
+    fx._handle_msg_aoi_update({"spawned": [{
+        "eid": 42, "kind": "player", "tx": 5, "ty": 5,
+        "name": "Fulano", "class_id": "guerreiro", "hp": 80, "hp_max": 100,
+        "level": 4, "light_active": True, "light_item_id": "lampiao",
+        "light_intensity_pct": 50, "light_radius_tiles": 7,
+    }]})
+    local_eid = fx._remote_players[42]
+    pls = fx.world.get_component(local_eid, PlayerLightSource)
+    assert pls is not None, "jogador remoto já aceso deveria nascer com PlayerLightSource"
+    assert pls.active
+    assert pls.item_id == "lampiao"
+    assert pls.radius_tiles == 7
+
+
+def test_aoi_update_spawned_sem_luz_nao_cria_player_light_source():
+    """Controle negativo -- sem light_active no payload, nenhum
+    componente de luz deve aparecer (comportamento de sempre, pra quem
+    não está com nada aceso)."""
+    from engine.components import PlayerLightSource
+    fx = _make_net_fixture()
+    fx._handle_msg_aoi_update({"spawned": [{
+        "eid": 43, "kind": "player", "tx": 5, "ty": 5,
+        "name": "Ciclano", "class_id": "guerreiro", "hp": 80, "hp_max": 100,
+        "level": 1,
+    }]})
+    local_eid = fx._remote_players[43]
+    assert fx.world.get_component(local_eid, PlayerLightSource) is None
+
+
 def test_aoi_update_spawned_harvestable_chama_spawn_remote_harvestable():
     """Bug real relatado pelo usuário 25/07/2026: clicou numa caixa de
     harvestable no jogo e nenhum loot apareceu. Causa: _handle_msg_aoi_update

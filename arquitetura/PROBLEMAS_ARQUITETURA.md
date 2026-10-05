@@ -24515,3 +24515,123 @@ novo.
 100% client-side (`client/network_handlers.py`) — sem deploy no
 Hetzner. Precisa de rebuild do `.exe` antes do próximo upload no
 itch.io (mesmo caveat do §229 — ainda não rebuildado nesta sessão).
+
+## 231. Bug real — luz do item (lampião) "apagava" pro observador remoto (AOI/mapa) e ficava dessincronizada ao entrar/sair da BG (04/10/2026)
+
+**Sintoma relatado pelo usuário**, 2 partes:
+1. Jogador remoto com lampião ligado sai do AOI de outro player e
+   volta (ou muda de mapa) — quem observa deixa de ver a iluminação.
+2. Jogador entra na BG com o lampião ligado e sai — a luz continua
+   acesa no mundo, mas o ÍCONE do item mostra "apagado" e clicar não
+   faz nada; só relogar corrige.
+
+**Causa raiz (parte 1)**: `WorldServer.player_light_field(eid)` já
+existe desde 23/09/2026 especificamente pra resolver "jogador que
+ENTRA no campo de visão de outro já aceso" — e já era usado nos 2
+pontos server-side corretos (spawn do próprio player ao logar,
+`server/session.py:2182`; sweep de descoberta de outros players no
+AOI por tick, `server/session.py:4169`). O problema era 100%
+CLIENTE: `client/network_handlers.py::_handle_msg_aoi_update` tem seu
+PRÓPRIO dict de spawn pro caminho "spawned" do `AOI_UPDATE` — o
+caminho MAIS COMUM de descoberta (roda todo tick, é como o cliente
+aprende sobre qualquer jogador que entra no seu AOI de novo, inclusive
+depois de uma troca de mapa) — e esse dict nunca repassava os 4 campos
+de luz que o servidor já mandava, mesmo o `faction` bem ao lado já
+sendo repassado com o mesmo padrão condicional. `_handle_msg_entity_spawn`
+(ENTITY_SPAWN, usado só por entradas pontuais) já tratava isso certo
+há mais de 1 semana — os 2 caminhos deveriam ter paridade e não tinham.
+
+**Causa raiz (parte 2)**: `inv_snapshot`/`equip_snapshot` (enviados
+pelo servidor ao entrar/sair de progressão normalizada de instância,
+`server/instance_progression.py`) reconstruíam o Item no cliente via
+`self._item_from_data` — o mesmo formato "raw" de `BUY_RESULT`/
+`TRADE_STATE`, que só copia uma lista FIXA de campos conhecidos.
+`WorldServer._item_data_from_obj` (servidor, quem serializa) nunca
+inclui `light_source` nessa lista — campo adicionado em 23/09/2026,
+bem depois desse serializador existir, igual aos outros "campo novo
+esquecido no round-trip" já catalogados várias vezes neste arquivo
+(equipamento/hotbar/talentos/inventário). Resultado: o lampião
+reconstruído perdia `light_source`, o ícone (que exige
+`item.light_source` truthy pra mostrar aceso,
+`client/inventory_handlers.py`) caía pra "apagado", e o clique (que
+TAMBÉM exige `item.light_source` truthy pra rotear pro toggle) caía no
+fallback de equipar em vez de alternar a luz — daí "clico e não
+acontece nada". A luz em si ficava acesa porque `PlayerLightSource`
+(componente separado, nunca tocado por `instance_progression.py`)
+nunca mudava — só a REPRESENTAÇÃO do item no inventário local
+divergia do estado real. Relogar corrige porque o login normal usa
+`_restore_item` (tenta o catálogo primeiro por `item_id`), nunca
+`_item_from_data`.
+
+**Fix**:
+- Parte 1: `_handle_msg_aoi_update`'s "spawned" ganha o mesmo merge
+  condicional de `light_active`/`light_item_id`/`light_intensity_pct`/
+  `light_radius_tiles` que `_handle_msg_entity_spawn` já tinha.
+- Parte 2: `inv_snapshot`/`equip_snapshot` passam a reconstruir via
+  `self._restore_item` (tenta o catálogo local por `item_id` primeiro
+  — pega QUALQUER campo novo/futuro de propósito, sem precisar listar
+  campo por campo nesse serializador manual; cai pro `_item_from_data`
+  de sempre só quando o item não existe no catálogo local, ex: item de
+  loja/instância sem equivalente — comportamento preservado).
+- `BUY_RESULT`/`TRADE_STATE` (achado relacionado, NÃO corrigido agora
+  — fora de escopo do relatado): usam o mesmo `_item_from_data` cru.
+  "lampiao" hoje só é concedido por recompensa de quest (não é
+  vendido em loja), então esse caminho específico não reproduz o bug
+  na prática — mas SE algum item com `light_source` um dia for
+  vendável ou negociável em trade, o mesmo problema reapareceria ali.
+  Registrado aqui pro caso de alguém pedir isso depois.
+
+**Teste**: `tests/test_client_ui.py::test_aoi_update_spawned_propaga_luz_de_item_do_player_remoto`/
+`test_aoi_update_spawned_sem_luz_nao_cria_player_light_source` (2,
+parte 1) + `tests/test_client_instance_sync.py::
+TestInstanceInventorySyncPreservaLightSource` (3, parte 2 — lampião
+preserva `light_source` via catálogo; equipamento usa o mesmo caminho;
+item SEM equivalente no catálogo local continua caindo no fallback
+raw, regressão). Revert-to-confirm feito nos 2 pontos (cada um
+quebrado isoladamente, os testes correspondentes falharam exatamente
+como esperado, restaurados). Regressão: suíte combinada
+`test_client_ui.py`+`test_client_instance_sync.py`+
+`test_fatiador_de_corpos.py`+`test_item_light.py` (281 testes) sem
+quebra.
+
+100% client-side (`client/network_handlers.py`) — sem deploy no
+Hetzner. Precisa de rebuild do `.exe` antes do próximo upload no
+itch.io.
+
+## 232. Bug real — Fatiador de Corpos continuava causando dano/som depois do personagem morrer (04/10/2026)
+
+**Sintoma relatado pelo usuário**: a skill Fatiador de Corpos (canal
+de 5s, dano em área ao redor do guerreiro) continuava ativa mesmo
+depois do personagem morrer — som e dano em quem estivesse na área.
+
+**Causa raiz**: `WorldServer._tick`'s loop de "ticks subsequentes ao
+cast" (`server/world_server.py`, bloco "Fatiador de Corpos", chamado
+todo tick pra qualquer player com `CharacterStats.fatiador_timer > 0`)
+nunca checava se o CASTER ainda estava vivo antes de chamar
+`_fatiador_aoe_tick` — só o HP do ALVO era checado
+(`ecs.current_hp > 0`, dentro de `engine/skill_handlers.py::
+_fatiador_aoe_tick`). `fatiador_timer` é um campo bespoke em
+`CharacterStats` (não usa o componente genérico `Channeling`) — e a
+limpeza de morte já existente (`server/respawn_system.py::
+_handle_player_death`, comentário "Cancela Channeling ativo — evita
+dano AoE pós-morte") só olhava `Channeling`, nunca esse campo
+específico. Mesma classe de bug (canal que devia morrer com o
+personagem), causa raiz diferente (campo fora do componente genérico
+que a limpeza já cobria).
+
+**Fix**: `_handle_player_death` zera `CharacterStats.fatiador_timer`
+no mesmo bloco onde já cancela `Channeling` — corta o canal na
+próxima iteração do loop de tick, igual qualquer outro cast
+interrompido por morte.
+
+**Teste**: `tests/test_fatiador_de_corpos.py::
+TestFatiadorParaDeVerdadeAoMorrer` (3) — morte zera `fatiador_timer`;
+mob próximo não recebe mais dano depois da morte do caster (prova
+real, não só o campo); controle de regressão SEM morte continua
+causando dano normal. Revert-to-confirm feito (zeramento desativado,
+os 2 testes relevantes falharam — inclusive a prova real, mob levou
+dano de um guerreiro morto — restaurado). Suíte de combate/arena/BG
+(94 testes) sem regressão.
+
+Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`) — fix é
+server-side (`server/respawn_system.py`).
