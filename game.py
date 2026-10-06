@@ -2139,7 +2139,19 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                                                              self._debug_item_scroll - event.y))
                 elif event.type == pygame.MOUSEWHEEL and self._handle_chat_scroll(event):
                     pass
-                elif event.type == pygame.MOUSEWHEEL:
+                # Nenhum modal com rolagem própria (Ranking, Treinador, etc.)
+                # consumia a roda do mouse aqui -- o evento sempre caía neste
+                # último `elif` E, mais abaixo, no handle_events() do modal
+                # aberto, zoomando a câmera POR TRÁS do painel ao mesmo tempo
+                # que rolava a lista (bug real relatado pelo usuário,
+                # 06/10/2026, achado no modal de Ranking — mas o gap valia
+                # pra QUALQUER modal com scroll não listado nos 2 `elif`
+                # acima). `_any_modal_open()` (client/modal_stack_handlers.py)
+                # é o mesmo ponto único de verdade já usado por outros
+                # bloqueios de input de fundo (ver bloco do minimap logo
+                # abaixo) — zoom nunca deveria agir com QUALQUER modal por
+                # cima da tela, não só os 2 que já tinham tratamento especial.
+                elif event.type == pygame.MOUSEWHEEL and not self._any_modal_open():
                     self._handle_scroll_zoom(event.y)
 
             # Mapa consome eventos quando aberto

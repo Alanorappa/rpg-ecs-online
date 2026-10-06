@@ -4018,6 +4018,19 @@ def test_any_modal_open_false_com_tudo_fechado():
     assert fx._any_modal_open() is False
 
 
+def test_any_modal_open_true_com_ranking_aberto():
+    """Bug real relatado pelo usuário (06/10/2026): rolar o mouse com o
+    Ranking aberto também zoomava a câmera -- o `elif` de zoom em
+    game.py::run() não checava NENHUM modal fora de debug/chat. Fix usa
+    _any_modal_open() (mesmo ponto único de verdade do resto do
+    arquivo) -- esta é a parte testável fora do loop de eventos real."""
+    fx = _make_modal_stack_fixture()
+    assert fx._any_modal_open() is False
+    fx._show_ranking = True
+    assert fx._any_modal_open() is True
+    assert fx._topmost_open_modal() == "ranking"
+
+
 def test_any_modal_open_true_com_quest_dialog_aberto_via_item_e_inventario_fechado():
     """Mesmo estado do bug real: quest_dialog abre via open_for_item()
     (sem NPC real) e o inventário já fechou junto — _any_modal_open()

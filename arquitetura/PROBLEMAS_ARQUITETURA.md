@@ -25067,3 +25067,42 @@ Deploy: fix é 100% client-side (`game.py`) — precisa de rebuild do
 `.exe` antes de chegar a quem já tem o `.exe` v0.51.0 instalado
 (quem roda `python main.py` direto do código-fonte já recebe o fix
 só com o commit, sem rebuild).
+
+## 240. Roda do mouse com modal de Ranking aberto também zoomava a câmera por trás (06/10/2026)
+
+**Sintoma relatado pelo usuário**: rolar o mouse pra descer a lista do
+Ranking Geral também mudava o zoom da câmera do mundo, por trás do
+modal.
+
+**Causa raiz**: `game.py::run()` tem 1 loop de eventos com um `elif`
+pra `MOUSEWHEEL` — só 2 casos tinham tratamento especial antes do zoom
+(`_show_debug` e `_handle_chat_scroll`); QUALQUER outro modal com
+scroll próprio (Ranking, e em tese também o Treinador — mesmo
+mecanismo de `MOUSEWHEEL` só que nunca comparado lado a lado antes)
+nunca entrava nesse `elif`, então o MESMO evento de roda chegava ao
+zoom da câmera E, mais abaixo no mesmo `run()`, ao `handle_events()` do
+modal aberto — os dois reagiam ao mesmo scroll ao mesmo tempo.
+
+**Fix**: `elif event.type == pygame.MOUSEWHEEL and not self.
+_any_modal_open():` — reusa o mesmo ponto único de verdade já usado
+por outro bloqueio de input de fundo no mesmo arquivo (clique no
+minimap atravessando um modal por cima, achado antes). Zoom da câmera
+nunca deveria reagir com QUALQUER modal cobrindo a tela, não só os 2
+que já tinham tratamento nomeado — corrige Ranking de propósito e,
+de quebra, a mesma classe de gap pra qualquer modal futuro com scroll
+próprio, sem precisar listar cada um à mão.
+
+**Teste**: `tests/test_client_ui.py::
+test_any_modal_open_true_com_ranking_aberto` (novo) — cobre a PARTE
+testável fora do loop de eventos real (`_any_modal_open()` reconhece
+`_show_ranking`); o comportamento completo (zoom realmente suprimido
+durante o scroll) depende do loop de eventos do `GameEngine` rodando
+de verdade, fora do que dá pra automatizar sem instanciar o jogo
+inteiro — validado por leitura cuidadosa do código + boot smoke-test
+(`python main.py` sobe sem erro), mas a confirmação final é manual do
+usuário em jogo.
+
+Deploy: fix é 100% client-side (`game.py`) — precisa de rebuild do
+`.exe` antes de chegar a quem já tem o `.exe` instalado (quem roda
+`python main.py` direto do código-fonte já recebe o fix só com o
+commit).
