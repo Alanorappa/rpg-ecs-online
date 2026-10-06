@@ -23,9 +23,10 @@ PANEL_W     = UI.RANKING_W
 PANEL_H     = UI.RANKING_H
 SIDEBAR_W   = UI.RANKING_SIDEBAR_W
 PAD         = 16
-HEADER_H    = 56
-ROW_H       = 28
-SIDEBAR_ROW_H = 32
+HEADER_H    = 60
+ROW_H       = 34
+TABLE_HEADER_H = 34   # linha de cabeçalho da tabela (NOME | RANK | ...)
+SIDEBAR_ROW_H = 36
 SCROLLBAR_W = 10
 
 C_BG        = (14, 10, 6, 230)
@@ -49,7 +50,10 @@ _CATEGORIES: "list[tuple[str, str]]" = [("level", "Rank Level")] + [
 
 
 class RankingSystem(UIScaleMixin):
-    _FONT_BASES = {"font_sm": 18, "font_md": 22, "font_lg": 28}
+    # Mesma escala de ui/skill_level_ui.py (painel read-only irmão) —
+    # pedido do usuário (06/10/2026): fonte original (18/22/28) estava
+    # pequena demais pra ler confortavelmente.
+    _FONT_BASES = {"font_sm": 22, "font_md": 27, "font_lg": 34}
 
     def __init__(self, world, player_entity_id: int, screen: pygame.Surface):
         super().__init__()
@@ -108,7 +112,7 @@ class RankingSystem(UIScaleMixin):
                            panel.right - self._u(PAD) - tx, sb.h)
 
     def _visible_rows(self, table: pygame.Rect) -> int:
-        return max(1, (table.h - self._u(28)) // self._u(ROW_H))
+        return max(1, (table.h - self._u(TABLE_HEADER_H)) // self._u(ROW_H))
 
     # ------------------------------------------------------------------
     def handle_events(self, events: list, panel: pygame.Rect) -> None:
@@ -189,7 +193,7 @@ class RankingSystem(UIScaleMixin):
         label = "LEVEL" if self._category == "level" else "SKILL LEVEL"
         self.screen.blit(self.font_sm.render(label, False, C_GRAY),
                          (table.x + col_name_w + col_rank_w, hy))
-        header_h = self._u(28)
+        header_h = self._u(TABLE_HEADER_H)
         pygame.draw.line(self.screen, C_BORDER,
                          (table.x, table.y + header_h - self._u(4)),
                          (table.right, table.y + header_h - self._u(4)))

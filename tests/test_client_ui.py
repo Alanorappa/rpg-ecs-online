@@ -439,7 +439,8 @@ def test_clique_na_sidebar_troca_categoria():
     panel = rs._panel_rect()
     sidebar = rs._sidebar_rect(panel)
     # 2ª linha da sidebar = 2ª categoria (índice 1 -- "espada", logo após "level")
-    row_h = rs._u(32)
+    from ui.ranking_system import SIDEBAR_ROW_H
+    row_h = rs._u(SIDEBAR_ROW_H)
     click_pos = (sidebar.x + 5, sidebar.y + row_h + 5)
     ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=click_pos)
     rs.handle_events([ev], panel)
