@@ -455,6 +455,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._hbe_expand_slots: bool = False
         self._show_habilidades: bool = False     # painel Habilidades (tecla H)
         self._show_skills: bool = False          # painel Skill Level (tecla L)
+        self._show_ranking: bool = False         # modal de Ranking Geral (tecla K)
         self._show_char_stats: bool = False      # modal de estatísticas (tecla C)
         self._hab_scroll: int = 0               # scroll do painel Habilidades
         self._ui_events:      list = []            # eventos do frame atual (para _draw_* sem parâmetro)
