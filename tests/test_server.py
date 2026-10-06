@@ -523,13 +523,14 @@ class TestRegressionBugs(unittest.TestCase):
         if not mob:
             self.skipTest("Sem mobs")
 
-        from engine.components import CombatState, CombatStats, AIControlled, TileMovement, Position
+        from engine.components import CombatState, CombatStats, AIControlled, TileMovement, Position, InitialPosition
         from engine.tileset import TILE_SIZE as _TS
         mob_ai  = self.ws.world.get_component(mob, AIControlled)
         mob_tm  = self.ws.world.get_component(mob, TileMovement)
         mob_cs  = self.ws.world.get_component(mob, CombatStats)
         mob_cst = self.ws.world.get_component(mob, CombatState)
         mob_pos = self.ws.world.get_component(mob, Position)
+        mob_ip  = self.ws.world.get_component(mob, InitialPosition)
         ptm     = self.ws.world.get_component(eid, TileMovement)
 
         # Posiciona mob adjacente ao player — sincroniza current, target E is_moving=False
@@ -542,6 +543,16 @@ class TestRegressionBugs(unittest.TestCase):
         if mob_pos:
             mob_pos.x = tx * _TS + _TS // 2
             mob_pos.y = ty * _TS + _TS // 2
+        if mob_ip:
+            # Realinha a âncora do leash pro tile novo — sem isso o mob
+            # pode estar "impossivelmente longe" do próprio spawn original
+            # (mob escolhido por first_mob() pode nascer em qualquer canto
+            # do mapa) e a checagem antecipada de leash (06/10/2026, ver
+            # PROBLEMAS_ARQUITETURA.md §241) força RETURNING antes do
+            # teste conseguir validar o ataque — mesmo realinhamento que
+            # tests/helpers.py::teleport_mob_to_player já faz.
+            mob_ip.x = tx * _TS + _TS // 2
+            mob_ip.y = ty * _TS + _TS // 2
 
         # Configura mob para atacar imediatamente
         if mob_ai:

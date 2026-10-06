@@ -3608,6 +3608,42 @@ class EnemyAISystem(System):
                  or is_hostile(self.world, enemy_id, ai_control.target_eid))
             )
 
+            # --- Leash antecipado (06/10/2026) ---
+            # Checagem normal de leash (mais abaixo, bloco "Perseguição do
+            # Jogador") nunca roda pra um mob que já está ATTACKING, porque
+            # o bloco de ataque logo adiante dá `continue` todo tick em que
+            # o mob segue em alcance (linha ~3809) — a checagem de leash de
+            # verdade fica DEPOIS desse `continue`, nunca alcançada. Um mob
+            # ainda CHASING desiste certinho ao estourar o leash (aquele
+            # bloco roda normal pra ele); mas se o PASSO final da
+            # perseguição pousa o mob adjacente ao alvo no MESMO tick em que
+            # já passou dos 20 tiles de casa, ele vira ATTACKING ali mesmo,
+            # e nunca mais reavalia — fica preso trocando golpe pra sempre
+            # se a luta empacar (bug real relatado pelo usuário: NPC/mob
+            # "travado" longe do spawn, só alguns casos — os que cruzam o
+            # leash exatamente no passo que os deixa adjacentes). Esta
+            # checagem roda ANTES do atalho de ataque, só pra ATTACKING
+            # (CHASING continua coberto pelo bloco original, sem mudança).
+            # Ver PROBLEMAS_ARQUITETURA.md §241.
+            if ai_control.state == "ATTACKING":
+                _early_spawn_tile_x = int(initial_pos.x / TILE_SIZE)
+                _early_spawn_tile_y = int(initial_pos.y / TILE_SIZE)
+                _early_dist_from_spawn = chebyshev(
+                    tile_movement.current_tile_x, tile_movement.current_tile_y,
+                    _early_spawn_tile_x, _early_spawn_tile_y
+                )
+                _early_leash_radius = (self.MAX_LEASH_RADIUS_DMG
+                                        if ai_control.aggroed_by_damage
+                                        else self.MAX_LEASH_RADIUS)
+                if _early_dist_from_spawn > _early_leash_radius:
+                    if _MCL: _MCL.log("LEASH", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                      dist_spawn=f"{_early_dist_from_spawn}t",
+                                      leash_r=_early_leash_radius,
+                                      prev=_dbg_prev_state, early="attacking")
+                    from engine.core_systems import force_mob_give_up_target as _early_give_up
+                    _early_give_up(self.world, enemy_id, ai_control.target_eid)
+                    continue
+
             # --- Ataque (separado do movimento) ---
             damage_type_to_use = "magical" if (
                 enemy_combat_stats.spell_power > 0 or enemy_combat_stats.base_magical_damage > 0

@@ -25177,6 +25177,120 @@ World —, restaurado). Regressão: `test_map_transition_screen.py`/
 `test_mid_session_reconnect.py`/`test_client_ui.py` (264 testes) sem
 quebra. Boot smoke-test (`python main.py`) sem erro.
 
+**CORREÇÃO (06/10/2026, mesmo dia — a causa raiz acima estava
+ERRADA)**: usuário testou com um RESTART COMPLETO do processo
+(`python main.py` fechado e reaberto do zero, confirmado
+explicitamente) — garante `_remote_mobs` 100% vazio, zero
+possibilidade de staleness de cliente. O bug persistiu mesmo assim,
+derrubando a hipótese acima. O fix de `_handle_msg_auth_ok` continua
+válido e testado (resolve reconexão NO MEIO da sessão, cenário
+diferente), só não era a causa DESTE sintoma. Causa raiz de verdade:
+**§242**. Diagnóstico real feito com log direto no servidor
+(`_build_mob_spawn_payload`, filtrado por nome "custodio") confirmando
+que a posição broadcastada pelo servidor SEMPRE bateu com a realidade
+— nunca houve desync de posição/broadcast; o NPC realmente estava
+onde o servidor dizia, só que longe de casa, travado numa luta que
+nunca terminava. Lição: a hipótese "cliente com cache velho" parecia
+plausível e tinha um mecanismo real por trás (SPAWN_SKIP), mas nunca
+foi confirmada com prova direta antes de ser reportada como corrigida
+— só depois do usuário contestar com um teste mais forte (restart
+completo) que a investigação voltou a fontes primárias (log do
+servidor) em vez de insistir na mesma teoria.
+
 Deploy: fix é 100% client-side (`game.py`, `client/
 network_handlers.py`) — precisa de rebuild do `.exe` antes de chegar a
 quem já tem o `.exe` instalado.
+
+## 242. Causa raiz de verdade do §241 — mob/NPC em ATTACKING nunca reavalia leash, fica preso lutando longe de casa pra sempre (06/10/2026)
+
+**Sintoma relatado pelo usuário, reproduzido ao vivo**: usuário puxou
+zumbis pra longe do respawn deles de propósito (teste); o NPC "Custodio
+Benevide" (dador de quest "Coveiro", `maps/map_1_entities.json`) saiu
+do posto pra perseguir, alcançou, e ficou preso trocando golpe com os
+zumbis longe de casa, sem nunca voltar — screenshot do usuário mostra
+os 3 (Custodio + 2 Zumbi) parados juntos, HP baixo dos zumbis, Custodio
+com barra cheia. Usuário confirma que esse comportamento (NPC sair pra
+lutar e depois voltar sozinho) sempre funcionou antes e só passou a
+travar "de um tempo pra cá", e que NEM TODO mob/NPC trava — alguns
+"quando chegam no limite do chasing voltam pro spawn normalmente".
+
+**Investigação**: log direto (`debug/aoi_debug.log`, filtrado por nome)
+confirmou que o servidor sempre soube a posição real do Custodio —
+descartando de vez a hipótese de desync do §241. Log de combate de mob
+(`debug/logs/mob_combat.log`, `RPG_DEBUG_MOB_COMBAT=1`, já ativo em
+produção) mostrou Custodio (eid=34) em ciclo de `ATK_FIRE`/`ATK_BLOCK`
+regular (cooldown normal, ~2s), sempre adjacente ao mesmo alvo, sempre
+no MESMO tile — ou seja, ativamente lutando, não congelado por
+nenhum bug de movimento/rede. `mob_tile` da luta ficava bem perto do
+raio de leash (`EnemyAISystem.MAX_LEASH_RADIUS = 20` tiles) da casa
+dele.
+
+`create_quest_giver`/`create_blacksmith`/`create_trainer`
+(`engine/entity_factory.py`) usam `_build_combat_entity` — MESMA
+infraestrutura de combate/IA de um mob hostil ("combate genérico, Fase
+1"), incluindo `AIControlled` com perseguição por proximidade. Isso é
+intencional (NPC se defende/revida), não é o bug.
+
+**Causa raiz real**: `EnemyAISystem.update()` (`engine/world_systems.py`)
+tem uma checagem de leash (linha ~3838 antes desta correção, bloco
+"Perseguição do Jogador" / "Leash") que deveria forçar QUALQUER mob em
+`CHASING` OU `ATTACKING` a desistir e voltar pro spawn ao passar do
+raio de leash — a própria condição já incluía os dois estados
+(`ai_control.state in ("CHASING", "ATTACKING")`), prova de que o autor
+original JÁ pretendia cobrir ATTACKING. Só que essa checagem fica
+**depois**, no fluxo do código, do bloco de execução de ataque — que dá
+`continue` (linha ~3809) todo tick em que o mob já está em alcance
+(`in_attack_range`). Resultado: assim que o mob entra em `ATTACKING`,
+ele nunca mais alcança a checagem de leash enquanto seguir em alcance
+de ataque — está estruturalmente inalcançável, não é um bug de
+condição errada, é um bloco de código morto por ordem de execução.
+
+Um mob ainda `CHASING` (não chegou perto ainda) passa pela checagem
+normalmente a cada tick e desiste certo ao estourar o leash — é
+exatamente o "alguns voltam pro spawn" que o usuário descreveu. O
+travamento só acontece quando o PASSO FINAL da perseguição pousa o mob
+adjacente ao alvo no MESMO tick em que ele já passou do raio de leash:
+ele vira `ATTACKING` ali mesmo (a checagem de leash daquele tick nunca
+roda, porque o bloco de ataque — mais acima no código — já deu
+`continue` primeiro) e a partir daí fica permanentemente imune ao
+leash enquanto a luta continuar. Se os dois lados errarem o golpe com
+frequência (muito "evadiu", como no caso relatado), a luta nunca
+termina e o mob/NPC fica preso ali pra sempre — exatamente a
+intermitência relatada pelo usuário ("não são todos que bugam").
+
+**Fix**: checagem de leash antecipada, só para o estado `ATTACKING`,
+inserida logo após `in_attack_range` ser calculado e ANTES de qualquer
+tentativa de golpe (`engine/world_systems.py`, bloco novo comentado
+"Leash antecipado (06/10/2026)") — reusa `engine.core_systems.
+force_mob_give_up_target` (mesma função que o leash normal já chama).
+A checagem original (cobrindo `CHASING`) continua INTOCADA — nenhuma
+mudança de comportamento pra mob ainda perseguindo, só fecha a janela
+onde `ATTACKING` nunca era reavaliado.
+
+**Teste**: `tests/test_attacking_mob_respects_leash.py` (novo) — mob
+real (`first_mob`), forçado pra `ATTACKING` adjacente ao player, com
+`InitialPosition` realinhada pra simular "já perseguiu 25 tiles longe
+de casa" (> `MAX_LEASH_RADIUS=20`): 1 tick de `EnemyAISystem.update()`
+deve resultar em `state=="RETURNING"`/`target_eid==-1`. 2º teste
+(guarda de regressão): mesmo mob `ATTACKING`, mas `InitialPosition`
+perto (dentro do leash) — não pode ser afetado, continua `ATTACKING`.
+Revert-to-confirm: com a correção desfeita (`git stash` só do arquivo
+de produção), o 1º teste falha exatamente como o bug real
+(`'ATTACKING' != 'RETURNING'`), confirmando que o teste pega o
+problema de verdade; restaurado, ambos passam. Suíte relacionada
+(`test_enemy_ai_perf.py`, `test_teleport_breaks_mob_chase.py`,
+`test_faction.py`, `test_towers.py`, `test_server.py`,
+`test_minions.py`) rodada inteira: só 2 falhas pré-existentes
+encontradas (`test_minions.py`, 2 testes com dado de loot
+order-dependente — confirmado via `git stash` que falham IDÊNTICO sem
+nenhuma mudança minha, não relacionado) + 1 teste em `test_server.py`
+que dependia, por acidente, do MESMO bug de leash-nunca-reavaliado pra
+passar (`test_mob_attack_generates_combat_delta_with_player_target`
+teleportava um mob pra `ATTACKING` sem realinhar `InitialPosition` —
+corrigido no mesmo commit, mesmo realinhamento que `tests/helpers.py::
+teleport_mob_to_player` já fazia).
+
+Deploy: fix é 100% server-side (`engine/world_systems.py`, código
+compartilhado mas só o SERVIDOR roda `EnemyAISystem` de verdade —
+cliente não processa IA de mob). Deployado direto via
+`deploy_server.ps1`, sem rebuild de `.exe`.
