@@ -3111,6 +3111,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # então qualquer entidade sem zona mostrava raça como nome também.
         if ident and ident.name:
             payload["name"] = ident.name
+            if "custodio" in ident.name.lower():
+                from debug.aoi_debug import AOI_DBG as _AOI_DBG_custodio
+                _AOI_DBG_custodio.log("MOB_SPAWN_PAYLOAD_NAMED", eid=eid,
+                                       name=ident.name,
+                                       tx=tm.current_tile_x, ty=tm.current_tile_y)
         # is_dummy: sinaliza ao cliente pra anexar TrainingDummy no proxy local —
         # sem isso, skills usadas no boneco nunca contavam pra objetivos de quest
         # com params={"on_dummy": True} (ver quest_system.py), porque o cliente
