@@ -24819,3 +24819,63 @@ Deploy: log de diagnóstico enviado pro Hetzner
 (`deploy_server.ps1`) durante a investigação. O fix de verdade é
 100% client-side (`ui/trainer_system.py`) — precisa de rebuild do
 `.exe` antes do tester conseguir treinar.
+
+## 236. Bug real — item condicional de quest (drop por jogador) perdido quando o corpse tinha outro item junto (06/10/2026)
+
+**Sintoma relatado pelo usuário**: "já tínhamos corrigido isso antes"
+— quest "spider_venom" (70% de chance de dropar "Veneno de Aranha" ao
+matar aranha). O item só aparecia no loot quando a aranha também
+dropava outro item comum junto — e looteando o item comum PRIMEIRO, o
+modal de loot fechava sozinho e o item de quest sumia, sem chance de
+pegar.
+
+**Causa raiz**: loot condicional de quest (ex: Veneno de Aranha, Pelo
+de Urso — Fase L1, 25/07/2026) vive num pote SEPARADO do loot comum —
+`corpse["quest_rolls"][player_eid]`, resolvido por jogador, não mais
+fixo no corpse (decisão da Fase L1, pra grupo não "roubar" item de
+quest de quem não tem ela). O timer pós-saque (`request_loot`,
+`server/loot_processor.py`, regra "02/10/2026: saqueou tudo, expira na
+hora; sobrou algo, mais 30s") decidia "saqueou tudo" olhando só o pote
+COMUM (`items`/`coins`) — nunca `quest_rolls`. Com um corpse tendo 1
+item comum + 1 item condicional de quest, saquear o comum esvaziava
+items/coins, a condição batia "vazio", e o corpse inteiro era apagado
+NA HORA (`INSTANT_EXPIRE_S`, timer=0, próximo tick remove o dict
+completo de `self._corpses`) — levando junto `quest_rolls[player_eid]`,
+mesmo esse ainda tendo o item de quest não reclamado. O comentário
+original já documentava essa omissão como escolha deliberada ("checa
+só o pote COMUM... quest_rolls não entra nessa conta") — intencional
+na hora, mas sem considerar o caso de os dois potes terem conteúdo ao
+mesmo tempo.
+
+**Por que "já tínhamos corrigido antes" fazia sentido pro usuário**: a
+Fase L1 (25/07/2026) resolveu um bug DIFERENTE da mesma família (loot
+condicional vazando pra quem não tinha a quest); essa correção criou o
+pote `quest_rolls` separado, que nunca foi integrado na lógica de
+expiração de timer escrita DEPOIS (02/10/2026) — regressão nova sobre
+terreno já mexido antes, não o mesmo bug voltando.
+
+**Fix**: `request_loot` calcula `_personal_pending = any(corpse.get(
+"quest_rolls", {}).values())` (qualquer jogador do grupo com item
+condicional ainda não reclamado, não só quem acabou de saquear agora)
+e inclui isso na condição de `INSTANT_EXPIRE_S` — só expira na hora se
+os TRÊS potes (comum + coins + qualquer quest_rolls de qualquer
+jogador) estiverem vazios.
+
+**Teste**: `tests/test_loot_authoritative.py::
+TestCorpseTimerRespeitaLootCondicionalDeQuest` (2, novo) — corpse com 1
+item comum + 1 item condicional de quest ("veneno_aranha",
+`content.quests_data.QUEST_ITEMS`), saquear só o comum não expira
+(timer=30s, sobrevive ao tick seguinte, item de quest continua
+lootável de verdade); controle — saquear os dois aí sim expira na hora
+(timer=0). Revert-to-confirm feito (checagem de `quest_rolls`
+removida, o teste principal falhou exatamente como o bug real — timer
+0.0 em vez de 30.0 —, restaurado). Regressão:
+`test_loot_authoritative.py` (exceto 2 testes de
+`TestLootQuestProgressViaSessionFlow`, falha pré-existente de ambiente
+— `ConnectionRefusedError`, confirmada via `git stash` que já falhava
+ANTES desta mudança, não relacionada) + `test_quest_logic.py` (29
+testes) sem quebra.
+
+Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`) — fix é
+100% server-side (`server/loot_processor.py`), sem rebuild de `.exe`
+necessário.

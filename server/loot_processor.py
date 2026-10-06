@@ -198,17 +198,21 @@ class LootProcessorMixin:
             corpse["quest_rolls"][player_eid] = [d for d in personal_items if id(d) in _kept_ids]
             coins = corpse.pop("coins", 0)
 
-        # Timer pós-saque (02/10/2026, pedido do usuário): saqueou TUDO
-        # (pote comum de items + coins zerado) — corpse some na hora
-        # (INSTANT_EXPIRE_S); sobrou algo (outro item, ou o pedido foi
-        # só parcial) — mais 30s (PARTIAL_LOOT_TIMER_S) pra quem mais
-        # quiser vir saquear o resto. Checa só o pote COMUM
-        # (items/coins) — loot condicional pessoal de quest
-        # (quest_rolls[player_eid]) não entra nessa conta, mesmo
-        # critério que o resto do código já usa pra "o que sobrou"
-        # (ex: no_space acima).
+        # Timer pós-saque (02/10/2026, pedido do usuário; corrigido
+        # 06/10/2026 — bug real relatado pelo usuário: quest com item
+        # condicional, ex. "spider_venom" 70% drop — Fatiador... não,
+        # mob comum dropando o item condicional JUNTO de um item do pote
+        # comum. Saquear o item comum primeiro esvaziava items/coins e
+        # expirava o corpse NA HORA, apagando o dict inteiro —inclusive
+        # quest_rolls[player_eid], que ainda tinha o item de quest não
+        # reclamado. Precisa checar os DOIS potes: comum (items/coins) E
+        # pessoal (quest_rolls, Fase L1 25/07/2026 — qualquer jogador que
+        # já interagiu com este corpse, não só quem saqueou agora, já
+        # que loot condicional é por-jogador dentro do mesmo grupo).
+        _personal_pending = any(corpse.get("quest_rolls", {}).values())
         corpse["timer"] = (self.INSTANT_EXPIRE_S
                            if not corpse.get("items") and corpse.get("coins", 0) <= 0
+                               and not _personal_pending
                            else self.PARTIAL_LOOT_TIMER_S)
         # Atualiza Wallet do servidor para persistência
         if coins > 0:

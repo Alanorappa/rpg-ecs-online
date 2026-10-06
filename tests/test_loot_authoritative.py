@@ -334,5 +334,58 @@ class TestCorpseTimerSemLootNaoAparece(unittest.TestCase):
         self.assertEqual(self.ws._corpses[cid]["timer"], 30.0)
 
 
+class TestCorpseTimerRespeitaLootCondicionalDeQuest(unittest.TestCase):
+    """Bug real relatado pelo usuário (06/10/2026): quest "spider_venom"
+    (item condicional, Fase L1 25/07/2026, `quest_rolls[player_eid]` —
+    separado do pote comum "items"/"coins") só aparecia quando a aranha
+    também dropava outro item comum JUNTO. Looteando o item comum
+    primeiro, o corpse "sumia" antes de conseguir pegar o item de quest.
+
+    Causa raiz: o timer pós-saque (`request_loot`) decide "saqueou tudo,
+    expira na hora" olhando só items/coins -- nunca quest_rolls. Com um
+    item comum + 1 item condicional no mesmo corpse, saquear o comum
+    esvaziava items/coins e expirava na hora, apagando o dict inteiro
+    (quest_rolls incluso) antes do jogador clicar no item de quest."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.eid = spawn_player(self.ws, "s1", 130, 374)
+        self.cid = _make_corpse(self.ws, self.eid, items=[_loot_dict("hp_potion")], coins=0)
+        # Mesma mecânica de _resolve_conditional_loot_for: dict por
+        # player_eid, plantado direto (sem precisar simular o roll de
+        # verdade) -- mesmo padrão já usado por _make_corpse pro resto
+        # do corpse. "veneno_aranha" (item da quest "spider_venom") vive
+        # em content.quests_data.QUEST_ITEMS, não em item_table.ITEMS --
+        # resolve_item_by_id() é o mesmo caminho que o servidor real usa
+        # (_reconstruct_item), cobre os dois catálogos.
+        from content.item_table import resolve_item_by_id
+        from server.server_death_handler import _serialize_item
+        _quest_item = _serialize_item(resolve_item_by_id("veneno_aranha"))
+        self.ws._corpses[self.cid]["quest_rolls"][self.eid] = [_quest_item]
+
+    def test_saquear_item_comum_nao_apaga_item_de_quest_pendente(self):
+        result = self.ws.request_loot("s1", self.cid, take="item", item_id="hp_potion")
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            self.ws._corpses[self.cid]["timer"], self.ws.PARTIAL_LOOT_TIMER_S,
+            "ainda sobra o item de quest no pote pessoal -- não devia expirar na hora")
+
+        # Confirma que o corpse de fato sobrevive ao tick seguinte...
+        self.ws._process_loot_drops(dt=0.1)
+        self.assertIn(self.cid, self.ws._corpses)
+
+        # ...e que o item de quest continua lootável de verdade.
+        result2 = self.ws.request_loot("s1", self.cid, take="item", item_id="veneno_aranha")
+        self.assertIsNotNone(result2)
+        self.assertTrue(result2["items"], "item de quest deveria ter sido concedido")
+
+    def test_saquear_os_dois_ai_sim_expira_na_hora(self):
+        self.ws.request_loot("s1", self.cid, take="item", item_id="hp_potion")
+        self.ws.request_loot("s1", self.cid, take="item", item_id="veneno_aranha")
+        self.assertEqual(self.ws._corpses[self.cid]["timer"], self.ws.INSTANT_EXPIRE_S)
+        self.ws._process_loot_drops(dt=0.1)
+        self.assertNotIn(self.cid, self.ws._corpses)
+
+
 if __name__ == "__main__":
     unittest.main()
