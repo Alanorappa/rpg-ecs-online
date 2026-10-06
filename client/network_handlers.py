@@ -1124,6 +1124,22 @@ class NetworkHandlers:
                         if _ppos:
                             _ppos.x = real_tx * TILE_SIZE + TILE_SIZE / 2
                             _ppos.y = real_ty * TILE_SIZE + TILE_SIZE / 2
+                        # Para o clique de chão pendente em vez de deixar
+                        # recalcular e tentar o MESMO passo recusado de novo
+                        # (06/10/2026, pedido do usuário — bug real: cliente
+                        # ficava num loop visual, tentando o mesmo passo
+                        # bloqueado a cada recalc de PlayerAutoMove.
+                        # path_recalc_timer, levando uma correção igual a
+                        # esta de novo, sem nunca progredir). O jogador
+                        # precisa clicar de novo se ainda quiser ir até lá —
+                        # mesmo reset que `_process_ground_move` já faz ao
+                        # "chegar" no destino (ui/player_input_system.py).
+                        from engine.components import PlayerAutoMove as _PAMCorr
+                        _pam_corr = self.world.get_component(self.player_entity, _PAMCorr)
+                        if _pam_corr is not None:
+                            _pam_corr.ground_target = None
+                            _pam_corr.active        = False
+                            _pam_corr.path.clear()
                     # else: andando normalmente, sem dash (ex: perseguição iniciada
                     # pela própria skill que falhou — enter_combat/is_pursuing roda
                     # ANTES do handler, mesmo em caso de rejeição). Essa caminhada já

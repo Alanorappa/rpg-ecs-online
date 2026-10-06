@@ -24939,3 +24939,87 @@ catalogados como falha de ambiente pré-existente no §236) sem quebra.
 Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`) — fix é
 100% server-side (`server/loot_processor.py` + `engine/quest_logic.py`),
 sem rebuild de `.exe` necessário.
+
+## 238. Bug real — personagem "trava" e sofre rollback perto de um poste, num loop (06/10/2026)
+
+**Sintoma relatado pelo usuário**: andando (clique no chão) perto de um
+poste de iluminação do cemitério (mapa 1), o personagem fica num loop —
+anda um pouco, volta pra mesma posição, tenta chegar de novo, volta de
+novo — até "travar" visualmente ali, com o servidor repetidamente
+corrigindo (rollback) a posição.
+
+**Investigação**: diagnosticado com as ferramentas de debug já
+existentes de uma investigação anterior (§126, `debug/
+interceptar_debug.py`, apesar do nome — cobre QUALQUER correção de
+posição do próprio player, não só dash), já ativas em produção
+(`RPG_DEBUG_INTERCEPTAR=1`/`RPG_DEBUG_AOI=1`). Log real capturado:
+primeiro passo da rota (diagonal, cortando perto do poste) recusado
+como `MOVE_REJECTED_WALKABLE`; **hipótese inicial errada, corrigida
+pelo usuário** — cheguei a supor "ocupação passageira de outra
+entidade" sem confirmar; usuário testou repetidas vezes com o tile
+visivelmente livre no cliente e pediu investigação real em vez de
+suposição (ver nota de processo abaixo). Confirmado por carregamento
+direto do mapa pelo código real do jogo (não inferência de CSV cru):
+mapa idêntico entre cliente e servidor (checksum), tile de destino não
+é sólido, mesma elevação, sem transição — a causa exata da 1ª recusa
+não foi finalizada (user priorizou resolver o loop em vez de
+continuar essa ponta), mas **o mecanismo do loop em si foi confirmado
+com certeza via log**: a cada recusa, o `PlayerAutoMove` do cliente
+(`ui/player_input_system.py::_process_ground_move`) nunca ficava
+sabendo — só olha se a animação LOCAL terminou (`tile_movement.
+is_moving`), nunca se o servidor realmente aceitou o passo anterior.
+Resultado: a cada `path_recalc_timer` (recalcula a rota do zero), o
+mesmo primeiro passo (ainda bloqueado) era tentado de novo, recusado
+de novo, num loop — até a correção de posição (`DESYNC_CORR`,
+`client/network_handlers.py::_handle_msg_entity_move`) sincronizar a
+posição de volta (o "rollback" visível), sem nunca parar o
+`PlayerAutoMove` pendente que ia gerar o PRÓXIMO recalculo idêntico.
+
+**Nota de processo**: durante a investigação, apresentei "ocupação
+passageira" como explicação antes de verificar — usuário corrigiu
+("não quero que você tire conclusões sem me perguntar"). Lição: só
+checar dado real (log do cliente, não só do servidor) ou ADMITIR que é
+hipótese não confirmada, nunca apresentar suposição como diagnóstico
+fechado. Ver [[feedback-dont-generalize-from-biased-repro-data]] /
+[[feedback-verify-data-assumptions-before-concluding]] (memória).
+
+**Fix, escopo decidido explicitamente pelo usuário** ("prefiro que o
+servidor recuse o caminho e o client pare de andar do que ficar com
+esse loop" — não pediu a causa raiz da 1ª recusa, só o fim do loop):
+`_handle_msg_entity_move`, no ramo que já aplica a correção de posição
+pro MOVE normal (não-dash, gap genuíno — mesmo ramo do fix do §126),
+agora também limpa `PlayerAutoMove.path`/`ground_target`/`active` do
+player local — mesmo reset que `_process_ground_move` já faz sozinho
+ao "chegar" no destino. Efeito: 1 recusa = o personagem para (precisa
+clicar de novo pra tentar ir até lá), nunca mais um loop de
+recusa→recalcula→recusa de novo. Ramo "correção ignorada" (gap<=1,
+ainda em movimento — considerado possivelmente desatualizado, mesmo
+critério de antes) continua sem tocar em nada, dash continua sem
+mudança de comportamento (só ganha o mesmo reset de auto-move de
+brinde, que não tinha efeito prático nesse caminho).
+
+**Causa raiz da 1ª recusa (walkable), NÃO resolvida nesta tarefa**:
+fora de escopo por decisão do usuário — fica para investigação futura,
+se o padrão se repetir perto de outros objetos. Hipótese a checar
+primeiro, se retomado: `PathfindingSystem.find_path` (A*,
+`engine/world_systems.py`) NÃO tem nenhuma regra de "não cortar quina
+diagonal perto de obstáculo sólido" — só olha se o tile DESTINO da
+diagonal é sólido, nunca os 2 tiles ortogonais do "canto". Se
+`TileValidationSystem.is_tile_walkable` (usado pela validação real do
+`move_player`) tiver essa regra em algum ponto não encontrado nesta
+investigação, path cliente e validação servidor podem divergir
+exatamente nesse tipo de diagonal — mas isso NÃO foi confirmado
+empiricamente, só fica registrado como pista.
+
+**Teste**: `tests/test_client_ui.py::
+test_correcao_de_move_normal_com_gap_grande_cancela_auto_move_pendente`
+(novo) — correção aplicada (gap>1) zera `PlayerAutoMove` pendente;
+`test_correcao_de_move_normal_ignorada_nao_mexe_no_auto_move` (novo,
+controle) — correção IGNORADA (gap<=1, ainda em movimento) não mexe em
+nada, nem posição nem auto-move. Revert-to-confirm feito (reset do
+auto-move desativado, o teste principal falhou exatamente como o loop
+real — `active` continuava `True` depois da correção —, restaurado).
+Regressão: `test_client_ui.py` completo (238 testes) sem quebra.
+
+Deploy: fix é 100% client-side (`client/network_handlers.py`) — precisa
+de rebuild do `.exe` antes de chegar a quem já tem o jogo instalado.

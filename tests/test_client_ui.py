@@ -3310,7 +3310,7 @@ def test_interceptar_dash_visual_nao_existe_mais():
 
 def _make_entity_move_fixture():
     from engine.world import World
-    from engine.components import Position, TileMovement
+    from engine.components import Position, TileMovement, PlayerAutoMove
     import client.network_handlers as nh_mod
 
     class _Fixture(nh_mod.NetworkHandlers):
@@ -3326,6 +3326,7 @@ def _make_entity_move_fixture():
     player = world.create_entity()
     world.add_component(player, Position(x=5 * 32 + 16, y=5 * 32 + 16))
     world.add_component(player, TileMovement(current_tile_x=5, current_tile_y=5))
+    world.add_component(player, PlayerAutoMove())
     fx = _Fixture(world, player, my_eid=1)
     return fx, player
 
@@ -3359,6 +3360,62 @@ def test_dash_rejeitado_pelo_servidor_nao_anima_nada():
     })
     tm = fx.world.get_component(player, TileMovement)
     assert tm.is_moving is False
+
+
+# ── Loop de "trava no caminho" (06/10/2026, bug real relatado pelo
+# usuário): recusa de MOVE normal (não-dash) com gap genuíno aplicava a
+# correção de posição, mas nunca parava o PlayerAutoMove pendente
+# (clique de chão) — no próximo frame ele recalculava a rota e tentava
+# o MESMO passo recusado de novo, num loop visual (anda um pouco, volta,
+# anda, volta), até o jogador perceber "travou" e sofrer o "rollback".
+# Usuário pediu explicitamente: quando o servidor recusa, o cliente
+# para de insistir, em vez de ficar nesse loop.
+
+def test_correcao_de_move_normal_com_gap_grande_cancela_auto_move_pendente():
+    from engine.components import TileMovement, PlayerAutoMove
+    fx, player = _make_entity_move_fixture()
+    tm = fx.world.get_component(player, TileMovement)
+    tm.is_moving      = True
+    tm.target_tile_x  = 6
+    tm.target_tile_y  = 4
+    pam = fx.world.get_component(player, PlayerAutoMove)
+    pam.active        = True
+    pam.ground_target = (15, 5)
+    pam.path          = [(6, 4), (7, 3), (8, 3)]
+
+    fx._handle_msg_entity_move({
+        "eid": fx._my_eid, "tx": 3, "ty": 5, "from_tx": 5, "from_ty": 5,
+    })
+
+    assert (tm.current_tile_x, tm.current_tile_y) == (3, 5)
+    assert pam.active is False
+    assert pam.ground_target is None
+    assert pam.path == []
+
+
+def test_correcao_de_move_normal_ignorada_nao_mexe_no_auto_move():
+    """Controle: gap<=1 ainda em movimento (mesmo branch que já existia
+    antes, "correção pode estar desatualizada") não aplica NADA -- nem
+    posição, nem o novo cancelamento de auto-move."""
+    from engine.components import TileMovement, PlayerAutoMove
+    fx, player = _make_entity_move_fixture()
+    tm = fx.world.get_component(player, TileMovement)
+    tm.is_moving      = True
+    tm.target_tile_x  = 6
+    tm.target_tile_y  = 5
+    pam = fx.world.get_component(player, PlayerAutoMove)
+    pam.active        = True
+    pam.ground_target = (15, 5)
+    pam.path          = [(6, 5), (7, 5)]
+
+    fx._handle_msg_entity_move({
+        "eid": fx._my_eid, "tx": 6, "ty": 5, "from_tx": 5, "from_ty": 5,
+    })
+
+    assert (tm.current_tile_x, tm.current_tile_y) == (5, 5)  # posição intocada
+    assert pam.active is True
+    assert pam.ground_target == (15, 5)
+    assert pam.path == [(6, 5), (7, 5)]
 
 
 # ── GameEngine._rebuild_screen_refs — hud_surf, não só .screen ──────────────
