@@ -3592,36 +3592,55 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         eid = self._player_eids.get(session_id)
         if eid is None:
+            log.info("[Train] REJECTED reason=not_logged_in session=%s npc=%s skill=%s",
+                      session_id, npc_id, skill_id)
             return {"success": False, "reason": "not_logged_in"}
 
         tr = self.world.get_component(npc_id, _TrComp)
         if tr is None:
+            log.info("[Train] REJECTED reason=invalid_trainer eid=%s npc=%s skill=%s",
+                      eid, npc_id, skill_id)
             return {"success": False, "reason": "invalid_trainer"}
 
         if skill_id not in SKILL_CATALOG:
+            log.info("[Train] REJECTED reason=invalid_skill eid=%s npc=%s skill=%s",
+                      eid, npc_id, skill_id)
             return {"success": False, "reason": "invalid_skill"}
 
         char = self.world.get_component(eid, _TrChar)
         if char is None or char.class_id != tr.class_id:
+            log.info("[Train] REJECTED reason=class eid=%s name=%s player_class=%s trainer_class=%s skill=%s",
+                      eid, char.name if char else "?", char.class_id if char else "?", tr.class_id, skill_id)
             return {"success": False, "reason": "class"}
 
         ql = self.world.get_component(eid, _TrQL)
         if not _tr_qlogic.has_unlocked(ql, tr.unlock_quest_id):
+            log.info("[Train] REJECTED reason=locked eid=%s name=%s skill=%s unlock_quest_id=%s completed=%s",
+                      eid, char.name, skill_id, tr.unlock_quest_id,
+                      sorted(ql.completed) if ql else None)
             return {"success": False, "reason": "locked"}
 
         ps = self.world.get_component(eid, _TrPS)
         if ps is None:
+            log.info("[Train] REJECTED reason=no_player_skills eid=%s name=%s skill=%s",
+                      eid, char.name, skill_id)
             return {"success": False, "reason": "no_player_skills"}
         if skill_id in ps.learned_skill_ids:
+            log.info("[Train] REJECTED reason=already_learned eid=%s name=%s skill=%s",
+                      eid, char.name, skill_id)
             return {"success": False, "reason": "already_learned"}
 
         req = SKILL_LEVEL_REQUIREMENTS.get(skill_id, 99)
         if char.level < req:
+            log.info("[Train] REJECTED reason=level eid=%s name=%s skill=%s player_level=%s required=%s",
+                      eid, char.name, skill_id, char.level, req)
             return {"success": False, "reason": "level", "required": req}
 
         cost   = SKILL_COSTS.get(skill_id, 9999)
         wallet = self.world.get_component(eid, _TrWallet)
         if wallet is None or wallet.gold < cost:
+            log.info("[Train] REJECTED reason=insufficient_gold eid=%s name=%s skill=%s required=%s available=%s",
+                      eid, char.name, skill_id, cost, wallet.gold if wallet else 0)
             return {"success": False, "reason": "insufficient_gold",
                     "required": cost, "available": wallet.gold if wallet else 0}
 
@@ -3637,6 +3656,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         entry = SKILL_CATALOG.get(skill_id, {})
         name  = entry.get("name", skill_id) if isinstance(entry, dict) else skill_id
+        log.info("[Train] OK eid=%s name=%s skill=%s new_gold=%s", eid, char.name, skill_id, wallet.gold)
         return {"success": True, "skill_id": skill_id, "name": name, "new_gold": wallet.gold}
 
     # ---- sell ratio igual ao ShopSystem do cliente ----
