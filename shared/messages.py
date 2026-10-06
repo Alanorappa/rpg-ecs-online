@@ -762,11 +762,24 @@ def validate_c2s(msg_type: "MsgType", payload) -> "str | None":
 
 # ── S→C: AOI_UPDATE ──────────────────────────────────────────────────────────
 # {
-#   "spawned":   list    lista de EntitySpawn (entidades que entraram no AOI)
-#   "despawned": list    lista de eids que saíram do AOI
-#   "moved":     list    lista de EntityMove (entidades que se moveram)
-#   "stats":     list    lista de StatsUpdate (HP/MP que mudaram)
-#   "effects":   list    lista de EffectApplied/Removed
+#   "spawned":            list  lista de EntitySpawn (entidades que entraram no AOI)
+#   "despawned":          list  lista de eids que saíram do AOI
+#   "moved":              list  lista de EntityMove (entidades que se moveram)
+#   "stats":              list  lista de StatsUpdate (HP/MP que mudaram)
+#   "effects":            list  lista de EffectApplied/Removed
+#   "ally_vision_centers": list [[tx, ty, raio], ...] — visão compartilhada de
+#                          time (instanciado, arena/BG/dungeon). Só presente
+#                          quando não-vazio.
+#   "party_positions":    list  [{eid, tx, ty, name}, ...] — posição de
+#                          companheiros de grupo no MESMO mapa (06/10/2026,
+#                          pedido do usuário: mostrar grupo no mapa M/
+#                          minimapa, independente de FoW/AOI — diferente de
+#                          ally_vision_centers acima, que só revela névoa;
+#                          aqui é a posição literal). Recomputado do zero
+#                          todo tick, nunca delta. Só presente quando o
+#                          player está em grupo de 2+ E tem companheiro no
+#                          mesmo mapa/instância (quem está em outro mapa não
+#                          entra na lista).
 # }
 # Este é o pacote mais frequente — enviado todo tick com apenas os deltas.
 # Se não houver mudanças, o servidor pode omitir o pacote (otimização).

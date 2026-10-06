@@ -42,13 +42,21 @@ _TRAINER_FALLBACK_COLORS = {
     "arqueiro":  (90,  190,  90),
 }
 _MERCHANT_FALLBACK_COLOR = (210, 175,  60)
+# Mesma cor do canal de chat "grupo" (server/session.py::_handle_chat,
+# [140,230,150]) — pedido explícito do usuário (06/10/2026): "a cor do
+# sinal no minimapa... pode seguir a mesma cor da letra no chat em
+# grupo". Única cor pra TODOS os companheiros (não distingue indivíduo
+# por cor) — decisão do usuário, "a cor de todos pode ser igual".
+_PARTY_MEMBER_FALLBACK_COLOR = (140, 230, 150)
 _DEATH_FALLBACK_COLOR    = (150, 150, 150)
 
 
-def collect_markers(world, player_entity: int, quest_dialog) -> list[MapMarker]:
-    """Varre o mundo e devolve todos os marcadores ativos pro player local.
+def collect_markers(world, player_entity: int, quest_dialog,
+                    spawn_points: dict) -> list[MapMarker]:
+    """Varre os dados ESTÁTICOS do mapa (spawn_points) e devolve todos os
+    marcadores ativos pro player local.
 
-    quest_dialog: instância de QuestDialogSystem (fornece marker_for()).
+    quest_dialog: instância de QuestDialogSystem (fornece marker_for_static()).
 
     NÃO filtra por Visible (tag dinâmica de FoW/linha de visão) — pedido
     do usuário 11/07/2026: esses ícones servem pra GUIAR o player (mapa/
@@ -60,8 +68,18 @@ def collect_markers(world, player_entity: int, quest_dialog) -> list[MapMarker]:
     mais precisa do ícone pra se guiar. Morte segue a mesma regra por
     consistência: é a própria posição conhecida do player, sempre
     mostrada enquanto o corpo existir.
+
+    Fonte TROCADA pra dados estáticos (06/10/2026, bug real relatado pelo
+    usuário — PROBLEMAS_ARQUITETURA.md): antes varria o World AO VIVO
+    (`world.get_entities_with(TileMovement, QuestGiver/Trainer/Merchant)`)
+    — NPC de serviço só existe localmente enquanto dentro da AOI (mesmo
+    spawn/despawn de mob), então o ícone sumia assim que o player se
+    afastava, exatamente o oposto do que esta docstring já dizia ser a
+    intenção. `spawn_points` é a MESMA fonte que já alimenta os círculos
+    de rastreio de quest (`collect_quest_circles`) — sempre disponível,
+    independente de AOI.
     """
-    from engine.components import GhostState, QuestGiver, Trainer, Merchant, TileMovement
+    from engine.components import GhostState
 
     markers: list[MapMarker] = []
 
@@ -70,23 +88,49 @@ def collect_markers(world, player_entity: int, quest_dialog) -> list[MapMarker]:
         markers.append(MapMarker(gst.corpse_tx, gst.corpse_ty,
                                   "map_death", _DEATH_FALLBACK_COLOR))
 
-    for eid, tm, _giver in world.get_entities_with(TileMovement, QuestGiver):
-        marker = quest_dialog.marker_for(eid)
+    # quest_givers: (x, y, name, quest_ids, turn_in_ids, level, profession)
+    # — ver engine/map_loader.py::_merge_entities_json.
+    for qg in spawn_points.get("quest_givers", []):
+        x, y, name, quest_ids, turn_in_ids = qg[0], qg[1], qg[2], qg[3], qg[4]
+        marker = quest_dialog.marker_for_static(name, quest_ids, turn_in_ids)
         if marker is None:
             continue
         icon_name, color, symbol = marker
-        markers.append(MapMarker(tm.current_tile_x, tm.current_tile_y,
-                                  icon_name, color, symbol))
+        markers.append(MapMarker(x, y, icon_name, color, symbol))
 
-    for eid, tm, trainer in world.get_entities_with(TileMovement, Trainer):
-        color = _TRAINER_FALLBACK_COLORS.get(trainer.class_id, (200, 200, 200))
-        markers.append(MapMarker(tm.current_tile_x, tm.current_tile_y,
-                                  f"map_trainer_{trainer.class_id}", color, "T"))
+    # trainers: (x, y, name, class_id, quest_ids, turn_in_ids, level,
+    # profession, unlock_quest_id)
+    for tr in spawn_points.get("trainers", []):
+        x, y, class_id = tr[0], tr[1], tr[3]
+        color = _TRAINER_FALLBACK_COLORS.get(class_id, (200, 200, 200))
+        markers.append(MapMarker(x, y, f"map_trainer_{class_id}", color, "T"))
 
-    for eid, tm, _merch in world.get_entities_with(TileMovement, Merchant):
-        markers.append(MapMarker(tm.current_tile_x, tm.current_tile_y,
-                                  "map_merchant", _MERCHANT_FALLBACK_COLOR, "$"))
+    # merchants: (x, y, name, shop_id, level, profession)
+    for m in spawn_points.get("merchants", []):
+        markers.append(MapMarker(m[0], m[1], "map_merchant",
+                                  _MERCHANT_FALLBACK_COLOR, "$"))
 
+    return markers
+
+
+def collect_party_markers(party_member_positions: dict) -> list[MapMarker]:
+    """Marcador de posição de cada companheiro de grupo pro mapa (M)/
+    minimapa — pedido do usuário (06/10/2026): "ver a localização dos
+    companheiros de grupo... independente de estarem na fog ou não".
+
+    `party_member_positions`: dict eid→{"tx","ty","name"}, já filtrado
+    pelo SERVIDOR pra só conter quem está no MESMO mapa (ver
+    shared/messages.py::AOI_UPDATE "party_positions") — este função não
+    filtra nada de novo, só converte formato. Ícone = `map_party_member`
+    (fallback: círculo verde — mesma cor do chat de grupo — com a
+    PRIMEIRA LETRA do nome, já que todos os companheiros compartilham a
+    mesma cor por decisão do usuário)."""
+    markers: list[MapMarker] = []
+    for data in party_member_positions.values():
+        name = data.get("name", "?")
+        markers.append(MapMarker(
+            data["tx"], data["ty"], "map_party_member",
+            _PARTY_MEMBER_FALLBACK_COLOR, name[:1].upper() if name else "?"))
     return markers
 
 

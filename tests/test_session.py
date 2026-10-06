@@ -2933,6 +2933,42 @@ class TestAllyVisionSharing(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCa
                          "aliado sem Faction (partida encerrada) não deveria mais contribuir visão")
 
 
+class TestPartyPositionsNoAoiUpdate(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
+    """Bug real relatado pelo usuário (06/10/2026): quer ver no mapa (M)/
+    minimapa a posição de companheiros de grupo, independente de FoW/AOI
+    — ver shared/messages.py::AOI_UPDATE, campo "party_positions" novo."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    async def _make_party(self, tile_a: tuple, tile_b: tuple):
+        sa, fwa = await fake_login(self.mgr, "ppa", "ppusera", *tile_a)
+        sb, fwb = await fake_login(self.mgr, "ppb", "ppuserb", *tile_b)
+        self.assertIsNone(self.ws_server.request_party_invite(sa.entity_id, sb.entity_id))
+        self.ws_server.respond_party_invite(sb.entity_id, accept=True)
+        return sa, sb
+
+    async def test_inclui_companheiro_mesmo_longe_fora_da_aoi(self):
+        sa, sb = await self._make_party((115, 389), (200, 450))
+        update = self.mgr._build_update_for_session(sa, {}, 115, 389)
+        positions = update.get("party_positions", [])
+        self.assertEqual(len(positions), 1)
+        self.assertEqual(positions[0]["eid"], sb.entity_id)
+        self.assertEqual((positions[0]["tx"], positions[0]["ty"]), (200, 450))
+        self.assertTrue(positions[0]["name"])
+
+    async def test_nao_inclui_a_si_mesmo(self):
+        sa, sb = await self._make_party((115, 389), (116, 389))
+        update = self.mgr._build_update_for_session(sa, {}, 115, 389)
+        eids = [p["eid"] for p in update.get("party_positions", [])]
+        self.assertNotIn(sa.entity_id, eids)
+
+    async def test_sem_grupo_nao_inclui_campo_nenhum(self):
+        sa, _ = await fake_login(self.mgr, "ppsolo", "ppusersolo", 115, 389)
+        update = self.mgr._build_update_for_session(sa, {}, 115, 389)
+        self.assertNotIn("party_positions", update)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────

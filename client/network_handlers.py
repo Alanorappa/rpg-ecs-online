@@ -1177,6 +1177,17 @@ class NetworkHandlers:
             if fog is not None:
                 fog.ally_centers = [tuple(c) for c in avc]
 
+        # Posição de companheiros de grupo no mapa/minimapa (06/10/2026,
+        # pedido do usuário) — SUBSTITUI o dict inteiro (nunca merge),
+        # igual o servidor recomputa do zero todo tick
+        # (server/session.py::_build_update_for_session). Campo ausente
+        # (fora de grupo/grupo de 1) limpa — ui/map_markers.py lê isto
+        # direto, sem filtrar mapa (servidor já só manda quem está no
+        # MESMO mapa que o destinatário).
+        _pp = payload.get("party_positions")
+        self._party_member_positions = (
+            {p["eid"]: p for p in _pp} if _pp else {})
+
         # spawned ANTES de moved: entidades que entram no AOI e já se movem no
         # MESMO tick (ex: mob voltando a perseguir, knockback empurrando algo
         # de volta ao range) precisam existir no ECS local antes de receber o

@@ -1316,6 +1316,116 @@ whisper, bounds-check do X do clique, leitura do modo fixo no
 fallback, entrega pra TODOS os membros do grupo não só o 1º) — os 4
 testes relevantes falharam como esperado antes de restaurar.
 
+### 24. Ícone de NPC de serviço no mapa (M)/minimapa — independente de AOI (06/10/2026)
+
+Pedido do usuário: ícone de Treinador/Mercador/Dador de Quest no mapa
+(M)/minimapa já tinha a intenção documentada de não exigir visão direta
+("guia o jogador"), mas na prática só aparecia enquanto o NPC existia
+localmente — e NPC de serviço só existe no cliente enquanto dentro da
+AOI (mesmo spawn/despawn de mob). `ui/map_markers.py::collect_markers`
+varria o World AO VIVO (`world.get_entities_with(TileMovement,
+QuestGiver/Trainer/Merchant)`) em vez dos dados ESTÁTICOS do mapa
+(`spawn_points`, a mesma fonte que já alimenta `collect_quest_circles`,
+sempre disponível independente de AOI) — ganhou `spawn_points: dict`
+como parâmetro novo e passou a ler `spawn_points["quest_givers"]`/
+`["trainers"]`/`["merchants"]` direto (tuplas, ver
+`engine/map_loader.py::_merge_entities_json` pro shape exato de cada
+lista).
+
+**Dador de quest é o caso delicado**: a cor do ícone (!/disponível,
+?/completável, etc.) depende do progresso REAL de quest do player, que
+as 3 consultas (`engine.quest_logic.get_available_quests`/
+`get_completable_quests`/`get_inprogress_quests`) e uma 4ª que vivia
+SÓ em `ui/quest_system.py` (`_get_locked_quests`, nunca extraída —
+agora `get_locked_quests` em `quest_logic.py`, ponto único de verdade
+corrigido de quebra) resolviam só a partir de um `QuestGiver` de
+entidade VIVA. As 4 ganharam parâmetro opcional `giver=None`
+(retrocompatível — só usado se passado, senão cai no lookup por
+`npc_id` de sempre) — `ui/quest_system.py::QuestDialogSystem.
+marker_for_static(name, quest_ids, turn_in_ids)` constrói um
+`QuestGiver` avulso (nunca anexado a nenhuma entidade — o componente é
+só um dataclass simples) a partir dos dados estáticos e chama as
+mesmas 4 consultas com `giver=` — mesma decisão (`_marker_from_lists`,
+núcleo extraído de `marker_for`) que o caminho de NPC vivo, garantido
+por teste que os dois concordam byte a byte pro mesmo quest_ids/
+turn_in_ids.
+
+Testes: `tests/test_client_ui.py` (2, novos — world SEM nenhuma
+entidade NPC ainda mostra os marcadores, vindos só de spawn_points) +
+`tests/test_quest_split_npc.py` (1, novo — `marker_for_static` bate
+exatamente com `marker_for` do NPC vivo equivalente). Revert-to-confirm
+feito (loop de trainers temporariamente desativado, os 2 testes
+relevantes falharam exatamente como o bug real). Regressão: 307 testes
+(`test_client_ui.py`/`test_quest_split_npc.py`/
+`test_quest_talk_completable_priority.py`/`test_quest_logic.py`/
+`test_npc_service_unlock.py`/`test_service_npcs.py`) sem quebra.
+
+100% client-side (`ui/map_markers.py`, `engine/quest_logic.py`,
+`ui/quest_system.py`, `game.py`) — sem deploy no Hetzner, precisa de
+rebuild do `.exe` antes do próximo upload no itch.io.
+
+### 25. Posição de companheiros de grupo no mapa (M)/minimapa (06/10/2026)
+
+Pedido do usuário, na mesma sessão do item acima: ver no mapa/minimapa
+onde estão os companheiros de grupo, independente de FoW/AOI — vale em
+mundo aberto E dentro de instâncias (Arena/BG/dungeon, decisão
+explícita do usuário via `AskUserQuestion`). Cor do marcador: mesma do
+canal de chat de grupo, `[140,230,150]` verde (decisão do usuário —
+"a cor de todos pode ser igual", não distingue indivíduo por cor,
+símbolo de fallback é a 1ª letra do nome pra diferenciar quem é quem).
+
+**Novo campo em `AOI_UPDATE`** (não é mensagem nova — enriquece o
+pacote mais frequente, mesmo padrão já usado por
+`ally_vision_centers`, §visão compartilhada de time): `"party_positions":
+[{eid, tx, ty, name}, ...]` — ver `shared/messages.py` pro shape
+completo. `server/session.py::_build_update_for_session` computa do
+ZERO todo tick (nunca delta) via `WorldServer.get_party_members`,
+filtrado pro MESMO mapa do destinatário (`MapLocation`) — quem está em
+outro mapa/instância simplesmente não entra na lista, cliente não
+precisa filtrar nada. Só presente quando o player está em grupo de 2+
+E tem companheiro no mesmo mapa (ausência = sem grupo OU grupo sem
+ninguém no mesmo mapa agora).
+
+**Por que não precisou de entrada em `has_pending`** (checagem
+explícita, mesma regra de sempre pra buffer novo): diferente dos
+outros campos documentados lá, `party_positions` não é um buffer
+separado — é recomputado inline a partir de posição (`TileMovement`),
+e QUALQUER movimento de QUALQUER player já populam `deltas["moved"]`
+globalmente (1º termo do `has_pending`, antes de qualquer buffer
+específico) — companheiro de grupo se movendo já dispara o dispatch
+pra toda a sessão, o resto (meu próprio AOI_UPDATE recomputar
+`party_positions` fresco) vem de graça no mesmo ciclo.
+
+**Cliente**: `client/network_handlers.py::_handle_msg_aoi_update` guarda
+em `self._party_member_positions: dict[eid, {...}]` (GameEngine,
+inicializado em `game.py`) — SEMPRE substitui o dict inteiro (nunca
+merge, campo ausente limpa) — `ui/map_markers.py::
+collect_party_markers(party_member_positions)` converte pra
+`MapMarker` (ícone `map_party_member`, fallback círculo verde + 1ª
+letra do nome), somado à lista de `collect_markers()` nas 2 chamadas
+de render (`Minimap.render`/`MapOverlay.render`, `game.py`) — zero
+mudança nos dois renderers, que já tratam `MapMarker` de forma
+genérica.
+
+Testes: `tests/test_session.py::TestPartyPositionsNoAoiUpdate` (3,
+novos, servidor) — companheiro longe (fora de qualquer AOI) continua
+na lista; nunca inclui o próprio eid; sem grupo não inclui o campo.
+**Não executados nesta sessão** (ambiente local sem Postgres/Docker
+disponível — mesma limitação já registrada antes nesta mesma sessão
+pra `TestLootQuestProgressViaSessionFlow`) — seguem o MESMO padrão
+exato dos testes vizinhos já passando neste arquivo
+(`fake_login`/`_build_update_for_session`), revisados com cuidado
+redobrado por não poder confirmar via execução; rodar localmente antes
+de considerar 100% validado. `tests/test_client_ui.py` (3, novos,
+cliente) — cor/símbolo do marcador, lista vazia sem grupo,
+`_handle_msg_aoi_update` substitui o dict inteiro e limpa quando o
+campo some — estes SIM rodados e passando, com revert-to-confirm.
+
+Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`) — metade
+client-side (`ui/map_markers.py`, `client/network_handlers.py`,
+`game.py`) precisa de rebuild do `.exe` antes do próximo upload no
+itch.io.
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```
@@ -1651,6 +1761,8 @@ barra de HP); ghost (`is_ghost`) desenhado semi-transparente (alpha ~120/255).
 | Perda de ouro sem entrega em BUY_REQUEST (16/09/2026, item 4/ultimo da auditoria #150) - process_shop_buy checava espaco usando cache do cliente (last_client_payload, via _pending_inv) em vez do Inventory ao vivo real - se o cache estivesse desatualizado, liberava compra que a bag real nao comportava, ouro debitado antes da entrega parar no meio silenciosamente. Revisao cruzada confirmou o design e pediu extrair funcao compartilhada entre o check e a entrega (mesmo espirito de _stack_or_add_item), evitando duplicar a logica de empilhamento | ✅ corrigido e testado - novo _plan_stack_delivery (dry-run/apply) usado tanto pro check quanto pra entrega real; rejeita a compra INTEIRA sem debitar ouro se nao couber tudo. last_inventory e todo o mecanismo _pending_inv/confirm_inventory_save removidos (obsoletos). 5 testes novos sem dependencia de banco; revert-to-confirm confirma 3 falhando sem o fix. Com este item, os 4 achados Alta da auditoria estao todos corrigidos | `server/world_server.py` (_plan_stack_delivery, process_shop_buy), `server/session.py` (_handle_buy_request, _handle_save_state), `tests/test_craft_recycle_protocol.py`, ver `PROBLEMAS_ARQUITETURA.md` §155 |
 | Bug da aljava (#154) reaberto pelo usuario em producao poucos minutos apos o deploy - fix anterior corrigiu so o STATS_UPDATE (_handle_msg_stats_update), mas existia uma 2a via paralela: client/remote_entity_handlers.py::_apply_combat_result decrementava arrow_count direto a cada COMBAT_RESULT de auto-attack do proprio arqueiro, sem nenhuma checagem de identidade - nem antes nem depois do fix anterior, que nunca tocou esse codigo. Mesma race: tiro "em voo" com aljava trocada decrementava a aljava NOVA | ✅ corrigido e testado - decremento removido de _apply_combat_result; STATS_UPDATE (ja corrigido, idempotente, com checagem de identidade) e a unica fonte de verdade agora, mesmo evento/timing do servidor. Teste novo confirma que _apply_combat_result nao mexe mais em arrow_count; revert-to-confirm reproduz o decremento cego (999->998) contra o codigo antigo | `client/remote_entity_handlers.py` (_apply_combat_result), `tests/test_client_ui.py`, ver `PROBLEMAS_ARQUITETURA.md` §156 |
 | Trava de quest por serviço de NPC — loja e treinador de skill (04/10/2026, pedido do usuário: "a loja só destravar depois que o player fizer uma quest... a mesma coisa serve pra qualquer outro NPC, como treinamento"). Decisões fechadas com o usuário: só 1 `unlock_quest_id` por serviço (não lista — "já consigo fazer chain quest, só coloco a última no desbloqueio"); sem mensagem de "bloqueado" nenhuma — clicar no NPC travado abre o diálogo de quest direto (`ui/trainer_system.py::_open_menu` já priorizava quest completável sobre o menu de assunto; replicado pra loja via `NPCInteractionRequest(kind="open_quest_dialog")`, que não tinha menu intermediário). Aproveitou a tarefa pra fechar um débito pré-existente, aprovado pelo usuário: treinar skill NUNCA teve validação no servidor (só loja/forja já tinham, desde o débito A4) — `_do_learn` mutava `learned_skill_ids`/`Wallet.gold` locais direto, sem nenhuma mensagem de rede. Agora `TRAIN_SKILL_REQUEST`/`TRAIN_SKILL_RESULT` espelham exatamente o padrão já usado por `BUY_REQUEST`/`CRAFT_REQUEST` (classe/nível/ouro/trava de quest revalidados no servidor, nunca confiados do cliente) | ✅ completo e testado (18 testes novos, revert-to-confirm em cada peça); nenhuma loja/treinador usa a trava ainda — mecanismo pronto, qual quest trava qual NPC é decisão de conteúdo do usuário, não código | `engine/quest_logic.py::has_unlocked`, `engine/components.py::Trainer.unlock_quest_id`, `content/merchant_data.py::SHOPS[...]["unlock_quest_id"]`, `server/world_server.py::process_shop_buy`/`process_train_skill`, `server/session.py::_handle_train_skill_request`, `ui/trainer_system.py::_compute_options`/`_do_learn`, `ui/shop_system.py::_try_open_merchant`, `client/network_handlers.py::_handle_msg_train_skill_result`, `tests/test_npc_service_unlock.py` |
+| Ícone de NPC de serviço no mapa (M)/minimapa independente de AOI — ver decisão §24 (06/10/2026, pedido já feito antes, não corrigido até agora) | ✅ completo e testado (3 testes novos, revert-to-confirm) | `ui/map_markers.py::collect_markers`, `engine/quest_logic.py` (`giver=` opcional + `get_locked_quests` novo), `ui/quest_system.py::marker_for_static`, `game.py` |
+| Posição de companheiros de grupo no mapa (M)/minimapa, independente de FoW — ver decisão §25 (06/10/2026) | ✅ implementado; testes CLIENTE passando (3), testes SERVIDOR escritos mas **não executados** nesta sessão (sem Postgres local disponível) — rodar antes de considerar validado | `shared/messages.py` (AOI_UPDATE.party_positions), `server/session.py::_build_update_for_session`, `client/network_handlers.py::_handle_msg_aoi_update`, `ui/map_markers.py::collect_party_markers`, `game.py`, `tests/test_session.py::TestPartyPositionsNoAoiUpdate`, `tests/test_client_ui.py` |
 
 ---
 

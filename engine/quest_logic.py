@@ -430,12 +430,22 @@ def turn_in_ids_for(world, giver) -> tuple:
     return tuple(qid for qid in giver.quest_ids if qid not in claimed_elsewhere)
 
 
-def get_available_quests(world, player_eid: int, npc_id: int) -> list:
+def get_available_quests(world, player_eid: int, npc_id: int, giver=None) -> list:
     """Quests que o NPC pode oferecer (não iniciadas, pré-req ok, nível ok,
     classe ok). Quest com class_req != classe do player é tratada como se
-    não existisse pra ele."""
+    não existisse pra ele.
+
+    `giver` (06/10/2026, ícone de NPC no mapa M/minimapa independente de
+    AOI — ver PROBLEMAS_ARQUITETURA.md): passe um `QuestGiver` já
+    resolvido (não precisa ser um componente de entidade viva — qualquer
+    objeto com `.quest_ids`/`.turn_in_ids` serve, ex: construído direto
+    dos dados estáticos do mapa) pra pular a busca por `npc_id` no World
+    — usado quando o NPC pode não existir localmente (fora da AOI).
+    `npc_id` continua obrigatório na assinatura (compat com os call sites
+    existentes), mas só é USADO quando `giver` não é passado."""
     from engine.components import QuestLog, QuestGiver
-    giver = world.get_component(npc_id, QuestGiver)
+    if giver is None:
+        giver = world.get_component(npc_id, QuestGiver)
     if giver is None:
         return []
     ql = world.get_component(player_eid, QuestLog)
@@ -457,15 +467,18 @@ def get_available_quests(world, player_eid: int, npc_id: int) -> list:
 
 
 def get_completable_quests(world, player_eid: int, npc_id: int,
-                           pending_npc_name: str = "") -> list:
+                           pending_npc_name: str = "", giver=None) -> list:
     """Quests que o NPC aceita para entrega e estão 100% concluídas.
 
     pending_npc_name: se fornecido, também inclui quests cujo único
     objetivo pendente é talk_to_npc direcionado a este NPC — espelha o
     comportamento do servidor que aplica talk_to_npc antes de
-    can_turn_in."""
+    can_turn_in.
+
+    `giver`: ver docstring de `get_available_quests` — mesmo uso."""
     from engine.components import QuestGiver, QuestLog
-    giver = world.get_component(npc_id, QuestGiver)
+    if giver is None:
+        giver = world.get_component(npc_id, QuestGiver)
     if giver is None:
         return []
     ids    = turn_in_ids_for(world, giver)
@@ -479,10 +492,13 @@ def get_completable_quests(world, player_eid: int, npc_id: int,
     return result
 
 
-def get_inprogress_quests(world, player_eid: int, npc_id: int) -> list:
-    """Quests aceitas e em progresso (incompletas)."""
+def get_inprogress_quests(world, player_eid: int, npc_id: int, giver=None) -> list:
+    """Quests aceitas e em progresso (incompletas).
+
+    `giver`: ver docstring de `get_available_quests` — mesmo uso."""
     from engine.components import QuestGiver, QuestLog
-    giver = world.get_component(npc_id, QuestGiver)
+    if giver is None:
+        giver = world.get_component(npc_id, QuestGiver)
     if giver is None:
         return []
     ids    = turn_in_ids_for(world, giver)
@@ -493,4 +509,36 @@ def get_inprogress_quests(world, player_eid: int, npc_id: int) -> list:
             continue   # completável, não em progresso
         if ql and qid in ql.active:
             result.append(qid)
+    return result
+
+
+def get_locked_quests(world, player_eid: int, npc_id: int, giver=None) -> list:
+    """Quests com level_req acima do nível atual (pré-req ok mas
+    bloqueadas por nível). Quest restrita a outra classe NUNCA aparece
+    aqui (fica invisível, não bloqueada) — ver `get_available_quests`.
+
+    Extraída de `ui/quest_system.py::QuestDialogSystem._get_locked_quests`
+    (06/10/2026 — era a ÚNICA das 4 consultas de NPC que vivia fora deste
+    módulo, implementação duplicada em vez de ponto único de verdade).
+    `giver`: ver docstring de `get_available_quests` — mesmo uso."""
+    from engine.components import QuestLog, QuestGiver
+    if giver is None:
+        giver = world.get_component(npc_id, QuestGiver)
+    if giver is None:
+        return []
+    ql = world.get_component(player_eid, QuestLog)
+    if ql is None:
+        return []
+    plvl   = player_level(world, player_eid)
+    pclass = player_class_id(world, player_eid)
+    result = []
+    for qid in giver.quest_ids:
+        if qid in ql.active or qid in ql.completed:
+            continue
+        qdef = QUESTS.get(qid)
+        if qdef is None or (qdef.class_req and qdef.class_req != pclass):
+            continue
+        if all(r in ql.completed for r in qdef.requires):
+            if qdef.level_req > plvl:
+                result.append(qid)
     return result

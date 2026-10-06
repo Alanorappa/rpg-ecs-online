@@ -667,6 +667,22 @@ class QuestDialogSystem(UIScaleMixin, System):
         "locked":      "map_quest_locked",
     }
 
+    def _marker_from_lists(self, avail, completable, inprog, locked) -> "tuple[str, tuple, str] | None":
+        """Núcleo de marker_for/marker_for_static — decide (icon_name, cor,
+        símbolo) a partir das 4 listas já resolvidas. Nunca duplicar esta
+        decisão fora daqui."""
+        if completable:
+            state, color, symbol = "completable", self.COL_GOLD, "?"
+        elif avail:
+            state, color, symbol = "avail",       self.COL_GOLD, "!"
+        elif inprog:
+            state, color, symbol = "inprog",      self.COL_GREY, "?"
+        elif locked:
+            state, color, symbol = "locked",      self.COL_GREY, "!"
+        else:
+            return None
+        return self._QUEST_ICONS[state], color, symbol
+
     def marker_for(self, npc_id: int) -> "tuple[str, tuple, str] | None":
         """Estado de quest deste NPC pro player local: (icon_name, cor de
         fallback, símbolo de fallback), ou None se não há nada a mostrar
@@ -685,18 +701,23 @@ class QuestDialogSystem(UIScaleMixin, System):
         completable = self._get_completable_quests(npc_id, _npc_name)
         inprog      = self._get_inprogress_quests(npc_id)
         locked      = self._get_locked_quests(npc_id)
+        return self._marker_from_lists(avail, completable, inprog, locked)
 
-        if completable:
-            state, color, symbol = "completable", self.COL_GOLD, "?"
-        elif avail:
-            state, color, symbol = "avail",       self.COL_GOLD, "!"
-        elif inprog:
-            state, color, symbol = "inprog",      self.COL_GREY, "?"
-        elif locked:
-            state, color, symbol = "locked",      self.COL_GREY, "!"
-        else:
-            return None
-        return self._QUEST_ICONS[state], color, symbol
+    def marker_for_static(self, npc_name: str, quest_ids: tuple,
+                          turn_in_ids: tuple) -> "tuple[str, tuple, str] | None":
+        """Mesmo que marker_for, mas pro caso do NPC NÃO existir localmente
+        (fora da AOI — ícone no mapa M/minimapa precisa continuar
+        aparecendo mesmo assim, ver PROBLEMAS_ARQUITETURA.md, 06/10/2026).
+        `quest_ids`/`turn_in_ids` vêm direto dos dados estáticos do mapa
+        (`spawn_points["quest_givers"]`), nunca de um componente vivo."""
+        from engine.components import QuestGiver as _QGStatic
+        giver = _QGStatic(quest_ids=tuple(quest_ids), turn_in_ids=tuple(turn_in_ids))
+        avail       = quest_logic.get_available_quests(self.world, self.player_entity, -1, giver=giver)
+        completable = quest_logic.get_completable_quests(self.world, self.player_entity, -1,
+                                                          npc_name, giver=giver)
+        inprog      = quest_logic.get_inprogress_quests(self.world, self.player_entity, -1, giver=giver)
+        locked      = quest_logic.get_locked_quests(self.world, self.player_entity, -1, giver=giver)
+        return self._marker_from_lists(avail, completable, inprog, locked)
 
     # ── Render — indicadores no mundo ────────────────────────────────────────
 
@@ -1275,29 +1296,11 @@ class QuestDialogSystem(UIScaleMixin, System):
         return quest_logic.get_available_quests(self.world, self.player_entity, npc_id)
 
     def _get_locked_quests(self, npc_id: int) -> list:
-        """Quests com level_req acima do nível atual (pré-req ok mas bloqueadas).
-        Quest restrita a outra classe NUNCA aparece aqui (fica invisível, não
-        bloqueada) — ver _get_available_quests."""
-        from engine.components import QuestLog, QuestGiver as _QG
-        giver = self.world.get_component(npc_id, _QG)
-        if giver is None:
-            return []
-        ql = self.world.get_component(self.player_entity, QuestLog)
-        if ql is None:
-            return []
-        plvl  = self._qs._player_level()
-        pclass = self._qs._player_class_id()
-        result = []
-        for qid in giver.quest_ids:
-            if qid in ql.active or qid in ql.completed:
-                continue
-            qdef = QUESTS.get(qid)
-            if qdef is None or (qdef.class_req and qdef.class_req != pclass):
-                continue
-            if all(r in ql.completed for r in qdef.requires):
-                if qdef.level_req > plvl:
-                    result.append(qid)
-        return result
+        """Wrapper fino — lógica real em
+        engine.quest_logic.get_locked_quests (06/10/2026, mesmo motivo de
+        _get_available_quests acima — era a única das 4 consultas
+        duplicada aqui em vez de extraída)."""
+        return quest_logic.get_locked_quests(self.world, self.player_entity, npc_id)
 
     def _get_completable_quests(self, npc_id: int, pending_npc_name: str = "") -> list:
         """Wrapper fino — lógica real em

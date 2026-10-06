@@ -84,6 +84,23 @@ class TestQuestSplitNpc(unittest.TestCase):
         self.assertIsNone(self.dlg.marker_for(self.giver_npc))
         self.assertIsNotNone(self.dlg.marker_for(self.turnin_npc))
 
+    def test_marker_for_static_bate_com_marker_for_do_npc_vivo(self):
+        """marker_for_static (06/10/2026, ícone de mapa independente de
+        AOI) precisa concordar EXATAMENTE com marker_for pro mesmo
+        quest_ids/turn_in_ids -- mesma regra, só sem exigir NPC vivo."""
+        ql = self._ql()
+        ql.active[QID] = [1]   # completável no turnin_npc
+
+        live_turnin = self.dlg.marker_for(self.turnin_npc)
+        static_turnin = self.dlg.marker_for_static("Avido", (), (QID,))
+        self.assertEqual(live_turnin, static_turnin)
+        self.assertIsNotNone(static_turnin)
+
+        live_giver = self.dlg.marker_for(self.giver_npc)
+        static_giver = self.dlg.marker_for_static("Caterina", (QID,), ())
+        self.assertEqual(live_giver, static_giver)
+        self.assertIsNone(static_giver)
+
     def test_fallback_continua_funcionando_pra_npc_unico_sem_split(self):
         """Regressão: quest simples (1 NPC só dá E recebe, turn_in_ids
         vazio, ninguém mais reivindica) continua usando o fallback."""

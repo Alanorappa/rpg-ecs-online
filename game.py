@@ -186,6 +186,14 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # NÃO limpo após despawn — usado como fallback de FLT quando SKILL_RESULT
         # chega depois que o mob já foi removido de _remote_mobs.
         self._mob_ghost_pos: dict[int, tuple[float, float]] = {}
+        # Posição de companheiros de grupo no mapa/minimapa (06/10/2026,
+        # pedido do usuário) — server_eid → {"tx","ty","name"}. Sempre
+        # SUBSTITUÍDO por inteiro a cada AOI_UPDATE (nunca merge/delta,
+        # mesmo padrão de ally_vision_centers) — servidor já recomputa do
+        # zero todo tick. Ausência do campo no payload (fora de grupo, ou
+        # grupo de 1) limpa o dict — diferente de ally_vision_centers,
+        # aqui "sumiu do payload" significa mesmo "não mostra mais nada".
+        self._party_member_positions: dict[int, dict] = {}
         # Kills com animação em andamento (progress >= 0.3): local_eid → {"server_eid": int, "timer": float}
         # Remoção adiada até is_moving=False; mob termina o passo para target_tile.
         self._pending_mob_despawn: dict[int, dict] = {}
@@ -2902,14 +2910,16 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                             for eid, _, _, etm in self.world.get_entities_with(Enemy, Visible, TileMovement)
                             if (etm.current_tile_x, etm.current_tile_y) in _fog_mm.visible
                         ]
-                        from ui.map_markers import collect_markers, collect_quest_circles
+                        from ui.map_markers import collect_markers, collect_quest_circles, collect_party_markers
                         self._minimap.render(
                             _player_tm_m.current_tile_x,
                             _player_tm_m.current_tile_y,
                             _fog_mm.explored,
                             _fog_mm.visible,
                             _enemy_tiles,
-                            collect_markers(self.world, self.player_entity, self._quest_dialog),
+                            collect_markers(self.world, self.player_entity, self._quest_dialog,
+                                            self._spawn_points)
+                            + collect_party_markers(self._party_member_positions),
                             collect_quest_circles(self.world, self.player_entity, self._quest_system,
                                                   self._current_map_file, self._spawn_points),
                         )
@@ -3062,11 +3072,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 tx = player_tm.current_tile_x if player_tm else -1
                 ty = player_tm.current_tile_y if player_tm else -1
                 _fog_comp = self.world.get_component(self.player_entity, FogOfWar)
-                from ui.map_markers import collect_markers, collect_quest_circles
+                from ui.map_markers import collect_markers, collect_quest_circles, collect_party_markers
                 self._map_overlay.render(tx, ty,
                                          explored=_fog_comp.explored if _fog_comp else None,
                                          markers=collect_markers(self.world, self.player_entity,
-                                                                 self._quest_dialog),
+                                                                 self._quest_dialog, self._spawn_points)
+                                                 + collect_party_markers(self._party_member_positions),
                                          circles=collect_quest_circles(
                                              self.world, self.player_entity, self._quest_system,
                                              self._current_map_file, self._spawn_points))

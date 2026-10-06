@@ -4240,6 +4240,41 @@ class SessionManager:
         if ally_centers:
             result["ally_vision_centers"] = [[ax, ay, ar] for ax, ay, ar in ally_centers]
 
+        # Posição de companheiros de grupo no mapa (M)/minimapa (06/10/2026,
+        # pedido do usuário) — SEMPRE visível pra quem está no mesmo grupo,
+        # independente de FoW/AOI (diferente de ally_vision_centers acima,
+        # que só revela NÉVOA ao redor do aliado; aqui é a posição literal
+        # dele, ponto). Recomputado do zero todo tick (nunca delta — lista
+        # pequena, 1 a 4 outros membros) pra nunca "prender" numa posição
+        # velha se alguém trocar de mapa/instância. Só inclui quem está no
+        # MESMO mapa que o destinatário (comparar com result/sessão não
+        # ajuda aqui, mapa é por-entidade) — quem está em outro mapa/
+        # instância simplesmente não entra na lista, cliente não precisa
+        # filtrar nada.
+        _party_members = self.world_server.get_party_members(session.entity_id)
+        if len(_party_members) > 1:
+            from engine.components import TileMovement as _PTM_aoi, CharacterStats as _PCS_aoi
+            _my_map_pp = _my_map
+            _party_positions = []
+            for _pm_eid in _party_members:
+                if _pm_eid == session.entity_id:
+                    continue
+                _pm_ml = self.world_server.world.get_component(_pm_eid, _ML_aoi)
+                if not _pm_ml or _pm_ml.map_file != _my_map_pp:
+                    continue
+                _pm_tm = self.world_server.world.get_component(_pm_eid, _PTM_aoi)
+                if not _pm_tm:
+                    continue
+                _pm_cs = self.world_server.world.get_component(_pm_eid, _PCS_aoi)
+                _party_positions.append({
+                    "eid":  _pm_eid,
+                    "tx":   _pm_tm.current_tile_x,
+                    "ty":   _pm_tm.current_tile_y,
+                    "name": _pm_cs.name if _pm_cs else "?",
+                })
+            if _party_positions:
+                result["party_positions"] = _party_positions
+
         return result
 
     # ── Player deaths — enviados diretamente, não via AOI_UPDATE ─────────────

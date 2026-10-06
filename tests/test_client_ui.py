@@ -288,22 +288,27 @@ def test_shop_click_direito_acerta_npc_perto_da_borda_do_mapa():
 
 # ── ui/map_markers.py ────────────────────────────────────────────────────────
 
-def _make_marker_world():
-    from engine.world import World
-    from engine.components import (TileMovement, Trainer, Merchant, Visible)
-    world = World()
-    trainer = world.create_entity()   # SEM Visible (fora de FoW) — deve aparecer
-    world.add_component(trainer, TileMovement(current_tile_x=5, current_tile_y=5))
-    world.add_component(trainer, Trainer(class_id="mago"))
-    merchant = world.create_entity()  # COM Visible — também aparece
-    world.add_component(merchant, TileMovement(current_tile_x=8, current_tile_y=8))
-    world.add_component(merchant, Merchant())
-    world.add_component(merchant, Visible())
-    return world
+def _make_marker_spawn_points():
+    """Mesmo shape de tupla que engine/map_loader.py::_merge_entities_json
+    produz de verdade — NUNCA entidades vivas (06/10/2026: marcador de
+    NPC de serviço passou a vir só de dados estáticos, independente de
+    AOI, ver PROBLEMAS_ARQUITETURA.md)."""
+    return {
+        "trainers": [
+            (5, 5, "Treinador Teste", "mago", (), (), 1, "Treinador", ""),
+        ],
+        "merchants": [
+            (8, 8, "Mercador Teste", "general", 1, "Comerciante"),
+        ],
+        "quest_givers": [],
+    }
 
 
 class _FakeQuestDialog:
     def marker_for(self, eid):
+        return None
+
+    def marker_for_static(self, name, quest_ids, turn_in_ids):
         return None
 
 
@@ -311,11 +316,65 @@ def test_collect_markers_nao_exige_visible():
     """Decisão 25 (ARQUITETURA_ONLINE.md): ícone de mapa/minimapa GUIA o
     player — NPC fora da linha de visão continua no mapa."""
     from ui.map_markers import collect_markers
-    world = _make_marker_world()
+    from engine.world import World
+    world = World()
     player = world.create_entity()
-    markers = collect_markers(world, player, _FakeQuestDialog())
+    markers = collect_markers(world, player, _FakeQuestDialog(), _make_marker_spawn_points())
     kinds = sorted(m.icon_name for m in markers)
     assert kinds == ["map_merchant", "map_trainer_mago"], kinds
+
+
+def test_collect_markers_nao_depende_de_entidade_viva_no_world():
+    """Bug real relatado pelo usuário (06/10/2026): ícone de NPC no mapa M
+    só aparecia enquanto o NPC estava na AOI (existindo como entidade
+    local) -- sumia assim que o player se afastava. World aqui está
+    COMPLETAMENTE vazio (nenhum NPC spawnado) -- os marcadores têm que
+    continuar aparecendo, vindos só de spawn_points."""
+    from ui.map_markers import collect_markers
+    from engine.world import World
+    world = World()   # nenhuma entidade NPC -- simula "fora da AOI"
+    player = world.create_entity()
+    markers = collect_markers(world, player, _FakeQuestDialog(), _make_marker_spawn_points())
+    assert len(markers) == 2
+    positions = sorted((m.tile_x, m.tile_y) for m in markers)
+    assert positions == [(5, 5), (8, 8)]
+
+
+# ── Posição de companheiros de grupo no mapa/minimapa (06/10/2026) ──────────
+
+def test_collect_party_markers_usa_cor_do_chat_de_grupo_e_inicial_do_nome():
+    from ui.map_markers import collect_party_markers, _PARTY_MEMBER_FALLBACK_COLOR
+    positions = {
+        42: {"tx": 10, "ty": 20, "name": "Fulano"},
+        43: {"tx": 11, "ty": 21, "name": "beltrano"},
+    }
+    markers = collect_party_markers(positions)
+    assert len(markers) == 2
+    by_pos = {(m.tile_x, m.tile_y): m for m in markers}
+    assert by_pos[(10, 20)].fallback_symbol == "F"
+    assert by_pos[(11, 21)].fallback_symbol == "B"
+    for m in markers:
+        assert m.fallback_color == _PARTY_MEMBER_FALLBACK_COLOR == (140, 230, 150)
+        assert m.icon_name == "map_party_member"
+
+
+def test_collect_party_markers_vazio_sem_grupo():
+    from ui.map_markers import collect_party_markers
+    assert collect_party_markers({}) == []
+
+
+def test_aoi_update_party_positions_substitui_dict_inteiro():
+    """party_positions é sempre um snapshot FRESCO do servidor (nunca
+    delta/merge) -- chegar de novo troca o dict inteiro, e a AUSÊNCIA do
+    campo (fora de grupo) limpa, nunca deixa companheiro "fantasma"."""
+    fx = _make_net_fixture()
+    fx._handle_msg_aoi_update({
+        "party_positions": [{"eid": 99, "tx": 1, "ty": 2, "name": "Amigo"}],
+    })
+    assert fx._party_member_positions == {99: {"eid": 99, "tx": 1, "ty": 2, "name": "Amigo"}}
+
+    fx._handle_msg_aoi_update({})
+    assert fx._party_member_positions == {}
 
 
 def test_deconflict_positions_sem_sobreposicao():
