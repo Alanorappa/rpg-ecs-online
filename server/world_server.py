@@ -2695,9 +2695,35 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             if not _tile_val.is_tile_walkable(eid, tx, ty, tm._last_valid_tile_x, tm._last_valid_tile_y,
                                               ignore_eid=_pursuit_target):
                 from debug.aoi_debug import AOI_DBG as _AOI_DBG_mvw
+                # Diagnostico extra (06/10/2026, investigando rollback perto
+                # de poste) -- MOVE_REJECTED_WALKABLE sozinho nao dizia POR
+                # QUE (solido/andar diferente/ocupado) -- is_tile_walkable
+                # isolado contra o mapa real devolvia True pro mesmo tile,
+                # entao a causa so pode estar em algo do mundo AO VIVO
+                # (ocupacao) que um teste isolado nao reproduz.
+                _reason_mvw = "unknown"
+                _occ_mvw = None
+                _tmap_mvw = _tile_val._get_tilemap_component()
+                if _tmap_mvw is not None and 0 <= ty < len(_tmap_mvw.tile_matrix) \
+                        and 0 <= tx < len(_tmap_mvw.tile_matrix[ty]):
+                    if _tmap_mvw.tile_matrix[ty][tx].is_solid:
+                        _reason_mvw = "solid"
+                    else:
+                        _occ_mvw = _tile_val._occupied.get((tx, ty))
+                        if _occ_mvw is not None:
+                            _reason_mvw = "occupied"
+                            from engine.components import EntityIdentity as _EId_mvw, NPC as _NPC_mvw
+                            _oid_ident = self.world.get_component(_occ_mvw, _EId_mvw)
+                            _oid_npc   = self.world.get_component(_occ_mvw, _NPC_mvw)
+                            _occ_name_mvw = (_oid_npc.name if _oid_npc else
+                                            (_oid_ident.name if _oid_ident else "?"))
+                        else:
+                            _reason_mvw = "floor_mismatch"
                 _AOI_DBG_mvw.log("MOVE_REJECTED_WALKABLE", eid=eid, requested=(tx, ty),
                                  current=(tm.current_tile_x, tm.current_tile_y),
-                                 is_dash=getattr(tm, "is_dash", None))
+                                 is_dash=getattr(tm, "is_dash", None),
+                                 reason=_reason_mvw, occupant_eid=_occ_mvw,
+                                 occupant_name=(_occ_name_mvw if _occ_mvw is not None else None))
                 return False
         else:
             from engine.world_systems import is_tile_walkable as _walkable
