@@ -24879,3 +24879,63 @@ testes) sem quebra.
 Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`) — fix é
 100% server-side (`server/loot_processor.py`), sem rebuild de `.exe`
 necessário.
+
+## 237. Bug real — mob com loot comum raro quase nunca criava corpse, então o sorteio de item de quest condicional (70%) quase nunca rodava (06/10/2026)
+
+**Sintoma relatado pelo usuário**, ao questionar o fix do §236: "a
+chance de drop estava bem baixa, o que é estranho pois a chance de
+drop é de 70%... só dropava o item da quest quando outro item dropava
+junto". Confirmado como bug REAL, distinto (mas na mesma investigação)
+do §236.
+
+**Causa raiz**: loot condicional de quest (`quest_rolls`, Fase L1
+25/07/2026 — ex: "Veneno de Aranha" da quest `spider_venom`, 70% de
+chance) só é sorteado DEPOIS que um corpse já existe
+(`_resolve_conditional_loot_for`, chamado só quando há corpse pra
+anexar o sorteio). `_process_loot_drops` só cria corpse quando o mob
+dropa algo da tabela de loot COMUM dele (`not items and coins <= 0:
+continue`, decisão de 02/10/2026: "sem loot nenhum, sem corpo"). A
+Aranha (`content/mob_definitions.py`) tem `gold_chance=0.0` e uma
+tabela de item comum com chances baixas (2-5% cada,
+`padded_gloves`/`cloth_wrists`/`worn_hood`) — na prática só ~10% das
+mortes geravam corpse NENHUM. Como o sorteio dos 70% só acontece
+DENTRO de um corpse já existente, a chance EFETIVA observada do item
+de quest era ~10% × 70% ≈ 7%, não os 70% documentados — o sorteio
+simplesmente nunca chegava a rodar na maioria das mortes.
+
+**Fix** (confirmado com o usuário via pergunta direta — mudava uma
+decisão de produto anterior, 02/10/2026, "corpo vazio não aparece"):
+`_process_loot_drops` agora cria o corpse mesmo com loot comum vazio
+quando o dono do kill (ou algum membro do MESMO grupo — loot
+condicional é free-for-all dentro do grupo, igual o resto) tem uma
+quest ativa com objetivo `collect_item` elegível pra este mob
+(`WorldServer._any_party_member_awaits_conditional_loot`, novo). O
+sorteio de verdade continua acontecendo depois, lazy, igual sempre —
+o corpse pode abrir vazio se os 70% falharem (decisão explícita do
+usuário: é o preço de 70% valerem 70% de verdade).
+
+**Ponto único de verdade novo**: `engine.quest_logic.
+_eligible_conditional_objectives(ql, enemy_name, enemy_race)` —
+extraído de `roll_conditional_loot` (que agora só itera e sorteia),
+reusado por `has_pending_conditional_loot(ql, enemy_name, enemy_race)`
+(checa elegibilidade SEM consumir o RNG). Mob sem NENHUMA quest no
+jogo inteiro que o aceite continua sem gerar corpse vazio — o custo do
+fix é só avaliar `QuestLog.active` do dono/grupo, nunca varre o
+catálogo de quests inteiro por mob.
+
+**Teste**: `tests/test_loot_authoritative.py::
+TestCorpseNasceParaLootCondicionalSemLootComum` (4, novo) — sem quest
+ativa continua sem criar corpse (controle, preserva a regra de
+02/10/2026); com `spider_venom` ativa cria corpse mesmo com
+items=[]/coins=0; quest ativa num MEMBRO DO GRUPO (não o dono do kill)
+também força o corpse; objetivo já completo (`prog >= count`) NÃO
+força corpse. Revert-to-confirm feito (checagem nova removida, 2 dos 4
+testes falharam exatamente como o bug real — corpse não nascia com
+quest ativa —, restaurado). Regressão:
+`test_loot_authoritative.py`/`test_quest_logic.py`/`test_party.py` (55
+testes, exceto os 2 de `TestLootQuestProgressViaSessionFlow` já
+catalogados como falha de ambiente pré-existente no §236) sem quebra.
+
+Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`) — fix é
+100% server-side (`server/loot_processor.py` + `engine/quest_logic.py`),
+sem rebuild de `.exe` necessário.

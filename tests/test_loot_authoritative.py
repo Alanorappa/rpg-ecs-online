@@ -334,6 +334,87 @@ class TestCorpseTimerSemLootNaoAparece(unittest.TestCase):
         self.assertEqual(self.ws._corpses[cid]["timer"], 30.0)
 
 
+class TestCorpseNasceParaLootCondicionalSemLootComum(unittest.TestCase):
+    """Bug real relatado pelo usuário (06/10/2026, achado investigando o
+    §236 acima): quest "spider_venom" tem 70% de chance de dropar
+    "Veneno de Aranha" ao matar uma Aranha -- mas a Aranha quase nunca
+    dropa nada da tabela de loot COMUM dela (luvas/braçadeiras/capuz,
+    cada um na faixa de 2-5%, 0% de ouro). Sem loot comum, nenhum corpse
+    nascia (regra de 02/10/2026), e o sorteio dos 70% nunca chegava a
+    RODAR -- a chance real observada de conseguir o item de quest era
+    muito menor que 70%, limitada pela chance (baixa) de loot comum.
+
+    Fix: `_process_loot_drops` cria o corpse mesmo com loot comum vazio
+    quando o dono (ou algum membro do grupo dele) tem uma quest ativa
+    que aceita este mob -- decisão explícita do usuário: o corpse pode
+    abrir vazio se o sorteio falhar (30% de chance), é o preço de 70%
+    valerem 70% de verdade."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.eid = spawn_player(self.ws, "s1", 130, 374)
+
+    def _drop_vazio(self, mob_name: str = "Aranha", mob_race: str = "Fera") -> None:
+        self.ws._death_handler.pending_loot.append({
+            "mob_eid": -1, "owner_eid": self.eid,
+            "items": [], "coins": 0,
+            "tx": 130, "ty": 374, "map": self.ws._map_file,
+            "mob_name": mob_name, "mob_race": mob_race,
+        })
+
+    def _give_spider_venom_quest(self) -> None:
+        from engine.components import QuestLog
+        ql = self.ws.world.get_component(self.eid, QuestLog)
+        ql.active["spider_venom"] = [0]
+
+    def test_sem_quest_ativa_continua_sem_criar_corpse(self):
+        # Controle -- preserva a regra de 02/10/2026 pra quem não tem
+        # nenhuma quest que aceite este mob.
+        antes = set(self.ws._corpses.keys())
+        self._drop_vazio()
+        self.ws._process_loot_drops(dt=0.1)
+        self.assertEqual(set(self.ws._corpses.keys()), antes)
+
+    def test_com_quest_ativa_cria_corpse_mesmo_sem_loot_comum(self):
+        self._give_spider_venom_quest()
+        antes = set(self.ws._corpses.keys())
+        self._drop_vazio()
+        self.ws._process_loot_drops(dt=0.0)
+        novos = set(self.ws._corpses.keys()) - antes
+        self.assertEqual(len(novos), 1, "deveria criar corpse pro sorteio dos 70% poder rodar")
+        cid = novos.pop()
+        self.assertEqual(self.ws._corpses[cid]["items"], [])
+        self.assertEqual(self.ws._corpses[cid]["coins"], 0)
+
+    def test_quest_de_membro_do_grupo_tambem_conta(self):
+        eid2 = spawn_player(self.ws, "s2", 130, 375)
+        pid = self.ws._next_party_id
+        self.ws._next_party_id += 1
+        self.ws._parties[pid] = {"leader_eid": self.eid, "members": [self.eid, eid2]}
+        self.ws._player_party_id[self.eid] = pid
+        self.ws._player_party_id[eid2] = pid
+
+        from engine.components import QuestLog
+        ql2 = self.ws.world.get_component(eid2, QuestLog)
+        ql2.active["spider_venom"] = [0]
+
+        antes = set(self.ws._corpses.keys())
+        self._drop_vazio()  # owner_eid = self.eid, que NÃO tem a quest
+        self.ws._process_loot_drops(dt=0.0)
+        self.assertEqual(len(set(self.ws._corpses.keys()) - antes), 1,
+            "membro do grupo do dono com a quest ativa também deveria contar")
+
+    def test_quest_com_objetivo_ja_completo_nao_forca_corpse(self):
+        self._give_spider_venom_quest()
+        from engine.components import QuestLog
+        ql = self.ws.world.get_component(self.eid, QuestLog)
+        ql.active["spider_venom"] = [3]  # count=3, já bateu a meta
+        antes = set(self.ws._corpses.keys())
+        self._drop_vazio()
+        self.ws._process_loot_drops(dt=0.1)
+        self.assertEqual(set(self.ws._corpses.keys()), antes)
+
+
 class TestCorpseTimerRespeitaLootCondicionalDeQuest(unittest.TestCase):
     """Bug real relatado pelo usuário (06/10/2026): quest "spider_venom"
     (item condicional, Fase L1 25/07/2026, `quest_rolls[player_eid]` —

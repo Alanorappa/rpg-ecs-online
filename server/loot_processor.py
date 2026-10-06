@@ -29,6 +29,23 @@ class LootProcessorMixin:
         self._pending_harvestable_refill.clear()
         return result
 
+    def _any_party_member_awaits_conditional_loot(self, owner_eid: int,
+                                                  mob_name: str, mob_race: str) -> bool:
+        """True se o dono do kill (ou algum membro do MESMO grupo dele —
+        loot condicional de quest é free-for-all dentro do grupo, igual
+        o resto do loot) tem uma quest ativa que aceita este mob pra
+        drop condicional (06/10/2026 — ver `_process_loot_drops`, usado
+        só pra decidir se um corpse deve nascer MESMO sem loot comum
+        nenhum). Nunca sorteia nada aqui — só checa elegibilidade."""
+        from engine.components import QuestLog as _QL_await
+        import engine.quest_logic as _quest_logic_await
+        members = self.get_party_members(owner_eid) or [owner_eid]
+        for member_eid in members:
+            ql = self.world.get_component(member_eid, _QL_await)
+            if _quest_logic_await.has_pending_conditional_loot(ql, mob_name, mob_race):
+                return True
+        return False
+
     def _resolve_conditional_loot_for(self, corpse: dict, player_eid: int) -> list:
         """Resolve (1x, cacheado) o loot condicional de quest (ex.: Pelo de
         Urso) PARA ESTE JOGADOR ESPECÍFICO — Fase L1, 25/07/2026, pedido do
@@ -252,6 +269,7 @@ class LootProcessorMixin:
         for loot_entry in self._death_handler.consume_loot():
             items = loot_entry["items"]
             coins = loot_entry.get("coins", 0)
+            owner_eid  = loot_entry["owner_eid"]
             # Sem loot NENHUM (nem item, nem gold) — nenhum corpse
             # nasce (02/10/2026, pedido do usuário: "quando não trava
             # nenhum loot, não aparece o corpo"). Vale pra QUALQUER mob,
@@ -260,9 +278,27 @@ class LootProcessorMixin:
             # curto dedicado, 4s, só pra confirmação visual de morte;
             # removido por decisão explícita do usuário, mesma regra
             # pra todo mundo agora).
+            #
+            # EXCEÇÃO (06/10/2026, pedido do usuário — bug real: quest
+            # "spider_venom", 70% de chance, parecia dropar bem menos):
+            # loot condicional de quest (`quest_rolls`, Fase L1) é
+            # resolvido LAZY, só quando o corpse já existe — sem essa
+            # exceção, um mob com tabela de loot comum vazia/rara (ex:
+            # Aranha, só ~10% de chance de item comum) NUNCA criava
+            # corpse na maioria das mortes, e o sorteio dos 70% nunca
+            # chegava a RODAR. Se dono (ou algum membro do GRUPO dele,
+            # já que loot condicional é free-for-all dentro do grupo)
+            # tem uma quest ativa que aceita este mob, cria o corpse
+            # mesmo vazio — o sorteio de verdade acontece depois, lazy,
+            # igual sempre (pode abrir vazio se o sorteio falhar, por
+            # decisão explícita do usuário — é o preço de 70% valerem
+            # 70% de verdade).
             if not items and coins <= 0:
-                continue
-            owner_eid  = loot_entry["owner_eid"]
+                _mob_name = loot_entry.get("mob_name", "")
+                _mob_race = loot_entry.get("mob_race", "")
+                if not self._any_party_member_awaits_conditional_loot(
+                        owner_eid, _mob_name, _mob_race):
+                    continue
             corpse_id  = self._next_corpse_id
             self._next_corpse_id += 1
             self._corpses[corpse_id] = {

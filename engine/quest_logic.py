@@ -316,10 +316,15 @@ def complete_quest(world, player_eid: int, ql, qid: str):
     return qdef.reward, consumed
 
 
-def roll_conditional_loot(ql, enemy_name: str, enemy_race: str) -> list:
-    """Drop bônus condicional pra objetivos collect_item ativos que aceitam
-    esse mob como alvo. Retorna lista de Item (factories de QUEST_ITEMS)."""
-    extras = []
+def _eligible_conditional_objectives(ql, enemy_name: str, enemy_race: str):
+    """Gera cada ObjectiveDef collect_item ELEGÍVEL pra este mob (quest
+    ativa, progresso incompleto, alvo bate, loot_item configurado) — sem
+    sortear nada. Ponto único de verdade do "casamento" quest↔mob,
+    reusado por `roll_conditional_loot` (sorteia de verdade) e
+    `has_pending_conditional_loot` (só checa se existe, sem consumir o
+    RNG — usado pelo servidor pra decidir se um corpse deve nascer MESMO
+    sem loot comum nenhum, ver `server/loot_processor.py::
+    _process_loot_drops` — 06/10/2026)."""
     for qid, prog in ql.active.items():
         qdef = QUESTS.get(qid)
         if qdef is None:
@@ -333,10 +338,27 @@ def roll_conditional_loot(ql, enemy_name: str, enemy_race: str) -> list:
                 continue
             if not obj.loot_item:
                 continue
-            if random.random() <= obj.loot_chance:
-                factory = QUEST_ITEMS.get(obj.loot_item)
-                if factory:
-                    extras.append(factory())
+            yield obj
+
+
+def has_pending_conditional_loot(ql, enemy_name: str, enemy_race: str) -> bool:
+    """True se `ql` tem ao menos 1 objetivo collect_item elegível pra
+    este mob (ver `_eligible_conditional_objectives`) — nunca sorteia,
+    só verifica se VALE A PENA sortear."""
+    if ql is None:
+        return False
+    return next(_eligible_conditional_objectives(ql, enemy_name, enemy_race), None) is not None
+
+
+def roll_conditional_loot(ql, enemy_name: str, enemy_race: str) -> list:
+    """Drop bônus condicional pra objetivos collect_item ativos que aceitam
+    esse mob como alvo. Retorna lista de Item (factories de QUEST_ITEMS)."""
+    extras = []
+    for obj in _eligible_conditional_objectives(ql, enemy_name, enemy_race):
+        if random.random() <= obj.loot_chance:
+            factory = QUEST_ITEMS.get(obj.loot_item)
+            if factory:
+                extras.append(factory())
     return extras
 
 
