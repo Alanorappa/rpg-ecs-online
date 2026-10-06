@@ -25106,3 +25106,77 @@ Deploy: fix é 100% client-side (`game.py`) — precisa de rebuild do
 `.exe` antes de chegar a quem já tem o `.exe` instalado (quem roda
 `python main.py` direto do código-fonte já recebe o fix só com o
 commit).
+
+## 241. NPC/mob "travado" numa posição velha, nunca na posição real do servidor (06/10/2026)
+
+**Sintoma relatado pelo usuário, ao vivo**: NPC "Custodio Benevide"
+visualmente parado no tile (133,358); mapa declara o spawn dele em
+(127,361) — confirmado via `map_1_entities.json`, não é "NPC parado no
+lugar certo" (comportamento normal, NPC nunca anda), é posição ERRADA
+de verdade. Zumbi "travado" em (128,349) relatado junto — log do
+servidor (`AUTO_ATK_RANGE_OK`) confirma que o COMBATE contra ele
+funciona normalmente naquele tile, então o servidor concorda com
+aquela posição — a dúvida do usuário era exatamente "cliente trava a
+posição ou servidor para de atualizar", e a resposta é nenhum dos dois:
+o servidor está certo, o CLIENTE que nunca criou a entidade nova.
+
+**Causa raiz**: eid de entidade NÃO é estável entre reinícios do
+servidor (mundo reconstrói do zero a cada boot — NPCs/mobs ganham eids
+NOVOS, já documentado em §238/§240 pra OUTRO sintoma). `client/
+remote_entity_handlers.py::_spawn_remote_mob` pula silenciosamente
+(`SPAWN_SKIP`) qualquer `server_eid` que já exista em
+`self._remote_mobs` — mas a reconexão mid-sessão (`_handle_msg_auth_ok`,
+§230, 03/10/2026) NUNCA limpava esse dict antes de reenviar
+`SELECT_CHARACTER` (só `_do_transition`, troca de mapa de verdade,
+fazia essa limpeza). Depois de QUALQUER reconexão (servidor reiniciado,
+ex: um deploy — esta sessão fez vários hoje — ou só uma queda de rede),
+o `WORLD_STATE` novo chega com eids NOVOS; se um eid novo colide por
+acaso com uma chave VELHA do dict stale, `_spawn_remote_mob` acha que
+"já tem essa entidade" e NUNCA cria a de verdade — o que fica na tela é
+a entidade ANTIGA, na posição de ANTES do restart, para sempre (NPC
+nunca mais se move por natureza; mob só "autocorrige" se por acaso
+andar de novo, que pode nunca acontecer).
+
+**Fix**: `_handle_msg_auth_ok` passa a chamar
+`_remove_all_remote_entities(keep_tilemap=True)` +
+`_clear_remote_entity_caches()` ANTES de reenviar `SELECT_CHARACTER` —
+mesmos 2 métodos que `_do_transition()` já usava pra troca de mapa de
+verdade, só que preservando o Tilemap local (reconexão é pro MESMO
+mapa, terreno continua válido). `_remove_all_remote_entities` (novo,
+extraído de dentro de `_do_transition`) e `_clear_remote_entity_caches`
+(já existia) ficam SEPARADOS de propósito — um teste já existente
+(`TestClearRemoteEntityCaches`) testa só a parte de dicts com um objeto
+fake sem `world`/`player_entity`; fundir os dois quebraria esse teste.
+
+**Lição repetida nesta sessão** (mesma classe do §239 — atributo
+usado sem checar quem mais chama o método): ao adicionar a chamada
+nova em `_handle_msg_auth_ok`, o teste já existente
+(`tests/test_mid_session_reconnect.py`) usa um `_Fixture` que herda SÓ
+de `NetworkHandlers`, nunca de `GameEngine` — os métodos novos nem
+EXISTIAM nesse fixture (não é só atributo faltando, é o método inteiro,
+já que `_remove_all_remote_entities`/`_clear_remote_entity_caches`
+vivem em `game.py`, não em `client/network_handlers.py`). Pego ANTES de
+chegar no usuário desta vez — rodei a suíte afetada antes de reportar
+pronto, diferente do §239.
+
+**Limitação conhecida**: o fix previne o problema em QUALQUER
+reconexão FUTURA — não corrige, sozinho, uma entidade que JÁ ficou
+stale numa sessão aberta antes do deploy (precisa de 1 relog/reconexão
+pra aplicar a limpeza nova).
+
+**Teste**: `tests/test_map_transition_screen.py::
+TestRemoveAllRemoteEntities` (2, novo — `keep_tilemap=True` preserva
+Tilemap e remove o resto; `keep_tilemap=False`, default, remove tudo
+inclusive Tilemap) + `tests/test_mid_session_reconnect.py::
+test_limpa_entidades_remotas_velhas_antes_de_reselecionar` (novo —
+confirma que `_handle_msg_auth_ok` chama os 2 métodos, nesta ordem,
+antes de reenviar `SELECT_CHARACTER`). Revert-to-confirm feito nos 2
+testes de `TestRemoveAllRemoteEntities` (loop de remoção desativado, os
+2 falharam exatamente como o bug real — entidade velha continuava no
+World —, restaurado). Regressão: `test_map_transition_screen.py`/
+`test_mid_session_reconnect.py`/`test_client_ui.py` (264 testes) sem
+quebra. Boot smoke-test (`python main.py`) sem erro.
+
+Deploy: fix é 100% client-side (`game.py`, `client/
+network_handlers.py`) — precisa de rebuild do `.exe` antes de chegar a
+quem já tem o `.exe` instalado.

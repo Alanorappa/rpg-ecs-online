@@ -136,6 +136,51 @@ class TestHandleMsgZoneChange(unittest.TestCase):
         self.assertFalse(fx.world.get_component(cam_eid, Camera).free_mode)
 
 
+class TestRemoveAllRemoteEntities(unittest.TestCase):
+    """`GameEngine._remove_all_remote_entities()` (06/10/2026, bug real
+    relatado pelo usuário: NPC/mob "travado" numa posição velha após
+    reconectar no meio do jogo). Separado de `_clear_remote_entity_caches`
+    de propósito (ver docstring de ambos em game.py) -- este teste cobre
+    SÓ a remoção de entidade em si, com um World real."""
+
+    def _make_fixture(self):
+        import game
+
+        class _FakeEntityHolder:
+            pass
+
+        fake = _FakeEntityHolder()
+        fake.world = World()
+        fake.player_entity = fake.world.create_entity()
+        fake.camera_entity = fake.world.create_entity()
+        fake.tilemap_entity = fake.world.create_entity()
+        return fake, game
+
+    def test_remove_mantem_player_camera_e_tilemap_quando_pedido(self):
+        fake, game = self._make_fixture()
+        mob_eid = fake.world.create_entity()
+
+        game.GameEngine._remove_all_remote_entities(fake, keep_tilemap=True)
+
+        self.assertIn(fake.player_entity, fake.world._components)
+        self.assertIn(fake.camera_entity, fake.world._components)
+        self.assertIn(fake.tilemap_entity, fake.world._components,
+                      "keep_tilemap=True (reconexão pro MESMO mapa) não pode remover o tilemap")
+        self.assertNotIn(mob_eid, fake.world._components)
+
+    def test_remove_tilemap_tambem_por_padrao(self):
+        """default keep_tilemap=False -- troca de mapa DE VERDADE
+        (_do_transition) precisa derrubar o tilemap velho também, pra
+        criar um novo do mapa de destino."""
+        fake, game = self._make_fixture()
+
+        game.GameEngine._remove_all_remote_entities(fake)
+
+        self.assertIn(fake.player_entity, fake.world._components)
+        self.assertIn(fake.camera_entity, fake.world._components)
+        self.assertNotIn(fake.tilemap_entity, fake.world._components)
+
+
 class TestClearRemoteEntityCaches(unittest.TestCase):
     """`GameEngine._clear_remote_entity_caches()` (02/10/2026, bug real
     relatado pelo usuário: corpo de mob morto numa instância de BG

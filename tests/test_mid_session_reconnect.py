@@ -49,6 +49,19 @@ class _FakeNet:
 class _Fixture(NetworkHandlers):
     def __init__(self):
         self._net = _FakeNet()
+        # _remove_all_remote_entities/_clear_remote_entity_caches (06/10/2026)
+        # vivem em game.GameEngine, não em NetworkHandlers -- stub simples
+        # aqui só registra a chamada, não precisa de world/player_entity
+        # reais pra testar o que ESTE arquivo testa (reenvio de
+        # SELECT_CHARACTER). Cobertura real dos 2 métodos fica em
+        # tests/test_map_transition_screen.py.
+        self.cleanup_calls: list = []
+
+    def _remove_all_remote_entities(self, keep_tilemap: bool = False) -> None:
+        self.cleanup_calls.append(("remove_all", keep_tilemap))
+
+    def _clear_remote_entity_caches(self) -> None:
+        self.cleanup_calls.append(("clear_caches", None))
 
 
 class TestAuthOkReenviaSelectCharacterNaReconexao(unittest.TestCase):
@@ -61,6 +74,22 @@ class TestAuthOkReenviaSelectCharacterNaReconexao(unittest.TestCase):
         fx._handle_msg_auth_ok({"characters": [{"id": 7, "name": "Fulano"}]})
 
         self.assertEqual(fx._net.sent, [(MsgType.SELECT_CHARACTER, {"char_id": 7})])
+
+    def test_limpa_entidades_remotas_velhas_antes_de_reselecionar(self):
+        """Bug real relatado pelo usuário (06/10/2026, 2ª parte do mesmo
+        bug de reconexão): NPC/mob ficava "travado" numa posição velha
+        depois de reconectar -- eid não é estável entre reinícios do
+        servidor, e sem limpar as entidades/caches VELHOS daqui, um eid
+        novo colidindo com uma chave velha em _remote_mobs fazia o
+        respawn de verdade ser pulado (SPAWN_SKIP). keep_tilemap=True
+        porque é o MESMO mapa, só o mundo dinâmico que mudou."""
+        fx = _Fixture()
+        fx._selected_char_id = 7
+        fx._handle_msg_auth_ok({"characters": [{"id": 7, "name": "Fulano"}]})
+        self.assertEqual(fx.cleanup_calls, [
+            ("remove_all", True),
+            ("clear_caches", None),
+        ])
 
     def test_nao_reenvia_nada_sem_char_id_guardado(self):
         """Guard defensivo -- na prática, AUTH_OK do login/seleção INICIAL

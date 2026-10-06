@@ -3275,13 +3275,52 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
     # Transição de mapa (cavernas / retorno)
     # ------------------------------------------------------------------
 
+    def _remove_all_remote_entities(self, keep_tilemap: bool = False) -> None:
+        """Remove TODA entidade local que espelha algo do servidor
+        (mob/player/corpse remoto) — usado nos 2 casos em que o mundo do
+        cliente deixa de ter QUALQUER relação com o que o servidor vai
+        mandar a seguir, ANTES de chamar `_clear_remote_entity_caches()`
+        (os caches guardam `local_eid`, que fica órfão/inválido se a
+        entidade já foi removida sem avisar quem aponta pra ela):
+
+        1. `_do_transition()`, troca de mapa DE VERDADE (`keep_tilemap=
+           False`, default — o mapa muda, o Tilemap local também precisa
+           ser destruído e recriado do zero pro mapa novo).
+        2. `_handle_msg_auth_ok()` (`client/network_handlers.py`,
+           06/10/2026), reconexão NO MEIO do jogo pro MESMO mapa
+           (`keep_tilemap=True` — terreno local continua válido, só as
+           entidades DINÂMICAS precisam sumir). Bug real relatado pelo
+           usuário: eid de entidade NÃO é estável entre reinícios do
+           servidor (mundo reconstrói do zero, NPC/mob ganha eid NOVO) —
+           sem remover as entidades VELHAS daqui, um WORLD_STATE novo
+           colidindo por acaso um eid novo com uma chave velha em
+           `_remote_mobs` fazia `_spawn_remote_mob` pular o spawn de
+           verdade (`SPAWN_SKIP`, ver `client/
+           remote_entity_handlers.py`) — a entidade ANTIGA ficava visível
+           pra sempre, numa posição que não tinha mais relação com nada
+           (NPC nunca mais se move por natureza; mob só "autocorrigia"
+           se por acaso andasse de novo, o que podia nunca acontecer).
+
+        Método SEPARADO de `_clear_remote_entity_caches()` (não
+        fundidos, 06/10/2026) — aquele é testado isoladamente
+        (`tests/test_map_transition_screen.py::
+        TestClearRemoteEntityCaches`) com um objeto fake que só tem os 6
+        dicts, sem `world`/`player_entity`/`camera_entity`/
+        `tilemap_entity`; fundir a remoção ali quebraria esse teste."""
+        keep = {self.player_entity, self.camera_entity}
+        if keep_tilemap:
+            keep.add(self.tilemap_entity)
+        for eid in list(self.world._components.keys()):
+            if eid not in keep:
+                self.world.remove_entity(eid)
+
     def _clear_remote_entity_caches(self) -> None:
         """Limpa TODO cache client-only indexado por eid/corpse_id de
-        entidades remotas — chamado por `_do_transition()` só no branch
-        de troca de mapa DE VERDADE (os `local_eid` referenciados já
-        foram destruídos ali por `world.remove_entity`, e um mapa NOVO —
-        ou instância NOVA do mesmo template — não tem relação nenhuma
-        com o conteúdo do mapa anterior).
+        entidades remotas — chamador precisa ter chamado
+        `_remove_all_remote_entities()` antes (ou garantido por outro
+        meio que as entidades já não existem mais), senão os `local_eid`
+        guardados aqui apontam pra entidades que ainda existem no
+        `world`, nunca removidas.
 
         Extraído em método próprio (02/10/2026) pra ficar testável
         isoladamente — bug real relatado pelo usuário: `_remote_corpses`/
@@ -3339,13 +3378,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             self._autosave()
             return
 
-        # Remove todas as entidades exceto jogador e câmera
-        keep = {self.player_entity, self.camera_entity}
-        for eid in list(self.world._components.keys()):
-            if eid not in keep:
-                self.world.remove_entity(eid)
-
-        # Limpa caches de entidades remotas — os local_eids foram destruídos acima
+        # Remove todas as entidades (exceto jogador/câmera) E limpa os
+        # caches de entidades remotas — mesmos 2 métodos usados pela
+        # reconexão mid-session (client/network_handlers.py::
+        # _handle_msg_auth_ok), ver docstring de _remove_all_remote_entities.
+        self._remove_all_remote_entities()
         self._clear_remote_entity_caches()
 
         # Reseta caches de tilemap

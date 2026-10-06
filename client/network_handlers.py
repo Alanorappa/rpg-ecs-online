@@ -200,7 +200,29 @@ class NetworkHandlers:
         `GameEngine`/`NetworkHandlers`. `self._selected_char_id` só
         existe depois do 1º `LOGIN_OK` (ver `_handle_msg_login_ok`), que
         é exatamente a garantia de que isto é uma reconexão NO MEIO do
-        jogo, não o login normal."""
+        jogo, não o login normal.
+
+        `_clear_remote_entity_caches()` (06/10/2026, 2ª parte do mesmo
+        bug, achada depois — usuário relatou NPC/mob "travado" numa
+        posição velha após reconectar): eid de entidade NÃO é estável
+        entre reinícios do servidor (mundo reconstrói do zero, NPCs/mobs
+        ganham eids NOVOS). Sem limpar os caches locais aqui, um
+        WORLD_STATE novo (que chega logo depois do SELECT_CHARACTER
+        acima) processa cada entidade via `_spawn_remote_mob` — que
+        pula silenciosamente (`SPAWN_SKIP`, ver
+        `client/remote_entity_handlers.py`) qualquer `server_eid` que já
+        exista em `self._remote_mobs`, achando que já tem a entidade
+        certa. Se um eid NOVO colidir por acaso com uma chave VELHA (de
+        antes da reconexão), o spawn de verdade nunca acontece — o que
+        fica na tela é a entidade ANTIGA (posição/eid de antes do
+        restart), congelada pra sempre (NPC nunca mais se move por
+        natureza; mob só se "autocorrige" se por acaso andar de novo,
+        o que pode nunca acontecer). Mesmo método já usado por
+        `_do_transition()` pra troca de mapa de verdade — reconexão é a
+        MESMA classe de "o mundo do cliente não tem relação com o que
+        vem a seguir", só que pro MESMO mapa."""
+        self._remove_all_remote_entities(keep_tilemap=True)
+        self._clear_remote_entity_caches()
         char_id = getattr(self, "_selected_char_id", -1)
         if char_id >= 0 and self._net:
             from shared.messages import MsgType as _MT_reauth
