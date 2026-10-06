@@ -513,13 +513,26 @@ async def list_inbox(char_id: int) -> list:
 
 _RANKING_LIMIT = 100
 
+# Personagem de bot de teste de carga (tools/loadtest/identity.py::
+# bot_char_name — "LoadBot" + 4 letras, ex. "LoadBotaaaa") nunca deve
+# aparecer no Ranking Geral — 06/10/2026, pedido do usuário, achado
+# real: 300 contas loadbot0000-loadbot0299 em produção (ferramenta já
+# usada numa sessão anterior) poluiriam o rank de verdade. Filtro
+# DINÂMICO por padrão de nome (nunca lista de id mantida à mão) — vale
+# pra qualquer execução futura da mesma ferramenta, sem precisar tocar
+# aqui de novo. Prefixo tem que bater EXATAMENTE com
+# `tools/loadtest/identity.py::bot_char_name` — mudar um sem o outro
+# quebra o filtro silenciosamente.
+_BOT_NAME_PREFIX = "LoadBot"
+
 
 async def get_ranking(category: str) -> list:
     """Ranking geral (06/10/2026, pedido do usuário) — `category` é
     "level" (nível de personagem) ou um dos `engine.components.
     SKILL_IDS` (nível de skill por uso, 0-200). Inclui TODOS os
     personagens já criados, online ou não — decisão explícita do
-    usuário ("ranking de verdade", não só quem está jogando agora).
+    usuário ("ranking de verdade", não só quem está jogando agora) —
+    EXCETO bots de teste de carga (`_BOT_NAME_PREFIX`).
 
     Retorna até `_RANKING_LIMIT` entradas `{name, class_id, value}` já
     ordenadas (maior valor primeiro, nome alfabético como desempate) —
@@ -535,13 +548,17 @@ async def get_ranking(category: str) -> list:
     if category == "level":
         rows = await pool.fetch(
             "SELECT name, class_id, level AS value FROM characters "
-            "ORDER BY level DESC, name ASC LIMIT $1", _RANKING_LIMIT)
+            "WHERE name NOT LIKE $1 "
+            "ORDER BY level DESC, name ASC LIMIT $2",
+            f"{_BOT_NAME_PREFIX}%", _RANKING_LIMIT)
         return [dict(r) for r in rows]
 
     if category not in _SKILL_IDS_RANK:
         return []
 
-    rows = await pool.fetch("SELECT name, class_id, skill_levels_json FROM characters")
+    rows = await pool.fetch(
+        "SELECT name, class_id, skill_levels_json FROM characters WHERE name NOT LIKE $1",
+        f"{_BOT_NAME_PREFIX}%")
     entries = []
     for r in rows:
         value = 0

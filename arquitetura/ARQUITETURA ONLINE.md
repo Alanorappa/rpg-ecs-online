@@ -1493,6 +1493,22 @@ client-side (`ui/ranking_system.py`, `game.py`, `client/
 network_handlers.py`, `client/modal_stack_handlers.py`, `config.py`)
 precisa de rebuild do `.exe` antes do próximo upload no itch.io.
 
+**Adendo (06/10/2026, mesmo dia) — bots de teste de carga excluídos do
+ranking**: usuário perguntou se dava pra identificar contas/personagens
+de teste no banco — investigação achou 300 contas reais
+`loadbot0000`-`loadbot0299` em produção (`tools/loadtest/`, usado numa
+sessão anterior, nunca apagado — contas são reaproveitadas de propósito
+entre execuções, não é lixo a limpar). Filtro DINÂMICO por nome
+(`server/auth.py::_BOT_NAME_PREFIX = "LoadBot"`, igual
+`tools/loadtest/identity.py::bot_char_name`) em vez de lista de id —
+`get_ranking` exclui qualquer personagem com esse prefixo, em ambas as
+queries (level via SQL `WHERE name NOT LIKE`, skill via filtro antes do
+loop em Python). Nenhuma conta/personagem apagada — decisão do usuário
+foi filtrar, não deletar. Teste novo:
+`tests/test_ranking.py::test_bot_de_loadtest_nunca_aparece_no_ranking`
+(mesma limitação de ambiente já registrada acima — não executado nesta
+sessão).
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```

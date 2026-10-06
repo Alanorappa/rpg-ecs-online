@@ -35,6 +35,10 @@ class TestRankingLevel(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
             "UPDATE characters SET skill_levels_json=$1 WHERE id=$2",
             json.dumps({"levels": {skill_id: value}, "xp": {}}), char_id)
 
+    async def _set_name(self, char_id: int, name: str) -> None:
+        pool = await auth._get_pool()
+        await pool.execute("UPDATE characters SET name=$1 WHERE id=$2", name, char_id)
+
     async def test_ranking_de_level_ordena_desc(self):
         sa, _ = await fake_login(self.mgr, "ranka", "rankusera")
         sb, _ = await fake_login(self.mgr, "rankb", "rankuserb")
@@ -67,6 +71,24 @@ class TestRankingLevel(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
     async def test_categoria_invalida_devolve_vazio(self):
         entries = await auth.get_ranking("categoria_que_nao_existe")
         self.assertEqual(entries, [])
+
+    async def test_bot_de_loadtest_nunca_aparece_no_ranking(self):
+        """Bug real achado pelo usuário (06/10/2026): 300 contas
+        loadbot0000-loadbot0299 (tools/loadtest/) já existem em produção
+        e poluiriam o ranking de verdade. Nome do personagem segue
+        SEMPRE o padrão de tools/loadtest/identity.py::bot_char_name
+        ("LoadBot" + letras) -- filtro por esse prefixo, nunca lista de
+        id mantida à mão."""
+        sa, _ = await fake_login(self.mgr, "rankf", "rankuserf")
+        await self._set_name(sa.char_data["id"], "LoadBotzzzz")
+        await self._set_level(sa.char_data["id"], 200)   # nível MAIS alto possível
+        await self._set_skill_level(sa.char_data["id"], "espada", 200)
+
+        level_entries = await auth.get_ranking("level")
+        self.assertNotIn("LoadBotzzzz", [e["name"] for e in level_entries])
+
+        skill_entries = await auth.get_ranking("espada")
+        self.assertNotIn("LoadBotzzzz", [e["name"] for e in skill_entries])
 
     async def test_ranking_request_handler_responde_result(self):
         """Fluxo completo via protocolo (RANKING_REQUEST -> RANKING_RESULT),
