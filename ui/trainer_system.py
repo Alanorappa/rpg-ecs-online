@@ -384,9 +384,24 @@ class TrainerSystem(UIScaleMixin, System):
 
         if not self._net:
             return
+        # self._tr_eid e o eid LOCAL do mirror (criado por
+        # client/remote_entity_handlers.py::_spawn_remote_mob via
+        # create_enemy() -- NAO reusa o eid do servidor). O servidor so
+        # conhece seus proprios eids (process_train_skill faz
+        # world.get_component(npc_id, Trainer) contra o World dele) --
+        # mandar o eid local sempre resolvia pra "invalid_trainer", pra
+        # QUALQUER player, sempre (bug real reportado por tester, 05/10/2026
+        # -- nunca era sobre a trava de quest). Resolve pro server_eid
+        # ANTES de mandar, mesmo padrao ja usado por
+        # ui/skill_system.py (cast de skill em alvo) e
+        # client/trade_handlers.py (abrir trade).
+        from engine.components import RemoteEntityMeta as _REM_train
+        meta = self.world.get_component(self._tr_eid, _REM_train)
+        if meta is None:
+            return
         from shared.messages import MsgType as _MTtrain
         self._net.send(_MTtrain.TRAIN_SKILL_REQUEST, {
-            "npc_id": self._tr_eid, "skill_id": skill_id,
+            "npc_id": meta.server_eid, "skill_id": skill_id,
         })
 
     # ------------------------------------------------------------------

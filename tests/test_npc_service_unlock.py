@@ -341,5 +341,76 @@ class TestShopTryOpenMerchantRedirecionaParaQuest(unittest.TestCase):
         self.assertIsNone(self.world.get_component(self.player, NPCInteractionRequest))
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# 6) Cliente — TrainerSystem._do_learn manda o eid do SERVIDOR, não o local
+# ─────────────────────────────────────────────────────────────────────────
+# Bug real reportado por tester (ERUDOM, 05/10/2026): "Interceptar aparece
+# na lista, clico e não acontece nada" — nada a ver com a trava de quest
+# (ele já tinha completado). Causa real: client/remote_entity_handlers.py::
+# _spawn_remote_mob cria o NPC com um eid LOCAL novo (create_enemy()),
+# diferente do eid que o SERVIDOR usa pra essa mesma entidade — o eid real
+# do servidor fica só em RemoteEntityMeta.server_eid. _do_learn mandava
+# self._tr_eid (local) direto como "npc_id" — o servidor nunca reconhecia
+# esse id (process_train_skill faz world.get_component(npc_id, Trainer)
+# contra o PRÓPRIO World dele), sempre recusava com reason="invalid_trainer",
+# pra QUALQUER player, sempre — log de produção confirmou isso em 3
+# sessões/eids diferentes do mesmo tester, inclusive após relogar.
+
+class TestDoLearnMandaServerEidNaoLocal(unittest.TestCase):
+
+    class _FakeNet:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, msg_type, payload):
+            self.sent.append((msg_type, payload))
+
+    def setUp(self):
+        from engine.world import World
+        from ui.trainer_system import TrainerSystem
+        from engine.components import RemoteEntityMeta
+
+        self.world = World()
+        self.player = self.world.create_entity()
+        _cs = CharacterStats(name="Testchar", class_id="guerreiro")
+        _cs.level = 8
+        self.world.add_component(self.player, _cs)
+        self.world.add_component(self.player, PlayerSkills())
+        self.world.add_component(self.player, Wallet(gold=1000))
+        self.world.add_component(self.player, PlayerControlled())
+
+        # eid LOCAL do NPC (o que create_enemy() teria criado) é
+        # propositalmente DIFERENTE do server_eid simulado abaixo — é
+        # exatamente essa diferença que o bug ignorava.
+        self.npc_local_eid = self.world.create_entity()
+        self.world.add_component(self.npc_local_eid, NPC(name="Avido Faseo"))
+        self.world.add_component(self.npc_local_eid, Trainer(class_id="guerreiro"))
+        self.world.add_component(self.npc_local_eid, RemoteEntityMeta(server_eid=9999))
+
+        screen = pygame.Surface((800, 600))
+        self.trainer = TrainerSystem(self.world, self.player, screen)
+        self.trainer.set_ui_scale(1.0)
+        self.trainer._net = self._FakeNet()
+        self.trainer._tr_eid = self.npc_local_eid
+        self.trainer._tr_class_id = "guerreiro"
+
+    def test_do_learn_manda_server_eid_nao_o_eid_local(self):
+        self.trainer._do_learn("interceptar")
+        self.assertEqual(len(self.trainer._net.sent), 1)
+        _msg_type, payload = self.trainer._net.sent[0]
+        self.assertEqual(payload["npc_id"], 9999,
+            "deveria mandar RemoteEntityMeta.server_eid, não o eid local do mirror")
+        self.assertNotEqual(payload["npc_id"], self.npc_local_eid)
+
+    def test_do_learn_sem_remote_entity_meta_nao_manda_nada(self):
+        # Guarda de regressão: sem RemoteEntityMeta (ex: NPC local nunca
+        # chegou via rede), nunca manda um npc_id "chutado" (-1/local) —
+        # melhor não mandar nada do que mandar id errado de novo.
+        from engine.components import RemoteEntityMeta
+        self.world.remove_component(self.npc_local_eid, RemoteEntityMeta)
+        self.trainer._do_learn("interceptar")
+        self.assertEqual(len(self.trainer._net.sent), 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -24747,3 +24747,75 @@ quebra.
 Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`) — fix
 também precisa de rebuild do `.exe` (metade client-side) antes do
 próximo upload no itch.io.
+
+## 235. Bug real — `TrainerSystem._do_learn` mandava o eid LOCAL do NPC, servidor sempre recusava como "treinador inválido" (05/10/2026)
+
+**Sintoma relatado por tester (ERUDOM)**: tentando aprender a skill
+Interceptar com Avido Faseo — a skill aparece na lista, ele clica em
+"Aprender" e nada acontece. Hipótese inicial do usuário (quest
+completada numa versão antiga do client) foi investigada e descartada:
+conferido direto no banco de produção, `merchant_greeting` já estava
+em `QuestLog.completed`, nível/ouro também batiam com os requisitos.
+
+**Investigação**: sem nenhum log de falha no servidor pra comparar
+(nenhuma das 3 ações autoritativas — compra, treino, craft — logava o
+motivo de recusa), adicionei log temporário em
+`WorldServer.process_train_skill` pra capturar o `reason` de cada
+rejeição. Resultado real em produção: `reason=invalid_trainer`,
+repetido dezenas de vezes, com o MESMO padrão mesmo depois do tester
+relogar 2 vezes (eid/npc_id mudando a cada relog, sempre inválido).
+Relog eliminava a hipótese de "id antigo de antes de um restart do
+servidor" (cache stale) — se fosse isso, o PRIMEIRO pedido pós-relog
+já teria funcionado.
+
+**Causa raiz**: NPCs (e mobs) chegam ao cliente pela rede e são
+reconstruídos localmente por
+`client/remote_entity_handlers.py::_spawn_remote_mob`, que cria uma
+entidade NOVA no ECS do cliente via `create_enemy()` — o eid resultante
+é um contador LOCAL do cliente, **nunca** o mesmo eid que o servidor
+usa pra essa entidade. O eid real do servidor fica guardado à parte, em
+`RemoteEntityMeta.server_eid`, anexado à mesma entidade local. Esse
+padrão já era seguido corretamente em outros pontos que precisam
+mandar um alvo pro servidor (`ui/skill_system.py` ao conjurar skill
+num alvo, `client/trade_handlers.py` ao abrir trade) — mas
+`TrainerSystem._do_learn` (escrito no dia anterior, função nova) mandava
+`self._tr_eid` (o eid LOCAL, capturado em `_open_menu` via
+`world.get_entities_with(..., Trainer)`, iteração 100% local) direto
+como `"npc_id"` no payload de `TRAIN_SKILL_REQUEST`. O servidor
+(`process_train_skill`) faz `self.world.get_component(npc_id, Trainer)`
+contra o PRÓPRIO World dele — um eid de outro espaço de numeração nunca
+bate com nada ali, resultado sempre `reason="invalid_trainer"`, pra
+QUALQUER player, sempre (não era específico do ERUDOM nem da trava de
+quest nova — a trava nunca chegou a ser avaliada, a função recusava
+antes disso). Como a `ShopSystem` nunca precisou resolver um eid de NPC
+(usa `shop_id`, uma string de catálogo), esse bug ficou invisível até a
+trainer ser a primeira feature de NPC a precisar do eid de verdade.
+
+**Fix**: `_do_learn` resolve `RemoteEntityMeta.server_eid` da entidade
+local ANTES de mandar o request (mesmo padrão de `skill_system.py`/
+`trade_handlers.py`); sem `RemoteEntityMeta` (NPC sem origem de rede,
+não deveria acontecer em modo online), não manda nada em vez de
+arriscar mandar um id chutado.
+
+**Observabilidade adicionada no mesmo commit**: `process_train_skill`
+agora loga o motivo de toda rejeição (`log.info`, nível INFO,
+`logs/server.log` + journal) — lacuna que atrasou bastante esta
+investigação (sem isso, a única forma de saber o `reason` real era
+reproduzir ao vivo com o tester enquanto eu olhava o log). Vale
+replicar o mesmo padrão em `process_shop_buy`/craft se um caso parecido
+aparecer de novo.
+
+**Teste**: `tests/test_npc_service_unlock.py::
+TestDoLearnMandaServerEidNaoLocal` (2, novo) — NPC local com eid
+deliberadamente diferente do `server_eid` simulado, confirma que o
+payload manda `server_eid`; guarda de regressão pra NPC sem
+`RemoteEntityMeta` (não manda nada). Revert-to-confirm feito (fix
+desfeito temporariamente, os 2 testes falharam exatamente como o bug
+real — `npc_id` batendo com o eid local em vez do `server_eid` —,
+restaurado). Regressão: `test_npc_service_unlock.py`/
+`test_client_ui.py`/`test_service_npcs.py` (280 testes) sem quebra.
+
+Deploy: log de diagnóstico enviado pro Hetzner
+(`deploy_server.ps1`) durante a investigação. O fix de verdade é
+100% client-side (`ui/trainer_system.py`) — precisa de rebuild do
+`.exe` antes do tester conseguir treinar.
