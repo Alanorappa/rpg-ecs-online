@@ -269,6 +269,10 @@ class MsgType(str, Enum):
     MAIL_CLAIM_RESULT  = "mail_claim_result" # S→C  {mail_id, success, item_index, gold_claimed, reason} — valor real vem por INVENTORY_UPDATE/STATS_UPDATE junto, isto só confirma qual slot marcar
     MAIL_DELETE        = "mail_delete"       # C→S  {mail_id} — resposta é um MAIL_INBOX_LIST atualizado (sem mensagem própria)
 
+    # ── Ranking geral (06/10/2026) — ver arquitetura/ARQUITETURA ONLINE.md ──
+    RANKING_REQUEST    = "ranking_request"   # C→S  {category} — "level" ou um dos engine.components.SKILL_IDS
+    RANKING_RESULT     = "ranking_result"    # S→C  {category, entries: [{name, class_id, value}]} — já ordenado, até 100 entradas, TODOS os personagens (online ou não)
+
     # ── GM (menu de debug F12, 07/08/2026) ──────────────────────────
     # Só a conta com is_gm=True (server/grant_gm.py, sem UI/endpoint pra
     # conceder) tem efeito — sem is_gm, servidor ignora silenciosamente
@@ -408,6 +412,7 @@ C2S_REQUIRED: dict = {
     MsgType.MAIL_CLAIM_ITEM:    {"mail_id": _NUM, "item_index": _NUM},
     MsgType.MAIL_CLAIM_GOLD:    {"mail_id": _NUM},
     MsgType.MAIL_DELETE:        {"mail_id": _NUM},
+    MsgType.RANKING_REQUEST:    {"category": str},
     MsgType.GM_LEVELUP:         {"levels": _NUM},
     MsgType.GM_ADD_GOLD:        {"amount": _NUM},
     MsgType.GM_ADD_ITEM:        {"item_name": str},

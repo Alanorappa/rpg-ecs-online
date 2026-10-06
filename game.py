@@ -534,6 +534,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._init_systems()
         self._talent_system = TalentSystem(self.world, self.player_entity, self.screen)
         self._skill_level_ui = SkillLevelUI(self.world, self.player_entity, self.screen)
+        from ui.ranking_system import RankingSystem
+        self._ranking_system = RankingSystem(self.world, self.player_entity, self.screen)
         self._char_stats_ui = CharStatsUI(self.screen)
         self._char_stats_ui.on_open = self._send_char_stats_request
         self._shop_system   = ShopSystem(self.world, self.player_entity, self.screen)
@@ -582,7 +584,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # vivem fora de GameEngine — eles não têm acesso a self._u()/
         # self.font_* direto, então precisam de set_ui_scale() explícito
         # (ver ui_scale_mixin.py e arquitetura/PROBLEMAS_ARQUITETURA.md, IU3).
-        for _sys in (self._talent_system, self._skill_level_ui, self._char_stats_ui, self._shop_system,
+        for _sys in (self._talent_system, self._skill_level_ui, self._ranking_system, self._char_stats_ui, self._shop_system,
                      self._quest_system, self._quest_dialog, self._quest_journal,
                      self._crafting_system, self._trainer_system, self._buff_bar,
                      self._day_night_clock_hud, self._mail_system):
@@ -687,6 +689,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # MailSystem: envia MAIL_* ao servidor (banco é a fonte de verdade
         # do inbox, entrega assíncrona — ver server/mail_processor.py)
         self._mail_system._net = self._net
+        # RankingSystem: envia RANKING_REQUEST ao servidor (banco é a fonte
+        # de verdade, inclui personagens offline — ver server/ranking_processor.py)
+        self._ranking_system._net = self._net
         # BlacksmithSystem: envia CRAFT_REQUEST/RECYCLE_REQUEST ao servidor
         # (débito A4, 11/08/2026 — antes forjar/reciclar era 100% local,
         # servidor nunca descontava ouro/material de verdade)
@@ -1413,7 +1418,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # ShopSystem, QuestSystem/QuestDialogSystem/QuestJournalSystem,
         # LootSystem, TalentSystem, MapOverlay) têm suas próprias fontes — não
         # reagem a _reload_ui_fonts(), precisam do push explícito abaixo.
-        for _sys in (self._talent_system, self._skill_level_ui, self._shop_system, self._quest_system,
+        for _sys in (self._talent_system, self._skill_level_ui, self._ranking_system, self._shop_system, self._quest_system,
                      self._quest_dialog, self._quest_journal,
                      self._crafting_system, self._trainer_system,
                      self._loot_system, self._map_overlay, self._minimap, self._buff_bar,
@@ -1556,6 +1561,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._show_debug      = False
         self._show_habilidades = False
         self._show_skills     = False
+        self._show_ranking    = False
         self._show_char_stats = False
         self._arena_modal_open_val = False
         # Cancela qualquer drag em andamento (habilidades/inventário/hotbar/
@@ -2040,6 +2046,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         self._close_all_modals()
                         if not already_open:
                             self._show_skills = True
+                    elif event.key == self._menu_keys.get("ranking", pygame.K_k):
+                        already_open = self._show_ranking
+                        self._close_all_modals()
+                        if not already_open:
+                            self._show_ranking = True
+                            self._ranking_system.on_open()
                     elif event.key == self._menu_keys.get("estatisticas", pygame.K_c):
                         already_open = self._show_char_stats
                         self._close_all_modals()
@@ -2147,6 +2159,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 self._skill_level_ui.handle_events(events, panel)
                 if self._skill_level_ui.wants_close:
                     self._show_skills = False
+
+            # Modal de Ranking Geral consome eventos quando aberto (read-only)
+            if self._show_ranking:
+                panel = self._ranking_system._panel_rect()
+                self._ranking_system.handle_events(events, panel)
+                if self._ranking_system.wants_close:
+                    self._show_ranking = False
 
             # Modal de Estatísticas consome eventos quando aberto (read-only)
             if self._show_char_stats:
@@ -2973,6 +2992,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 self._talent_system.render()
             if self._show_skills:
                 self._skill_level_ui.render()
+            if self._show_ranking:
+                self._ranking_system.render()
             if self._show_char_stats:
                 self._char_stats_ui.render()
             if self._show_hotbar_editor:
@@ -3788,7 +3809,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             _refresh(sys)
         for attr in ("_skill_system", "_loot_system", "_projectile_system",
                      "_render_system", "_tile_render_system",
-                     "_talent_system", "_skill_level_ui", "_char_stats_ui",
+                     "_talent_system", "_skill_level_ui", "_ranking_system", "_char_stats_ui",
                      "_shop_system", "_quest_dialog", "_quest_journal",
                      "_blacksmith_system", "_crafting_system", "_trainer_system",
                      "_day_night_system", "_mail_system"):

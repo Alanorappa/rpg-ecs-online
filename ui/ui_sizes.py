@@ -43,6 +43,8 @@ class UI:
     HOTBAR_EDITOR_MAX_H          = 620        # teto de altura — acima disso, a lista de linhas rola (ver hotbar_editor_handlers.py)
     CRAFTING_W, CRAFTING_H       = 700, 510   # modal de Forja/Reciclagem (ferreiro)
     TRAINER_W, TRAINER_H         = 640, 480   # modal de treinamento de skills (trainer NPC)
+    RANKING_W, RANKING_H         = 720, 560   # modal de Ranking Geral (tecla K)
+    RANKING_SIDEBAR_W            = 180        # coluna esquerda de categorias
     SHOP_W, SHOP_H                = 1120, 700  # modal de loja (comerciante NPC) — o maior painel do jogo
     SHOP_QTY_MODAL_W, SHOP_QTY_MODAL_H = 460, 240  # mini-modal "quantidade" que abre por cima da loja
     LOOT_MODAL_W                  = 260        # janela de loot (clique direito em corpo) — altura é dinâmica (TITLE_H + nº de linhas)
@@ -291,6 +293,8 @@ class UI:
     CRAFTING_OFFSET_Y     = 0
     TRAINER_OFFSET_X      = 0
     TRAINER_OFFSET_Y      = 0
+    RANKING_OFFSET_X      = 0
+    RANKING_OFFSET_Y      = 0
     SHOP_OFFSET_X         = 0
     SHOP_OFFSET_Y         = 0
     SHOP_QTY_MODAL_OFFSET_X = 0

@@ -47,6 +47,9 @@
 | Portal — handler de rede | `server/session.py` | `_handle_portal_enter_req()`; drenos de `consume_portal_teleport_events()`/`consume_portal_cast_cancel_events()` em `_dispatch_tick_deltas` |
 | Portal — cliente | `client/portal_handlers.py` | `PortalHandlers` — detecção de tile (`portal_tiles`), modal de seleção de destino, estado de cast local/otimista |
 | Portal — animação do tile (objeto de mundo, evento, broadcast AOI) | `engine/tileset.py`, `engine/portal_anim_state.py`, `ui/tile_sprite_manager.py`, `ui/tile_render_system.py` | `PORTAL_ACTIVATE_SHEET_BY_TILE_ID`/`PORTAL_DEACTIVATE_SHEET_BY_TILE_ID`, estado de módulo `portal_anim_state`, `get_portal_event_frame()`, branch em `get_world_objects()` |
+| Ranking Geral — servidor (consulta no banco) | `server/auth.py` | `get_ranking(category)` — level via coluna, skill via `skill_levels_json` lido em Python, até 100 entradas |
+| Ranking Geral — servidor (bridge/handler) | `server/ranking_processor.py`, `server/session.py` | `RankingProcessorMixin.process_ranking_request`; `_handle_ranking_request` |
+| Ranking Geral — cliente | `ui/ranking_system.py` | `RankingSystem` — modal read-only (tecla K), sidebar de categorias + tabela rolável, cache por categoria |
 | Duelo — servidor | `server/duel_processor.py` | `DuelProcessorMixin` — `_duel_pairs`, convites, tick de distância, interceptor de golpe letal |
 | Duelo — cliente | `client/duel_handlers.py` | `DuelHandlers` — modal de convite, contexto PvP client-side, avisos, nameplate vermelho do oponente |
 | Party/Grupo — servidor | `server/party_processor.py` | `PartyProcessorMixin` — `_parties`/`_player_party_id` (N-ário), convites, líder, XP compartilhado (`_party_members_in_range`) |
@@ -87,6 +90,7 @@
 | Adicionar talento | `content/talent_data.py` | `TALENTS` + `CLASS_BUILD_MAP` |
 | Efeito de talento no jogo | `ui/talent_system.py` | `apply_talent_effects()` |
 | Painel read-only de Skill Level (tecla L) | `ui/skill_level_ui.py` | `SkillLevelUI`, registrado em `client/modal_stack_handlers.py` |
+| Modal de Ranking Geral (tecla K) | `ui/ranking_system.py` | `RankingSystem`, registrado em `client/modal_stack_handlers.py` |
 | Criar item/arma/arco/aljava (catálogo único — loot + loja) | `content/item_table.py` | `ITEMS` dict (07/07/2026 — antes duplicado em `content/loot_tables.py`/`content/merchant_data.py`; `loot_tables._T` e `merchant_data`'s stock agora só referenciam daqui) |
 | Catalogar tile/objeto novo (árvore, arbusto, muro, etc.) a partir de um PNG | `engine/tileset.py` | `SPRITE_FAMILIES` (1 sprite = 1 arquivo), `SHEET_FAMILIES` (grade de terreno, `color_overrides` por (col,row) — 26/08/2026), `OBJECT_SHEET_FAMILIES` (grade OU catálogo explícito; `"groups"` — 26/08/2026 — pra 1 arquivo com categorias visuais diferentes, cada grupo com prefix/label/color própria) |
 | Cor do tile/objeto no minimapa e mapa-múndi (tecla M) | `game.py::_merge_display_matrix` + `ui/map_overlay.py::load_map` | Prioridade por célula: objeto > visual de sheet de terreno (`terrain_visual`) > terreno puro; footprint de colisão inteiro pintado via `engine.tileset.get_collision_offsets`, não só a âncora (26/08/2026, ver `PROBLEMAS_ARQUITETURA.md` §78) |
@@ -352,6 +356,8 @@ rpg_ecs_online/
 │   ├── portal_processor.py          ← PortalProcessorMixin: portal com destino escolhido
 │   │                                  + cast de 5s (30/09/2026), destino validado server-side
 │   │                                  contra `_portal_gates_by_map` (nunca via ZONE_CHANGE_REQ)
+│   ├── ranking_processor.py         ← RankingProcessorMixin: Ranking Geral (06/10/2026),
+│   │                                  bridge fino pra auth.get_ranking (level/skill level, todos os personagens)
 │   ├── party_processor.py           ← PartyProcessorMixin: grupo N-ário, convites, líder, XP compartilhado
 │   ├── pvp_zone_processor.py        ← PvpZoneProcessorMixin: zona PvP (Fase F), stateless, sem tick-check
 │   ├── bush_zone_processor.py       ← BushZoneProcessorMixin: stealth de bush estilo MOBA, stateless, sem tick-check

@@ -1123,6 +1123,13 @@ class SessionManager:
         mails = await self.world_server.process_mail_open_inbox(session.char_data["id"])
         await session.send(MsgType.MAIL_INBOX_LIST, {"mails": mails})
 
+    async def _handle_ranking_request(self, session: Session, payload: dict, ts: int) -> None:
+        if not session.authenticated:
+            return
+        category = str(payload.get("category", ""))
+        entries = await self.world_server.process_ranking_request(category)
+        await session.send(MsgType.RANKING_RESULT, {"category": category, "entries": entries})
+
     # ── GM (menu de debug F12) — só `session.is_gm` tem efeito ────────────
     # Mesmo padrão de bypass negado silenciosamente já usado em
     # skill_processor.py pra taunt/stun: sem is_gm, a mensagem é ignorada,
@@ -2821,6 +2828,7 @@ class SessionManager:
         MsgType.MAIL_CLAIM_ITEM:    _handle_mail_claim_item,
         MsgType.MAIL_CLAIM_GOLD:    _handle_mail_claim_gold,
         MsgType.MAIL_DELETE:        _handle_mail_delete,
+        MsgType.RANKING_REQUEST:    _handle_ranking_request,
         MsgType.GM_LEVELUP:        _handle_gm_levelup,
         MsgType.GM_ADD_GOLD:       _handle_gm_add_gold,
         MsgType.GM_ADD_ITEM:       _handle_gm_add_item,

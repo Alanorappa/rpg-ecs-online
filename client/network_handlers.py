@@ -2897,6 +2897,11 @@ class NetworkHandlers:
     # já existentes, tratados pelos handlers de sempre) — estes 4 só
     # atualizam o estado da UI de correio em si (MailUIState).
 
+    def _handle_msg_ranking_result(self, payload: dict) -> None:
+        category = payload.get("category", "")
+        entries  = payload.get("entries", [])
+        self._ranking_system.on_result(category, entries)
+
     def _handle_msg_mail_inbox_list(self, payload: dict) -> None:
         from ui.ui_components import MailUIState as _MailUIStateInbox
         mail_ui = self.world.get_component(self.player_entity, _MailUIStateInbox)
@@ -3436,6 +3441,7 @@ NetworkHandlers._NET_DISPATCH_NAMES = {
     MsgType.SKILL_GRANTED: "_handle_msg_skill_granted",
     MsgType.BUY_RESULT: "_handle_msg_buy_result",
     MsgType.SELL_RESULT: "_handle_msg_sell_result",
+    MsgType.RANKING_RESULT: "_handle_msg_ranking_result",
     MsgType.MAIL_INBOX_LIST: "_handle_msg_mail_inbox_list",
     MsgType.MAIL_ITEM_DETAIL: "_handle_msg_mail_item_detail",
     MsgType.MAIL_SEND_RESULT: "_handle_msg_mail_send_result",

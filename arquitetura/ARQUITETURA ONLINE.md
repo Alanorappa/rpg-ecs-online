@@ -1426,6 +1426,73 @@ client-side (`ui/map_markers.py`, `client/network_handlers.py`,
 `game.py`) precisa de rebuild do `.exe` antes do próximo upload no
 itch.io.
 
+### 26. Ranking Geral — level e skill level, todos os personagens (06/10/2026)
+
+Pedido do usuário, com esboço fornecido: modal com categorias numa
+coluna à esquerda (Level + as 11 trilhas de Skill Level — machado/
+espada/maça/arco/báculo/escudo/defesa/3 resistências/magic,
+`engine.components.SKILL_IDS`) e uma tabela rolável à direita (nome,
+posição no rank, valor). Decisões fechadas com o usuário
+(`AskUserQuestion`): inclui TODOS os personagens já criados — online ou
+não ("ranking de verdade", não só quem está jogando agora); tecla **K**
+abre o modal (livre — conferido não haver nenhum `pygame.K_k` já em uso
+em lugar nenhum do código, apesar de um comentário antigo e
+desatualizado em `ui/ui_sizes.py` sugerir o contrário pro editor de
+hotbar, que na verdade abre por um caminho diferente).
+
+**Fonte de dado é o BANCO, não o World ao vivo** — primeira vez que uma
+feature deste projeto precisa necessariamente de personagem OFFLINE
+(diferente de todo o resto do jogo, sempre sobre o ECS ao vivo).
+`server/auth.py::get_ranking(category)` — "level" usa `ORDER BY` direto
+na coluna; skill usa `skill_levels_json` (TEXT, não JSONB) lido e
+ordenado em Python (mais simples/seguro que confiar em cast `::jsonb`
+dentro do SQL, e o volume de personagens ainda é pequeno o bastante pra
+isso não pesar) — até 100 entradas, nome como desempate. Mixin novo
+`server/ranking_processor.py::RankingProcessorMixin.
+process_ranking_request` (1 método, bridge fino pro `auth.get_ranking`
+— mesmo padrão de `mail_processor.py`).
+
+**Protocolo**: `RANKING_REQUEST` (C→S, `{category}`) / `RANKING_RESULT`
+(S→C, `{category, entries: [{name, class_id, value}]}`) — request/
+response simples (não é AOI_UPDATE nem push periódico; ranking não
+muda a cada frame).
+
+**Cliente**: `ui/ranking_system.py::RankingSystem` — modal read-only,
+SEM estado próprio de "aberto" (mesmo padrão de `SkillLevelUI`/
+`CharStatsUI`: flag `self._show_ranking` em `game.py`, ligada/desligada
+pela tecla K + `_close_all_modals()`/ESC via `client/
+modal_stack_handlers.py::_modal_registry()`). Resultado de cada
+categoria fica cacheado em `self._data` pela duração da sessão —
+clicar numa categoria já vista não manda outro `RANKING_REQUEST`.
+Scrollbar: mesmo padrão visual (track + thumb proporcional) já usado
+pelo chat (`client/chat_handlers.py`), só mouse wheel, sem drag.
+
+Testes: `tests/test_client_ui.py` (7, novos, cliente — pedido da
+categoria padrão ao abrir, cache por categoria, clique na sidebar troca
+categoria, clique no X fecha, roteamento do RANKING_RESULT pro sistema)
+— rodados e passando, com revert-to-confirm na lógica de cache.
+`tests/test_ranking.py` (5, novos, servidor — ordenação por level,
+leitura de `skill_levels_json`, skill sem dado vira 0 (nunca erro),
+categoria inválida devolve lista vazia, fluxo completo via protocolo).
+**Não executados nesta sessão** (sem Postgres/Docker local disponível —
+mesma limitação já registrada nos itens anteriores desta sessão) —
+seguem o mesmo padrão de `tests/test_mail.py` (`fake_login` + banco
+real de dev); rodar localmente antes de considerar 100% validado.
+
+Achado colateral durante a implementação: um teste JÁ EXISTENTE
+(`tests/test_client_ui.py::_make_modal_stack_fixture`) quebrou ao
+adicionar a entrada "ranking" em `_modal_registry()` — o fixture
+precisa declarar EXPLICITAMENTE todo `_show_X` novo lido pelo registro
+(`__getattr__` só auto-stuba método `_close_*`, nunca flag de estado) —
+mesma classe de gap já documentada ali pelo próprio comentário do
+arquivo (achada antes com o modal de portal). Corrigido no mesmo
+commit.
+
+Deploy: enviado pro servidor Hetzner (`deploy_server.ps1`) — metade
+client-side (`ui/ranking_system.py`, `game.py`, `client/
+network_handlers.py`, `client/modal_stack_handlers.py`, `config.py`)
+precisa de rebuild do `.exe` antes do próximo upload no itch.io.
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```
@@ -1763,6 +1830,7 @@ barra de HP); ghost (`is_ghost`) desenhado semi-transparente (alpha ~120/255).
 | Trava de quest por serviço de NPC — loja e treinador de skill (04/10/2026, pedido do usuário: "a loja só destravar depois que o player fizer uma quest... a mesma coisa serve pra qualquer outro NPC, como treinamento"). Decisões fechadas com o usuário: só 1 `unlock_quest_id` por serviço (não lista — "já consigo fazer chain quest, só coloco a última no desbloqueio"); sem mensagem de "bloqueado" nenhuma — clicar no NPC travado abre o diálogo de quest direto (`ui/trainer_system.py::_open_menu` já priorizava quest completável sobre o menu de assunto; replicado pra loja via `NPCInteractionRequest(kind="open_quest_dialog")`, que não tinha menu intermediário). Aproveitou a tarefa pra fechar um débito pré-existente, aprovado pelo usuário: treinar skill NUNCA teve validação no servidor (só loja/forja já tinham, desde o débito A4) — `_do_learn` mutava `learned_skill_ids`/`Wallet.gold` locais direto, sem nenhuma mensagem de rede. Agora `TRAIN_SKILL_REQUEST`/`TRAIN_SKILL_RESULT` espelham exatamente o padrão já usado por `BUY_REQUEST`/`CRAFT_REQUEST` (classe/nível/ouro/trava de quest revalidados no servidor, nunca confiados do cliente) | ✅ completo e testado (18 testes novos, revert-to-confirm em cada peça); nenhuma loja/treinador usa a trava ainda — mecanismo pronto, qual quest trava qual NPC é decisão de conteúdo do usuário, não código | `engine/quest_logic.py::has_unlocked`, `engine/components.py::Trainer.unlock_quest_id`, `content/merchant_data.py::SHOPS[...]["unlock_quest_id"]`, `server/world_server.py::process_shop_buy`/`process_train_skill`, `server/session.py::_handle_train_skill_request`, `ui/trainer_system.py::_compute_options`/`_do_learn`, `ui/shop_system.py::_try_open_merchant`, `client/network_handlers.py::_handle_msg_train_skill_result`, `tests/test_npc_service_unlock.py` |
 | Ícone de NPC de serviço no mapa (M)/minimapa independente de AOI — ver decisão §24 (06/10/2026, pedido já feito antes, não corrigido até agora) | ✅ completo e testado (3 testes novos, revert-to-confirm) | `ui/map_markers.py::collect_markers`, `engine/quest_logic.py` (`giver=` opcional + `get_locked_quests` novo), `ui/quest_system.py::marker_for_static`, `game.py` |
 | Posição de companheiros de grupo no mapa (M)/minimapa, independente de FoW — ver decisão §25 (06/10/2026) | ✅ implementado; testes CLIENTE passando (3), testes SERVIDOR escritos mas **não executados** nesta sessão (sem Postgres local disponível) — rodar antes de considerar validado | `shared/messages.py` (AOI_UPDATE.party_positions), `server/session.py::_build_update_for_session`, `client/network_handlers.py::_handle_msg_aoi_update`, `ui/map_markers.py::collect_party_markers`, `game.py`, `tests/test_session.py::TestPartyPositionsNoAoiUpdate`, `tests/test_client_ui.py` |
+| Ranking Geral (level + skill level, TODOS os personagens online ou não) — ver decisão §26 (06/10/2026) | ✅ implementado; testes CLIENTE passando (7), testes SERVIDOR escritos mas **não executados** nesta sessão (sem Postgres local disponível) — rodar antes de considerar validado | `server/auth.py::get_ranking`, `server/ranking_processor.py` (novo), `shared/messages.py` (RANKING_REQUEST/RESULT), `server/session.py::_handle_ranking_request`, `ui/ranking_system.py` (novo), `game.py`, `client/modal_stack_handlers.py`, `config.py` (tecla K), `tests/test_ranking.py`, `tests/test_client_ui.py` |
 
 ---
 

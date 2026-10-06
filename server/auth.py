@@ -511,6 +511,50 @@ async def list_inbox(char_id: int) -> list:
     return result
 
 
+_RANKING_LIMIT = 100
+
+
+async def get_ranking(category: str) -> list:
+    """Ranking geral (06/10/2026, pedido do usuário) — `category` é
+    "level" (nível de personagem) ou um dos `engine.components.
+    SKILL_IDS` (nível de skill por uso, 0-200). Inclui TODOS os
+    personagens já criados, online ou não — decisão explícita do
+    usuário ("ranking de verdade", não só quem está jogando agora).
+
+    Retorna até `_RANKING_LIMIT` entradas `{name, class_id, value}` já
+    ordenadas (maior valor primeiro, nome alfabético como desempate) —
+    `[]` se `category` não existe. "level" usa `ORDER BY` direto
+    (coluna simples); skill usa `skill_levels_json` (TEXT, não JSONB —
+    lido e ordenado em Python, mais simples/seguro que confiar em cast
+    `::jsonb` dentro do SQL, e o volume de personagens ainda é pequeno
+    o bastante pra isso não pesar)."""
+    from engine.components import SKILL_IDS as _SKILL_IDS_RANK
+    import json as _json_rank
+
+    pool = await _get_pool()
+    if category == "level":
+        rows = await pool.fetch(
+            "SELECT name, class_id, level AS value FROM characters "
+            "ORDER BY level DESC, name ASC LIMIT $1", _RANKING_LIMIT)
+        return [dict(r) for r in rows]
+
+    if category not in _SKILL_IDS_RANK:
+        return []
+
+    rows = await pool.fetch("SELECT name, class_id, skill_levels_json FROM characters")
+    entries = []
+    for r in rows:
+        value = 0
+        try:
+            data = _json_rank.loads(r["skill_levels_json"] or "{}")
+            value = int(data.get("levels", {}).get(category, 0))
+        except (ValueError, TypeError, AttributeError):
+            pass
+        entries.append({"name": r["name"], "class_id": r["class_id"], "value": value})
+    entries.sort(key=lambda e: (-e["value"], e["name"]))
+    return entries[:_RANKING_LIMIT]
+
+
 async def get_mail_detail(mail_id: int, char_id: int) -> "dict | None":
     """Valida ownership pelo `char_id` — NUNCA confia só no `mail_id` vindo
     do cliente (outro player não pode abrir mail alheio adivinhando o id)."""

@@ -377,6 +377,95 @@ def test_aoi_update_party_positions_substitui_dict_inteiro():
     assert fx._party_member_positions == {}
 
 
+# ── ui/ranking_system.py (06/10/2026) ───────────────────────────────────────
+
+class _FakeNetSend:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, msg_type, payload):
+        self.sent.append((msg_type, payload))
+
+
+def _make_ranking_system():
+    from engine.world import World
+    from ui.ranking_system import RankingSystem
+    world = World()
+    player = world.create_entity()
+    screen = pygame.display.get_surface() or pygame.Surface((1280, 720))
+    rs = RankingSystem(world, player, screen)
+    rs.set_ui_scale(1.0)
+    rs._net = _FakeNetSend()
+    return rs
+
+
+def test_on_open_pede_categoria_level_por_padrao():
+    from shared.messages import MsgType
+    rs = _make_ranking_system()
+    rs.on_open()
+    assert rs._net.sent == [(MsgType.RANKING_REQUEST, {"category": "level"})]
+    assert "level" in rs._pending
+
+
+def test_on_result_guarda_dado_e_limpa_pending():
+    rs = _make_ranking_system()
+    rs.on_open()
+    entries = [{"name": "Fulano", "class_id": "guerreiro", "value": 42}]
+    rs.on_result("level", entries)
+    assert rs._data["level"] == entries
+    assert "level" not in rs._pending
+
+
+def test_trocar_categoria_pede_de_novo_so_se_nao_tiver_cache():
+    from shared.messages import MsgType
+    rs = _make_ranking_system()
+    rs.on_open()
+    rs.on_result("level", [{"name": "A", "class_id": "guerreiro", "value": 1}])
+    rs._net.sent.clear()
+
+    rs._request_category("espada")   # categoria nova -- pede
+    assert rs._net.sent == [(MsgType.RANKING_REQUEST, {"category": "espada"})]
+    rs.on_result("espada", [{"name": "B", "class_id": "mago", "value": 2}])
+    rs._net.sent.clear()
+
+    rs._request_category("level")    # já cacheada -- NÃO pede de novo
+    assert rs._net.sent == []
+    assert rs._category == "level"
+
+
+def test_clique_na_sidebar_troca_categoria():
+    rs = _make_ranking_system()
+    rs.on_open()
+    panel = rs._panel_rect()
+    sidebar = rs._sidebar_rect(panel)
+    # 2ª linha da sidebar = 2ª categoria (índice 1 -- "espada", logo após "level")
+    row_h = rs._u(32)
+    click_pos = (sidebar.x + 5, sidebar.y + row_h + 5)
+    ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=click_pos)
+    rs.handle_events([ev], panel)
+    assert rs._category == "espada"
+
+
+def test_clique_no_x_fecha():
+    rs = _make_ranking_system()
+    panel = rs._panel_rect()
+    close_r = rs._close_btn_rect(panel)
+    ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=close_r.center)
+    rs.handle_events([ev], panel)
+    assert rs.wants_close is True
+
+
+def test_handle_msg_ranking_result_roteia_pro_ranking_system():
+    fx = _make_net_fixture()
+    fx._ranking_system = _make_ranking_system()
+    fx._ranking_system.on_open()
+    fx._handle_msg_ranking_result({
+        "category": "level",
+        "entries": [{"name": "Ciclano", "class_id": "arqueiro", "value": 99}],
+    })
+    assert fx._ranking_system._data["level"][0]["name"] == "Ciclano"
+
+
 def test_deconflict_positions_sem_sobreposicao():
     from ui.map_markers import deconflict_positions
     pts = [(100.0, 100.0)] * 4           # 4 marcadores no MESMO ponto
@@ -3911,6 +4000,7 @@ def _make_modal_stack_fixture(quest_dialog_open=False, show_inventory=False,
             self._show_debug       = False
             self._show_talents     = False
             self._show_skills      = False
+            self._show_ranking     = False
             self._show_char_stats  = show_char_stats
             self._show_inventory   = show_inventory
             self._show_pause       = False

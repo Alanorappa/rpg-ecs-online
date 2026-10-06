@@ -51,6 +51,7 @@ DEFAULTS = {
         "habilidades": 104,   # K_h  — painel de skills aprendidas
         "skill_level": 108,   # K_l  — painel de Skill Level (Tibia-like)
         "estatisticas": 99,   # K_c  — modal de estatísticas do personagem (Fase E)
+        "ranking":     107,   # K_k  — modal de Ranking Geral (06/10/2026)
     },
 }
 
