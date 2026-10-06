@@ -25023,3 +25023,47 @@ Regressão: `test_client_ui.py` completo (238 testes) sem quebra.
 
 Deploy: fix é 100% client-side (`client/network_handlers.py`) — precisa
 de rebuild do `.exe` antes de chegar a quem já tem o jogo instalado.
+
+## 239. `AttributeError: _show_ranking` ao abrir o client — crash reportado pelo usuário (06/10/2026)
+
+**Sintoma**: usuário tentou abrir o client logo após o build da feature
+de Ranking Geral (§26, ARQUITETURA ONLINE.md) e o jogo nunca chegou a
+abrir — traceback no terminal, `'GameEngine' object has no attribute
+'_show_ranking'`, na primeira leitura da flag no loop de render.
+
+**Causa raiz**: implementei `self._show_ranking` seguindo o padrão de
+`_show_skills`/`_show_char_stats`, mas só copiei o ponto onde essas
+flags são RESETADAS (`_close_all_modals()`, que assume que a flag já
+existe) — nunca o ponto onde são DECLARADAS de verdade pela primeira
+vez (`__init__`, perto de `_show_habilidades`/`_show_skills`, linha
+~457). Como `_close_all_modals()` só roda em resposta a uma tecla
+pressionada, e o loop de render lê `self._show_ranking` todo frame
+desde o início, o crash acontecia ANTES de qualquer tecla ser
+apertada — na primeira iteração do loop.
+
+**Por que não foi pego antes de chegar no usuário**: toda a verificação
+desta feature (testes automatizados + smoke test manual) ficou restrita
+a `ui/ranking_system.py` isolado e ao fixture mínimo de
+`_make_modal_stack_fixture` — nunca cheguei a instanciar o `GameEngine`
+real nem rodar `python main.py` de verdade antes de entregar. Nenhum
+teste automatizado cobre (nem deveria tentar cobrir sozinho, dado o
+custo) a inicialização completa do `GameEngine` — a única forma real de
+pegar este tipo de gap é efetivamente abrir o jogo, que é exatamente o
+passo que ficou pulado.
+
+**Fix**: `self._show_ranking: bool = False` adicionado no `__init__`,
+mesma linha de vizinhança de `_show_skills`/`_show_char_stats`.
+
+**Lição a aplicar daqui pra frente**: ao adicionar um novo `_show_X`
+(ou qualquer flag lida incondicionalmente no loop de render/eventos),
+sempre verificar que existem OS DOIS pontos — declaração real no
+`__init__` E reset em `_close_all_modals()` — nunca só copiar o
+segundo achando que já cobre o primeiro. Idealmente, rodar
+`python main.py` pelo menos até a tela de jogo (não só os testes
+automatizados) antes de reportar uma feature de UI como pronta — gap
+já registrado nas instruções do projeto, mas pulado nesta entrega.
+
+Deploy: fix é 100% client-side (`game.py`) — precisa de rebuild do
+`.exe` antes de chegar a quem já tem o `.exe` v0.51.0 instalado
+(quem roda `python main.py` direto do código-fonte já recebe o fix
+só com o commit, sem rebuild).
