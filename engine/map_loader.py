@@ -601,7 +601,10 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
 
     if "training_dummies" in data:
         spawn_points["training_dummies"] = [
-            (d["x"], d["y"]) for d in data["training_dummies"]
+            # reflect_damage (07/10/2026) — 0 = boneco normal; ver
+            # engine.components.TrainingDummy pro racional completo.
+            (d["x"], d["y"], d.get("reflect_damage", 0))
+            for d in data["training_dummies"]
         ]
 
     if "default_ambient" in data:

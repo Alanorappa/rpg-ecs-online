@@ -916,6 +916,26 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             })
         _sys_svc["emit_retaliation"] = _on_retaliation
 
+        # Callback de reflexão de dano do Boneco de Treino (07/10/2026) —
+        # mesma indireção de _on_retaliation acima: deal_damage (código
+        # compartilhado, engine/world_systems.py) não conhece
+        # _combat_this_tick (atributo só do WorldServer), então passa
+        # pelo registro genérico de serviços. Diferente de
+        # emit_retaliation (fields invertidos de propósito, framing do
+        # Escudo de Fogo): aqui o boneco É o atacante de verdade — client
+        # vê "dummy bateu no player" normalmente, igual qualquer mob.
+        def _on_dummy_reflect(dummy_eid: int, player_eid: int, damage: int,
+                              outcome: str, hp_after: int) -> None:
+            _srv_ref._combat_this_tick.append({
+                "attacker": dummy_eid,
+                "target":   player_eid,
+                "damage":   damage,
+                "outcome":  outcome,
+                "hp_after": hp_after,
+                "source":   "auto",
+            })
+        _sys_svc["emit_dummy_reflect"] = _on_dummy_reflect
+
         # P4: injeção direta de serviços por bundle — elimina dependência no global _svc.
         # `perf_push=self._perf_push, perf_pop=self._perf_pop` (Fase 4.5,
         # 12/08/2026, atualizado Fase 4.7 — ver PROBLEMAS_ARQUITETURA.md
@@ -1035,8 +1055,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def _create_training_dummies(self, dummies_data: list) -> None:
         from engine.entity_factory import create_training_dummy as _ctd
-        for tx, ty in dummies_data:
-            eid = _ctd(self.world, tx, ty)
+        for tx, ty, reflect_damage in dummies_data:
+            eid = _ctd(self.world, tx, ty, reflect_damage=reflect_damage)
 
     def _create_combat_npcs(self, combat_npcs_data: list, map_file: str) -> None:
         """Cria NPCs de combate (guarda, etc — Sistema de Facções, Fase 4) a

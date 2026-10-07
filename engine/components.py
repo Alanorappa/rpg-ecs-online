@@ -1956,8 +1956,15 @@ class NPCInteractionRequest:
 
 @dataclass
 class TrainingDummy:
-    """Tag: boneco de treino. HP resetado ao atingir 0 em vez de morrer."""
-    pass
+    """Tag: boneco de treino. HP resetado ao atingir 0 em vez de morrer.
+
+    `reflect_damage` (07/10/2026, pedido do usuário — "treino de defesa/
+    escudo") — 0 (padrão) = comportamento de sempre, sem reflexão. Com
+    valor > 0, todo golpe do player nele reflete essa quantidade FIXA de
+    volta, via hit real (mesma rolagem de acerto/esquiva/aparo/bloqueio/
+    crítico/armadura de qualquer ataque — ver `CombatSystem.deal_damage`,
+    reaproveitado recursivamente, nunca uma fórmula de dano paralela)."""
+    reflect_damage: int = 0
 
 
 @dataclass

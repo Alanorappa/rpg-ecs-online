@@ -870,6 +870,35 @@ class CombatSystem(System):
                         _emit_ret(target_id, attacker_id, _retaliation,
                                   max(0, _att_cs.current_hp))
 
+        # Boneco de treino com reflexão de dano (07/10/2026, pedido do
+        # usuário — "treino de defesa/escudo"): reflete um valor FIXO de
+        # volta pro atacante via HIT REAL — reusa este mesmo deal_damage
+        # recursivamente (boneco "bate de volta"), nunca uma fórmula de
+        # dano paralela. Passa pela MESMA rolagem de acerto/esquiva/
+        # aparo/bloqueio/crítico/armadura que qualquer ataque normal —
+        # é esse o ponto ("o personagem pode esquivar, aparar etc"),
+        # diferente do Escudo de Fogo acima (dano cru, sem rolagem).
+        # Boneco nunca tem Faction (ver faction_system._NO_FACTION,
+        # resolve "neutro" por padrão) — can_engage() já permite o
+        # "ataque" de volta sem precisar de nenhum ajuste de facção.
+        if attacker_is_player and final_damage > 0:
+            from engine.components import TrainingDummy as _TDReflect
+            _dummy = self.world.get_component(target_id, _TDReflect)
+            if _dummy and _dummy.reflect_damage > 0:
+                _att_cs_ref = self._get_combat_stats(attacker_id)
+                _hp_before_ref = _att_cs_ref.current_hp if _att_cs_ref else 0
+                _dead_ref, _outcome_ref = self.deal_damage(
+                    target_id, attacker_id, "physical",
+                    base_ability_damage=_dummy.reflect_damage)
+                # Broadcast de rede (online): deal_damage não conhece
+                # _combat_this_tick (atributo só do WorldServer) — mesma
+                # indireção já usada pelo Escudo de Fogo (emit_retaliation).
+                _emit_dr = _svc.get("emit_dummy_reflect")
+                if _emit_dr and _att_cs_ref:
+                    _dmg_dealt_ref = max(0, _hp_before_ref - _att_cs_ref.current_hp)
+                    _emit_dr(target_id, attacker_id, _dmg_dealt_ref,
+                             _outcome_ref, max(0, _att_cs_ref.current_hp))
+
         if target_stats.current_hp <= 0:
             return self._handle_death(target_id, attacker_id), outcome
         return False, outcome

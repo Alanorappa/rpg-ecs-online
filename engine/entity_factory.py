@@ -711,11 +711,14 @@ def create_trainer(world: World, tile_x: int, tile_y: int,
     return eid
 
 
-def create_training_dummy(world: World, tile_x: int, tile_y: int) -> int:
+def create_training_dummy(world: World, tile_x: int, tile_y: int,
+                          reflect_damage: int = 0) -> int:
     """Cria boneco de treino estático para testes de skills e talentos.
 
     HP: 999 999 | Armadura: 100 | hp5: ~99 999/5s | Sem IA, sem ataque, sem XP.
-    """
+
+    `reflect_damage` (07/10/2026) — ver `TrainingDummy` pro racional
+    completo. 0 = boneco normal (comportamento de sempre)."""
     from engine.components import TrainingDummy as _TD
     x = tile_x * TILE_SIZE + TILE_SIZE / 2
     y = tile_y * TILE_SIZE + TILE_SIZE / 2
@@ -744,7 +747,7 @@ def create_training_dummy(world: World, tile_x: int, tile_y: int) -> int:
     world.add_component(eid, EnemyTier(tier="boss"))
     world.add_component(eid, StatusEffects())
     world.add_component(eid, NpcSounds())
-    world.add_component(eid, _TD())
+    world.add_component(eid, _TD(reflect_damage=reflect_damage))
 
     stats = CombatStats(
         base_stamina=999_999,

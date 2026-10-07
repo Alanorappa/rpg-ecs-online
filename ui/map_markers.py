@@ -271,7 +271,9 @@ _TRAINING_DUMMY_RACE = "Mecânico"
 
 
 def _dummy_positions(spawn_points: dict) -> "list[tuple[int, int]]":
-    return [(x, y) for x, y in spawn_points.get("training_dummies", [])]
+    # training_dummies: (x, y, reflect_damage) — reflect_damage ignorado
+    # aqui, só a posição importa pro círculo de alvo (07/10/2026).
+    return [(d[0], d[1]) for d in spawn_points.get("training_dummies", [])]
 
 
 def _hostile_target_circles(spawn_points: dict, target: str) -> "list[QuestCircle]":
