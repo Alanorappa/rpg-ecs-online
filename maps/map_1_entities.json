@@ -182,9 +182,9 @@
     }
   ],
   "training_dummies": [
-    { "x": 115, "y": 383, "reflect_damage": 1, "sprite": "vp_215" },
+    { "x": 115, "y": 383, "reflect_damage": 1, "sprite": "vp_217" },
     { "x": 118, "y": 383 },
-    { "x": 121, "y": 383 }
+    { "x": 121, "y": 383, "sprite": "vp_175", "ranged_only": true }
   ],
   "combat_npcs": [
     {
