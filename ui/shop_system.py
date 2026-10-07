@@ -148,26 +148,22 @@ class ShopSystem(UIScaleMixin, System):
         SH = self.world_surf.get_height()
         return get_camera_offset(self.world, SW, SH)
 
-    def _shop_unlock_quest_id(self, eid: int) -> str:
-        m = self.world.get_component(eid, Merchant)
-        if m is None:
-            return ""
-        return SHOPS.get(m.shop_id, {}).get("unlock_quest_id", "")
-
     def _try_open_merchant(self, eid: int) -> None:
         """Abre a loja, OU — se travada por quest (04/10/2026, pedido do
-        usuário) — pede pro QuestDialogSystem abrir no lugar, mesmo
-        `NPCInteractionRequest` que BlacksmithSystem já usa pra "abrir
-        outro System de NPC" (ver docstring do componente). Sem nenhuma
-        mensagem de bloqueio de propósito: o player só vê o fluxo de
-        quest normal — igual qualquer NPC que só tem quest pra oferecer
-        ainda. `ui/trainer_system.py::_open_menu` já faz exatamente essa
-        priorização pro treinador; aqui replica pra loja, que não tem
-        menu de assunto intermediário (abre direto)."""
+        usuário; trava generalizada por NPC individual em 06/10/2026,
+        ver `NPCUnlock`/`quest_logic.is_npc_unlocked`) — pede pro
+        QuestDialogSystem abrir no lugar, mesmo `NPCInteractionRequest`
+        que BlacksmithSystem já usa pra "abrir outro System de NPC" (ver
+        docstring do componente). Sem nenhuma mensagem de bloqueio de
+        propósito: o player só vê o fluxo de quest normal — igual
+        qualquer NPC que só tem quest pra oferecer ainda. `ui/
+        trainer_system.py::_open_menu`/`ui/crafting_system.py::
+        _open_menu` já fazem exatamente essa priorização; aqui replica
+        pra loja, que não tem menu de assunto intermediário (abre
+        direto)."""
         from engine.components import QuestLog as _QL_shop
-        unlock_qid = self._shop_unlock_quest_id(eid)
         ql = self.world.get_component(self.player_entity, _QL_shop)
-        if quest_logic.has_unlocked(ql, unlock_qid):
+        if quest_logic.is_npc_unlocked(self.world, eid, ql):
             self.open_merchant_id     = eid
             self._pending_merchant_id = -1
             self._shop_scroll = 0
@@ -286,6 +282,7 @@ class ShopSystem(UIScaleMixin, System):
             "item_id":     getattr(preview, "item_id", ""),
             "quantity":    1,
             "current_gold": _wallet_buy.gold if _wallet_buy else 0,
+            "npc_eid":     self.open_merchant_id,
         })
 
     def _buy_qty(self, entry: dict, qty: int, shop_id: str = "") -> None:
@@ -301,6 +298,7 @@ class ShopSystem(UIScaleMixin, System):
             "item_id":     getattr(preview, "item_id", ""),
             "quantity":    qty,
             "current_gold": _wallet_qty.gold if _wallet_qty else 0,
+            "npc_eid":     self.open_merchant_id,
         })
 
     def _open_qty_modal(self, entry: dict, shop_id: str = "") -> None:

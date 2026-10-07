@@ -332,6 +332,19 @@ class BlacksmithSystem(UIScaleMixin, System):
     # Ações internas
     # ------------------------------------------------------------------
     def _open_menu(self, eid: int):
+        """Abre o menu do ferreiro, OU — se travado por quest (06/10/2026,
+        generalização pedida pelo usuário) — pede pro QuestDialogSystem
+        abrir no lugar, mesmo padrão de `ui/shop_system.py::
+        _try_open_merchant`/`ui/trainer_system.py::_open_menu`. Cobre
+        negociar/reciclar/forjar de uma vez (os 3 só são alcançáveis
+        depois de passar por aqui, único ponto de entrada)."""
+        from engine.components import QuestLog as _QL_bs
+        ql = self.world.get_component(self.player_entity, _QL_bs)
+        if not quest_logic.is_npc_unlocked(self.world, eid, ql):
+            self.world.add_component(self.player_entity, NPCInteractionRequest(
+                kind="open_quest_dialog", target_eid=eid))
+            self._open_cooldown = 0.3
+            return
         self._bs_eid  = eid
         npc = self.world.get_component(eid, NPC)
         self._bs_name = npc.name if npc else "Ferreiro"
@@ -383,7 +396,8 @@ class BlacksmithSystem(UIScaleMixin, System):
             return
         from shared.messages import MsgType as _MTRec
         self._rec_pending = True
-        self._net.send(_MTRec.RECYCLE_REQUEST, {"inv_index": self._rec_bag_idx})
+        self._net.send(_MTRec.RECYCLE_REQUEST, {
+            "inv_index": self._rec_bag_idx, "npc_eid": self._bs_eid})
 
     def _do_forge(self):
         """Manda CRAFT_REQUEST — débito A4 (11/08/2026, ver
@@ -409,7 +423,8 @@ class BlacksmithSystem(UIScaleMixin, System):
             return
         from shared.messages import MsgType as _MTCraft
         self._frg_pending = True
-        self._net.send(_MTCraft.CRAFT_REQUEST, {"recipe_id": self._frg_selected})
+        self._net.send(_MTCraft.CRAFT_REQUEST, {
+            "recipe_id": self._frg_selected, "npc_eid": self._bs_eid})
 
     def _do_delete_bag_item(self, idx: int):
         inv = self._inv()

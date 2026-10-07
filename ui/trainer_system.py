@@ -274,15 +274,17 @@ class TrainerSystem(UIScaleMixin, System):
         cs = self.world.get_component(self.player_entity, CharacterStats)
         tr = self.world.get_component(eid, Trainer)
         tr_class = tr.class_id if tr else "guerreiro"
-        # Trava de quest (04/10/2026, pedido do usuário) — treino só entra
-        # como opção depois que Trainer.unlock_quest_id estiver completo.
-        # Sem isso virar opção, _open_menu abaixo já prioriza quest
-        # disponível/completável sozinho (nenhuma mudança necessária lá) —
-        # é por isso que nenhuma mensagem de "bloqueado" é preciso: o
-        # player só vê o fluxo de quest, igual sempre foi pra NPC que só
-        # tem quest pra oferecer.
+        # Trava de quest (04/10/2026, pedido do usuário; generalizada por
+        # NPC individual em 06/10/2026, ver NPCUnlock/
+        # quest_logic.is_npc_unlocked) — treino só entra como opção
+        # depois que a trava do NPC estiver completa. Sem isso virar
+        # opção, _open_menu abaixo já prioriza quest disponível/
+        # completável sozinho (nenhuma mudança necessária lá) — é por
+        # isso que nenhuma mensagem de "bloqueado" é preciso: o player
+        # só vê o fluxo de quest, igual sempre foi pra NPC que só tem
+        # quest pra oferecer.
         ql = self.world.get_component(self.player_entity, QuestLog)
-        _unlocked = quest_logic.has_unlocked(ql, tr.unlock_quest_id if tr else "")
+        _unlocked = quest_logic.is_npc_unlocked(self.world, eid, ql)
         if cs and cs.class_id == tr_class and _unlocked:
             options.append(("treinamento", "Treinamento"))
         if (quest_logic.get_available_quests(self.world, self.player_entity, eid) or

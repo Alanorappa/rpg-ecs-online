@@ -23,7 +23,7 @@ from ui.systems import (
 )
 from engine.stats_system import XPSystem
 from ui.quest_system import QuestSystem, QuestDialogSystem, QuestJournalSystem
-from engine.entity_factory import create_player, create_camera, create_enemy, create_tilemap, create_merchant, create_spawn_zone, create_quest_giver, create_blacksmith, create_trainer
+from engine.entity_factory import create_player, create_camera, create_tilemap
 from ui.god_mode import GodModeEditor
 from engine.components import Inventory, Equipment, PlayerSkills, Wallet, GhostState, PlayerLightSource
 from engine.map_loader import load_map_csv, validate_map
@@ -819,53 +819,18 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._zoom = self._zoom_default
 
     def _spawn_entities_from(self, spawn_points: dict):
-        # Modo online: enemies, spawn_zones e (Fase 1 de combate genérico,
-        # 21/07/2026) mercador/ferreiro/dador-de-missão/treinador são
-        # gerenciados exclusivamente pelo servidor — chegam pelo spawn de
-        # rede normal de mob (server/world_server.py::_create_service_npcs
-        # + client/remote_entity_handlers.py::_spawn_remote_mob), não mais
-        # criados localmente aqui. O cliente só continua criando essas 4
-        # entidades sozinho em modo OFFLINE (sem servidor pra sincronizar).
-        _online = bool(getattr(self, "_net", None))
-
-        if not _online:
-            for col, row, enemy_type, enemy_tier in spawn_points.get("enemies", []):
-                is_ranged = (enemy_type == "ranged")
-                create_enemy(self.world, col, row,
-                             attack_range=3 if is_ranged else 1,
-                             is_ranged=is_ranged,
-                             tier=enemy_tier)
-
-            for zd in spawn_points.get("spawn_zones", []):
-                create_spawn_zone(
-                    self.world,
-                    center_x=zd["x"], center_y=zd["y"],
-                    enemy_type=zd["enemy_type"], enemy_tier=zd["enemy_tier"],
-                    radius=zd["radius"], max_count=zd["count"],
-                    respawn_cooldown=zd["respawn_cooldown"],
-                    level_min=zd.get("level_min", 1), level_max=zd.get("level_max", 1),
-                    race=zd.get("race", "Humanoide"),
-                    entity_class=zd.get("entity_class", ""),
-                    faction=zd.get("faction", "monstros_hostis"),
-                )
-
-            for col, row, name, shop_id, lvl, prof in spawn_points.get("merchants", []):
-                create_merchant(self.world, col, row, name=name, shop_id=shop_id,
-                                level=lvl, profession=prof)
-
-            for col, row, name, quest_ids, turn_in_ids, lvl, prof in spawn_points.get("quest_givers", []):
-                create_quest_giver(self.world, col, row, name=name,
-                                   quest_ids=quest_ids, turn_in_ids=turn_in_ids,
-                                   level=lvl, profession=prof)
-
-            for col, row, name, shop_id, lvl, prof in spawn_points.get("blacksmiths", []):
-                create_blacksmith(self.world, col, row, name=name,
-                                  shop_id=shop_id, level=lvl, profession=prof)
-
-            for col, row, name, class_id, quest_ids, turn_in_ids, lvl, prof, unlock_qid in spawn_points.get("trainers", []):
-                create_trainer(self.world, col, row, name=name,
-                               class_id=class_id, quest_ids=quest_ids, turn_in_ids=turn_in_ids,
-                               level=lvl, profession=prof, unlock_quest_id=unlock_qid)
+        # Mantido só por compatibilidade de assinatura (chamado em 2
+        # pontos, linha ~814 e ~3443) — não existe mais versão offline
+        # separada (ver CLAUDE.md), e `_connect_online()` SEMPRE roda
+        # antes disto, então o bloco "modo offline" que existia aqui
+        # (enemies/spawn_zones/merchant/quest_giver/blacksmith/trainer
+        # criados localmente) nunca era alcançável de verdade — removido
+        # 07/10/2026 (ver feedback_clean_up_leftover_offline_parallel_code
+        # na memória do projeto). Essas 6 entidades são geridas
+        # exclusivamente pelo servidor (server/world_server.py::
+        # _create_service_npcs) e chegam pelo spawn de rede normal de mob
+        # (client/remote_entity_handlers.py::_spawn_remote_mob).
+        pass
 
     def _build_transition_tiles(self, spawn_points: dict):
         self.transition_tiles = {}

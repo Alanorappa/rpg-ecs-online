@@ -403,21 +403,34 @@ def quests_claimed_for_turn_in(world) -> set:
 
 
 def has_unlocked(ql, unlock_quest_id: str) -> bool:
-    """True se o serviço de NPC (loja/treinador) travado por
-    `unlock_quest_id` já pode ser usado — 04/10/2026, pedido do usuário
-    ("trava de loja/treinador até completar quest do NPC"). `""`/None =
-    sem trava (todo serviço sem `unlock_quest_id` configurado continua
-    liberado, comportamento de sempre). Ponto único de verdade — usado
-    tanto pelo cliente (`ui/trainer_system.py::_compute_options`,
-    `ui/shop_system.py`) quanto pelo servidor
-    (`WorldServer.process_shop_buy`/`process_train_skill`), sempre
-    contra `QuestLog.completed` — nunca `active` (precisa ter
-    TERMINADO a quest, não só aceito)."""
+    """True se `unlock_quest_id` já está em `QuestLog.completed` — nunca
+    `active` (precisa ter TERMINADO a quest, não só aceito). `""`/None =
+    sem trava, sempre liberado. Checagem pura (recebe o id direto) —
+    pra decidir se um NPC específico está travado, use
+    `is_npc_unlocked` (lê o `NPCUnlock` do NPC e chama esta função)."""
     if not unlock_quest_id:
         return True
     if ql is None:
         return False
     return unlock_quest_id in ql.completed
+
+
+def is_npc_unlocked(world, npc_eid: int, ql) -> bool:
+    """Ponto único de verdade pra QUALQUER sistema de interação de NPC
+    (loja, treinador, ferreiro/forja/reciclagem, correio, ou capacidade
+    futura) decidir se a interação com `npc_eid` está liberada —
+    06/10/2026, generalizado a pedido do usuário (antes só Trainer
+    tinha trava, e loja usava um mecanismo paralelo por shop_id em
+    content/merchant_data.py — os dois substituídos por isto). `NPCUnlock`
+    ausente no NPC = sempre liberado. Nunca ler um campo `unlock_quest_id`
+    de um componente de capacidade específico (Merchant/Trainer/etc) —
+    a trava mora SÓ em `NPCUnlock`, independente de quais outras
+    capacidades o NPC tem."""
+    from engine.components import NPCUnlock
+    unlock = world.get_component(npc_eid, NPCUnlock)
+    if unlock is None:
+        return True
+    return has_unlocked(ql, unlock.quest_id)
 
 
 def turn_in_ids_for(world, giver) -> tuple:

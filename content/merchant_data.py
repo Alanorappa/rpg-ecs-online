@@ -106,16 +106,6 @@ INSTANCE_SHOP_STOCK_BY_CLASS = {
     for cls in ("guerreiro", "arqueiro", "mago")
 }
 
-# Trava de quest por loja (04/10/2026, pedido do usuário) — chave
-# opcional "unlock_quest_id" em qualquer entrada de SHOPS: "" (ausente,
-# padrão) = sem trava, loja sempre liberada (comportamento de sempre).
-# Com valor, a loja só abre depois de QUESTS[unlock_quest_id] estar em
-# QuestLog.completed (engine.quest_logic.has_unlocked, ponto único de
-# verdade — consultado por WorldServer.process_shop_buy no servidor E
-# por ui/shop_system.py no cliente, nunca duplicado). Cobre Blacksmith
-# também (combina Merchant, mesmo shop_id="blacksmith" abaixo). Nenhuma
-# loja usa isso ainda — mecanismo pronto, decisão de QUAL quest trava
-# QUAL loja é conteúdo, não código.
 SHOPS = {
     "general": {
         "name": "Mercador Geral",

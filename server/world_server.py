@@ -1083,18 +1083,22 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             create_quest_giver as _csn_qg, create_trainer as _csn_trainer,
             create_mailbox as _csn_mailbox,
         )
-        for col, row, name, lvl, prof in spawn_points.get("mailboxes", []):
-            _csn_mailbox(self.world, col, row, name=name, level=lvl, profession=prof)
-        for col, row, name, shop_id, lvl, prof in spawn_points.get("merchants", []):
+        for col, row, name, lvl, prof, unlock_qid in spawn_points.get("mailboxes", []):
+            _csn_mailbox(self.world, col, row, name=name, level=lvl, profession=prof,
+                        unlock_quest_id=unlock_qid)
+        for col, row, name, shop_id, lvl, prof, quest_ids, turn_in_ids, unlock_qid in spawn_points.get("merchants", []):
             _csn_merchant(self.world, col, row, name=name, shop_id=shop_id,
-                         level=lvl, profession=prof)
-        for col, row, name, quest_ids, turn_in_ids, lvl, prof in spawn_points.get("quest_givers", []):
+                         level=lvl, profession=prof,
+                         quest_ids=quest_ids, turn_in_ids=turn_in_ids,
+                         unlock_quest_id=unlock_qid)
+        for col, row, name, quest_ids, turn_in_ids, lvl, prof, unlock_qid in spawn_points.get("quest_givers", []):
             _csn_qg(self.world, col, row, name=name,
                    quest_ids=quest_ids, turn_in_ids=turn_in_ids,
-                   level=lvl, profession=prof)
-        for col, row, name, shop_id, lvl, prof in spawn_points.get("blacksmiths", []):
+                   level=lvl, profession=prof, unlock_quest_id=unlock_qid)
+        for col, row, name, shop_id, lvl, prof, unlock_qid in spawn_points.get("blacksmiths", []):
             _csn_blacksmith(self.world, col, row, name=name,
-                           shop_id=shop_id, level=lvl, profession=prof)
+                           shop_id=shop_id, level=lvl, profession=prof,
+                           unlock_quest_id=unlock_qid)
         for col, row, name, class_id, quest_ids, turn_in_ids, lvl, prof, unlock_qid in spawn_points.get("trainers", []):
             _csn_trainer(self.world, col, row, name=name,
                         class_id=class_id, quest_ids=quest_ids, turn_in_ids=turn_in_ids,
@@ -3022,7 +3026,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                                 SpawnZone, EntityIdentity, TrainingDummy as _TDpay, Faction as _FacPay,
                                 NPC as _NPCpay, Merchant as _Merchpay, Blacksmith as _Blackpay,
                                 Trainer as _Trainpay, QuestGiver as _QGpay, Tower as _TowerPay,
-                                Minion as _MinionPay, Mailbox as _Mailpay)
+                                Minion as _MinionPay, Mailbox as _Mailpay, NPCUnlock as _NPCUnlockPay)
         cs    = self.world.get_component(eid, CombatStats)
         ai    = self.world.get_component(eid, AIControlled)
         ren   = self.world.get_component(eid, Renderable)
@@ -3139,24 +3143,24 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         _train = self.world.get_component(eid, _Trainpay)
         if _train is not None:
             payload["class_id"] = _train.class_id
-            # Trava de quest (04/10/2026) — faltava aqui: SHOPS[...]
-            # ["unlock_quest_id"] (loja) é conteúdo ESTÁTICO, o cliente já
-            # importa o mesmo content/merchant_data.py direto, sem precisar
-            # de sync. Trainer.unlock_quest_id é dado POR INSTÂNCIA (só o
-            # servidor sabe), igual class_id logo acima — sem mandar aqui,
-            # o cliente reconstruía o Trainer remoto sempre com o default
-            # "" (sem trava nenhuma, mesmo com o servidor configurado
-            # certo) — bug real relatado pelo usuário: menu mostrava
-            # "Treinamento" mesmo sem completar a quest, porque a UI (que
-            # decide o que MOSTRAR) só conhece o espelho local incompleto;
-            # o servidor (process_train_skill) já recusaria a compra de
-            # qualquer forma, mas o jogador nunca chegava a tentar.
-            if _train.unlock_quest_id:
-                payload["trainer_unlock_quest_id"] = _train.unlock_quest_id
         _qg = self.world.get_component(eid, _QGpay)
         if _qg is not None:
             payload["quest_ids"]    = list(_qg.quest_ids)
             payload["turn_in_ids"]  = list(_qg.turn_in_ids)
+        # Trava de quest (04/10/2026, generalizada 06/10/2026) — `NPCUnlock`
+        # é dado POR INSTÂNCIA (só o servidor sabe), igual class_id/shop_id
+        # acima — sem mandar aqui, o espelho local SEMPRE nascia sem trava
+        # (default ""), mesmo o servidor tendo a trava real configurada —
+        # a UI que decide o que MOSTRAR (ui/trainer_system.py, ui/
+        # shop_system.py, ui/crafting_system.py) só olha esta cópia local,
+        # nunca o servidor direto (bug real relatado pelo usuário: menu
+        # mostrava "Treinamento" mesmo sem completar a quest — o servidor
+        # já recusaria a ação de qualquer forma, mas o jogador nunca
+        # chegava a tentar). Genérico — manda pra QUALQUER NPC com
+        # NPCUnlock, não só Trainer.
+        _unlock = self.world.get_component(eid, _NPCUnlockPay)
+        if _unlock is not None and _unlock.quest_id:
+            payload["unlock_quest_id"] = _unlock.quest_id
         # Se o mob já está em movimento no momento do spawn, inclui o destino.
         # O cliente inicia a animação imediatamente em vez de esperar o próximo evento.
         if tm.is_moving and (tm.target_tile_x != tm.current_tile_x or
@@ -3464,12 +3468,20 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def process_shop_buy(self, session_id: str, shop_id: str,
                          item_name: str, quantity: int,
-                         item_id: str = "") -> dict:
+                         item_id: str = "", npc_eid: int = -1) -> dict:
         """Processa compra em loja — autoritativo no servidor.
 
         Valida: shop_id existe no catálogo, item está no estoque,
         gold suficiente, espaço no inventário.
         Retorna dict {success, reason, item_data, new_gold}.
+
+        `npc_eid` (06/10/2026, generalização da trava de quest por NPC —
+        antes travava por `shop_id`/catálogo estático, agora por NPC
+        individual via `NPCUnlock`, mesmo padrão de `process_train_skill`,
+        que já recebia `npc_id` desde sempre). `-1` (cliente antigo/sem
+        NPC conhecido) = sem NPC pra checar, trata como destravado — a
+        trava é opt-in (só existe quando o mapa configura `NPCUnlock`
+        nesse NPC especificamente).
 
         `item_id` (débito C2, 10/08/2026) — identificação primária, O(1);
         `item_name` cai pro cache legado por nome (`_shop_item_cache_by_name`)
@@ -3502,17 +3514,16 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         if eid is None:
             return {"success": False, "reason": "not_logged_in"}
 
-        # 0. Trava de quest por loja (04/10/2026, pedido do usuário) —
-        # autoritativo: checa ANTES de qualquer outra coisa, mesmo
-        # critério usado pro cliente decidir se mostra a loja
-        # (ui/shop_system.py), nunca duplicado (quest_logic.has_unlocked).
-        from content.merchant_data import SHOPS as _SHOPS_unlock
-        _unlock_qid = _SHOPS_unlock.get(shop_id, {}).get("unlock_quest_id", "")
-        if _unlock_qid:
+        # 0. Trava de quest por NPC (04/10/2026, generalizada 06/10/2026
+        # — pedido do usuário) — autoritativo: checa ANTES de qualquer
+        # outra coisa, mesmo critério usado pelo cliente pra decidir se
+        # mostra a loja (ui/shop_system.py), nunca duplicado
+        # (quest_logic.is_npc_unlocked, ponto único pra QUALQUER NPC).
+        if npc_eid != -1:
             from engine.components import QuestLog as _QL_shop_unlock
             import engine.quest_logic as _qlogic_shop_unlock
             _ql_shop = self.world.get_component(eid, _QL_shop_unlock)
-            if not _qlogic_shop_unlock.has_unlocked(_ql_shop, _unlock_qid):
+            if not _qlogic_shop_unlock.is_npc_unlocked(self.world, npc_eid, _ql_shop):
                 return {"success": False, "reason": "locked"}
 
         # 1. Valida catálogo — usa cache pré-construído (sem instanciar factories)
@@ -3605,8 +3616,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         mutava `learned_skill_ids`/`Wallet.gold` locais direto, sem
         nenhuma mensagem de rede — mesma classe de débito já corrigida
         pra loja/forja, nunca pra treino). Repete TODAS as checagens que
-        o cliente já fazia (nunca confia nelas) + a trava de quest nova
-        (`Trainer.unlock_quest_id`).
+        o cliente já fazia (nunca confia nelas) + a trava de quest
+        (`NPCUnlock`, generalizada 06/10/2026 — antes era campo próprio
+        de `Trainer`).
 
         Retorna {success, skill_id?, name?, new_gold?, reason?} — mesmo
         formato de `process_shop_buy`."""
@@ -3641,9 +3653,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             return {"success": False, "reason": "class"}
 
         ql = self.world.get_component(eid, _TrQL)
-        if not _tr_qlogic.has_unlocked(ql, tr.unlock_quest_id):
-            log.info("[Train] REJECTED reason=locked eid=%s name=%s skill=%s unlock_quest_id=%s completed=%s",
-                      eid, char.name, skill_id, tr.unlock_quest_id,
+        if not _tr_qlogic.is_npc_unlocked(self.world, npc_id, ql):
+            log.info("[Train] REJECTED reason=locked eid=%s name=%s skill=%s npc=%s completed=%s",
+                      eid, char.name, skill_id, npc_id,
                       sorted(ql.completed) if ql else None)
             return {"success": False, "reason": "locked"}
 
@@ -3792,7 +3804,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "new_gold":   wallet.gold,
         }
 
-    def craft_item(self, session_id: str, recipe_id: str) -> dict:
+    def craft_item(self, session_id: str, recipe_id: str, npc_eid: int = -1) -> dict:
         """Processa forja em ferreiro — autoritativo no servidor. Débito A4
         (11/08/2026, ver PROBLEMAS_ARQUITETURA.md) — antes, `ui/
         crafting_system.py::_do_forge` mutava só a cópia LOCAL do cliente
@@ -3803,13 +3815,24 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         Lê `RECIPES[recipe_id]` do próprio catálogo (nunca confia em custo/
         material/resultado vindo do cliente — só o `recipe_id` em si), e
         confere ouro + materiais no Inventory AO VIVO antes de aplicar
-        qualquer coisa. Retorna {success, reason, item, new_gold}."""
+        qualquer coisa. Retorna {success, reason, item, new_gold}.
+
+        `npc_eid` (06/10/2026, trava de quest genérica — ver
+        `process_shop_buy` pro mesmo racional/convenção)."""
         from engine.components import Wallet, Inventory
         from content.crafting_data import RECIPES, RARITY_FORGE_COST
 
         eid = self._player_eids.get(session_id)
         if eid is None:
             return {"success": False, "reason": "not_logged_in"}
+
+        if npc_eid != -1:
+            from engine.components import QuestLog as _QL_forge
+            import engine.quest_logic as _qlogic_forge
+            _ql_forge = self.world.get_component(eid, _QL_forge)
+            if not _qlogic_forge.is_npc_unlocked(self.world, npc_eid, _ql_forge):
+                return {"success": False, "reason": "locked"}
+
         recipe = RECIPES.get(recipe_id)
         if recipe is None:
             return {"success": False, "reason": "invalid_recipe"}
@@ -3884,20 +3907,31 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                                    for mat_id, qty in materials],
         }
 
-    def recycle_item(self, session_id: str, inv_index: int) -> dict:
+    def recycle_item(self, session_id: str, inv_index: int, npc_eid: int = -1) -> dict:
         """Processa reciclagem em ferreiro — autoritativo no servidor,
         contraparte de `craft_item` (débito A4, 11/08/2026). `inv_index`
         (não o item em si, mesmo padrão de `equip_item_from_inventory`) —
         servidor lê o item real na posição indicada do Inventory AO VIVO,
         nunca confia em item/raridade/tipo mandado pelo cliente.
 
-        Retorna {success, reason, materials, new_gold}."""
+        Retorna {success, reason, materials, new_gold}.
+
+        `npc_eid` (06/10/2026, trava de quest genérica — ver
+        `process_shop_buy` pro mesmo racional/convenção)."""
         from engine.components import Wallet, Inventory
         from content.crafting_data import RARITY_RECYCLE_COST, get_recycle_materials
 
         eid = self._player_eids.get(session_id)
         if eid is None:
             return {"success": False, "reason": "not_logged_in"}
+
+        if npc_eid != -1:
+            from engine.components import QuestLog as _QL_recycle
+            import engine.quest_logic as _qlogic_recycle
+            _ql_recycle = self.world.get_component(eid, _QL_recycle)
+            if not _qlogic_recycle.is_npc_unlocked(self.world, npc_eid, _ql_recycle):
+                return {"success": False, "reason": "locked"}
+
         wallet = self.world.get_component(eid, Wallet)
         inv    = self.world.get_component(eid, Inventory)
         if not wallet or not inv:

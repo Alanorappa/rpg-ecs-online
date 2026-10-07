@@ -105,7 +105,8 @@ def collect_markers(world, player_entity: int, quest_dialog,
         color = _TRAINER_FALLBACK_COLORS.get(class_id, (200, 200, 200))
         markers.append(MapMarker(x, y, f"map_trainer_{class_id}", color, "T"))
 
-    # merchants: (x, y, name, shop_id, level, profession)
+    # merchants: (x, y, name, shop_id, level, profession, quest_ids,
+    # turn_in_ids, unlock_quest_id) — 3 últimos ignorados aqui (06/10/2026).
     for m in spawn_points.get("merchants", []):
         markers.append(MapMarker(m[0], m[1], "map_merchant",
                                   _MERCHANT_FALLBACK_COLOR, "$"))

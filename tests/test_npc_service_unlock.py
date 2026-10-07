@@ -4,22 +4,34 @@ serviço de NPC (loja/treinador), pedido do usuário (04/10/2026):
 "a loja só destravar depois que o player fizer uma quest... a mesma
 coisa serve para qualquer outro NPC que interage, como treinamento."
 
+Generalizada em 06/10/2026 (pedido do usuário, investigando por que
+`turn_in_ids`/`unlock_quest_id` não funcionavam pro mercador "Fabian
+Hardek"): a trava deixou de ser um campo específico de `Trainer` (ou um
+mecanismo paralelo por `shop_id` em `content/merchant_data.py`) e virou
+um componente único (`NPCUnlock`), anexável a QUALQUER NPC
+(Merchant/Blacksmith/Mailbox/Trainer/QuestGiver/futuro), pra não
+precisar reimplementar a trava toda vez que um sistema de interação
+novo for criado.
+
 Decisões fechadas com o usuário (AskUserQuestion):
 - Treino de skill ganha validação REAL no servidor nesta mesma tarefa
   (antes era 100% client-trusted — `ui/trainer_system.py::_do_learn`
   mutava ouro/learned_skill_ids local, sem nenhuma mensagem de rede).
 - "Finalizar várias quests" = só a ÚLTIMA quest de uma chain já
   existente (`QuestDef.requires`) — por isso a trava é 1 quest_id só
-  (`unlock_quest_id`), nunca uma lista.
+  (`NPCUnlock.quest_id`), nunca uma lista.
 - Sem feedback de "bloqueado" — clicar no NPC travado abre o diálogo
   de quest direto (mesma priorização que `ui/trainer_system.py::
-  _open_menu` já fazia pra quest completável; replicada aqui pra loja,
-  que não tinha menu intermediário).
+  _open_menu` já fazia pra quest completável; replicada em loja/
+  ferreiro/correio, que não tinham menu intermediário).
+- Trava por NPC INDIVIDUAL (não por shop_id/catálogo) — pedido
+  explícito do usuário, pra valer igual em qualquer sistema futuro.
 
 Cobre:
-  1. `engine.quest_logic.has_unlocked` — ponto único de verdade.
-  2. `WorldServer.process_shop_buy` — trava por loja (`SHOPS[shop_id]
-     ["unlock_quest_id"]`), autoritativa.
+  1. `engine.quest_logic.has_unlocked`/`is_npc_unlocked` — ponto único
+     de verdade.
+  2. `WorldServer.process_shop_buy` — trava por NPC (`npc_eid`),
+     autoritativa.
   3. `WorldServer.process_train_skill` — fluxo NOVO inteiro
      (autoridade real: classe, nível, ouro, trava de quest, concessão).
   4. `ui/trainer_system.py::_compute_options` — "Treinamento" não
@@ -40,6 +52,7 @@ from tests.helpers import make_world_server, spawn_player
 from engine.components import (
     Inventory, Wallet, QuestLog, Trainer, Merchant, NPC, CharacterStats,
     PlayerSkills, CombatStats, PlayerControlled, NPCInteractionRequest,
+    NPCUnlock,
 )
 from content.quests_data import QUESTS, QuestDef, QuestReward, ObjectiveDef
 import engine.quest_logic as quest_logic
@@ -70,7 +83,36 @@ class TestHasUnlocked(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 2) Loja — trava autoritativa no servidor
+# 1b) is_npc_unlocked — ponto único de verdade GENÉRICO (06/10/2026),
+#     lê NPCUnlock do NPC em vez de um campo próprio de cada capacidade.
+# ─────────────────────────────────────────────────────────────────────────
+
+class TestIsNpcUnlocked(unittest.TestCase):
+
+    def setUp(self):
+        from engine.world import World
+        self.world = World()
+        self.npc = self.world.create_entity()
+
+    def test_sem_npcunlock_sempre_liberado(self):
+        ql = QuestLog()
+        self.assertTrue(quest_logic.is_npc_unlocked(self.world, self.npc, ql))
+        self.assertTrue(quest_logic.is_npc_unlocked(self.world, self.npc, None))
+
+    def test_com_npcunlock_exige_completed(self):
+        self.world.add_component(self.npc, NPCUnlock(quest_id="alguma_quest"))
+        ql = QuestLog()
+        self.assertFalse(quest_logic.is_npc_unlocked(self.world, self.npc, ql))
+        ql.completed.add("alguma_quest")
+        self.assertTrue(quest_logic.is_npc_unlocked(self.world, self.npc, ql))
+
+    def test_npcunlock_com_quest_id_vazio_sempre_liberado(self):
+        self.world.add_component(self.npc, NPCUnlock(quest_id=""))
+        self.assertTrue(quest_logic.is_npc_unlocked(self.world, self.npc, None))
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2) Loja — trava autoritativa no servidor, por NPC individual
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestShopBuyUnlockGate(unittest.TestCase):
@@ -82,10 +124,6 @@ class TestShopBuyUnlockGate(unittest.TestCase):
             objectives=(ObjectiveDef(type="kill", target="*", count=1),),
             reward=QuestReward(xp=1),
         )
-        from content.merchant_data import SHOPS
-        self._orig_general = dict(SHOPS["general"])
-        SHOPS["general"]["unlock_quest_id"] = self.UNLOCK_QID
-
         self.ws     = make_world_server()
         self.eid    = spawn_player(self.ws, "s1", 130, 374)
         self.inv    = self.ws.world.get_component(self.eid, Inventory)
@@ -93,14 +131,16 @@ class TestShopBuyUnlockGate(unittest.TestCase):
         self.wallet.gold = 10_000
         self.inv.items.clear()
 
+        self.merchant = self.ws.world.create_entity()
+        self.ws.world.add_component(self.merchant, Merchant(shop_id="general"))
+        self.ws.world.add_component(self.merchant, NPCUnlock(quest_id=self.UNLOCK_QID))
+
     def tearDown(self):
         QUESTS.pop(self.UNLOCK_QID, None)
-        from content.merchant_data import SHOPS
-        SHOPS["general"] = self._orig_general
 
     def test_compra_recusada_sem_completar_a_quest(self):
         result = self.ws.process_shop_buy("s1", "general", "Espada de Ferro", 1,
-                                          item_id="iron_sword")
+                                          item_id="iron_sword", npc_eid=self.merchant)
         self.assertFalse(result["success"])
         self.assertEqual(result["reason"], "locked")
         self.assertEqual(self.wallet.gold, 10_000, "ouro não deveria ter sido debitado")
@@ -110,15 +150,22 @@ class TestShopBuyUnlockGate(unittest.TestCase):
         ql = self.ws.world.get_component(self.eid, QuestLog)
         ql.completed.add(self.UNLOCK_QID)
         result = self.ws.process_shop_buy("s1", "general", "Espada de Ferro", 1,
-                                          item_id="iron_sword")
+                                          item_id="iron_sword", npc_eid=self.merchant)
         self.assertTrue(result["success"])
         self.assertEqual(self.wallet.gold, 10_000 - 55)
 
-    def test_loja_sem_unlock_quest_id_continua_liberada(self):
-        """Regressão -- lojas que nunca configuraram a trava (todas, por
-        padrão) continuam funcionando exatamente como antes."""
-        from content.merchant_data import SHOPS
-        SHOPS["general"].pop("unlock_quest_id", None)
+    def test_mercador_sem_npcunlock_continua_liberado(self):
+        """Regressão -- mercador que nunca configurou a trava (todos, por
+        padrão) continua funcionando exatamente como antes."""
+        merchant2 = self.ws.world.create_entity()
+        self.ws.world.add_component(merchant2, Merchant(shop_id="general"))
+        result = self.ws.process_shop_buy("s1", "general", "Espada de Ferro", 1,
+                                          item_id="iron_sword", npc_eid=merchant2)
+        self.assertTrue(result["success"])
+
+    def test_sem_npc_eid_conhecido_continua_liberado(self):
+        """Compatibilidade -- cliente antigo/sem NPC conhecido (npc_eid
+        default -1) nunca trava uma compra que antes passava."""
         result = self.ws.process_shop_buy("s1", "general", "Espada de Ferro", 1,
                                           item_id="iron_sword")
         self.assertTrue(result["success"])
@@ -147,8 +194,8 @@ class TestTrainSkillAuthoritative(unittest.TestCase):
 
         self.trainer_eid = self.ws.world.create_entity()
         self.ws.world.add_component(self.trainer_eid, NPC(name="Treinador de Teste"))
-        self.ws.world.add_component(self.trainer_eid,
-            Trainer(class_id="guerreiro", unlock_quest_id=self.UNLOCK_QID))
+        self.ws.world.add_component(self.trainer_eid, Trainer(class_id="guerreiro"))
+        self.ws.world.add_component(self.trainer_eid, NPCUnlock(quest_id=self.UNLOCK_QID))
 
     def tearDown(self):
         QUESTS.pop(self.UNLOCK_QID, None)
@@ -255,8 +302,8 @@ class TestTrainerComputeOptionsRespeitaTrava(unittest.TestCase):
 
         self.npc = self.world.create_entity()
         self.world.add_component(self.npc, NPC(name="Treinador"))
-        self.world.add_component(self.npc,
-            Trainer(class_id="guerreiro", unlock_quest_id=self.UNLOCK_QID))
+        self.world.add_component(self.npc, Trainer(class_id="guerreiro"))
+        self.world.add_component(self.npc, NPCUnlock(quest_id=self.UNLOCK_QID))
 
         screen = pygame.Surface((800, 600))
         self.qs = QuestSystem(self.world, self.player)
@@ -298,9 +345,6 @@ class TestShopTryOpenMerchantRedirecionaParaQuest(unittest.TestCase):
             objectives=(ObjectiveDef(type="kill", target="*", count=1),),
             reward=QuestReward(xp=1),
         )
-        from content.merchant_data import SHOPS
-        self._orig_general = dict(SHOPS["general"])
-        SHOPS["general"]["unlock_quest_id"] = self.UNLOCK_QID
 
         from ui.ui_components import ShopUIState
 
@@ -314,6 +358,7 @@ class TestShopTryOpenMerchantRedirecionaParaQuest(unittest.TestCase):
         self.merchant = self.world.create_entity()
         self.world.add_component(self.merchant, NPC(name="Mercador"))
         self.world.add_component(self.merchant, Merchant(shop_id="general"))
+        self.world.add_component(self.merchant, NPCUnlock(quest_id=self.UNLOCK_QID))
 
         screen = pygame.Surface((800, 600))
         self.shop = ShopSystem(self.world, self.player, screen)
@@ -321,8 +366,6 @@ class TestShopTryOpenMerchantRedirecionaParaQuest(unittest.TestCase):
 
     def tearDown(self):
         QUESTS.pop(self.UNLOCK_QID, None)
-        from content.merchant_data import SHOPS
-        SHOPS["general"] = self._orig_general
 
     def test_travado_nao_abre_loja_e_pede_quest_dialog(self):
         self.shop._try_open_merchant(self.merchant)
@@ -410,6 +453,173 @@ class TestDoLearnMandaServerEidNaoLocal(unittest.TestCase):
         self.world.remove_component(self.npc_local_eid, RemoteEntityMeta)
         self.trainer._do_learn("interceptar")
         self.assertEqual(len(self.trainer._net.sent), 0)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 7) Ferreiro — forja/reciclagem ganham a MESMA trava genérica (06/10/2026,
+#    pedido explícito do usuário: "para trainer, shopping, forja,
+#    reciclagem, correio e todos os outros sistemas"). Antes desta tarefa
+#    nenhum dos dois tinha gate nenhum.
+# ─────────────────────────────────────────────────────────────────────────
+
+class TestForgeRecycleUnlockGate(unittest.TestCase):
+    UNLOCK_QID = "nsu_quest_ferreiro"
+
+    def setUp(self):
+        QUESTS[self.UNLOCK_QID] = QuestDef(
+            title="Teste", description="d",
+            objectives=(ObjectiveDef(type="kill", target="*", count=1),),
+            reward=QuestReward(xp=1),
+        )
+        self.ws  = make_world_server()
+        self.eid = spawn_player(self.ws, "s1", 130, 374)
+        self.wallet = self.ws.world.get_component(self.eid, Wallet)
+        self.wallet.gold = 10_000
+
+        self.blacksmith = self.ws.world.create_entity()
+        from engine.components import Blacksmith
+        self.ws.world.add_component(self.blacksmith, Blacksmith(shop_id="blacksmith"))
+        self.ws.world.add_component(self.blacksmith, NPCUnlock(quest_id=self.UNLOCK_QID))
+
+    def tearDown(self):
+        QUESTS.pop(self.UNLOCK_QID, None)
+
+    def test_forja_recusada_sem_completar_a_quest(self):
+        result = self.ws.craft_item("s1", "espada_afiada", npc_eid=self.blacksmith)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["reason"], "locked")
+
+    def test_forja_passa_da_trava_apos_completar_a_quest(self):
+        """Só confirma que a trava LIBERA (reason != locked) -- o resto
+        da validação (ouro/material reais) já é coberto por outros
+        testes de craft_item, fora de escopo aqui."""
+        ql = self.ws.world.get_component(self.eid, QuestLog)
+        ql.completed.add(self.UNLOCK_QID)
+        result = self.ws.craft_item("s1", "espada_afiada", npc_eid=self.blacksmith)
+        self.assertNotEqual(result.get("reason"), "locked")
+
+    def test_reciclagem_recusada_sem_completar_a_quest(self):
+        result = self.ws.recycle_item("s1", 0, npc_eid=self.blacksmith)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["reason"], "locked")
+
+    def test_forja_sem_npc_eid_conhecido_passa_da_trava(self):
+        """Compatibilidade -- sem npc_eid (cliente antigo), nunca trava
+        uma forja que antes passava (gate é opt-in)."""
+        result = self.ws.craft_item("s1", "espada_afiada")
+        self.assertNotEqual(result.get("reason"), "locked")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 8) Ferreiro — ui/crafting_system.py::_open_menu redireciona pra quest
+#    em vez de abrir o menu (mesmo padrão de ShopSystem).
+# ─────────────────────────────────────────────────────────────────────────
+
+class TestBlacksmithOpenMenuRedirecionaParaQuest(unittest.TestCase):
+    UNLOCK_QID = "nsu_quest_bs_client"
+
+    def setUp(self):
+        from engine.world import World
+        from ui.crafting_system import BlacksmithSystem
+        from engine.components import Blacksmith
+
+        QUESTS[self.UNLOCK_QID] = QuestDef(
+            title="Teste", description="d",
+            objectives=(ObjectiveDef(type="kill", target="*", count=1),),
+            reward=QuestReward(xp=1),
+        )
+        self.world = World()
+        self.player = self.world.create_entity()
+        self.world.add_component(self.player, QuestLog())
+        self.world.add_component(self.player, Inventory())
+        self.world.add_component(self.player, Wallet(gold=0))
+
+        self.blacksmith = self.world.create_entity()
+        self.world.add_component(self.blacksmith, NPC(name="Ferreiro"))
+        self.world.add_component(self.blacksmith, Blacksmith(shop_id="blacksmith"))
+        self.world.add_component(self.blacksmith, NPCUnlock(quest_id=self.UNLOCK_QID))
+
+        screen = pygame.Surface((800, 600))
+        self.bs = BlacksmithSystem(self.world, self.player, screen)
+        self.bs.set_ui_scale(1.0)
+
+    def tearDown(self):
+        QUESTS.pop(self.UNLOCK_QID, None)
+
+    def test_travado_nao_abre_menu_e_pede_quest_dialog(self):
+        self.bs._open_menu(self.blacksmith)
+        self.assertEqual(self.bs._state, self.bs.STATE_CLOSED)
+        req = self.world.get_component(self.player, NPCInteractionRequest)
+        self.assertIsNotNone(req)
+        self.assertEqual(req.kind, "open_quest_dialog")
+        self.assertEqual(req.target_eid, self.blacksmith)
+
+    def test_destravado_abre_o_menu_normalmente(self):
+        ql = self.world.get_component(self.player, QuestLog)
+        ql.completed.add(self.UNLOCK_QID)
+        self.bs._open_menu(self.blacksmith)
+        self.assertEqual(self.bs._state, self.bs.STATE_MENU)
+        self.assertEqual(self.bs._bs_eid, self.blacksmith)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 9) Mercador aceita entrega de quest (bug original que motivou esta
+#    generalização, 06/10/2026 — "Fabian Hardek" não aceitava entrega de
+#    "merchant_greeting" porque create_merchant nunca anexava QuestGiver).
+# ─────────────────────────────────────────────────────────────────────────
+
+class TestMerchantComQuestGiver(unittest.TestCase):
+
+    def test_create_merchant_com_turn_in_ids_anexa_questgiver(self):
+        from engine.entity_factory import create_merchant
+        from engine.components import QuestGiver
+        from engine.world import World
+        world = World()
+        eid = create_merchant(world, 10, 10, shop_id="general", name="Fabian Teste",
+                              quest_ids=("merchant_greeting",),
+                              turn_in_ids=("merchant_greeting",))
+        qg = world.get_component(eid, QuestGiver)
+        self.assertIsNotNone(qg, "mercador com quest_ids deveria ganhar QuestGiver")
+        self.assertEqual(qg.turn_in_ids, ("merchant_greeting",))
+
+    def test_create_merchant_sem_quest_ids_nao_anexa_questgiver(self):
+        """Regressão -- mercador comum (sem quest_ids) continua sem
+        QuestGiver, exatamente como antes desta mudança."""
+        from engine.entity_factory import create_merchant
+        from engine.components import QuestGiver
+        from engine.world import World
+        world = World()
+        eid = create_merchant(world, 10, 10, shop_id="general")
+        self.assertIsNone(world.get_component(eid, QuestGiver))
+
+    def test_mercador_com_questgiver_aparece_em_get_completable_quests(self):
+        """Cobre o bug original fim-a-fim: um mercador que aceita a
+        entrega de uma quest completável precisa aparecer como giver
+        válido pro quest_logic, igual qualquer outro NPC."""
+        from engine.entity_factory import create_merchant
+        from engine.world import World
+        import engine.quest_logic as ql_logic
+
+        qid = "nsu_merchant_turn_in"
+        QUESTS[qid] = QuestDef(
+            title="Teste", description="d",
+            objectives=(ObjectiveDef(type="kill", target="*", count=1),),
+            reward=QuestReward(xp=1),
+        )
+        try:
+            world = World()
+            player = world.create_entity()
+            ql = QuestLog()
+            ql.active[qid] = [1]   # objetivo já cumprido (count=1 atingido)
+            world.add_component(player, ql)
+
+            merchant_eid = create_merchant(world, 10, 10, shop_id="general",
+                                           name="Fabian Teste",
+                                           quest_ids=(qid,), turn_in_ids=(qid,))
+            completable = ql_logic.get_completable_quests(world, player, merchant_eid)
+            self.assertIn(qid, completable)
+        finally:
+            QUESTS.pop(qid, None)
 
 
 if __name__ == "__main__":

@@ -947,21 +947,24 @@ class RemoteEntityHandlers:
         _class_id = data.get("class_id")
         if _class_id is not None:
             from engine.components import Trainer as _TrainSpawn
-            # trainer_unlock_quest_id (04/10/2026) — faltava aqui: sem
-            # isso, o espelho local SEMPRE nascia com unlock_quest_id=""
-            # (default), mesmo o servidor tendo a trava real configurada
-            # — a UI que decide mostrar "Treinamento" (ui/trainer_system.py
-            # ::_compute_options) só olha esta cópia local, nunca o
-            # servidor direto. Bug real relatado pelo usuário: menu
-            # mostrava "Treinamento" mesmo sem completar a quest exigida.
-            self.world.add_component(local_eid, _TrainSpawn(
-                class_id=_class_id,
-                unlock_quest_id=data.get("trainer_unlock_quest_id", "")))
+            self.world.add_component(local_eid, _TrainSpawn(class_id=_class_id))
         if data.get("quest_ids") is not None:
             from engine.components import QuestGiver as _QGSpawn
             self.world.add_component(local_eid, _QGSpawn(
                 quest_ids=tuple(data.get("quest_ids", [])),
                 turn_in_ids=tuple(data.get("turn_in_ids", []))))
+        # unlock_quest_id (04/10/2026, generalizada 06/10/2026) — sem
+        # isso, o espelho local SEMPRE nascia sem trava, mesmo o
+        # servidor tendo `NPCUnlock` configurado — a UI que decide
+        # mostrar/liberar a interação (ui/trainer_system.py, ui/
+        # shop_system.py, ui/crafting_system.py) só olha esta cópia
+        # local, nunca o servidor direto. Genérico — qualquer NPC
+        # (Merchant/Blacksmith/Mailbox/Trainer/QuestGiver) pode chegar
+        # com este campo, não só Trainer.
+        _unlock_qid = data.get("unlock_quest_id", "")
+        if _unlock_qid:
+            from engine.components import NPCUnlock as _UnlockSpawn
+            self.world.add_component(local_eid, _UnlockSpawn(quest_id=_unlock_qid))
 
         # Remove CombatStats: HP é autoritativo pelo servidor (RemoteEntityMeta.hp).
         # Remove AIControlled: mobs remotos são movidos por ENTITY_MOVE do servidor;

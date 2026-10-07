@@ -792,6 +792,30 @@ padrão a quebrar, não só os bugs individuais.
   `QuestSystem` — quebraria com `AttributeError` assim que um ferreiro
   tivesse quest disponível pra iniciar. Ver PROBLEMAS_ARQUITETURA.md
   §139.
+- **Qualquer NPC de serviço (loja/treinador/ferreiro/correio/futuro)
+  precisando travar a interação até o player completar uma quest** →
+  componente `NPCUnlock(quest_id)` (`engine/components.py`, 06/10/2026)
+  — anexável a QUALQUER NPC independente de quais outras capacidades
+  tem (Merchant/Trainer/Blacksmith/Mailbox/QuestGiver), via
+  `engine.entity_factory._attach_npc_unlock` (chamada por TODO
+  `create_*` de NPC de serviço) + `unlock_quest_id` lido do JSON do
+  mapa (`engine/map_loader.py`, mesma chave em qualquer lista de
+  entidade). Checagem SEMPRE via `engine.quest_logic.is_npc_unlocked
+  (world, npc_eid, ql)` — NUNCA ler um campo `unlock_quest_id` dentro
+  de um componente de capacidade específico de novo (era assim antes,
+  só em `Trainer`, e a loja tinha um mecanismo TOTALMENTE paralelo por
+  `shop_id` em `content/merchant_data.py` — os dois removidos). UI que
+  abre o NPC (loja/ferreiro/correio) redireciona pra
+  `NPCInteractionRequest(kind="open_quest_dialog")` em vez de abrir
+  quando travado — nunca mensagem de "bloqueado". Ação que de fato
+  gasta recurso real (compra/forja/reciclagem) precisa do MESMO check
+  no SERVIDOR, autoritativo — `BUY_REQUEST`/`CRAFT_REQUEST`/
+  `RECYCLE_REQUEST` carregam `npc_eid` pra isso (campo opcional, -1 =
+  sem NPC conhecido, trata como destravado — nunca travar uma ação que
+  não tinha NPC pra checar). Pedido explícito do usuário (06/10/2026):
+  "para não termos retrabalho futuro" — qualquer sistema de interação
+  de NPC novo usa isto desde o primeiro commit, nunca reimplementa uma
+  trava própria.
 - **SAVE_STATE novo disparado por um evento sem relação com exploração
   de mapa (loot/compra/venda/forja/troca/stats/qualquer futuro)** →
   `_send_save_state(include_fog=False)` (`client/save_sync_handlers.py`)

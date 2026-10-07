@@ -1473,16 +1473,25 @@ class Blacksmith:
 
 @dataclass
 class Trainer:
-    """Capacidade de treinador de classe — ensina skills a preço. Combine com NPC."""
+    """Capacidade de treinador de classe — ensina skills a preço. Combine com NPC.
+    Trava de quest (se houver) NÃO mora aqui — ver `NPCUnlock`."""
     class_id: str = "guerreiro"   # identificador da classe ensinada
-    # Trava de quest (04/10/2026, pedido do usuário) — "" = sem trava
-    # (sempre liberado, comportamento de sempre). Com valor, o treino só
-    # aparece como opção depois que `unlock_quest_id` estiver em
-    # QuestLog.completed (ver engine.quest_logic.has_unlocked) — ponto
-    # único de verdade consultado tanto pelo menu do cliente
-    # (ui/trainer_system.py::_compute_options) quanto pelo servidor
-    # (WorldServer.process_train_skill), nunca duplicado.
-    unlock_quest_id: str = ""
+
+
+@dataclass
+class NPCUnlock:
+    """Trava genérica de interação por quest (06/10/2026, generalizado a
+    pedido do usuário — antes só Trainer tinha isso, e loja usava um
+    mecanismo paralelo por shop_id em content/merchant_data.py).
+    Qualquer NPC (Merchant, Blacksmith, Mailbox, Trainer, QuestGiver, ou
+    capacidade futura) pode ganhar este componente OPCIONAL,
+    independente de quais OUTRAS capacidades tem — nunca duplicar um
+    campo `unlock_quest_id` dentro de um componente de capacidade
+    específico de novo. Ausente = sempre liberado (comportamento de
+    sempre). Ponto único de verdade pra LER: engine.quest_logic.
+    is_npc_unlocked — nunca checar `QuestLog.completed` direto num
+    system novo."""
+    quest_id: str = ""
 
 
 @dataclass

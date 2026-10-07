@@ -128,26 +128,28 @@ class TestServiceNpcCombateGenerico(unittest.TestCase):
         self.assertNotIn("shop_id", payload)
 
     def test_payload_de_trainer_sem_trava_nao_inclui_unlock_quest_id(self):
-        """Regressão — treinador comum (sem unlock_quest_id configurado,
-        o caso de todos hoje) não ganha o campo novo no payload."""
+        """Regressão — treinador comum (sem trava configurada, o caso de
+        todos hoje) não ganha o campo novo no payload."""
         eid = create_trainer(self.ws.world, 143, 374, name="Instrutor Livre", class_id="guerreiro")
         tm = self.ws.world.get_component(eid, TileMovement)
         payload = self.ws._build_mob_spawn_payload(eid, tm)
-        self.assertNotIn("trainer_unlock_quest_id", payload)
+        self.assertNotIn("unlock_quest_id", payload)
 
     def test_payload_de_trainer_travado_inclui_unlock_quest_id(self):
-        """Bug real relatado pelo usuário (05/10/2026): configurou
-        Trainer.unlock_quest_id no Avido Faseo (servidor), mas o menu do
-        cliente continuava mostrando "Treinamento" liberado — causa raiz
-        era este payload nunca repassar o campo, então o espelho local do
-        cliente (client/remote_entity_handlers.py::_spawn_remote_mob)
-        sempre recriava o Trainer com unlock_quest_id="" (default), não
-        importa o que o servidor tivesse configurado de verdade."""
+        """Bug real relatado pelo usuário (05/10/2026): configurou a trava
+        de quest no Avido Faseo (servidor), mas o menu do cliente
+        continuava mostrando "Treinamento" liberado — causa raiz era este
+        payload nunca repassar o campo, então o espelho local do cliente
+        (client/remote_entity_handlers.py::_spawn_remote_mob) sempre
+        recriava o NPC sem NPCUnlock (default), não importa o que o
+        servidor tivesse configurado de verdade. Generalizado em
+        06/10/2026 — `unlock_quest_id` (sem prefixo "trainer_") agora
+        vale pra QUALQUER NPC com NPCUnlock, não só Trainer."""
         eid = create_trainer(self.ws.world, 144, 374, name="Avido Teste",
                              class_id="guerreiro", unlock_quest_id="merchant_greeting")
         tm = self.ws.world.get_component(eid, TileMovement)
         payload = self.ws._build_mob_spawn_payload(eid, tm)
-        self.assertEqual(payload.get("trainer_unlock_quest_id"), "merchant_greeting")
+        self.assertEqual(payload.get("unlock_quest_id"), "merchant_greeting")
 
     def test_payload_de_trainer_arqueiro_manda_race_e_is_ranged_corretos(self):
         """Bug real relatado pelo usuário 21/07/2026: treinador de arqueiro

@@ -238,13 +238,13 @@ class MsgType(str, Enum):
     INV_SYNC           = "inv_sync"          # C→S  inventário mudou (loot de item) {inventory: [...]}
     TALENT_UPDATE      = "talent_update"     # C→S  talento alocado/desalocado {talents: {chosen_build, allocated, available_points}}
     HOTBAR_UPDATE      = "hotbar_update"     # C→S  barra de ações/consumíveis mudou {skills, consumables}
-    BUY_REQUEST        = "buy_request"       # C→S  compra em loja {shop_id, item_name, quantity}
+    BUY_REQUEST        = "buy_request"       # C→S  compra em loja {shop_id, item_name, quantity, npc_eid?} — npc_eid (06/10/2026): trava de quest genérica por NPC, ver NPCUnlock/is_npc_unlocked; ausente/-1 = sem NPC conhecido, trata como destravado
     BUY_RESULT         = "buy_result"        # S→C  resultado da compra {success, reason, item, new_gold}
     SELL_REQUEST       = "sell_request"      # C→S  {item_name, item_value, stack_sold}
     SELL_RESULT        = "sell_result"       # S→C  {success, item_name, sell_price, new_gold} | {success:False, reason}
-    CRAFT_REQUEST      = "craft_request"     # C→S  {recipe_id} — débito A4 (11/08/2026)
+    CRAFT_REQUEST      = "craft_request"     # C→S  {recipe_id, npc_eid?} — débito A4 (11/08/2026); npc_eid (06/10/2026) mesma trava genérica de BUY_REQUEST
     CRAFT_RESULT       = "craft_result"      # S→C  {success, reason, item, new_gold}
-    RECYCLE_REQUEST    = "recycle_request"   # C→S  {inv_index} — débito A4 (11/08/2026)
+    RECYCLE_REQUEST    = "recycle_request"   # C→S  {inv_index, npc_eid?} — débito A4 (11/08/2026); npc_eid (06/10/2026) mesma trava genérica de BUY_REQUEST
     RECYCLE_RESULT     = "recycle_result"    # S→C  {success, reason, materials, new_gold}
     TRAIN_SKILL_REQUEST = "train_skill_request"  # C→S  {npc_id, skill_id} — 04/10/2026, antes treinar era 100% client-trusted
     TRAIN_SKILL_RESULT  = "train_skill_result"   # S→C  {success, skill_id, name, new_gold} | {success:False, reason}

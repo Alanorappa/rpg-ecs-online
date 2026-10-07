@@ -122,8 +122,22 @@ class MailSystem(UIScaleMixin, System):
         return ui is not None and ui.sub_screen_open
 
     def open_for(self, mailbox_eid: int) -> None:
+        """Abre o inbox, OU — se travado por quest (06/10/2026,
+        generalização pedida pelo usuário, mesmo padrão de `ui/
+        shop_system.py::_try_open_merchant`/`ui/crafting_system.py::
+        _open_menu`) — pede pro QuestDialogSystem abrir no lugar. Nenhum
+        mailbox hoje configura `NPCUnlock`, mas a fiação já fica pronta
+        pra quando um precisar."""
         ui = self._ui()
         if ui is None or not self._net:
+            return
+        from engine.components import QuestLog as _QL_mail
+        import engine.quest_logic as _quest_logic_mail
+        ql = self.world.get_component(self.player_entity, _QL_mail)
+        if not _quest_logic_mail.is_npc_unlocked(self.world, mailbox_eid, ql):
+            self.world.add_component(self.player_entity, NPCInteractionRequest(
+                kind="open_quest_dialog", target_eid=mailbox_eid))
+            self._open_cooldown = 0.3
             return
         ui.mailbox_eid = mailbox_eid
         ui.screen = "inbox"

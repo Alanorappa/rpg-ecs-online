@@ -309,12 +309,18 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
             (m["x"], m["y"],
              m.get("name", "Comerciante"),        # nome customizado do JSON
              m.get("shop_id", "general"),
-             m.get("level", 1), m.get("profession", "Comerciante"))
+             m.get("level", 1), m.get("profession", "Comerciante"),
+             # quest_ids/turn_in_ids (06/10/2026) — mercador também pode
+             # aceitar entrega de quest (ex: "Fabian Hardek"); unlock_quest_id
+             # — trava genérica de interação, ver engine.components.NPCUnlock.
+             tuple(m.get("quest_ids", [])),
+             tuple(m.get("turn_in_ids", [])),
+             m.get("unlock_quest_id", ""))
             for m in data["merchants"]
         ]
     else:
         spawn_points["merchants"] = [
-            (col, row, "Comerciante", sid, 1, "Comerciante")
+            (col, row, "Comerciante", sid, 1, "Comerciante", (), (), "")
             for col, row, sid in spawn_points["merchants"]
         ]
 
@@ -325,7 +331,8 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
              tuple(q.get("quest_ids", [])),
              tuple(q.get("turn_in_ids", [])),
              q.get("level", 1),
-             q.get("profession", "Missiveiro"))
+             q.get("profession", "Missiveiro"),
+             q.get("unlock_quest_id", ""))
             for q in data["quest_givers"]
         ]
 
@@ -335,7 +342,8 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
              b.get("name", "Ferreiro"),
              b.get("shop_id", "blacksmith"),
              b.get("level", 1),
-             b.get("profession", "Ferreiro"))
+             b.get("profession", "Ferreiro"),
+             b.get("unlock_quest_id", ""))
             for b in data["blacksmiths"]
         ]
 
@@ -360,7 +368,8 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
             (mb["x"], mb["y"],
              mb.get("name", "Correio"),
              mb.get("level", 1),
-             mb.get("profession", "Correio"))
+             mb.get("profession", "Correio"),
+             mb.get("unlock_quest_id", ""))
             for mb in data["mailboxes"]
         ]
 

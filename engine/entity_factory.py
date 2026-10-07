@@ -11,7 +11,7 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        SpawnZone, EntityIdentity, StatusEffects, ConsumableBar, NpcSounds, FogOfWar, \
                        EnemyAbilities, EnemyAbilitySlot, QuestLog, QuestGiver, NPC, Blacksmith, \
                        LearnedRecipes, Trainer, Faction, Combatant, Harvestable, Tower, Minion, \
-                       Mailbox
+                       Mailbox, NPCUnlock
 from ui.ui_components import (
     UIState, ShopUIState, LootUIState, DragState, TradeUIState,
     InstanceInventoryUIState, MailUIState,
@@ -544,15 +544,34 @@ def _service_npc_race_for_class(class_id: str) -> str:
     }.get(class_id, _SERVICE_NPC_DEFAULT_RACE)
 
 
+def _attach_npc_unlock(world: World, eid: int, unlock_quest_id: str) -> None:
+    """Anexa `NPCUnlock` se `unlock_quest_id` não for vazio — chamado
+    por TODO `create_*` de NPC de serviço (06/10/2026, ponto único,
+    nunca duplicar esta checagem dentro de um `create_*` específico).
+    Ver `engine.quest_logic.is_npc_unlocked` pro lado de leitura."""
+    if unlock_quest_id:
+        world.add_component(eid, NPCUnlock(quest_id=unlock_quest_id))
+
+
 def create_merchant(world: World, tile_x: int, tile_y: int, shop_id: str = "general",
                     name: str = "Comerciante", level: int = 1,
-                    profession: str = "Comerciante") -> int:
+                    profession: str = "Comerciante",
+                    quest_ids: tuple = (), turn_in_ids: tuple = (),
+                    unlock_quest_id: str = "") -> int:
     """NPC de serviço com combate genérico (Fase 1, 21/07/2026, pedido do
     usuário) — HP real + auto-attack igual a qualquer mob (via
     `_build_combat_entity`, mesma infra de `create_combat_npc`/Guarda
     Real), facção `civis` (amigável ao player, hostil a monstro/bandido).
     NÃO usa skills reais do jogador (Interceptar, etc.) — isso é uma Fase
-    2 a discutir depois."""
+    2 a discutir depois.
+
+    `quest_ids`/`turn_in_ids` (06/10/2026, pedido do usuário — mercador
+    "Fabian Hardek" precisava aceitar entrega de quest) — mesmo padrão
+    de `create_trainer`: anexa `QuestGiver` só se `quest_ids` for
+    passado. Sem isso, NENHUM mercador podia ser alvo de entrega de
+    quest (`QuestGiver` nunca existia na entidade, `quest_logic` é
+    genérico mas não tinha o que ler). `unlock_quest_id` — ver
+    `_attach_npc_unlock`/`engine.quest_logic.is_npc_unlocked`."""
     from content.merchant_data import SHOPS
     shop = SHOPS.get(shop_id, SHOPS["general"])
     npc_name = name if name != "Comerciante" else shop.get("name", name)
@@ -564,12 +583,17 @@ def create_merchant(world: World, tile_x: int, tile_y: int, shop_id: str = "gene
     world.add_component(eid, Renderable(color=color, width=PLAYER_SIZE, height=PLAYER_SIZE))
     world.add_component(eid, NPC(name=npc_name, level=level, profession=profession))
     world.add_component(eid, Merchant(shop_id=shop_id))
+    if quest_ids:
+        world.add_component(eid, QuestGiver(quest_ids=tuple(quest_ids),
+                                            turn_in_ids=tuple(turn_in_ids) or tuple(quest_ids)))
+    _attach_npc_unlock(world, eid, unlock_quest_id)
     return eid
 
 
 def create_mailbox(world: World, tile_x: int, tile_y: int,
                    name: str = "Correio", level: int = 1,
-                   profession: str = "Correio") -> int:
+                   profession: str = "Correio",
+                   unlock_quest_id: str = "") -> int:
     """NPC "Caixa de Correio" (25/09/2026) com combate genérico (Fase 1 —
     ver create_merchant docstring pro racional completo). Sem catálogo por
     instância (diferente de Merchant/shop_id) — só o componente marcador
@@ -590,13 +614,15 @@ def create_mailbox(world: World, tile_x: int, tile_y: int,
                                         sprite_id="vp_180"))
     world.add_component(eid, NPC(name=name, level=level, profession=profession))
     world.add_component(eid, Mailbox())
+    _attach_npc_unlock(world, eid, unlock_quest_id)
     return eid
 
 
 def create_quest_giver(world: World, tile_x: int, tile_y: int,
                        name: str = "Missiveiro", quest_ids: tuple = (),
                        turn_in_ids: tuple = (),
-                       level: int = 1, profession: str = "Missiveiro") -> int:
+                       level: int = 1, profession: str = "Missiveiro",
+                       unlock_quest_id: str = "") -> int:
     """NPC dador de quests com combate genérico (Fase 1 — ver
     create_merchant docstring pro racional completo)."""
     eid = _build_combat_entity(
@@ -607,12 +633,14 @@ def create_quest_giver(world: World, tile_x: int, tile_y: int,
     world.add_component(eid, NPC(name=name, level=level, profession=profession))
     world.add_component(eid, QuestGiver(quest_ids=tuple(quest_ids),
                                         turn_in_ids=tuple(turn_in_ids)))
+    _attach_npc_unlock(world, eid, unlock_quest_id)
     return eid
 
 
 def create_blacksmith(world: World, tile_x: int, tile_y: int,
                       name: str = "Ferreiro", shop_id: str = "blacksmith",
-                      level: int = 1, profession: str = "Ferreiro") -> int:
+                      level: int = 1, profession: str = "Ferreiro",
+                      unlock_quest_id: str = "") -> int:
     """NPC ferreiro (loja + reciclagem/forja) com combate genérico (Fase
     1 — ver create_merchant docstring pro racional completo)."""
     from content.merchant_data import SHOPS
@@ -627,6 +655,7 @@ def create_blacksmith(world: World, tile_x: int, tile_y: int,
     world.add_component(eid, NPC(name=npc_name, level=level, profession=profession))
     world.add_component(eid, Merchant(shop_id=shop_id))
     world.add_component(eid, Blacksmith(shop_id=shop_id))
+    _attach_npc_unlock(world, eid, unlock_quest_id)
     return eid
 
 
@@ -640,19 +669,22 @@ def create_trainer(world: World, tile_x: int, tile_y: int,
     como guerreiro") — ver create_merchant docstring pro racional
     completo. Pode acumular QuestGiver opcionalmente.
 
-    `unlock_quest_id` (04/10/2026) — "" (padrão) = treino sempre
-    liberado; com valor, só aparece como opção depois que o player
-    completar essa quest (engine.quest_logic.has_unlocked)."""
+    `unlock_quest_id` (04/10/2026, generalizado 06/10/2026) — "" (padrão)
+    = treino sempre liberado; com valor, só aparece como opção depois
+    que o player completar essa quest — ver `_attach_npc_unlock`/
+    `engine.quest_logic.is_npc_unlocked` (NÃO mora mais em `Trainer`,
+    mora em `NPCUnlock`, ponto único pra qualquer NPC)."""
     race = _service_npc_race_for_class(class_id)
     eid = _build_combat_entity(
         world, tile_x, tile_y, ENEMY_MELEE_ATTACK_RANGE, False, "normal",
         race, "", level, _SERVICE_NPC_FACTION, identity_name=name)
     world.add_component(eid, Renderable(color=(80, 140, 220), width=PLAYER_SIZE, height=PLAYER_SIZE))
     world.add_component(eid, NPC(name=name, level=level, profession=profession))
-    world.add_component(eid, Trainer(class_id=class_id, unlock_quest_id=unlock_quest_id))
+    world.add_component(eid, Trainer(class_id=class_id))
     if quest_ids:
         world.add_component(eid, QuestGiver(quest_ids=tuple(quest_ids),
                                             turn_in_ids=tuple(turn_in_ids) or tuple(quest_ids)))
+    _attach_npc_unlock(world, eid, unlock_quest_id)
     return eid
 
 

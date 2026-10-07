@@ -975,9 +975,10 @@ class SessionManager:
         item_name = str(payload.get("item_name", ""))
         item_id   = str(payload.get("item_id", ""))
         quantity  = max(1, int(payload.get("quantity", 1)))
+        npc_eid   = int(payload.get("npc_eid", -1))
         result = self.world_server.process_shop_buy(
             session.session_id, shop_id, item_name, quantity,
-            item_id=item_id)
+            item_id=item_id, npc_eid=npc_eid)
         await session.send(MsgType.BUY_RESULT, result)
 
     async def _handle_craft_request(self, session: Session, payload: dict, ts: int) -> None:
@@ -988,7 +989,8 @@ class SessionManager:
         if not session.authenticated:
             return
         recipe_id = str(payload.get("recipe_id", ""))
-        result = self.world_server.craft_item(session.session_id, recipe_id)
+        npc_eid   = int(payload.get("npc_eid", -1))
+        result = self.world_server.craft_item(session.session_id, recipe_id, npc_eid=npc_eid)
         await session.send(MsgType.CRAFT_RESULT, result)
 
     async def _handle_recycle_request(self, session: Session, payload: dict, ts: int) -> None:
@@ -999,7 +1001,8 @@ class SessionManager:
         if not session.authenticated:
             return
         inv_index = int(payload.get("inv_index", -1))
-        result = self.world_server.recycle_item(session.session_id, inv_index)
+        npc_eid   = int(payload.get("npc_eid", -1))
+        result = self.world_server.recycle_item(session.session_id, inv_index, npc_eid=npc_eid)
         await session.send(MsgType.RECYCLE_RESULT, result)
 
     async def _handle_train_skill_request(self, session: Session, payload: dict, ts: int) -> None:
