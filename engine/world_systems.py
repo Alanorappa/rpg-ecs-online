@@ -3344,19 +3344,6 @@ class EnemyAISystem(System):
                 dist_to_initial_tiles = (abs(initial_tile_x - enemy_current_tile_x) +
                                           abs(initial_tile_y - enemy_current_tile_y))
 
-                _dbg_ident_custodio = self.world.get_component(enemy_id, EntityIdentity)
-                if _dbg_ident_custodio and "custodio" in (_dbg_ident_custodio.name or "").lower():
-                    from debug.aoi_debug import AOI_DBG as _AOI_DBG_ret3
-                    _AOI_DBG_ret3.log(
-                        "RETURNING_STEP2", eid=enemy_id,
-                        cur=current_enemy_tile, home=(initial_tile_x, initial_tile_y),
-                        dist=dist_to_initial_tiles,
-                        state=ai_control.state,
-                        path=(ai_control.path if ai_control.path else []),
-                        is_blocked=ai_control.is_blocked,
-                        blocked_by=ai_control.blocked_by_entity_id,
-                        is_moving=tile_movement.is_moving,
-                        recalc_timer=f"{ai_control.path_recalc_timer:.2f}")
                 if dist_to_initial_tiles > self._settle_threshold_tiles(enemy_id):
                     if _MCL and ai_control.state != "RETURNING":
                         _MCL.log("LOST_TGT", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
