@@ -82,6 +82,36 @@ LAST_DAMAGE_AMOUNTS: dict[int, int] = {}
 LAST_EFFECTS_APPLIED: dict[int, list] = {}
 
 
+def should_include_skill_damage_target(mob_eid: int, damage: int,
+                                       caster_eid: int, explicit_target_id: int) -> bool:
+    """Ponto único de verdade (07/10/2026, PROBLEMAS_ARQUITETURA.md §247 —
+    unificação pedida pelo usuário depois de achar a mesma regra copiada
+    em 3 call sites) pra decidir se `mob_eid` deve entrar no relatório de
+    "quem esta skill/spell afetou" (SKILL_RESULT/`results_targets`),
+    quando a razão é DANO (`damage > 0`, lido de `LAST_DAMAGE_AMOUNTS`).
+
+    `LAST_DAMAGE_AMOUNTS` é um dict GLOBAL, populado por QUALQUER
+    `apply_damage_core` que disparar durante a janela de execução do
+    handler (limpo antes, lido depois — ver comentário acima) — não sabe
+    distinguir "a skill bateu nisso de propósito" de "isto bateu em
+    alguém como efeito COLATERAL enquanto a skill executava" (ex:
+    reflexo do Boneco de Treino, que bate de volta no PRÓPRIO CASTER via
+    chamada recursiva de `deal_damage`, dentro do MESMO handler). Sem
+    este guard, o caster aparecia como "alvo da própria skill" e o
+    cliente mostrava um 2º floating text, duplicando o que o broadcast
+    de combate genérico (`emit_combat_event`, §246) já exibe.
+
+    Regra: `mob_eid == caster_eid` só é incluído se `mob_eid ==
+    explicit_target_id` — ou seja, o caster só aparece no relatório da
+    PRÓPRIA skill quando ele é o alvo EXPLÍCITO do cast (skill de
+    auto-dano genuína, se um dia existir) — nunca quando é incidental.
+    Qualquer OUTRO `mob_eid` (não o caster) nunca é afetado por este
+    guard. Self-buff/self-effect SEM dano (`applied_effects`, ex:
+    `cc_immune` do Fatiador de Corpos) não passa por aqui — é decidido
+    por uma condição separada em cada call site, sem este problema."""
+    return damage > 0 and (mob_eid != caster_eid or mob_eid == explicit_target_id)
+
+
 # ── apply_damage_core ─────────────────────────────────────────────────────────
 
 def apply_damage_core(world, target_id: int, dmg: int, *,

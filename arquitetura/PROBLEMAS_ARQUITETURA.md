@@ -25822,3 +25822,35 @@ mecânica FUTURA que faça uma entidade "bater de volta" ou causar dano
 colateral DENTRO da execução de uma skill/handler de outra entidade
 precisa ser auditada contra os 3 pontos aqui, não só contra
 `emit_combat_event`.
+
+**ATUALIZAÇÃO (07/10/2026, mesmo dia)**: usuário perguntou se a
+correção acima resolvia "de uma vez" ou só a causa raiz pontual —
+resposta honesta na hora: a REGRA generaliza bem pra fontes de dano
+incidental futuras (não é "excluir o boneco", é "excluir o caster a
+menos que seja o alvo real"), mas os 3 call sites continuavam sendo 3
+blocos quase idênticos, cada um com sua própria cópia da mesma
+condição — um 4º call site futuro teria que copiar de novo, não
+ganhava a proteção de graça. Usuário pediu pra unificar. Fix: `engine.
+core_systems.should_include_skill_damage_target(mob_eid, damage,
+caster_eid, explicit_target_id)` — função única, ao lado de
+`LAST_DAMAGE_AMOUNTS`/`LAST_DAMAGE_OUTCOMES`/`LAST_EFFECTS_APPLIED`
+(mesmo módulo, mesmo "pacote" de mecanismo+invariante, convenção já
+usada pelo projeto). Os 3 call sites (`server/skill_processor.py` e os
+2 de `server/spell_completion_processor.py`) foram trocados para
+CHAMAR essa função em vez de reimplementar a condição — nenhum deles
+guarda mais a lógica própria. Decisão explícita de NÃO tentar unificar
+o resto da lógica de cada call site (resolução de outcome, branch de
+miss/dodge/parry/block que só existe em skill_processor.py, campos
+específicos como `mob_slow_mult`) — essas partes genuinamente
+divergem entre skill instantânea/completion/projétil, forçar numa
+função só criaria uma mega-função com parâmetros condicionais difícil
+de ler, pior que 3 blocos específicos. Unificar só o que É, de fato, a
+MESMA regra nos 3 lugares (a decisão de inclusão por dano) — não
+unificar por unificar.
+
+**Teste**: revert-to-confirm na função nova (retorno forçado pra só
+`damage > 0`, sem o guard) — `TestSkillNoBonecoNaoDuplicaReflexoViaSkillResult`
+falhou exatamente como esperado, confirmando que os 3 call sites
+passaram a depender de verdade da função compartilhada (não só uma
+cópia local que por acaso ficou igual). Suíte ampla de skill/magia
+(158 testes) e suíte completa (ver commit) sem regressão.

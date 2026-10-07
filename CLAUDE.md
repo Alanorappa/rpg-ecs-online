@@ -339,28 +339,30 @@ padrão a quebrar, não só os bugs individuais.
 - **Qualquer mecânica que causa dano/efeito COLATERAL no PRÓPRIO
   CASTER de uma skill, DENTRO da execução do handler dela** (ex:
   reflexo do boneco de treino batendo de volta, ou categoria futura
-  parecida) → precisa se excluir das 3 branches que montam o relatório
-  de "quem a skill afetou" pro `SKILL_RESULT`, senão o caster aparece
-  como "alvo da própria skill" e duplica o FLT (07/10/2026, §247 —
-  achado DEPOIS de §246, mecanismo DIFERENTE, não confundir os dois):
-  `server/skill_processor.py` (`if damage > 0 and (mob_eid !=
-  player_eid or mob_eid == tid):`) e `server/spell_completion_
-  processor.py` (2 call sites, completion sem projétil e impacto de
-  projétil, mesma lógica com `target_id`). Causa: as 3 branches leem
-  `LAST_DAMAGE_AMOUNTS`/`LAST_DAMAGE_OUTCOMES`/`LAST_EFFECTS_APPLIED`
-  (`engine/core_systems.py`, dicts GLOBAIS limpos antes do handler e
-  lidos depois — otimização de 06/09/2026 que substituiu um snapshot
-  O(mobs), ver histórico) — populados por QUALQUER `apply_damage_core`
-  que disparar durante a janela do handler, sem saber se foi a skill
-  batendo no alvo dela ou um efeito colateral batendo de volta no
-  caster. Exclusão vale SÓ pro caster, SÓ na branch de dano — nunca
-  generalizar pra excluir outro eid qualquer, e nunca tocar na branch
-  de efeito-sem-dano (self-buff tipo `cc_immune` do Fatiador de Corpos
-  já é seguro por natureza: só entra ali quando `mob_eid == tid`/
-  `target_id`). `_server_apply_magic_damage(..., report=True)`
-  (canalização tick-a-tick) NÃO precisa desse guard — já é escopada
-  por-alvo (hp_before/hp_after de 1 entidade só), nunca um sweep
-  global. Ver PROBLEMAS_ARQUITETURA.md §247.
+  parecida) → `engine.core_systems.should_include_skill_damage_target(
+  mob_eid, damage, caster_eid, explicit_target_id)` (07/10/2026, §247 —
+  ponto único, unificado a partir de 3 call sites quase idênticos que
+  existiam antes) — SEMPRE chamar isto antes de incluir `mob_eid` na
+  branch de DANO do relatório de "quem a skill afetou" pro
+  `SKILL_RESULT`, NUNCA reescrever a condição na mão num 4º call site
+  futuro. Usado hoje em `server/skill_processor.py` e
+  `server/spell_completion_processor.py` (2 call sites: completion sem
+  projétil e impacto de projétil). Causa do bug original: os 3 call
+  sites leem `LAST_DAMAGE_AMOUNTS`/`LAST_DAMAGE_OUTCOMES`/
+  `LAST_EFFECTS_APPLIED` (`engine/core_systems.py`, dicts GLOBAIS
+  limpos antes do handler e lidos depois — otimização de 06/09/2026
+  que substituiu um snapshot O(mobs), ver histórico) — populados por
+  QUALQUER `apply_damage_core` que disparar durante a janela do
+  handler, sem saber se foi a skill batendo no alvo dela ou um efeito
+  colateral batendo de volta no caster (ex: reflexo do boneco). A
+  função só afeta a branch de DANO — nunca generalizar pra excluir
+  outro eid qualquer, e nunca tocar na branch de efeito-sem-dano
+  (self-buff tipo `cc_immune` do Fatiador de Corpos já é seguro por
+  natureza: só entra ali quando `mob_eid == tid`/`target_id`).
+  `_server_apply_magic_damage(..., report=True)` (canalização
+  tick-a-tick) NÃO precisa desse guard — já é escopada por-alvo
+  (hp_before/hp_after de 1 entidade só), nunca um sweep global. Ver
+  PROBLEMAS_ARQUITETURA.md §247.
 - **Atributo de combate novo** → par `base_X`/`X` em `CombatStats` + 1 entrada
   em `stat_fns._MODIFIABLE_ATTRS` (+ `_STAT_CLAMPS` se tiver limite).
 - **Qualquer coisa (item, buff, talento) que pode mudar `stamina` (deriva

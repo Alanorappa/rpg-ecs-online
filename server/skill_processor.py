@@ -512,7 +512,8 @@ class SkillProcessorMixin:
             # (correto só pro físico de alvo único).
             from engine.core_systems import (LAST_DAMAGE_OUTCOMES as _last_dmg_outcomes,
                                               LAST_DAMAGE_AMOUNTS as _last_dmg_amounts,
-                                              LAST_EFFECTS_APPLIED as _last_fx_applied)
+                                              LAST_EFFECTS_APPLIED as _last_fx_applied,
+                                              should_include_skill_damage_target as _should_incl_dmg)
 
             # Conjunto de alvos a reportar: quem apply_damage_core tocou
             # (outcome sempre registrado, mesmo quando bloqueado) + quem
@@ -559,22 +560,13 @@ class SkillProcessorMixin:
                         r["effect_durations"] = _eff_durs
                     return r
 
-                # 07/10/2026 (PROBLEMAS_ARQUITETURA.md §246, 3ª ocorrência
-                # da mesma família): `damage>0` sozinho inclui QUALQUER
-                # dano real aplicado a este eid durante a execução do
-                # handler — inclusive dano INCIDENTAL que não veio da
-                # skill em si (ex: reflexo do Boneco de Treino, que bate
-                # de volta no PRÓPRIO caster via chamada recursiva de
-                # deal_damage dentro do mesmo handler). Esse dano já é
-                # reportado pelo mecanismo genérico `emit_combat_event`
-                # (unificação de combate, mesmo §246) — reportar aqui
-                # TAMBÉM duplicava o floating text. Exclui o CASTER desta
-                # branch a menos que ele seja o alvo EXPLÍCITO do próprio
-                # cast (`mob_eid == tid`, skill de auto-dano genuína, se
-                # algum dia existir) — nunca exclui outro eid qualquer,
-                # só o caster, que é o único caso onde "dano incidental
-                # dentro do meu próprio handler" pode acontecer hoje.
-                if damage > 0 and (mob_eid != player_eid or mob_eid == tid):
+                # Ponto único de verdade (07/10/2026, PROBLEMAS_
+                # ARQUITETURA.md §247 — unificação, 3 call sites iguais
+                # antes): decide se dano INCIDENTAL no próprio caster
+                # (ex: reflexo do Boneco de Treino, recursivo dentro
+                # deste mesmo handler) entra no relatório da skill, que
+                # já é reportado separado por `emit_combat_event`.
+                if _should_incl_dmg(mob_eid, damage, player_eid, tid):
                     results_targets.append(_make_result(_this_outcome))
                 elif mob_eid == tid and _this_outcome in ("miss", "dodge", "parry", "block"):
                     results_targets.append(_make_result(_this_outcome))
