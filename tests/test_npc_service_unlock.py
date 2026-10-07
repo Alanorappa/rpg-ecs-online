@@ -582,6 +582,26 @@ class TestMerchantComQuestGiver(unittest.TestCase):
         self.assertIsNotNone(qg, "mercador com quest_ids deveria ganhar QuestGiver")
         self.assertEqual(qg.turn_in_ids, ("merchant_greeting",))
 
+    def test_create_merchant_so_com_turn_in_ids_sem_quest_ids_anexa_questgiver(self):
+        """Bug real achado em produção (06/10/2026): o caso REAL do
+        Fabian Hardek é só `turn_in_ids` (ele não DÁ nenhuma quest, só
+        aceita a entrega de uma quest dada por outro NPC) — `quest_ids`
+        fica vazio. O teste acima (com os 2 juntos) nunca pegou esse
+        caso porque sempre passava `quest_ids` também. Guard antigo
+        (`if quest_ids:`) deixava Fabian sem QuestGiver, sem marcador
+        "?" e sem diálogo nenhum ao clicar com o direito."""
+        from engine.entity_factory import create_merchant
+        from engine.components import QuestGiver
+        from engine.world import World
+        world = World()
+        eid = create_merchant(world, 10, 10, shop_id="general", name="Fabian Teste",
+                              turn_in_ids=("merchant_greeting",))
+        qg = world.get_component(eid, QuestGiver)
+        self.assertIsNotNone(qg,
+            "mercador só com turn_in_ids (sem quest_ids) também deveria ganhar QuestGiver")
+        self.assertEqual(qg.turn_in_ids, ("merchant_greeting",))
+        self.assertEqual(qg.quest_ids, ())
+
     def test_create_merchant_sem_quest_ids_nao_anexa_questgiver(self):
         """Regressão -- mercador comum (sem quest_ids) continua sem
         QuestGiver, exatamente como antes desta mudança."""

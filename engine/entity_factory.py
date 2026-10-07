@@ -567,9 +567,12 @@ def create_merchant(world: World, tile_x: int, tile_y: int, shop_id: str = "gene
 
     `quest_ids`/`turn_in_ids` (06/10/2026, pedido do usuário — mercador
     "Fabian Hardek" precisava aceitar entrega de quest) — mesmo padrão
-    de `create_trainer`: anexa `QuestGiver` só se `quest_ids` for
-    passado. Sem isso, NENHUM mercador podia ser alvo de entrega de
-    quest (`QuestGiver` nunca existia na entidade, `quest_logic` é
+    de `create_trainer`: anexa `QuestGiver` se QUALQUER um dos dois for
+    passado (`quest_ids OR turn_in_ids`, nunca só `quest_ids` — Fabian é
+    exatamente o caso "só aceita entrega, não dá quest nenhuma",
+    `turn_in_ids` sozinho, `quest_ids` vazio; bug real achado em
+    produção: `if quest_ids:` sozinho deixava Fabian sem QuestGiver,
+    sem marcador "?" e sem diálogo nenhum ao clicar — `quest_logic` é
     genérico mas não tinha o que ler). `unlock_quest_id` — ver
     `_attach_npc_unlock`/`engine.quest_logic.is_npc_unlocked`."""
     from content.merchant_data import SHOPS
@@ -583,7 +586,7 @@ def create_merchant(world: World, tile_x: int, tile_y: int, shop_id: str = "gene
     world.add_component(eid, Renderable(color=color, width=PLAYER_SIZE, height=PLAYER_SIZE))
     world.add_component(eid, NPC(name=npc_name, level=level, profession=profession))
     world.add_component(eid, Merchant(shop_id=shop_id))
-    if quest_ids:
+    if quest_ids or turn_in_ids:
         world.add_component(eid, QuestGiver(quest_ids=tuple(quest_ids),
                                             turn_in_ids=tuple(turn_in_ids) or tuple(quest_ids)))
     _attach_npc_unlock(world, eid, unlock_quest_id)
@@ -681,7 +684,7 @@ def create_trainer(world: World, tile_x: int, tile_y: int,
     world.add_component(eid, Renderable(color=(80, 140, 220), width=PLAYER_SIZE, height=PLAYER_SIZE))
     world.add_component(eid, NPC(name=name, level=level, profession=profession))
     world.add_component(eid, Trainer(class_id=class_id))
-    if quest_ids:
+    if quest_ids or turn_in_ids:
         world.add_component(eid, QuestGiver(quest_ids=tuple(quest_ids),
                                             turn_in_ids=tuple(turn_in_ids) or tuple(quest_ids)))
     _attach_npc_unlock(world, eid, unlock_quest_id)

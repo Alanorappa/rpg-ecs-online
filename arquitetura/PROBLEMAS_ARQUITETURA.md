@@ -25415,3 +25415,44 @@ em cima de parede nasce e PARECE normal (a entidade aparece parada no
 lugar certo) até o dia em que ela precisa se mover e voltar — o bug
 fica invisível por tempo arbitrário até alguém puxar a entidade pra
 longe de casa pela primeira vez.
+
+## 245. Mercador "Fabian Hardek" sem marcador "?" e sem reação a clique direito, depois do fix de NPCUnlock (06/10/2026)
+
+**Sintoma relatado pelo usuário**: depois do deploy da trava genérica
+de quest (`NPCUnlock`, ver decisão em `ARQUITETURA ONLINE.md`), o
+Fabian Hardek continuava sem o marcador "?" de quest acima dele, e
+clicar com o direito nele não abria nada (nem loja, nem diálogo de
+quest) — nenhum feedback visível.
+
+**Causa raiz**: `create_merchant`/`create_trainer`
+(`engine/entity_factory.py`) só anexavam `QuestGiver` quando
+`quest_ids` (quests que o NPC DÁ) era não-vazio —
+`if quest_ids: world.add_component(eid, QuestGiver(...))`. O Fabian é
+exatamente o caso "só aceita ENTREGA de uma quest dada por outro NPC"
+— `turn_in_ids=["merchant_greeting"]` no JSON, `quest_ids` ausente
+(vazio). Com o guard antigo, `QuestGiver` nunca nascia nele, então
+`quest_logic` (genérico, já corrigido para ler `QuestGiver` de
+QUALQUER NPC) não tinha nada pra ler — zero quest disponível/
+completável, nenhum marcador, e `QuestDialogSystem._open_dialog`
+(chamado quando `ShopSystem` redireciona um mercador travado) só
+loga uma mensagem de chat ("Sem missões para você no momento") e
+retorna sem abrir nada quando a lista de quests está vazia — por
+isso "nada acontece" visualmente ao clicar.
+
+O teste escrito na tarefa anterior (`test_create_merchant_com_
+turn_in_ids_anexa_questgiver`) não pegou esse caso porque passava
+`quest_ids` E `turn_in_ids` juntos — nunca exercitou o cenário real do
+Fabian (só `turn_in_ids`).
+
+**Fix**: guard trocado para `if quest_ids or turn_in_ids:` em
+`create_merchant` E `create_trainer` (mesmo bug copiado nos dois) —
+`QuestGiver` agora nasce sempre que o NPC tem QUALQUER papel de quest,
+dar OU aceitar entrega.
+
+**Teste**: `tests/test_npc_service_unlock.py::TestMerchantComQuestGiver::
+test_create_merchant_so_com_turn_in_ids_sem_quest_ids_anexa_questgiver`
+(novo) — só `turn_in_ids`, sem `quest_ids`, replicando a config real do
+Fabian. Revert-to-confirm: com o guard antigo restaurado
+(`git stash` só de `entity_factory.py`), o teste falha exatamente como
+o bug relatado (`QuestGiver` ausente); com o fix, passa. Suíte
+relacionada (307 testes) sem regressão.
