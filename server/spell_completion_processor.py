@@ -263,7 +263,20 @@ class SpellCompletionMixin:
                         _fx_list_cc = _last_fx_cc.get(mob_eid, [])
                         applied  = [e["type"] for e in _fx_list_cc]
                         _blocked = mob_eid in (self._magic_blocked_immune_eids or ())
-                        if damage > 0 or applied or _blocked:
+                        # 07/10/2026 (PROBLEMAS_ARQUITETURA.md §246, mesma
+                        # família de bug já corrigida em skill_processor.py)
+                        # — `damage>0` sozinho inclui dano INCIDENTAL ao
+                        # próprio caster (ex: reflexo do Boneco de Treino,
+                        # recursivo dentro do mesmo `deal_damage`, se a
+                        # spell/skill de completion acertar um boneco com
+                        # `reflect_damage`). Esse dano já é reportado pelo
+                        # `emit_combat_event` genérico — exclui o caster
+                        # desta branch a menos que ele seja o alvo
+                        # EXPLÍCITO da própria completion (`mob_eid ==
+                        # target_id`).
+                        _dmg_is_self_incidental = (damage > 0 and mob_eid == player_eid
+                                                   and mob_eid != target_id)
+                        if (damage > 0 and not _dmg_is_self_incidental) or applied or _blocked:
                             _res = {
                                 "eid":             mob_eid,
                                 "damage":          damage,
@@ -474,7 +487,14 @@ class SpellCompletionMixin:
             _fx_list_ph = _last_fx_ph.get(mob_eid, [])
             applied  = [e["type"] for e in _fx_list_ph]
             _blocked = mob_eid in (self._magic_blocked_immune_eids or ())
-            if damage > 0 or applied or _blocked:
+            # 07/10/2026 (PROBLEMAS_ARQUITETURA.md §246, mesma família já
+            # corrigida acima e em skill_processor.py) — exclui dano
+            # INCIDENTAL ao próprio caster (ex: reflexo do Boneco de
+            # Treino atingido por projétil) desta branch; já reportado
+            # via `emit_combat_event` genérico.
+            _dmg_is_self_incidental_ph = (damage > 0 and mob_eid == player_eid
+                                         and mob_eid != target_id)
+            if (damage > 0 and not _dmg_is_self_incidental_ph) or applied or _blocked:
                 _res2 = {
                     "eid":             mob_eid,
                     "damage":          damage,

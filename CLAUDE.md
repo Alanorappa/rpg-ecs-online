@@ -336,6 +336,31 @@ padrão a quebrar, não só os bugs individuais.
   duplicado em 2 arquivos — 2 bugs reais de FLT duplicado no mesmo dia
   provaram que esse padrão não escala. Não existe mais nada pra
   excluir.
+- **Qualquer mecânica que causa dano/efeito COLATERAL no PRÓPRIO
+  CASTER de uma skill, DENTRO da execução do handler dela** (ex:
+  reflexo do boneco de treino batendo de volta, ou categoria futura
+  parecida) → precisa se excluir das 3 branches que montam o relatório
+  de "quem a skill afetou" pro `SKILL_RESULT`, senão o caster aparece
+  como "alvo da própria skill" e duplica o FLT (07/10/2026, §247 —
+  achado DEPOIS de §246, mecanismo DIFERENTE, não confundir os dois):
+  `server/skill_processor.py` (`if damage > 0 and (mob_eid !=
+  player_eid or mob_eid == tid):`) e `server/spell_completion_
+  processor.py` (2 call sites, completion sem projétil e impacto de
+  projétil, mesma lógica com `target_id`). Causa: as 3 branches leem
+  `LAST_DAMAGE_AMOUNTS`/`LAST_DAMAGE_OUTCOMES`/`LAST_EFFECTS_APPLIED`
+  (`engine/core_systems.py`, dicts GLOBAIS limpos antes do handler e
+  lidos depois — otimização de 06/09/2026 que substituiu um snapshot
+  O(mobs), ver histórico) — populados por QUALQUER `apply_damage_core`
+  que disparar durante a janela do handler, sem saber se foi a skill
+  batendo no alvo dela ou um efeito colateral batendo de volta no
+  caster. Exclusão vale SÓ pro caster, SÓ na branch de dano — nunca
+  generalizar pra excluir outro eid qualquer, e nunca tocar na branch
+  de efeito-sem-dano (self-buff tipo `cc_immune` do Fatiador de Corpos
+  já é seguro por natureza: só entra ali quando `mob_eid == tid`/
+  `target_id`). `_server_apply_magic_damage(..., report=True)`
+  (canalização tick-a-tick) NÃO precisa desse guard — já é escopada
+  por-alvo (hp_before/hp_after de 1 entidade só), nunca um sweep
+  global. Ver PROBLEMAS_ARQUITETURA.md §247.
 - **Atributo de combate novo** → par `base_X`/`X` em `CombatStats` + 1 entrada
   em `stat_fns._MODIFIABLE_ATTRS` (+ `_STAT_CLAMPS` se tiver limite).
 - **Qualquer coisa (item, buff, talento) que pode mudar `stamina` (deriva

@@ -559,7 +559,22 @@ class SkillProcessorMixin:
                         r["effect_durations"] = _eff_durs
                     return r
 
-                if damage > 0:
+                # 07/10/2026 (PROBLEMAS_ARQUITETURA.md §246, 3ª ocorrência
+                # da mesma família): `damage>0` sozinho inclui QUALQUER
+                # dano real aplicado a este eid durante a execução do
+                # handler — inclusive dano INCIDENTAL que não veio da
+                # skill em si (ex: reflexo do Boneco de Treino, que bate
+                # de volta no PRÓPRIO caster via chamada recursiva de
+                # deal_damage dentro do mesmo handler). Esse dano já é
+                # reportado pelo mecanismo genérico `emit_combat_event`
+                # (unificação de combate, mesmo §246) — reportar aqui
+                # TAMBÉM duplicava o floating text. Exclui o CASTER desta
+                # branch a menos que ele seja o alvo EXPLÍCITO do próprio
+                # cast (`mob_eid == tid`, skill de auto-dano genuína, se
+                # algum dia existir) — nunca exclui outro eid qualquer,
+                # só o caster, que é o único caso onde "dano incidental
+                # dentro do meu próprio handler" pode acontecer hoje.
+                if damage > 0 and (mob_eid != player_eid or mob_eid == tid):
                     results_targets.append(_make_result(_this_outcome))
                 elif mob_eid == tid and _this_outcome in ("miss", "dodge", "parry", "block"):
                     results_targets.append(_make_result(_this_outcome))

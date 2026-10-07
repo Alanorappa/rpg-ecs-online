@@ -25728,3 +25728,97 @@ esta mudança (loot de lampião em minion morto, roteamento de
 waypoint) — confirmado rodando as 2 no código original (antes desta
 refatoração, via `git stash`) e vendo as MESMAS 2 falhas lá. Suíte
 completa rodada antes do deploy (ver resultado no commit).
+
+## 247. FLT do reflexo do Boneco de Treino duplicava via SKILL (não auto-attack) — 4ª ocorrência da mesma família, mecanismo DIFERENTE (07/10/2026)
+
+**Sintoma relatado pelo usuário**, depois do §246 (3ª correção,
+"unificação") já estar em produção: "mesmo sendo resolvido parte do
+problema, só o ataque automático parou de duplicar o flt, qnd uso
+skill ainda duplica". Ou seja: auto-attack no boneco com
+`reflect_damage` — corrigido de verdade. Skill (ex: Golpe Poderoso) no
+MESMO boneco — ainda duplicava.
+
+**Causa raiz — NÃO relacionada a `mob_delta`/`mob_avoidance_events`**
+(ambos já removidos no §246, nada a ver com eles aqui). É um mecanismo
+TOTALMENTE diferente, mas da MESMA família conceitual: um relatório
+"genérico" que varre TUDO que aconteceu durante uma janela de execução,
+sem distinguir "o que a minha skill fez de propósito" de "o que
+aconteceu como efeito colateral de uma chamada recursiva dentro do
+mesmo handler".
+
+`server/skill_processor.py` (skills instantâneas) e
+`server/spell_completion_processor.py` (completions de cast com tempo
++ impacto de projétil — 2 call sites) montam o relatório de "quem a
+skill afetou" (pra mandar em `SKILL_RESULT`) lendo
+`LAST_DAMAGE_AMOUNTS`/`LAST_DAMAGE_OUTCOMES`/`LAST_EFFECTS_APPLIED`
+(`engine/core_systems.py`) — dicts GLOBAIS, limpos ANTES do handler
+rodar e lidos DEPOIS, populados por QUALQUER `apply_damage_core` que
+disparar nesse intervalo (otimização de performance de 06/09/2026,
+substituindo um snapshot O(mobs) de todo combatente do mapa — ver
+comentário original no código). O problema: a chamada recursiva do
+reflexo do boneco (`CombatSystem.deal_damage` → reflexo → `deal_damage`
+de novo, boneco bate no CASTER) acontece DENTRO do mesmo handler da
+skill, e popula os MESMOS dicts globais — o código que monta
+`results_targets`/`results` então "descobre" o PRÓPRIO CASTER como um
+"alvo atingido pela skill" (branch `if damage > 0:`, sem nenhuma
+distinção de fonte), mesmo o caster não sendo o alvo real da skill (é
+o boneco batendo de volta). Cliente (`client/network_handlers.py::
+_handle_msg_skill_result`, linha ~585) chama `_apply_combat_result`
+pra CADA entrada de `targets` — gerando um 2º FLT em cima do que
+`emit_combat_event` (§246) já mostrou via AOI_UPDATE.
+
+**Por que só skill duplicava e auto-attack não**: auto-attack nunca
+teve esse mecanismo de relatório-por-sweep — ele registra o resultado
+do PRÓPRIO golpe direto (`_combat_this_tick.append(...)` em
+`_process_pvp_attack`/`_process_player_attacks`, sem nenhum sweep de
+dict global). Só skill/spell têm esse relatório "genérico" — e só
+porque, até o reflexo existir, NADA durante a execução de uma skill
+jamais tinha causado dano de volta no PRÓPRIO caster como efeito
+colateral. O reflexo é o primeiro mecanismo a fazer isso.
+
+**Fix** — mesmo princípio nos 3 call sites (exclui o CASTER da branch
+de inclusão por dano, a menos que ele seja o alvo EXPLÍCITO do próprio
+cast — preserva skill de auto-dano genuína, se um dia existir, e
+preserva self-buff/self-effect sem dano, tipo `cc_immune` do Fatiador
+de Corpos, que nunca passava por essa branch de qualquer forma):
+- `server/skill_processor.py` (~linha 577): `if damage > 0 and
+  (mob_eid != player_eid or mob_eid == tid):`
+- `server/spell_completion_processor.py` (completion sem projétil,
+  ~linha 266, e impacto de projétil, ~linha 490): mesma lógica,
+  variável `target_id` no lugar de `tid`.
+
+**Não precisou de fix**: `_server_apply_magic_damage(...,
+report=True)` (canalização tick-a-tick, ex. Calamidade Flamejante) —
+essa função já é escopada por-alvo (snapshot `hp_before`/`hp_after` do
+`target_id` específico passado, nunca um sweep de dict global) — não
+tem como "descobrir" o caster incidentalmente. Também não aciona o
+reflexo do boneco pra início de conversa (chama `apply_damage_core`
+direto, nunca `CombatSystem.deal_damage`, que é onde o bloco de
+reflexo mora) — magia contra o boneco hoje não reflete; ficou fora de
+escopo deste fix (é uma limitação de design separada, não a
+duplicação relatada).
+
+**Teste** (revert-to-confirm real):
+`tests/test_flt_dedup.py::TestSkillNoBonecoNaoDuplicaReflexoViaSkillResult`
+— guerreiro usa `golpe_poderoso` (autorizado via `authorize_skill`,
+raiva setada direto) contra um boneco real (`create_training_dummy`,
+`reflect_damage=20`) via `_process_skill_requests()` de verdade; sem o
+fix, reproduziu exatamente a duplicata (`targets` tinha 2 entradas:
+`eid=player` com `damage=20` E `eid=dummy` com o dano real da skill).
+Com o fix, suíte ampla (`test_flt_dedup.py`, `test_training_dummy_
+reflect.py`, `test_combat.py`, `test_fatiador_de_corpos.py` — guarda
+de regressão específica pro self-buff `cc_immune`, `test_taunt.py`,
+`test_immunity_feedback.py`, `test_interceptar_*`, `test_faction.py`,
+`test_on_kill_charge_skills.py`, `test_skill_effect_no_local_dup_
+sound.py`, `test_talent_skill_*`, `test_tiro_multiplo_reticle_cache.py`)
+— 300 passed.
+
+**Lição a levar daqui**: a família de bug "relatório genérico que
+varre tudo que mudou, sem saber QUEM causou cada mudança" não é
+exclusiva de `mob_delta`/`mob_avoidance_events` — `LAST_DAMAGE_AMOUNTS`
+é a MESMA ideia (otimização válida, mas com o mesmo ponto cego) só que
+no nível de relatório de skill, não de broadcast de combate. Qualquer
+mecânica FUTURA que faça uma entidade "bater de volta" ou causar dano
+colateral DENTRO da execução de uma skill/handler de outra entidade
+precisa ser auditada contra os 3 pontos aqui, não só contra
+`emit_combat_event`.

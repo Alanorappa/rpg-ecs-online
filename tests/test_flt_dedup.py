@@ -291,6 +291,65 @@ class TestBonecoReflectMissNaoDuplicaFLT(unittest.TestCase):
             f"reflexo errando deveria gerar exatamente 1 evento de miss: {new_entries}")
 
 
+class TestSkillNoBonecoNaoDuplicaReflexoViaSkillResult(unittest.TestCase):
+    """Achado real relatado pelo usuário (07/10/2026, mesmo dia, depois
+    das 2 correções/unificação acima): usando AUTO-ATTACK no boneco com
+    reflect_damage, o "-1" parou de duplicar -- mas usando SKILL
+    (golpe_poderoso) no mesmo boneco, ainda duplicava.
+
+    Causa raiz DIFERENTE e NÃO relacionada a mob_delta/
+    mob_avoidance_events (já removidos): `server/skill_processor.py`
+    monta a lista "targets" do SKILL_RESULT varrendo
+    `LAST_DAMAGE_AMOUNTS`/`LAST_DAMAGE_OUTCOMES`
+    (`engine/core_systems.py`, dicts GLOBAIS, populados por QUALQUER
+    `apply_damage_core` que rodar durante a execução do handler da
+    skill, sem distinguir "a skill bateu nisso" de "algo bateu em
+    alguém como efeito colateral"). O reflexo do boneco (chamada
+    recursiva de `deal_damage` dentro do MESMO handler) também grava
+    no dict global -- `_touched` (linha ~522) varre o dict inteiro e
+    acaba incluindo o PRÓPRIO CASTER como "alvo" da skill, mesmo ele
+    não sendo o alvo real (é o boneco batendo de volta, não a skill
+    acertando o player). Client (`client/network_handlers.py::
+    _handle_msg_skill_result`) chama `_apply_combat_result` pra CADA
+    entrada de "targets" -- gerando um 2º FLT em cima do que
+    `emit_combat_event` (mecanismo novo, §246) já mostra via
+    AOI_UPDATE/`_pending_mob_attacks`."""
+
+    def setUp(self):
+        from engine.entity_factory import create_training_dummy
+        from tests.helpers import authorize_skill
+        from engine.components import CharacterStats, CombatState, CombatStats
+        self.ws = make_world_server()
+        self.player = spawn_player(self.ws, "skill_dummy_p", 130, 374, class_id="guerreiro")
+        authorize_skill(self.ws, self.player, "golpe_poderoso")
+        char = self.ws.world.get_component(self.player, CharacterStats)
+        char.rage = 100
+        cs = self.ws.world.get_component(self.player, CombatStats)
+        cs.current_hp = cs.max_hp
+        self.dummy = create_training_dummy(self.ws.world, 131, 374, reflect_damage=20)
+        self.ws._tick(0.05)   # garante registro em _mob_eids
+        cst = self.ws.world.get_component(self.player, CombatState)
+        cst.target_entity_id = self.dummy
+
+    def test_golpe_poderoso_no_boneco_nao_reporta_o_player_como_alvo(self):
+        self.ws._skill_results_this_tick.clear()
+        self.ws._pending_skill_requests.append({
+            "player_eid": self.player, "sid": "golpe_poderoso",
+            "tid": self.dummy, "dir_x": 0.0, "dir_y": 0.0,
+        })
+        self.ws._process_skill_requests()
+
+        results = [r for r in self.ws._skill_results_this_tick
+                  if r["caster_eid"] == self.player and r["sid"] == "golpe_poderoso"]
+        self.assertTrue(results, "golpe_poderoso deveria gerar um SKILL_RESULT")
+        targets = results[0]["targets"]
+        player_targets = [t for t in targets if t["eid"] == self.player]
+        self.assertEqual(player_targets, [],
+            f"SKILL_RESULT não deveria reportar o PRÓPRIO caster como alvo "
+            f"(dano do reflexo do boneco vazando pra dentro do resultado "
+            f"da skill, que o cliente mostra como um 2º FLT): {targets}")
+
+
 class TestMobAtacaPlayerViaEmitCombatEvent(unittest.TestCase):
     """07/10/2026 (§246 "unificação") — substitui o antigo
     `TestPvpDamageTrackingNaoQuebraMobDelta`, que testava o mecanismo de
