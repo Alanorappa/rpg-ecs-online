@@ -25456,3 +25456,49 @@ Fabian. Revert-to-confirm: com o guard antigo restaurado
 (`git stash` só de `entity_factory.py`), o teste falha exatamente como
 o bug relatado (`QuestGiver` ausente); com o fix, passa. Suíte
 relacionada (307 testes) sem regressão.
+
+## 246. Texto flutuante de dano do reflexo do Boneco de Treino aparecia 2x (07/10/2026)
+
+**Sintoma relatado pelo usuário**: testando o boneco com `reflect_damage`
+(§ ver decisão em `ARQUITETURA ONLINE.md`), o "-1" do dano refletido
+aparecia duas vezes na tela.
+
+**Causa raiz**: `ui/player_input_system.py` (CLIENTE) já faz predição
+local de combate pra alguns casos (ex: mago melee sem arco equipado) —
+chama `deal_damage()` DIRETO no cliente, mesma função compartilhada que
+o servidor usa, pra feedback imediato antes da confirmação de rede.
+Meu bloco novo de reflexão (dentro de `CombatSystem.deal_damage`) não
+tinha nenhum guard de `is_server` — rodava IGUAL nessa predição local
+E no servidor autoritativo. Resultado: o cliente mostrava o FLT da
+própria predição local (`_emit_hit_feedback`, chamado pela chamada
+recursiva de `deal_damage` dentro da predição) E DEPOIS o FLT do
+broadcast de rede autoritativo (`emit_dummy_reflect` → `COMBAT_RESULT`
+→ `_apply_combat_result`) — mesmo golpe, 2 textos.
+
+**Achado relacionado, FORA de escopo (não corrigido agora)**: essa
+MESMA predição client-side (`ui/player_input_system.py`, chamada de
+`deal_damage` direto no cliente) provavelmente já causava o mesmo tipo
+de duplicação pro dano NORMAL contra qualquer boneco de treino (não só
+o reflexo) — só não era perceptível porque os 2 FLTs (predição local +
+confirmação de rede) mostram o MESMO valor, na MESMA posição,
+praticamente no mesmo instante, então visualmente se sobrepõem e
+parecem 1 texto só. O reflexo expôs o problema porque o FLT da
+predição aparece numa posição DIFERENTE (sobre o boneco) do FLT do
+broadcast (sobre o player), tornando a duplicação óbvia. Vale revisitar
+esse mecanismo de predição local mais a fundo depois, se o usuário
+quiser — fora do pedido desta tarefa.
+
+**Fix**: bloco de reflexão ganhou guard `self.is_server` (mesmo padrão
+já usado na MESMA função pra XP de skill level — "só pode rodar no
+servidor"). Cliente nunca aplica/prediz o reflexo; só reage ao
+broadcast autoritativo, igual qualquer outro dano real.
+
+**Teste**: suíte de `tests/test_training_dummy_reflect.py` já cobria a
+aplicação/broadcast do reflexo via `CombatSystem(..., is_server=True)`
+— continua passando com o guard (nenhum teste quebrou). 2 testes
+tiveram RNG travado (`unittest.mock.patch("random.random",
+return_value=0.99)`) depois de achados flaky nesta mesma investigação
+— o golpe refletido passa por rolagem de acerto real (não
+`pre_outcome`, que só cobre o golpe ORIGINAL), então miss ocasional do
+próprio boneco (sem acerto 100% configurado) fazia o teste falhar
+~40% das vezes antes da trava de RNG.

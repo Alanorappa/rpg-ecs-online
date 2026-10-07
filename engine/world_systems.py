@@ -881,7 +881,19 @@ class CombatSystem(System):
         # Boneco nunca tem Faction (ver faction_system._NO_FACTION,
         # resolve "neutro" por padrão) — can_engage() já permite o
         # "ataque" de volta sem precisar de nenhum ajuste de facção.
-        if attacker_is_player and final_damage > 0:
+        #
+        # self.is_server (07/10/2026, bug real relatado pelo usuário:
+        # texto flutuante de dano aparecia 2x) — SEM este guard, o
+        # reflexo também rodava na predição client-side que `ui/
+        # player_input_system.py` já faz pra alguns casos (ex: mago sem
+        # arco, chama `deal_damage` direto no cliente pra feedback
+        # imediato antes da confirmação do servidor). O cliente mostrava
+        # o FLT da própria predição local E DEPOIS o FLT do broadcast
+        # autoritativo do servidor (`emit_dummy_reflect`) — mesmo golpe,
+        # 2 textos. Reflexo é dano de verdade (igual XP de skill, mesmo
+        # `self.is_server` logo acima nesta função) — só o SERVIDOR
+        # decide/aplica, cliente só reage ao broadcast.
+        if self.is_server and attacker_is_player and final_damage > 0:
             from engine.components import TrainingDummy as _TDReflect
             _dummy = self.world.get_component(target_id, _TDReflect)
             if _dummy and _dummy.reflect_damage > 0:

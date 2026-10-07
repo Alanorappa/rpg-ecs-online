@@ -21,6 +21,7 @@ CombatSystem.deal_damage` (bloco de reflexão), `server/world_server.py`
 indireção que `emit_retaliation` já usa pro Escudo de Fogo).
 """
 import os, sys, unittest
+from unittest.mock import patch
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -146,11 +147,16 @@ class TestDummyReflectDamageApplies(unittest.TestCase):
 
     def test_golpe_no_boneco_reflete_dano_no_player(self):
         hp_before = self.player_cs.current_hp
-        # multiplier alto pro golpe no boneco nunca sair como outcome que
-        # zera final_damage (ex: miss) -- garante que o GATE do reflexo
-        # (final_damage > 0 no golpe ORIGINAL) seja sempre satisfeito.
-        self.cs_sys.deal_damage(self.player, self.dummy, "physical",
-                                base_ability_damage=9999, apply_armor_reduction=False)
+        # RNG travado em 0.99 -- fora de QUALQUER faixa de miss/dodge/
+        # parry/block/crit (todas são "roll < chance", chance sempre <1),
+        # garante outcome='hit' determinístico nos DOIS golpes (original
+        # E o reflexo recursivo, que não é controlável via pre_outcome
+        # por vir de dentro do próprio deal_damage) -- sem isso, o teste
+        # era flaky (boneco tem ~5% de miss próprio por padrão, suficiente
+        # pra falhar de vez em quando numa suíte rodada muitas vezes).
+        with patch("random.random", return_value=0.99):
+            self.cs_sys.deal_damage(self.player, self.dummy, "physical",
+                                    base_ability_damage=9999, apply_armor_reduction=False)
         self.assertLess(self.player_cs.current_hp, hp_before,
             "boneco com reflect_damage>0 deveria ter revidado algum dano")
 
@@ -160,8 +166,9 @@ class TestDummyReflectDamageApplies(unittest.TestCase):
         flutuante de dano no player -- mesma indireção de
         emit_retaliation, _svc não conhece WorldServer diretamente)."""
         before = len(self.ws._combat_this_tick)
-        self.cs_sys.deal_damage(self.player, self.dummy, "physical",
-                                base_ability_damage=9999, apply_armor_reduction=False)
+        with patch("random.random", return_value=0.99):
+            self.cs_sys.deal_damage(self.player, self.dummy, "physical",
+                                    base_ability_damage=9999, apply_armor_reduction=False)
         new_entries = self.ws._combat_this_tick[before:]
         reflect_entries = [e for e in new_entries if e["attacker"] == self.dummy
                           and e["target"] == self.player]
@@ -193,12 +200,17 @@ class TestDummyReflectDamageApplies(unittest.TestCase):
 
         hp_low_before  = cs_low.current_hp
         hp_high_before = cs_high.current_hp
-        cs_sys2.deal_damage(p_low,  dummy_low,  "physical",
-                            base_ability_damage=9999, apply_armor_reduction=False,
-                            pre_outcome="hit")
-        cs_sys2.deal_damage(p_high, dummy_high, "physical",
-                            base_ability_damage=9999, apply_armor_reduction=False,
-                            pre_outcome="hit")
+        # pre_outcome="hit" isola o golpe ORIGINAL (nunca sai como
+        # miss) -- o reflexo recursivo não aceita pre_outcome (vem de
+        # dentro do próprio deal_damage), por isso o RNG travado
+        # também, mesmo racional do teste acima.
+        with patch("random.random", return_value=0.99):
+            cs_sys2.deal_damage(p_low,  dummy_low,  "physical",
+                                base_ability_damage=9999, apply_armor_reduction=False,
+                                pre_outcome="hit")
+            cs_sys2.deal_damage(p_high, dummy_high, "physical",
+                                base_ability_damage=9999, apply_armor_reduction=False,
+                                pre_outcome="hit")
         dmg_low  = hp_low_before  - cs_low.current_hp
         dmg_high = hp_high_before - cs_high.current_hp
         self.assertLess(dmg_high, dmg_low,
