@@ -3344,6 +3344,13 @@ class EnemyAISystem(System):
                 dist_to_initial_tiles = (abs(initial_tile_x - enemy_current_tile_x) +
                                           abs(initial_tile_y - enemy_current_tile_y))
 
+                if enemy_id == 34:
+                    from debug.aoi_debug import AOI_DBG as _AOI_DBG_ret_entry
+                    _AOI_DBG_ret_entry.log(
+                        "RETURNING_BRANCH_ENTERED", eid=enemy_id,
+                        dist=dist_to_initial_tiles,
+                        threshold=self._settle_threshold_tiles(enemy_id),
+                        state=ai_control.state)
                 if dist_to_initial_tiles > self._settle_threshold_tiles(enemy_id):
                     if _MCL and ai_control.state != "RETURNING":
                         _MCL.log("LOST_TGT", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
