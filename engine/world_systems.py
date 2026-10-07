@@ -3344,13 +3344,6 @@ class EnemyAISystem(System):
                 dist_to_initial_tiles = (abs(initial_tile_x - enemy_current_tile_x) +
                                           abs(initial_tile_y - enemy_current_tile_y))
 
-                if enemy_id == 34:
-                    from debug.aoi_debug import AOI_DBG as _AOI_DBG_ret_entry
-                    _AOI_DBG_ret_entry.log(
-                        "RETURNING_BRANCH_ENTERED", eid=enemy_id,
-                        dist=dist_to_initial_tiles,
-                        threshold=self._settle_threshold_tiles(enemy_id),
-                        state=ai_control.state)
                 if dist_to_initial_tiles > self._settle_threshold_tiles(enemy_id):
                     if _MCL and ai_control.state != "RETURNING":
                         _MCL.log("LOST_TGT", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
@@ -3385,17 +3378,6 @@ class EnemyAISystem(System):
                         ai_control.path_recalc_timer = self.path_recalc_interval
                     else:
                         ai_control.path_recalc_timer -= dt
-
-                    if enemy_id == 34:
-                        from debug.aoi_debug import AOI_DBG as _AOI_DBG_ret2
-                        _AOI_DBG_ret2.log(
-                            "RETURNING_STEP", eid=enemy_id,
-                            cur=current_enemy_tile, home=(initial_tile_x, initial_tile_y),
-                            path=(ai_control.path if ai_control.path else []),
-                            is_blocked=ai_control.is_blocked,
-                            is_moving=tile_movement.is_moving,
-                            recalc_timer=f"{ai_control.path_recalc_timer:.2f}",
-                            home_occupied=((initial_tile_x, initial_tile_y) in all_occupied_tiles))
 
                     if ai_control.path and not ai_control.is_blocked:
                         if not tile_movement.is_moving:

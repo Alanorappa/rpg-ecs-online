@@ -25353,3 +25353,65 @@ travou" relatado pelo usuário DEPOIS do fix provavelmente era só este
 crash-loop (mundo resetando no meio do retorno pro spawn), não uma
 falha nova do fix de leash em si — mas isso só pode ser confirmado de
 verdade com um teste limpo, sem o log quebrado, depois deste deploy.
+
+## 244. Causa raiz de verdade do travamento (§241/§242) — spawn do Custódio caía em cima de parede sólida, pathfinding de volta nunca podia ter sucesso (07/10/2026)
+
+**Sintoma, depois do fix do §242 (que estava certo, mas não era
+suficiente)**: Custódio continuava travando — inclusive bem na frente
+do usuário, logo depois de atacar um mob (não mais um problema de sair
+da tela/AOI, confirmado pelo próprio usuário testando isso
+explicitamente). Log de diagnóstico corrigido (desta vez testado
+localmente antes do deploy, sem crashar) confirmou: ele entrava em
+`RETURNING` normalmente, `is_blocked=False`, `is_moving=False`, mas
+`ai_control.path` ficava **permanentemente vazio** a cada ciclo de
+recálculo (confirmado no momento exato em que `path_recalc_timer`
+resetava pra `0.80`, ou seja, uma busca de caminho NOVA de verdade
+tinha acabado de rodar — não era caso de orçamento de pathfinding
+esgotado).
+
+**Causa raiz real**: `maps/map_1_entities.json` declarava Custódio em
+`x=127, y=361`. Conferido direto no `maps/map_1.csv`: essa linha é
+`"########....###"` a partir da coluna 120 — coluna 127 cai
+EXATAMENTE em cima de um tile `"#"` (`WALL_TILE`, "Parede da cidade",
+`engine/tileset.py:329`), o poste de muro bem ao lado do vão de porta
+real (colunas 128-131, terreno `"."` = `STONE_FLOOR`, chão andável).
+Confirmado também no `object_matrix` (`vp_216` nessa coluna — poste de
+iluminação, decoração do portão). Entidade nasce ali porque a criação
+inicial (`_build_combat_entity`) grava `Position`/`TileMovement`
+DIRETO, sem checar `is_tile_walkable` — spawn estático nunca passa por
+pathfinding. Mas assim que ele sai (persegue um mob) e depois precisa
+VOLTAR via A* (`_find_path_budgeted`→`find_path`), não existe — e
+nunca vai existir — nenhuma rota válida terminando num tile sólido.
+`find_path` sempre retorna vazio, pra sempre, em QUALQUER distância,
+de QUALQUER posição — não é timing, não é occupancy, não é budget, é
+estrutural: o destino do caminho é impossível por definição.
+
+Isso explica de forma completa e consistente TUDO que foi observado
+nesta investigação (§241→§242→§243→§244): por que alguns mobs/NPCs
+voltam pro spawn normalmente e o Custódio especificamente nunca
+voltava (casa dele é a única em cima de parede); por que ele trava em
+posições/distâncias completamente diferentes a cada repetição (ele só
+para onde quer que esteja no momento em que perde o alvo — nunca
+consegue dar nem 1 passo de volta); e por que esse travamento nunca
+tinha relação com reconexão, AOI, ou crash (as 3 hipóteses anteriores,
+cada uma investigada e descartada com prova — client cache em §241,
+leash em §242, crash-loop do próprio log em §243).
+
+**Fix**: usuário andou até o local pessoalmente pra confirmar visual
+(achado dele: "o tile onde Custódio está tem um poste de iluminação")
+e corrigiu o spawn direto em `maps/map_1_entities.json` para
+`x=128, y=362` (entrada do cemitério, terreno `"."`/`STONE_FLOOR`
+confirmado andável, sem objeto bloqueando). Dado de conteúdo puro —
+zero mudança de código pra esse fix específico (os logs de diagnóstico
+do §243/§244, já tendo cumprido o papel, foram removidos no mesmo
+commit).
+
+**Lição pra qualquer entidade estática futura (NPC/mob fixo em
+mapa)**: posição declarada em `*_entities.json` precisa ser verificada
+contra o terreno real (`is_tile_walkable`/terreno não-sólido) no
+momento da autoria — nada no pipeline de carga (`map_loader.py`,
+`entity_factory.py`) valida isso automaticamente hoje, então um spawn
+em cima de parede nasce e PARECE normal (a entidade aparece parada no
+lugar certo) até o dia em que ela precisa se mover e voltar — o bug
+fica invisível por tempo arbitrário até alguém puxar a entidade pra
+longe de casa pela primeira vez.
