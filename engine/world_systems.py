@@ -882,24 +882,24 @@ class CombatSystem(System):
         # resolve "neutro" por padrão) — can_engage() já permite o
         # "ataque" de volta sem precisar de nenhum ajuste de facção.
         #
-        # self.is_server (07/10/2026, bug real relatado pelo usuário:
-        # texto flutuante de dano aparecia 2x) — SEM este guard, o
-        # reflexo também rodava na predição client-side que `ui/
-        # player_input_system.py` já faz pra alguns casos (ex: mago sem
-        # arco, chama `deal_damage` direto no cliente pra feedback
-        # imediato antes da confirmação do servidor). O cliente mostrava
-        # o FLT da própria predição local E DEPOIS o FLT do broadcast
-        # autoritativo do servidor (`emit_dummy_reflect`) — mesmo golpe,
-        # 2 textos. Reflexo é dano de verdade (igual XP de skill, mesmo
-        # `self.is_server` logo acima nesta função) — só o SERVIDOR
-        # decide/aplica, cliente só reage ao broadcast.
+        # self.is_server (07/10/2026) — reflexo é dano de verdade (igual
+        # XP de skill, mesmo `self.is_server` logo acima nesta função),
+        # só o SERVIDOR decide/aplica; sem este guard, o reflexo também
+        # rodava na predição client-side que `ui/player_input_system.py`
+        # já faz pra alguns casos (ex: mago sem arco, chama `deal_damage`
+        # direto no cliente pra feedback imediato). Esse guard sozinho
+        # NÃO foi a causa real do FLT duplicado relatado pelo usuário —
+        # a causa real era `mob_delta` (server/combat_processor.py)
+        # "descobrindo" a mesma perda de HP de novo e gerando um 2º
+        # combat_this_tick fantasma, corrigido em
+        # `WorldServer._damage_tracker_composite` (ver PROBLEMAS_
+        # ARQUITETURA.md §246). Este guard continua certo por si só —
+        # cliente nunca deve prever/aplicar o reflexo, só reagir ao
+        # broadcast autoritativo — mas não é o fix do bug reportado.
         if self.is_server and attacker_is_player and final_damage > 0:
             from engine.components import TrainingDummy as _TDReflect
             _dummy = self.world.get_component(target_id, _TDReflect)
             if _dummy and _dummy.reflect_damage > 0:
-                from debug.aoi_debug import AOI_DBG as _AOI_DBG_dummyref
-                _AOI_DBG_dummyref.log("DUMMY_REFLECT_FIRED", dummy_eid=target_id,
-                                      player_eid=attacker_id, final_damage=final_damage)
                 _att_cs_ref = self._get_combat_stats(attacker_id)
                 _hp_before_ref = _att_cs_ref.current_hp if _att_cs_ref else 0
                 _dead_ref, _outcome_ref = self.deal_damage(

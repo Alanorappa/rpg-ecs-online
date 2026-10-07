@@ -41,7 +41,7 @@ import pygame
 pygame.init()
 
 from tests.helpers import make_world_server, spawn_player, run_ticks
-from engine.components import FireShieldEffect, CombatState, Channeling
+from engine.components import FireShieldEffect, CombatState, Channeling, CombatStats
 
 
 def run_ticks_per_tick(ws, n: int, dt: float = 0.05) -> list:
@@ -142,6 +142,76 @@ class TestCalamidadeFlamejanteNaoDuplicaFLT(unittest.TestCase):
             self.assertLessEqual(len(hits), 1,
                                  f"tick de canalização duplicado no mesmo tick: {hits}")
         self.assertTrue(any_hit, "nenhum tick de dano ocorreu em 2s — teste inconclusivo")
+
+
+class TestBonecoReflectNaoDuplicaFLT(unittest.TestCase):
+    """Reflexo do Boneco de Treino (`TrainingDummy.reflect_damage`, §246,
+    07/10/2026) é a 3ª categoria desta mesma classe de bug — não é PvP
+    (killer é o boneco, não um player), mas JÁ registra seu próprio
+    combat_this_tick manualmente (`_on_dummy_reflect`/`emit_dummy_reflect`,
+    mesma indireção do Escudo de Fogo acima). Causa raiz real (não o
+    guard `is_server` que foi o 1º fix tentado, insuficiente por si só):
+    `_damage_tracker_composite` (server/world_server.py) só excluía do
+    `_pvp_damage_this_tick` quando o KILLER também é player — boneco não
+    é player, então `mob_delta` (combat_processor.py) "descobria" a MESMA
+    perda de HP de novo e gerava um 2º evento fantasma."""
+
+    def setUp(self):
+        # Boneco via FÁBRICA real (create_training_dummy), não o helper
+        # minimalista `_make_dummy` de test_training_dummy_reflect.py --
+        # aquele helper não anexa Enemy/Combatant, então o boneco nunca
+        # entra em `WorldServer._mob_eids` e `_process_player_attacks`
+        # (server/combat_processor.py:289) nunca dispara o auto-attack
+        # contra ele (cai no branch "não é mob nem alvo PvP válido" e
+        # zera o target) -- sem o auto-attack de verdade disparando, o
+        # reflexo (que vive DENTRO de CombatSystem.deal_damage, só
+        # chamado por _resolve_auto_attack) nunca roda, e o teste "passa"
+        # por motivo errado (ou falha por coincidência de mob de fundo
+        # acertar o player, nada a ver com o reflexo -- achado real
+        # verificando este teste com revert-to-confirm).
+        from engine.entity_factory import create_training_dummy
+        self.ws = make_world_server()
+        self.player = spawn_player(self.ws, "flt_dummy_p", 130, 374)
+        cs = self.ws.world.get_component(self.player, CombatStats)
+        cs.current_hp = cs.max_hp
+        cs.dodge_rating = 0.0
+        cs.block_rating = 0.0
+        self.dummy = create_training_dummy(self.ws.world, 131, 374, reflect_damage=20)
+        # Registro em _mob_eids é feito por um sweep periódico do próprio
+        # _tick() (checa Combatant) -- força 1 tick "vazio" primeiro pra
+        # garantir que o boneco já está registrado antes do loop de
+        # medição abaixo (sem isso, só o 1º tick da medição arriscaria
+        # perder o auto-attack por 1 tick de atraso).
+        self.ws._tick(0.05)
+        self.assertIn(self.dummy, self.ws._mob_eids,
+                      "boneco precisa estar em _mob_eids pro auto-attack disparar")
+        cst = self.ws.world.get_component(self.player, CombatState)
+        cst.target_entity_id = self.dummy
+        cst.is_pursuing = True
+        sid = self.ws._player_eid_to_sid[self.player]
+        self.ws._attack_timers[sid] = 0.0
+
+    def test_reflexo_gera_so_1_evento_por_tick_nunca_2_iguais(self):
+        from unittest.mock import patch
+        # RNG travado em 0.99 -- mesmo racional de
+        # tests/test_training_dummy_reflect.py: sem isso, miss/dodge/parry
+        # ocasional (golpe original OU o reflexo recursivo) deixa o teste
+        # flaky, sem relação com o bug sendo verificado aqui.
+        with patch("random.random", return_value=0.99):
+            per_tick = run_ticks_per_tick(self.ws, 240, dt=0.05)  # 12s
+        any_hit_on_player = False
+        for tick_entries in per_tick:
+            hits_on_player = [c for c in tick_entries
+                              if c["damage"] > 0 and c["target"] == self.player]
+            if hits_on_player:
+                any_hit_on_player = True
+            sigs = [(c["target"], c["damage"], c["hp_after"]) for c in tick_entries
+                    if c["damage"] > 0 and c["target"] == self.player]
+            dupes = [s for s in set(sigs) if sigs.count(s) > 1]
+            self.assertEqual(dupes, [],
+                             f"assinatura duplicada no mesmo tick (reflexo do boneco): "
+                             f"{[c for c in tick_entries if (c['target'], c['damage'], c['hp_after']) in dupes]}")
+        self.assertTrue(any_hit_on_player, "nenhum reflexo conectou em 12s — teste inconclusivo")
 
 
 class TestPvpDamageTrackingNaoQuebraMobDelta(unittest.TestCase):

@@ -306,6 +306,25 @@ padrão a quebrar, não só os bugs individuais.
   chegava certo via HP5/combate mas com `max_hp` desatualizado do lado
   cliente, current/max passava de 1.0 e a barra de HP "crescia" na tela
   (ver PROBLEMAS_ARQUITETURA.md §89).
+- **Qualquer fonte de dano server-side que registra seu PRÓPRIO
+  `_combat_this_tick` manualmente (reflexo de boneco de treino,
+  retaliation tipo Escudo de Fogo, tick de canalização — qualquer
+  broadcast "fora do call site normal de PvP/PvE")** → precisa também
+  se excluir de `WorldServer._damage_tracker_composite`'s guard
+  (`server/world_server.py`), senão `mob_delta`
+  (`server/combat_processor.py::_process_player_attacks`, o fallback
+  "qualquer perda de HP não explicada por DoT/PvP já rastreado é um
+  golpe de mob não visto") descobre a MESMA perda de HP de novo e gera
+  um 2º `combat_this_tick` fantasma pro mesmo golpe (`attacker=-1`) —
+  FLT duplicado, HP descontado só 1x. O guard original só cobria
+  "killer E target são players" (PvP) — qualquer categoria NOVA de
+  atacante não-player-mas-com-registro-próprio (boneco de treino,
+  07/10/2026) precisa de uma condição a mais ali, nunca generalizar
+  pra "qualquer killer não-player" (isso reativaria o bug que o guard
+  existe pra evitar — mob de verdade via `EnemyAISystem` não tem
+  `combat_this_tick` próprio, depende 100% do `mob_delta`). Ver
+  PROBLEMAS_ARQUITETURA.md §246 (correção) e `historico/ARQUITETURA
+  ONLINE HISTORICO.md` §34.43 (ocorrência original, só PvP).
 - **Atributo de combate novo** → par `base_X`/`X` em `CombatStats` + 1 entrada
   em `stat_fns._MODIFIABLE_ATTRS` (+ `_STAT_CLAMPS` se tiver limite).
 - **Qualquer coisa (item, buff, talento) que pode mudar `stamina` (deriva

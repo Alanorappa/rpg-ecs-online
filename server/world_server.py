@@ -2978,15 +2978,30 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         de MOB contra player (auto-attack normal via EnemyAISystem, sem
         nenhum combat_this_tick próprio) depende INTEIRAMENTE do mob_delta
         pra ser detectado; excluir esse caso aqui também zeraria o
-        combat_this_tick de todo ataque de mob contra player."""
+        combat_this_tick de todo ataque de mob contra player.
+
+        3ª categoria (07/10/2026, §246 correção — ver PROBLEMAS_ARQUITETURA.md):
+        Boneco de Treino com `reflect_damage` também precisa se excluir
+        daqui, mesma razão de PvP — o reflexo JÁ registra seu próprio
+        `combat_this_tick` manualmente (`_on_dummy_reflect`/
+        `emit_dummy_reflect`, mesma indireção do Escudo de Fogo), mas o
+        boneco NÃO é player, então a condição original (`_killer_is_player`)
+        nunca cobria esse caso — `mob_delta` "descobria" a MESMA perda de HP
+        de novo e gerava um 2º evento fantasma (prova real: FLT do reflexo
+        aparecia 2x na tela, dano real descontado só 1x). NUNCA generalizar
+        pra "qualquer killer não-player" — isso reativaria o mesmo bug que
+        o `_killer_is_player` original evita (mob de verdade via
+        EnemyAISystem não tem registro próprio, depende 100% do mob_delta)."""
         self._track_arena_damage(killer_eid, target_id, dmg)
         from engine.components import PlayerControlled as _PC_dmgtrk
+        from engine.components import TrainingDummy as _TD_dmgtrk
         from engine.utils import incr_char_stat
         _target_is_player = self.world.get_component(target_id, _PC_dmgtrk) is not None
         _killer_is_player = self.world.get_component(killer_eid, _PC_dmgtrk) is not None
+        _killer_is_reflect_dummy = self.world.get_component(killer_eid, _TD_dmgtrk) is not None
         field = "pvp_damage" if _target_is_player else "pve_damage"
         incr_char_stat(self.world, killer_eid, field, dmg)
-        if _target_is_player and _killer_is_player and dmg > 0:
+        if _target_is_player and (_killer_is_player or _killer_is_reflect_dummy) and dmg > 0:
             self._pvp_damage_this_tick[target_id] = (
                 self._pvp_damage_this_tick.get(target_id, 0) + dmg)
 

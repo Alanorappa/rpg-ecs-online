@@ -25502,3 +25502,74 @@ return_value=0.99)`) depois de achados flaky nesta mesma investigação
 `pre_outcome`, que só cobre o golpe ORIGINAL), então miss ocasional do
 próprio boneco (sem acerto 100% configurado) fazia o teste falhar
 ~40% das vezes antes da trava de RNG.
+
+**CORREÇÃO (07/10/2026, mesmo dia)**: o guard `is_server` acima é
+legítimo (evita que a predição client-side preveja/aplique o reflexo,
+problema real por si só) mas **NÃO foi a causa do sintoma relatado** —
+usuário testou de novo após o deploy do guard e o "-1" continuava
+duplicado. Causa raiz real, só encontrada depois de reler o histórico
+do projeto (usuário apontou corretamente: "isso já aconteceu antes") —
+este é o **MESMO mecanismo já catalogado em `historico/ARQUITETURA
+ONLINE HISTORICO.md` §34.43** ("FLT duplicado" do Escudo de
+Fogo/Calamidade Flamejante, 23/07/2026), só numa 3ª categoria que a
+Fase C de então não previu:
+
+`_process_player_attacks` (`server/combat_processor.py`) detecta
+dano de MOB→player por DIFERENÇA DE HP pós-tick (`mob_delta` —
+"qualquer perda de HP não explicada por DoT/PvP já rastreado é um
+golpe de mob não visto"), porque EnemyAISystem nunca registra seu
+próprio `combat_this_tick`. O reflexo do boneco (`_on_dummy_reflect`/
+`emit_dummy_reflect`, mesma indireção do Escudo de Fogo) JÁ registra
+seu golpe manualmente — mas `WorldServer._damage_tracker_composite`
+(o hook único que exclui dano de `mob_delta` via
+`_pvp_damage_this_tick`) só fazia essa exclusão quando o **KILLER
+também é player** (a Fase C original só previu PvP: Escudo de
+Fogo/Calamidade Flamejante, os 2 killers eram sempre players). O
+boneco não é player — então o reflexo nunca entrava em
+`_pvp_damage_this_tick`, e `mob_delta` "descobria" a MESMA perda de HP
+de novo, gerando um 2º `combat_this_tick` fantasma (`attacker=-1`) pro
+MESMO golpe. HP só é subtraído 1x (confirmado desde o início pelo
+usuário) — só o EVENTO duplicava, exatamente como em §34.43.
+
+**Por que o 1º revert-to-confirm desta tarefa não pegou o bug**: o
+teste novo (`tests/test_flt_dedup.py::TestBonecoReflectNaoDuplicaFLT`)
+inicialmente usava o helper minimalista `_make_dummy` (de
+`tests/test_training_dummy_reflect.py`, que monta um boneco SEM
+`Enemy`/`Combatant` — suficiente pra testar `deal_damage()` direto,
+mas não pro fluxo real de tick). Sem `Combatant`, o boneco nunca
+entrava em `WorldServer._mob_eids`, e `_process_player_attacks`
+(linha ~289, "`target_eid not in self._mob_eids`") nunca disparava o
+auto-attack contra ele — o teste "passava" por motivo nenhum (nem
+reflexo nem bug aconteciam) ou "falhava" por coincidência de outro mob
+de fundo (mapa real carregado por `make_world_server()`) acertar o
+player por acaso. Fix do teste: usar `engine.entity_factory.
+create_training_dummy` de verdade (tem `Enemy`+`Combatant`) + 1 tick
+"vazio" antes de medir, pro sweep periódico que popula `_mob_eids`
+(`WorldServer._tick`, checa `Combatant`) já ter rodado.
+
+**Fix real**: `_damage_tracker_composite` ganhou uma 3ª condição —
+`_killer_is_reflect_dummy` (checa `TrainingDummy` no killer) — ao lado
+de `_killer_is_player`, ambos levando à mesma exclusão em
+`_pvp_damage_this_tick`. **NUNCA generalizar pra "qualquer killer
+não-player"** — reativaria o bug original que a Fase C evitava (mob
+de verdade via EnemyAISystem não registra `combat_this_tick` próprio,
+depende 100% do `mob_delta` pra ser visto; excluir isso quebraria TODO
+dano de mob contra player).
+
+**Teste** (revert-to-confirm real, não só sintético): com o fix
+revertido via `git stash`, o novo teste reproduziu a assinatura exata
+do bug (`[{'attacker': -1, ...}, {'attacker': <dummy_eid>, ...}]`, mesmo
+`damage`/`hp_after` nos 2) — confirma que é o MESMO mecanismo de §34.43.
+Com o fix restaurado, suíte relacionada (`test_flt_dedup.py`,
+`test_training_dummy_reflect.py`, `test_char_stats.py`,
+`test_npc_service_unlock.py`, `test_combat.py`, `test_arena.py`,
+`test_bg_queue.py`) — 193 testes, 0 falhas.
+
+**Lição a levar daqui**: um ponto único de verdade cujo guard é
+baseado numa suposição implícita ("só PvP passa por aqui", nunca
+escrita como tal) precisa ser revisitado toda vez que uma categoria
+NOVA de atacante não-player-mas-com-registro-próprio aparecer (ver
+regra nova em `CLAUDE.md`, seção "Pontos únicos de verdade" —
+qualquer fonte de dano que se auto-registra em `combat_this_tick`
+precisa também se excluir de `mob_delta`, não só quando o atacante é
+player).
