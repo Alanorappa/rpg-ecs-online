@@ -3,10 +3,11 @@
   "window_mode": "windowed_fullsize",
   "server_host": "5.161.104.174",
   "server_port": 8765,
+  "use_tls": true,
   "net_user": "teste",
   "net_pass": "123456",
   "music_volume": 0.046218487394957986,
-  "sfx_volume": 0.04201680672268908,
+  "sfx_volume": 0.14705882352941177,
   "music_enabled": true,
   "sfx_enabled": true,
   "hotbar": {
@@ -42,7 +43,8 @@
     "diario": 106,
     "habilidades": 104,
     "skill_level": 108,
-    "estatisticas": 99
+    "estatisticas": 99,
+    "ranking": 107
   },
   "characters": {
     "teste": {
@@ -1197,12 +1199,568 @@
         ]
       },
       "skill_slot_prefs": {}
+    },
+    "Yselgrum": {
+      "hotbar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {}
+    },
+    "Vexdor": {
+      "hotbar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {}
+    },
+    "Vordas": {
+      "hotbar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {}
+    },
+    "Mogzug": {
+      "hotbar": {
+        "slots": [
+          "golpe_poderoso",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {
+        "golpe_poderoso": 0
+      }
+    },
+    "Eryian": {
+      "hotbar": {
+        "slots": [
+          "recarregar",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {
+        "recarregar": 0
+      }
+    },
+    "Rhaenric": {
+      "hotbar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {}
+    },
+    "Mogwyth": {
+      "hotbar": {
+        "slots": [
+          "golpe_poderoso",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {
+        "golpe_poderoso": 0
+      }
+    },
+    "Ysgash": {
+      "hotbar": {
+        "slots": [
+          "golpe_poderoso",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {
+        "golpe_poderoso": 0
+      }
+    },
+    "Ashkiell": {
+      "hotbar": {
+        "slots": [
+          "golpe_poderoso",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {
+        "golpe_poderoso": 0
+      }
+    },
+    "Xanak": {
+      "hotbar": {
+        "slots": [
+          "golpe_poderoso",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {
+        "golpe_poderoso": 0
+      }
+    },
+    "Bryara": {
+      "hotbar": {
+        "slots": [
+          "golpe_poderoso",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {
+        "golpe_poderoso": 0
+      }
+    },
+    "Bokrir": {
+      "hotbar": {
+        "slots": [
+          "golpe_poderoso",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {
+        "golpe_poderoso": 0
+      }
     }
   },
   "debug_mode": true,
   "debug_rpg_aoi": true,
   "debug_rpg_interceptar": true,
-  "profile_frames": true,
+  "profile_frames": false,
   "ui_scale": 1.25,
   "consumable_bar": {
     "slots": [

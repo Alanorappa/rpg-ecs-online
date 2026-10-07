@@ -83,7 +83,9 @@
       "name": "Fabian Hardek",
       "shop_id": "general",
       "level": 10,
-      "profession": "Comerciante"
+      "profession": "Comerciante",
+      "turn_in_ids": ["merchant_greeting"],
+      "unlock_quest_id": "merchant_greeting"
     }
   ],
   "mailboxes": [
@@ -155,7 +157,7 @@
       "level": 60,
       "profession": "Guerreiro Veterano",
       "quest_ids": ["prova_valor", "first_blood", "merchant_greeting", "primeiros_golpes"],
-      "turn_in_ids": ["bem_vindo_guerreiro","prova_valor", "first_blood", "merchant_greeting", "primeiros_golpes"],
+      "turn_in_ids": ["bem_vindo_guerreiro","prova_valor", "first_blood", "primeiros_golpes"],
       "unlock_quest_id": "merchant_greeting"
     },
     {
