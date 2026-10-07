@@ -749,8 +749,13 @@ class SpellCompletionMixin:
         ai = self.world.get_component(target_id, AIControlled)
         return bool(ai and ai.state == "RETURNING")
 
-    def _apply_final_damage(self, target_id: int, dmg: int, attacker_id: int = -1) -> str:
+    def _apply_final_damage(self, target_id: int, dmg: int, attacker_id: int = -1,
+                            damage_kind: str = "") -> str:
         """Aplica dmg ao HP de target_id verificando todas as guardas.
+
+        damage_kind (07/10/2026, alvo de treino de arqueiro): "ranged" (via
+        _server_apply_ranged_physical) ou "magic" (via _server_apply_magic_
+        damage) — repassado pra apply_damage_core, nunca decidido aqui.
 
         Retorna o outcome de core_systems.apply_damage_core direto:
         "applied"|"killed"|"blocked_dead"|"blocked_immune"|"blocked_evade"|
@@ -779,7 +784,8 @@ class SpellCompletionMixin:
         from engine.core_systems import apply_damage_core
         return apply_damage_core(self.world, target_id, dmg,
                                  killer_eid=attacker_id, add_pending_death=False,
-                                 on_damage_dealt=self._log_mob_damage_hit)
+                                 on_damage_dealt=self._log_mob_damage_hit,
+                                 damage_kind=damage_kind)
 
     # ── Dano de magia server-side ────────────────────────────────────────────
 
@@ -851,7 +857,8 @@ class SpellCompletionMixin:
             grant_resist_skill_xp(self.world, target_id, school)
 
         hp_before = target_cs.current_hp
-        _final_outcome = self._apply_final_damage(target_id, dmg, attacker_id)
+        _final_outcome = self._apply_final_damage(target_id, dmg, attacker_id,
+                                                   damage_kind="magic")
         # Side-channel pro chamador (mesmo padrão de self._proj_spell_result/
         # _last_magic_is_crit) — 07/08/2026: antes um bloqueio por imunidade
         # virava um simples "False" aqui, indistinguível de alvo já morto/
@@ -1326,7 +1333,8 @@ class SpellCompletionMixin:
             if _fdp > 0 and random.random() < _fdp:
                 dmg = int(dmg * 1.50)
 
-        _final_outcome = self._apply_final_damage(target_id, dmg, player_eid)
+        _final_outcome = self._apply_final_damage(target_id, dmg, player_eid,
+                                                   damage_kind="ranged")
         if _final_outcome not in ("applied", "killed"):
             # "immune" cobre blocked_immune/blocked_evade/blocked_friendly/
             # blocked_dead — já era assim antes desta correção (07/08/2026:

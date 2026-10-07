@@ -1963,8 +1963,19 @@ class TrainingDummy:
     valor > 0, todo golpe do player nele reflete essa quantidade FIXA de
     volta, via hit real (mesma rolagem de acerto/esquiva/aparo/bloqueio/
     crítico/armadura de qualquer ataque — ver `CombatSystem.deal_damage`,
-    reaproveitado recursivamente, nunca uma fórmula de dano paralela)."""
+    reaproveitado recursivamente, nunca uma fórmula de dano paralela).
+
+    `accepts_only_ranged` (07/10/2026, pedido do usuário — "alvo de
+    treino para arqueiros") — False (padrão) = aceita qualquer tipo de
+    dano, igual sempre. True = só dano físico À DISTÂNCIA (flecha) tem
+    efeito; melee e mágico são bloqueados (`apply_damage_core`'s
+    `damage_kind`, `engine/core_systems.py`), reaproveitando o outcome
+    "blocked_immune" (FLT "Imune" já funciona ponta a ponta pra esse
+    outcome, sem precisar de feedback novo). DoT (queimadura/veneno/
+    sangramento) continua fora do alcance deste gate — débito aceito
+    pelo usuário, ver PROBLEMAS_ARQUITETURA.md."""
     reflect_damage: int = 0
+    accepts_only_ranged: bool = False
 
 
 @dataclass

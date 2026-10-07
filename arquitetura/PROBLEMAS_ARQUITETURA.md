@@ -25854,3 +25854,51 @@ falhou exatamente como esperado, confirmando que os 3 call sites
 passaram a depender de verdade da função compartilhada (não só uma
 cópia local que por acaso ficou igual). Suíte ampla de skill/magia
 (158 testes) e suíte completa (ver commit) sem regressão.
+
+## 248. DoT escapa de `apply_damage_core` por completo — débito aceito ao criar o alvo de treino de arqueiro (07/10/2026)
+
+**Contexto**: implementando o "alvo de treino exclusivo pra arqueiro"
+(`TrainingDummy.accepts_only_ranged`), a investigação (agente Explore)
+achou que `StatusEffectSystem._apply_tick` (`engine/core_systems.py`,
+DoT — queimadura/veneno/sangramento) escreve `cs.current_hp` DIRETO
+(`cs.current_hp = max(0, cs.current_hp - dmg)`), **nunca passando por
+`apply_damage_core`** — o núcleo único que todo dano "direto" usa. Ele
+duplica manualmente só 2 dos invariantes de lá (`is_immune`, modo
+evasão) mas **nunca checou `can_engage`/facção amigável** (o guard que
+gera `"blocked_friendly"`) — ou seja, DoT já ignorava a proteção de
+"alvo amigável" há tempos, antes até deste alvo de arqueiro existir.
+
+**Efeito prático pro gate novo**: o gate de `accepts_only_ranged`
+(`damage_kind != "ranged"` → bloqueia) só existe DENTRO de
+`apply_damage_core` — então um DoT mágico (ex: "Queimaduras Profundas",
+proc de crit da Bola de Fogo) continuaria batendo no alvo de arqueiro
+por fora do bloqueio, tick a tick, até expirar, mesmo que o dano
+DIRETO da Bola de Fogo já seja bloqueado corretamente.
+
+**Achado relacionado, AINDA mais fora de escopo**: `_server_bola_de_
+fogo` (`server/spell_completion_processor.py`) aplica o `apply_effect(
+..., "burn", ...)` do proc de crit SEM checar o retorno de
+`_server_apply_magic_damage` antes — ou seja, mesmo que o dano direto
+seja bloqueado (`"blocked_immune"`/`"blocked_friendly"`), o burn é
+anexado do mesmo jeito. Outros handlers (ex: `_server_picada_
+escorpiao`, do arqueiro) fazem o check certo
+(`if outcome not in ("miss","dodge","parry") and dmg > 0:`) antes de
+anexar o próprio efeito. Isso é um bug latente PRÉ-EXISTENTE,
+independente do alvo de arqueiro — não corrigido agora.
+
+**Decisão do usuário (`AskUserQuestion`, 07/10/2026)**: aceitável por
+agora — "ninguém fica queimando um alvo de treino de propósito" é um
+cenário raro na prática, e corrigir isso exigiria tocar no sistema de
+DoT inteiro (ou no mínimo auditar todo handler mágico que aplica
+efeito após dano), fora do escopo do pedido original (sprite +
+alvo de arqueiro). Documentado aqui como débito conhecido, não um bug
+escondido — se algum dia doer na prática (relato real de alguém
+queimando o alvo de propósito), revisitar com:
+1. Um gate equivalente dentro de `StatusEffectSystem._apply_tick`
+   (checar `TrainingDummy.accepts_only_ranged` contra o `effect_type`/
+   `DOT_SCHOOL` do efeito — `engine/core_systems.py:608`, já mapeia
+   `effect_type → school`).
+2. Corrigir `_server_bola_de_fogo` (e auditar os outros handlers
+   mágicos) pra só anexar efeito quando o dano direto não foi
+   bloqueado — bug separado, não introduzido por esta tarefa, mas
+   que precisaria ser corrigido junto se o item 1 acima for feito.

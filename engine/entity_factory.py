@@ -712,13 +712,22 @@ def create_trainer(world: World, tile_x: int, tile_y: int,
 
 
 def create_training_dummy(world: World, tile_x: int, tile_y: int,
-                          reflect_damage: int = 0) -> int:
+                          reflect_damage: int = 0, sprite_id: str = "vp_184",
+                          accepts_only_ranged: bool = False) -> int:
     """Cria boneco de treino estático para testes de skills e talentos.
 
     HP: 999 999 | Armadura: 100 | hp5: ~99 999/5s | Sem IA, sem ataque, sem XP.
 
     `reflect_damage` (07/10/2026) — ver `TrainingDummy` pro racional
-    completo. 0 = boneco normal (comportamento de sempre)."""
+    completo. 0 = boneco normal (comportamento de sempre).
+
+    `sprite_id` (07/10/2026, pedido do usuário — parametrizável por
+    boneco via JSON do mapa, chave `"sprite"`) — default "vp_184"
+    preserva a aparência de sempre pros bonecos já existentes no mapa.
+
+    `accepts_only_ranged` (07/10/2026, "alvo de treino para arqueiros")
+    — ver `TrainingDummy` pro racional completo. False (padrão) = aceita
+    qualquer tipo de dano, igual sempre."""
     from engine.components import TrainingDummy as _TD
     x = tile_x * TILE_SIZE + TILE_SIZE / 2
     y = tile_y * TILE_SIZE + TILE_SIZE / 2
@@ -727,10 +736,14 @@ def create_training_dummy(world: World, tile_x: int, tile_y: int,
     world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
     # Sprite real (25/09/2026, pedido do usuário — cadastrado por ele em
     # engine/tileset.py, grupo "decoracao_vila" da folha "TX Village
-    # Props with Shadow", tile "184" → tile_id "vp_184"). Mesmo padrão de
-    # create_mailbox: width/height ficam só como fallback.
+    # Props with Shadow", tile "184" → tile_id "vp_184" default). Mesmo
+    # padrão de create_mailbox: width/height ficam só como fallback.
+    # Parametrizável por boneco desde 07/10/2026 (`sprite_id` acima) —
+    # sincronização de rede já é automática (WorldServer._build_mob_
+    # spawn_payload lê Renderable.sprite_id genericamente), zero mudança
+    # de protocolo necessária.
     world.add_component(eid, Renderable(color=(255, 215, 0), width=28, height=28,
-                                        sprite_id="vp_184"))
+                                        sprite_id=sprite_id))
     world.add_component(eid, Collider(width=28, height=28))
     world.add_component(eid, Enemy())
     # Combatant: gate de registro em _mob_eids/sync agora é este componente,
@@ -747,7 +760,8 @@ def create_training_dummy(world: World, tile_x: int, tile_y: int,
     world.add_component(eid, EnemyTier(tier="boss"))
     world.add_component(eid, StatusEffects())
     world.add_component(eid, NpcSounds())
-    world.add_component(eid, _TD(reflect_damage=reflect_damage))
+    world.add_component(eid, _TD(reflect_damage=reflect_damage,
+                                 accepts_only_ranged=accepts_only_ranged))
 
     stats = CombatStats(
         base_stamina=999_999,

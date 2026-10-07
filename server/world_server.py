@@ -1057,8 +1057,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def _create_training_dummies(self, dummies_data: list) -> None:
         from engine.entity_factory import create_training_dummy as _ctd
-        for tx, ty, reflect_damage in dummies_data:
-            eid = _ctd(self.world, tx, ty, reflect_damage=reflect_damage)
+        for tx, ty, reflect_damage, sprite_id, ranged_only in dummies_data:
+            eid = _ctd(self.world, tx, ty, reflect_damage=reflect_damage,
+                      sprite_id=sprite_id, accepts_only_ranged=ranged_only)
 
     def _create_combat_npcs(self, combat_npcs_data: list, map_file: str) -> None:
         """Cria NPCs de combate (guarda, etc — Sistema de Facções, Fase 4) a

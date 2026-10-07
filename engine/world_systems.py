@@ -803,7 +803,15 @@ class CombatSystem(System):
         apply_damage_core(self.world, target_id, final_damage,
                           killer_eid=attacker_id, add_pending_death=False,
                           on_cc_break=_cc_break_fx,
-                          on_damage_dealt=self.on_damage_dealt)
+                          on_damage_dealt=self.on_damage_dealt,
+                          # "melee" (07/10/2026, alvo de treino de arqueiro)
+                          # — cobre auto-attack/skill físico de perto E o
+                          # reflexo recursivo do próprio boneco de treino,
+                          # os dois casos reais que chegam aqui. Arqueiro
+                          # (auto-attack ranged + as 4 skills de arco) nunca
+                          # passa por este método no servidor — ver
+                          # _server_apply_ranged_physical.
+                          damage_kind="melee")
 
         # Ponto único de broadcast pra QUALQUER atacante não-player contra
         # um player — par do emit na branch de avoidance acima (mesmo
@@ -880,8 +888,13 @@ class CombatSystem(System):
                 _att_cs  = self._get_combat_stats(attacker_id)
                 _att_pos = self.world.get_component(attacker_id, Position)
                 # Núcleo único: guards alive/immune + overkill + PendingDeath
+                # damage_kind="magic" (07/10/2026, alvo de treino de
+                # arqueiro) — retaliation é baseada em Spell Power, nunca
+                # tem um boneco de treino como alvo na prática, incluído
+                # só por completude/consistência.
                 _ret_result = apply_damage_core(self.world, attacker_id,
-                                                _retaliation, killer_eid=target_id)
+                                                _retaliation, killer_eid=target_id,
+                                                damage_kind="magic")
                 if _ret_result in ("applied", "killed") and _att_cs:
                     if _att_pos:
                         FLT.add(f"-{_retaliation}", _att_pos.x, _att_pos.y,

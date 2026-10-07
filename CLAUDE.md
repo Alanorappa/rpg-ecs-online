@@ -363,6 +363,34 @@ padrão a quebrar, não só os bugs individuais.
   tick-a-tick) NÃO precisa desse guard — já é escopada por-alvo
   (hp_before/hp_after de 1 entidade só), nunca um sweep global. Ver
   PROBLEMAS_ARQUITETURA.md §247.
+- **Entidade que só deve aceitar dano de um TIPO específico** (ex: alvo
+  de treino de arqueiro, `TrainingDummy.accepts_only_ranged`) →
+  `apply_damage_core(..., damage_kind="melee"|"ranged"|"magic"|"")`
+  (07/10/2026) — cada um dos 4 call sites reais (`CombatSystem.
+  deal_damage`→`"melee"`; `_apply_final_damage` via
+  `_server_apply_ranged_physical`→`"ranged"`/`_server_apply_magic_
+  damage`→`"magic"`; `apply_magic_damage_shared`→`"magic"`; retaliation
+  do Escudo de Fogo→`"magic"`) já SABE seu próprio tipo — nunca inventar
+  lógica de detecção dentro de `apply_damage_core`, só passar o literal
+  certo. `""` (não classificado) é tratado como "não é ranged" — fail-
+  closed. **DoT não passa por `apply_damage_core`** (`StatusEffectSystem.
+  _apply_tick` escreve `current_hp` direto) — qualquer gate por
+  `damage_kind` tem esse buraco conhecido, aceito pelo usuário pro alvo
+  de arqueiro (ver PROBLEMAS_ARQUITETURA.md §248); se um gate futuro
+  precisar cobrir DoT também, precisa de um 2º ponto dentro de
+  `_apply_tick`, nunca assumir que o gate em `apply_damage_core` já
+  cobre tudo.
+- **Sprite de uma entidade de serviço/decoração configurável por
+  instância via JSON do mapa** (ex: boneco de treino, `"sprite":
+  "vp_184"` em `training_dummies[]`) → parâmetro na função `create_*`
+  (`Renderable(sprite_id=sprite_id, ...)`, nunca hardcoded) + leitura
+  opcional em `engine/map_loader.py` com default = aparência de sempre.
+  **Sincronização de rede já é automática, sem campo de protocolo
+  novo** — `WorldServer._build_mob_spawn_payload` já lê `Renderable.
+  sprite_id` genericamente pra QUALQUER mob (mesmo mecanismo que Torre
+  já usa), e o cliente já aplica (`client/remote_entity_handlers.py`,
+  `server_sprite_id = data.get("sprite_id")`) — só funciona pra
+  entidades sincronizadas como mob (`Combatant`/`_mob_eids`).
 - **Atributo de combate novo** → par `base_X`/`X` em `CombatStats` + 1 entrada
   em `stat_fns._MODIFIABLE_ATTRS` (+ `_STAT_CLAMPS` se tiver limite).
 - **Qualquer coisa (item, buff, talento) que pode mudar `stamina` (deriva

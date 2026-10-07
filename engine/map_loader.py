@@ -601,9 +601,12 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
 
     if "training_dummies" in data:
         spawn_points["training_dummies"] = [
-            # reflect_damage (07/10/2026) — 0 = boneco normal; ver
+            # reflect_damage (07/10/2026) — 0 = boneco normal. sprite
+            # (07/10/2026) — "vp_184" = aparência de sempre. ranged_only
+            # (07/10/2026) — False = aceita qualquer tipo de dano. Ver
             # engine.components.TrainingDummy pro racional completo.
-            (d["x"], d["y"], d.get("reflect_damage", 0))
+            (d["x"], d["y"], d.get("reflect_damage", 0),
+             d.get("sprite", "vp_184"), d.get("ranged_only", False))
             for d in data["training_dummies"]
         ]
 

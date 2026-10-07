@@ -118,7 +118,8 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
                       killer_eid: int = -1,
                       add_pending_death: bool = True,
                       on_cc_break=None,
-                      on_damage_dealt=None) -> str:
+                      on_damage_dealt=None,
+                      damage_kind: str = "") -> str:
     """Núcleo ÚNICO da aplicação FINAL de dano em current_hp.
 
     Consolida os invariantes que antes viviam duplicados em 3+ lugares
@@ -133,6 +134,9 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
         state == "RETURNING", ver EnemyAISystem): dano bloqueado
       - atacante e alvo de facção "amigavel" entre si (content/
         faction_data.py, só checado se killer_eid != -1): dano bloqueado
+      - alvo com `TrainingDummy.accepts_only_ranged` e `damage_kind !=
+        "ranged"`: dano bloqueado (07/10/2026, "alvo de treino para
+        arqueiros") — ver docstring de `damage_kind` abaixo
       - overkill preservado (current_hp pode ficar negativo; nunca clampar)
       - dano > 0 quebra polymorph e sleep (sleep: on_expire_effect cancelado
         para não aplicar o slow encadeado ao acordar)
@@ -151,13 +155,26 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
     duplicar esse hook em cada handler de skill — client offline não passa
     nada (no-op).
 
+    damage_kind (07/10/2026, PROBLEMAS_ARQUITETURA.md): `"melee"`/
+    `"ranged"`/`"magic"`, ou `""` (não classificado — tratado como "não é
+    ranged" pra fins do gate abaixo, fail-closed). Cada um dos 4 call
+    sites reais (CombatSystem.deal_damage, _apply_final_damage via
+    _server_apply_ranged_physical/_server_apply_magic_damage,
+    apply_magic_damage_shared, retaliation do Escudo de Fogo) já SABE seu
+    próprio tipo — só precisa passar o literal certo, nunca inventar
+    lógica de detecção aqui. Só usado hoje pelo gate de
+    `accepts_only_ranged`; DoT não passa por aqui (escreve current_hp
+    direto em StatusEffectSystem._apply_tick) — fora do alcance deste
+    parâmetro, débito aceito pelo usuário.
+
     Retorna: "blocked_dead" | "blocked_immune" | "blocked_evade" |
     "blocked_friendly" | "applied" | "killed".
     O chamador mantém a responsabilidade pelo que NÃO é invariante:
     cálculo do dano, outcome (crit/block/...), aggro, enter_combat,
     feedback visual, broadcast de rede.
     """
-    from engine.components import CombatStats, CombatState, StatusEffects, PendingDeath, AIControlled
+    from engine.components import (CombatStats, CombatState, StatusEffects, PendingDeath,
+                                   AIControlled, TrainingDummy)
 
     def _finish(outcome: str) -> str:
         LAST_DAMAGE_OUTCOMES[target_id] = outcome
@@ -187,6 +204,13 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
         from engine.faction_system import can_engage
         if not can_engage(world, killer_eid, target_id):
             return _finish("blocked_friendly")
+    _dummy = world.get_component(target_id, TrainingDummy)
+    if _dummy and _dummy.accepts_only_ranged and damage_kind != "ranged":
+        # Alvo de treino exclusivo pra arqueiro — reusa "blocked_immune"
+        # (em vez de um outcome novo) porque esse já tem feedback "Imune"
+        # funcionando ponta a ponta em todo chamador, sem precisar ensinar
+        # cada um a entender um 5º motivo de bloqueio.
+        return _finish("blocked_immune")
 
     cs.current_hp -= dmg  # overkill preservado por contrato
     LAST_DAMAGE_AMOUNTS[target_id] = LAST_DAMAGE_AMOUNTS.get(target_id, 0) + dmg
@@ -273,7 +297,8 @@ def apply_magic_damage_shared(attacker_id: int, target_id: int, dmg: int, world,
 
     result = apply_damage_core(world, target_id, dmg,
                                killer_eid=attacker_id,
-                               on_cc_break=_on_cc_break)
+                               on_cc_break=_on_cc_break,
+                               damage_kind="magic")
     if result == "blocked_evade":
         if pos:
             FLT.add("Evadiu!", pos.x, pos.y, (150, 150, 150), "small", target_id=target_id)

@@ -30,7 +30,7 @@ import pygame
 pygame.init()
 
 from tests.helpers import make_world_server, spawn_player
-from engine.components import TrainingDummy, CombatStats, PlayerControlled
+from engine.components import TrainingDummy, CombatStats, PlayerControlled, Renderable
 from engine.world_systems import CombatSystem
 
 
@@ -71,6 +71,9 @@ class TestCreateTrainingDummyReflectParam(unittest.TestCase):
         eid = create_training_dummy(world, 10, 10)
         td = world.get_component(eid, TrainingDummy)
         self.assertEqual(td.reflect_damage, 0)
+        self.assertEqual(td.accepts_only_ranged, False)
+        ren = world.get_component(eid, Renderable)
+        self.assertEqual(ren.sprite_id, "vp_184")
 
     def test_create_training_dummy_com_reflect_damage(self):
         from engine.entity_factory import create_training_dummy
@@ -79,6 +82,22 @@ class TestCreateTrainingDummyReflectParam(unittest.TestCase):
         eid = create_training_dummy(world, 10, 10, reflect_damage=15)
         td = world.get_component(eid, TrainingDummy)
         self.assertEqual(td.reflect_damage, 15)
+
+    def test_create_training_dummy_com_sprite_customizada(self):
+        from engine.entity_factory import create_training_dummy
+        from engine.world import World
+        world = World()
+        eid = create_training_dummy(world, 10, 10, sprite_id="vp_190")
+        ren = world.get_component(eid, Renderable)
+        self.assertEqual(ren.sprite_id, "vp_190")
+
+    def test_create_training_dummy_accepts_only_ranged(self):
+        from engine.entity_factory import create_training_dummy
+        from engine.world import World
+        world = World()
+        eid = create_training_dummy(world, 10, 10, accepts_only_ranged=True)
+        td = world.get_component(eid, TrainingDummy)
+        self.assertEqual(td.accepts_only_ranged, True)
 
 
 class TestMapLoaderParsesReflectDamage(unittest.TestCase):
@@ -103,8 +122,31 @@ class TestMapLoaderParsesReflectDamage(unittest.TestCase):
             # JSON de teste) não quebrar.
             spawn_points = {"training_dummies": [], "merchants": []}
             _merge_entities_json(path, spawn_points)
+            # (x, y, reflect_damage, sprite, ranged_only) -- sprite/
+            # ranged_only ausentes no JSON caem nos defaults de sempre
+            # ("vp_184"/False), 07/10/2026.
             self.assertEqual(spawn_points["training_dummies"],
-                             [(10, 20, 7), (11, 21, 0)])
+                             [(10, 20, 7, "vp_184", False), (11, 21, 0, "vp_184", False)])
+        finally:
+            _os.unlink(path)
+
+    def test_training_dummies_le_sprite_e_ranged_only_do_json(self):
+        import json, tempfile, os as _os
+        from engine.map_loader import _merge_entities_json
+        data = {
+            "training_dummies": [
+                {"x": 30, "y": 40, "sprite": "vp_190", "ranged_only": True},
+            ]
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False,
+                                         encoding="utf-8") as f:
+            json.dump(data, f)
+            path = f.name
+        try:
+            spawn_points = {"training_dummies": [], "merchants": []}
+            _merge_entities_json(path, spawn_points)
+            self.assertEqual(spawn_points["training_dummies"],
+                             [(30, 40, 0, "vp_190", True)])
         finally:
             _os.unlink(path)
 
@@ -220,6 +262,67 @@ class TestDummyReflectDamageApplies(unittest.TestCase):
         dmg_high = hp_high_before - cs_high.current_hp
         self.assertLess(dmg_high, dmg_low,
             "player com mais armadura deveria tomar menos dano do reflexo")
+
+
+class TestAlvoDeTreinoDeArqueiro(unittest.TestCase):
+    """07/10/2026, pedido do usuário: alvo de treino que só aceita dano
+    FÍSICO À DISTÂNCIA (flecha) -- melee e mágico devem ser bloqueados.
+    Reusa o outcome "blocked_immune" (`apply_damage_core`, `engine/
+    core_systems.py`) em vez de inventar um novo -- já tem feedback
+    "Imune" funcionando ponta a ponta em todo chamador. DoT (queimadura/
+    veneno/sangramento) fica FORA do alcance deste gate -- decisão
+    explícita do usuário (`AskUserQuestion`, "aceitável por agora"),
+    ver PROBLEMAS_ARQUITETURA.md."""
+
+    def setUp(self):
+        from engine.entity_factory import create_training_dummy
+        self.ws = make_world_server()
+        self.player = spawn_player(self.ws, "ranged_dummy_p", 130, 374)
+        self.dummy = create_training_dummy(self.ws.world, 131, 374,
+                                           accepts_only_ranged=True)
+        self.dummy_cs = self.ws.world.get_component(self.dummy, CombatStats)
+        self.hp_before = self.dummy_cs.current_hp
+
+    def test_melee_e_bloqueado(self):
+        """CombatSystem.deal_damage (damage_kind="melee" internamente)."""
+        combat = CombatSystem(self.ws.world, is_server=True)
+        with patch("random.random", return_value=0.99):
+            combat.deal_damage(self.player, self.dummy, "physical",
+                               base_ability_damage=9999, apply_armor_reduction=False)
+        self.assertEqual(self.dummy_cs.current_hp, self.hp_before,
+            "melee não deveria causar dano no alvo de treino de arqueiro")
+
+    def test_magico_e_bloqueado(self):
+        """apply_magic_damage_shared (Pirofagia/offline, damage_kind="magic")."""
+        from engine.core_systems import apply_magic_damage_shared
+        apply_magic_damage_shared(self.player, self.dummy, 9999, self.ws.world)
+        self.assertEqual(self.dummy_cs.current_hp, self.hp_before,
+            "dano mágico não deveria causar dano no alvo de treino de arqueiro")
+
+    def test_ranged_fisico_aplica_normal(self):
+        """Simula o que _server_apply_ranged_physical faz: chama
+        apply_damage_core com damage_kind="ranged" -- exatamente o sinal
+        que o arqueiro (auto-attack + as 4 skills de arco) já passa."""
+        from engine.core_systems import apply_damage_core
+        result = apply_damage_core(self.ws.world, self.dummy, 50,
+                                   killer_eid=self.player, damage_kind="ranged")
+        self.assertIn(result, ("applied", "killed"))
+        self.assertEqual(self.dummy_cs.current_hp, self.hp_before - 50)
+
+    def test_boneco_normal_nao_e_afetado_pelo_gate(self):
+        """Regressão: accepts_only_ranged=False (default, bonecos já
+        existentes no mapa) continua aceitando melee normalmente --
+        prova que o gate novo não vaza pros bonecos de sempre."""
+        from engine.entity_factory import create_training_dummy
+        normal_dummy = create_training_dummy(self.ws.world, 132, 374)
+        normal_cs = self.ws.world.get_component(normal_dummy, CombatStats)
+        hp_before = normal_cs.current_hp
+        combat = CombatSystem(self.ws.world, is_server=True)
+        with patch("random.random", return_value=0.99):
+            combat.deal_damage(self.player, normal_dummy, "physical",
+                               base_ability_damage=50, apply_armor_reduction=False)
+        self.assertLess(normal_cs.current_hp, hp_before,
+            "boneco normal (accepts_only_ranged=False) deveria continuar aceitando melee")
 
 
 if __name__ == "__main__":

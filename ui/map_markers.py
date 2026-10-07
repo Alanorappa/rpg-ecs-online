@@ -271,8 +271,10 @@ _TRAINING_DUMMY_RACE = "Mecânico"
 
 
 def _dummy_positions(spawn_points: dict) -> "list[tuple[int, int]]":
-    # training_dummies: (x, y, reflect_damage) — reflect_damage ignorado
-    # aqui, só a posição importa pro círculo de alvo (07/10/2026).
+    # training_dummies: (x, y, reflect_damage, sprite_id, ranged_only) —
+    # só a posição (índices 0/1) importa pro círculo de alvo; indexação
+    # por posição (não unpacking completo) sobrevive a campos novos no
+    # fim da tupla sem precisar editar esta função (07/10/2026).
     return [(d[0], d[1]) for d in spawn_points.get("training_dummies", [])]
 
 
