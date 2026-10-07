@@ -3386,15 +3386,16 @@ class EnemyAISystem(System):
                     else:
                         ai_control.path_recalc_timer -= dt
 
-                    if "custodio" in _dbg_name.lower():
+                    if enemy_id == 34:
                         from debug.aoi_debug import AOI_DBG as _AOI_DBG_ret2
                         _AOI_DBG_ret2.log(
-                            "RETURNING_STEP", eid=enemy_id, name=_dbg_name,
+                            "RETURNING_STEP", eid=enemy_id,
                             cur=current_enemy_tile, home=(initial_tile_x, initial_tile_y),
-                            path_len=(len(ai_control.path) if ai_control.path else 0),
+                            path=(ai_control.path if ai_control.path else []),
                             is_blocked=ai_control.is_blocked,
                             is_moving=tile_movement.is_moving,
-                            recalc_timer=f"{ai_control.path_recalc_timer:.2f}")
+                            recalc_timer=f"{ai_control.path_recalc_timer:.2f}",
+                            home_occupied=((initial_tile_x, initial_tile_y) in all_occupied_tiles))
 
                     if ai_control.path and not ai_control.is_blocked:
                         if not tile_movement.is_moving:
