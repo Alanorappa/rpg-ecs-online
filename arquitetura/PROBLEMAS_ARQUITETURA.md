@@ -25294,3 +25294,62 @@ Deploy: fix é 100% server-side (`engine/world_systems.py`, código
 compartilhado mas só o SERVIDOR roda `EnemyAISystem` de verdade —
 cliente não processa IA de mob). Deployado direto via
 `deploy_server.ps1`, sem rebuild de `.exe`.
+
+## 243. Log de diagnóstico (do próprio §242) derrubava o servidor inteiro a cada ciclo de RETURNING (06/10/2026)
+
+**Contexto**: depois do fix do §242, usuário reportou um sintoma NOVO
+— "o Custódio já está travado, ele andou só um tile pro lado e isso já
+fez ele travar, quando um mob passa perto ele não reage". Para
+investigar, adicionei um log temporário (`RETURNING_STEP`) dentro do
+bloco de pathfinding de RETURNING (`engine/world_systems.py`),
+chamando `debug.aoi_debug.AOI_DBG.log(...)` com a MESMA sintaxe
+posicional que `debug.mob_combat_debug`'s `_MCL.log(event, eid, name,
+race, cls, **kwargs)` aceita — só que `AOI_DBG.log()` tem assinatura
+DIFERENTE (`log(self, event: str, **kwargs)`, só kwargs depois do
+evento, ver `debug/aoi_debug.py`). Resultado: `TypeError: log() takes
+2 positional arguments but 6 were given`, levantado TODA vez que
+QUALQUER entidade com "custodio" no nome entrava em `RETURNING`.
+
+**Efeito real, bem mais grave que um log quebrado**: essa exceção não
+era pega pelo try/except de `WorldServer._run_tick_or_sleep` (que
+RESETA deltas e loga "ERRO no tick X" — zero ocorrências encontradas
+em `logs/server.log`/`server_stderr.log`/`server_stdout.log`,
+confirmando que não foi esse o caminho) — o processo Python inteiro
+morria, e o `systemd` (`Restart=always`, `RestartSec=5`,
+`rpg-server.service`) reiniciava sozinho em ~5s. Confirmado nos logs:
+`[Session] entrou no jogo...` normal até `22:40:56`, nada de erro
+visível, e às `22:40:59.825` aparece `[Auth] banco inicializado` — a
+sequência INTEIRA de boot do zero — exatamente ~2.3s depois do
+`LOST_TGT ret=RETURNING` do Custódio às `22:40:57.531`. Cada restart
+reconstrói o `World` do zero (mundo ECS inteiro, não só o NPC) —
+explica tanto "Custódio travado" (congelado pelo processo matando no
+meio do movimento, mundo reconstruído) quanto "mob perto não reage"
+(toda a IA do servidor, não só a dele, para e recomeça do zero a cada
+restart). O `RestartSec=5` disfarça isso de uma reconexão rápida
+comum, nunca parecendo uma queda de verdade pro jogador.
+
+**Lição**: diagnóstico temporário em produção, mesmo "só um log a
+mais", tem o mesmo risco de qualquer código novo — precisa ser testado
+antes de confiar nele (aqui, bastava rodar localmente 1x com
+`RPG_DEBUG_AOI=1` e forçar o branch de RETURNING pra pegar o erro
+antes do deploy; não foi feito, por ser "só diagnóstico"). Daqui pra
+frente: qualquer log novo que usa `AOI_DBG`/`MCL`/qualquer logger do
+projeto precisa confirmar a ASSINATURA EXATA daquele logger específico
+antes de copiar o padrão de uma chamada vizinha que usa um logger
+DIFERENTE — os dois loggers deste projeto têm assinaturas diferentes
+de propósito (`MCL.log(event, eid, name, race, cls, **kwargs)` vs
+`AOI_DBG.log(event, **kwargs)`), e não há nada no nome/uso que avise
+isso visualmente.
+
+**Fix**: removidos os 2 logs de diagnóstico temporários inteiros
+(`RETURNING_STEP` em `engine/world_systems.py` e o
+`MOB_SPAWN_PAYLOAD_NAMED` irmão em `server/world_server.py`'s
+`_build_mob_spawn_payload`, já tinham cumprido o papel de confirmar
+que a posição do servidor sempre esteve correta) — nenhum dos dois é
+mais necessário, a causa real (§242) já está corrigida e testada.
+
+**Consequência pra investigação do §242**: o sintoma "andou 1 tile e já
+travou" relatado pelo usuário DEPOIS do fix provavelmente era só este
+crash-loop (mundo resetando no meio do retorno pro spawn), não uma
+falha nova do fix de leash em si — mas isso só pode ser confirmado de
+verdade com um teste limpo, sem o log quebrado, depois deste deploy.
