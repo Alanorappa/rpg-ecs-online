@@ -21,14 +21,28 @@ Bug real relatado pelo usuário em 2 skills sem nenhuma relação entre si:
   report=True)` (server/spell_completion_processor.py), usado por
   `_process_player_channeling`, também nunca registrava.
 
-Fix: centralizar o registro em `WorldServer._damage_tracker_composite`
-(engine/core_systems.py::register_damage_tracker — o ÚNICO hook que roda
-pra QUALQUER dano com killer_eid válido, já usado pra arena/CharStatsTracker
-desde a Fase E) — dispara pra TODO dano PLAYER→PLAYER automaticamente,
-sem precisar que cada call site novo lembre de rastrear à mão. Os 4 call
-sites que faziam esse rastreio manualmente (combat_processor.py,
-skill_processor.py, spell_completion_processor.py ×2) tiveram a linha
-removida, pra não contar 2x.
+Fix original (Fase C, 23/07/2026): centralizar o registro em
+`WorldServer._damage_tracker_composite` — dispara pra TODO dano
+PLAYER→PLAYER automaticamente. Os 4 call sites que faziam esse
+rastreio manualmente tiveram a linha removida, pra não contar 2x.
+
+**ATUALIZAÇÃO (07/10/2026, §246 "unificação")**: o mecanismo de
+DEDUÇÃO inteiro (`mob_delta` + o irmão pra miss/dodge/parry,
+`CombatSystem.mob_avoidance_events`, + `_pvp_damage_this_tick`/
+`_sfx_damage_players`/`_mob_attacker_of`/`_last_mob_attacker`, que só
+existiam pra alimentar/excluir essa dedução) foi REMOVIDO por completo
+— 2 bugs reais no mesmo dia (reflexo do Boneco de Treino, dano e
+depois "Errou", ambos duplicando) mostraram que qualquer fonte nova
+que se auto-registre precisa lembrar de se excluir dos 2 mecanismos
+de dedução, manualmente, em 2 arquivos — risco de esquecimento real,
+não hipotético. Agora TODO atacante não-player (mob/torre/minion/
+boneco) emite o evento DIRETO de dentro de `CombatSystem.deal_damage`
+(`emit_combat_event`, `engine/world_systems.py`/`server/world_server.
+py`), no instante exato em que o outcome é decidido — nunca mais
+deduzido depois por diff de HP. As classes de teste do mecanismo
+ANTIGO (PvP/retaliation/canalização) continuam válidas sem mudança;
+`TestMobAtacaPlayerViaEmitCombatEvent` substitui o teste que exercitava
+o mecanismo de dedução que não existe mais.
 """
 import os, sys
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -39,6 +53,7 @@ import unittest
 import asyncio
 import pygame
 pygame.init()
+from unittest.mock import patch
 
 from tests.helpers import make_world_server, spawn_player, run_ticks
 from engine.components import FireShieldEffect, CombatState, Channeling, CombatStats
@@ -257,51 +272,68 @@ class TestBonecoReflectMissNaoDuplicaFLT(unittest.TestCase):
             return orig_calc(attacker_id, *args, **kwargs)
         self.cs_sys._calculate_damage = _forced_miss_for_dummy
 
-        before = len(self.ws._combat_this_tick)
+        # 07/10/2026 (§246 "unificação"): emit_combat_event registra em
+        # _pending_mob_attacks, não _combat_this_tick direto -- ver
+        # comentário em WorldServer.__init__/_on_mob_combat_event (ordem
+        # "ataque antes de DoT" precisa disso, independente de QUANDO no
+        # tick o evento é emitido). mob_avoidance_events não existe mais
+        # (mecanismo de dedução removido por completo) -- o teste de
+        # "não duplica" agora é simplesmente "exatamente 1 entrada".
+        before = len(self.ws._pending_mob_attacks)
         self.cs_sys.deal_damage(self.player, self.dummy, "physical",
                                 base_ability_damage=9999, apply_armor_reduction=False,
                                 pre_outcome="hit")
 
-        new_entries = self.ws._combat_this_tick[before:]
+        new_entries = self.ws._pending_mob_attacks[before:]
         miss_entries = [e for e in new_entries if e["attacker"] == self.dummy
                         and e["target"] == self.player and e["outcome"] == "miss"]
         self.assertEqual(len(miss_entries), 1,
             f"reflexo errando deveria gerar exatamente 1 evento de miss: {new_entries}")
-        self.assertEqual(self.cs_sys.mob_avoidance_events, [],
-            "reflexo do boneco não deve alimentar mob_avoidance_events (duplicaria o 'Errou')")
 
 
-class TestPvpDamageTrackingNaoQuebraMobDelta(unittest.TestCase):
-    """Regressão: dano de MOB de verdade contra um player continua sendo
-    detectado via mob_delta normalmente — a exclusão da Fase C só se
-    aplica quando o KILLER também é player (PvP de verdade).
+class TestMobAtacaPlayerViaEmitCombatEvent(unittest.TestCase):
+    """07/10/2026 (§246 "unificação") — substitui o antigo
+    `TestPvpDamageTrackingNaoQuebraMobDelta`, que testava o mecanismo de
+    DEDUÇÃO por diff de HP (`mob_delta`/`_mob_attacker_of`/
+    `_last_mob_attacker`, todos removidos nesta refatoração). Mob/torre/
+    minion agora emitem o evento DIRETO de dentro de `CombatSystem.
+    deal_damage` (`emit_combat_event`, registrado em `_pending_mob_attacks`
+    — mesma lista que mob-vs-mob já usa, pra preservar a ordem "ataque
+    antes de DoT"). Chama `deal_damage` direto (mesmo padrão de
+    `tests/test_towers.py`/`test_training_dummy_reflect.py`) em vez de
+    depender da IA/RNG do mob de fato decidir atacar — determinístico,
+    sem flakiness, testa exatamente o ponto de emissão novo."""
 
-    Chama `_process_player_attacks` diretamente com um `player_hp_snapshot`
-    controlado (mesma assinatura usada pelo `_tick()` de verdade) em vez de
-    depender da IA/RNG do mob de fato acertar um golpe dentro de uma janela
-    de N ticks — determinístico, sem flakiness, e testa exatamente a
-    lógica de diffing que a Fase C tocou."""
+    def setUp(self):
+        from engine.entity_factory import create_enemy
+        self.ws = make_world_server()
+        self.player = spawn_player(self.ws, "mobdmg_p", 130, 374)
+        self.mob = create_enemy(self.ws.world, 131, 374)
+        self.combat = CombatSystem(self.ws.world, is_server=True)
 
-    def test_hp_perdido_sem_fonte_conhecida_ainda_vira_combat_this_tick(self):
-        ws = make_world_server()
-        p = spawn_player(ws, "mobdmg_p", 130, 374)
-        from engine.components import CombatStats
-        cs = ws.world.get_component(p, CombatStats)
-        hp_before = cs.current_hp
-        # Simula "EnemyAISystem já rodou e tirou 15 HP do player este tick"
-        # — nenhuma fonte conhecida (não é DoT, não é PvP) registrou isso
-        # em _sfx_damage_players/_pvp_damage_this_tick, exatamente o
-        # cenário que o mob_delta existe pra cobrir.
-        cs.current_hp -= 15
-        ws._combat_this_tick.clear()
+    def test_hit_de_mob_real_gera_exatamente_1_evento_com_attacker_correto(self):
+        before = len(self.ws._pending_mob_attacks)
+        with patch("random.random", return_value=0.99):
+            self.combat.deal_damage(self.mob, self.player, "physical",
+                                    base_ability_damage=15, apply_armor_reduction=False)
+        hits = [c for c in self.ws._pending_mob_attacks[before:]
+               if c["target"] == self.player and c["damage"] > 0]
+        self.assertEqual(len(hits), 1,
+            f"ataque de mob real deveria gerar exatamente 1 evento de dano: {hits}")
+        self.assertEqual(hits[0]["attacker"], self.mob,
+            "attacker deveria ser o mob real, nunca -1 nem deduzido de outro mob")
 
-        ws._process_player_attacks(0.05, {p: hp_before})
-
-        mob_hits_on_player = [c for c in ws._pending_mob_attacks
-                              if c["target"] == p and c["damage"] == 15]
-        self.assertEqual(len(mob_hits_on_player), 1,
-                         f"mob_delta deveria reportar a perda de HP não rastreada exatamente "
-                         f"1 vez: {ws._pending_mob_attacks}")
+    def test_miss_de_mob_real_gera_exatamente_1_evento_com_attacker_correto(self):
+        before = len(self.ws._pending_mob_attacks)
+        with patch("random.random", return_value=0.0):
+            self.combat.deal_damage(self.mob, self.player, "physical",
+                                    base_ability_damage=15, apply_armor_reduction=False)
+        misses = [c for c in self.ws._pending_mob_attacks[before:]
+                 if c["target"] == self.player and c["outcome"] in ("miss", "dodge", "parry")]
+        self.assertEqual(len(misses), 1,
+            f"esquiva de mob real deveria gerar exatamente 1 evento: {misses}")
+        self.assertEqual(misses[0]["attacker"], self.mob,
+            "attacker deveria ser o mob real, nunca -1 nem deduzido de outro mob")
 
 
 if __name__ == "__main__":

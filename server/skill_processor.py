@@ -571,11 +571,7 @@ class SkillProcessorMixin:
                 elif _applied and mob_eid == tid:
                     results_targets.append(_make_result("hit"))
 
-            # PvP: sincroniza HP + efeitos. Rastreio de _pvp_damage_this_tick
-            # (evita FLT duplo via mob_delta) é centralizado em
-            # WorldServer._damage_tracker_composite desde a Fase C
-            # (23/07/2026) — os handlers de skill já aplicam dano via
-            # apply_damage_core com killer_eid válido, que já registra isso.
+            # PvP: sincroniza HP + efeitos.
             import engine.components as _comp_pvp
             from engine.components import CharacterStats as _CSvic, PlayerControlled as _PCvic
             for _pvp_r in results_targets:

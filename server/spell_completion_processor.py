@@ -281,10 +281,7 @@ class SpellCompletionMixin:
                                     _res["mob_slow_mult"] = _slow_eff.magnitude
                             results.append(_res)
 
-            # PvP: HP + efeitos sync. Rastreio de _pvp_damage_this_tick
-            # (evita FLT duplo via mob_delta) é centralizado em
-            # WorldServer._damage_tracker_composite desde a Fase C
-            # (23/07/2026) — apply_damage_core já registra isso.
+            # PvP: HP + efeitos sync.
             for _r in results:
                 _r_eid = _r["eid"]
                 from engine.components import PlayerControlled as _PCvicC
@@ -512,9 +509,6 @@ class SpellCompletionMixin:
                         _r2_entry["applied_effects"]  = _r2["applied_effects"]
                         _r2_entry["effect_durations"] = _r2.get("effect_durations", {})
                     self.queue_stats_update(_r2_entry)
-                # Rastreio de _pvp_damage_this_tick (evita FLT duplo via
-                # mob_delta) é centralizado em WorldServer.
-                # _damage_tracker_composite desde a Fase C (23/07/2026).
 
         char = self.world.get_component(player_eid, _CHS)
         skill_entry: dict = {

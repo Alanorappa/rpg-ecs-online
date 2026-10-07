@@ -591,9 +591,6 @@ class CombatSystem(System):
     def __init__(self, world: World, is_server: bool = False, on_damage_dealt=None):
         self.world = world
         self.last_outcome: str = "hit"  # captura o outcome do último deal_damage
-        # Avoidances de mob→player (parry/dodge/miss) que o servidor deve repassar ao cliente.
-        # Preenchido em deal_damage; consumido e limpo por combat_processor cada tick.
-        self.mob_avoidance_events: list[tuple] = []  # (attacker_id, target_id, outcome, pos_hp)
         # True só na instância do servidor (server/world_server.py) — esta classe é
         # compartilhada client+server (roda também no client offline). Concessão de xp
         # de SkillLevels (Tibia-like) só pode rodar no servidor; ler bônus já calculados
@@ -764,25 +761,24 @@ class CombatSystem(System):
                                           attacker_id, target_id,
                                           attacker_is_player, target_is_player)
             self.last_outcome = outcome   # backward compat offline
-            # mob_avoidance_events é o MESMO tipo de fallback genérico que
-            # mob_delta (ver _damage_tracker_composite/§246) -- "mob bateu
-            # no player e eu não vi de outra forma, preciso te avisar" --
-            # só que pra MISS/DODGE/PARRY (sem HP-diff pra detectar). O
-            # reflexo do boneco de treino (bloco mais abaixo nesta função)
-            # JÁ se auto-registra via emit_dummy_reflect pra QUALQUER
-            # outcome, hit ou miss -- sem este guard, o "Errou" duplicava
-            # no cliente pelo MESMO motivo do dano duplicar antes do fix
-            # de mob_delta (achado real relatado pelo usuário, 07/10/2026,
-            # ver PROBLEMAS_ARQUITETURA.md §246). NUNCA generalizar pra
-            # "qualquer attacker não-player" -- reativaria o bug original
-            # que este mecanismo existe pra cobrir (mob de verdade via
-            # EnemyAISystem não se auto-registra, depende 100% disto).
-            from engine.components import TrainingDummy as _TDAvoid
-            _attacker_is_reflect_dummy = self.world.get_component(attacker_id, _TDAvoid) is not None
-            if not attacker_is_player and target_is_player and not _attacker_is_reflect_dummy:
-                _tgt_cs_av = self._get_combat_stats(target_id)
-                _hp_av = _tgt_cs_av.current_hp if _tgt_cs_av else 0
-                self.mob_avoidance_events.append((attacker_id, target_id, outcome, _hp_av))
+            # Ponto único de broadcast pra QUALQUER atacante não-player
+            # contra um player (07/10/2026 — ver PROBLEMAS_ARQUITETURA.md
+            # §246, "unificação"). Substitui o antigo `mob_avoidance_events`
+            # (fallback que "deduzia" o evento depois, por não ter HP-diff
+            # pra miss/dodge/parry) — agora o PRÓPRIO deal_damage já sabe o
+            # outcome no instante exato, então emite direto, sem dedução
+            # nenhuma. Cobre mob/torre/minion (via EnemyAISystem/
+            # ProjectileSystem, que chamam deal_damage igual a qualquer
+            # outro atacante) E o reflexo do boneco de treino (a chamada
+            # recursiva mais abaixo nesta função tem attacker=boneco,
+            # target=player — mesma condição, sem precisar de nenhum guard
+            # de exclusão separado, porque agora só existe 1 emissor).
+            if self.is_server and not attacker_is_player and target_is_player:
+                _emit_ce_av = _svc.get("emit_combat_event")
+                if _emit_ce_av:
+                    _tgt_cs_av = self._get_combat_stats(target_id)
+                    _hp_av = _tgt_cs_av.current_hp if _tgt_cs_av else 0
+                    _emit_ce_av(attacker_id, target_id, 0, outcome, max(0, _hp_av))
             return False, outcome
 
         final_damage = self._resolve_damage_modifiers(
@@ -808,6 +804,17 @@ class CombatSystem(System):
                           killer_eid=attacker_id, add_pending_death=False,
                           on_cc_break=_cc_break_fx,
                           on_damage_dealt=self.on_damage_dealt)
+
+        # Ponto único de broadcast pra QUALQUER atacante não-player contra
+        # um player — par do emit na branch de avoidance acima (mesmo
+        # racional/comentário, ver §246 "unificação"). Substitui o antigo
+        # `mob_delta` (diff de HP em server/combat_processor.py, que
+        # "descobria" o dano depois por não ter registro explícito).
+        if self.is_server and not attacker_is_player and target_is_player:
+            _emit_ce_dmg = _svc.get("emit_combat_event")
+            if _emit_ce_dmg:
+                _emit_ce_dmg(attacker_id, target_id, final_damage, outcome,
+                            max(0, target_stats.current_hp))
 
         # Aggro por dano: ataque força o alvo a perseguir independente do raio
         # (cobre players E outros combatentes — Sistema de Facções, Fase 5:
@@ -902,32 +909,22 @@ class CombatSystem(System):
         # só o SERVIDOR decide/aplica; sem este guard, o reflexo também
         # rodava na predição client-side que `ui/player_input_system.py`
         # já faz pra alguns casos (ex: mago sem arco, chama `deal_damage`
-        # direto no cliente pra feedback imediato). Esse guard sozinho
-        # NÃO foi a causa real do FLT duplicado relatado pelo usuário —
-        # a causa real era `mob_delta` (server/combat_processor.py)
-        # "descobrindo" a mesma perda de HP de novo e gerando um 2º
-        # combat_this_tick fantasma, corrigido em
-        # `WorldServer._damage_tracker_composite` (ver PROBLEMAS_
-        # ARQUITETURA.md §246). Este guard continua certo por si só —
-        # cliente nunca deve prever/aplicar o reflexo, só reagir ao
-        # broadcast autoritativo — mas não é o fix do bug reportado.
+        # direto no cliente pra feedback imediato).
+        #
+        # Broadcast de rede (07/10/2026, §246 "unificação") — a chamada
+        # recursiva abaixo (attacker=target_id/boneco, target=attacker_id/
+        # player) cai nos MESMOS 2 pontos de emissão genérica adicionados
+        # mais acima nesta função (branch de avoidance e branch de dano) —
+        # não precisa de callback próprio (`emit_dummy_reflect`, removido)
+        # nem de nenhum guard de exclusão: o boneco como atacante não-
+        # player contra um player é exatamente a condição que esses 2
+        # pontos já cobrem pra QUALQUER fonte (mob/torre/minion/boneco).
         if self.is_server and attacker_is_player and final_damage > 0:
             from engine.components import TrainingDummy as _TDReflect
             _dummy = self.world.get_component(target_id, _TDReflect)
             if _dummy and _dummy.reflect_damage > 0:
-                _att_cs_ref = self._get_combat_stats(attacker_id)
-                _hp_before_ref = _att_cs_ref.current_hp if _att_cs_ref else 0
-                _dead_ref, _outcome_ref = self.deal_damage(
-                    target_id, attacker_id, "physical",
-                    base_ability_damage=_dummy.reflect_damage)
-                # Broadcast de rede (online): deal_damage não conhece
-                # _combat_this_tick (atributo só do WorldServer) — mesma
-                # indireção já usada pelo Escudo de Fogo (emit_retaliation).
-                _emit_dr = _svc.get("emit_dummy_reflect")
-                if _emit_dr and _att_cs_ref:
-                    _dmg_dealt_ref = max(0, _hp_before_ref - _att_cs_ref.current_hp)
-                    _emit_dr(target_id, attacker_id, _dmg_dealt_ref,
-                             _outcome_ref, max(0, _att_cs_ref.current_hp))
+                self.deal_damage(target_id, attacker_id, "physical",
+                                 base_ability_damage=_dummy.reflect_damage)
 
         if target_stats.current_hp <= 0:
             return self._handle_death(target_id, attacker_id), outcome

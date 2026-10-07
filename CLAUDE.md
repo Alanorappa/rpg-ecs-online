@@ -306,35 +306,36 @@ padrão a quebrar, não só os bugs individuais.
   chegava certo via HP5/combate mas com `max_hp` desatualizado do lado
   cliente, current/max passava de 1.0 e a barra de HP "crescia" na tela
   (ver PROBLEMAS_ARQUITETURA.md §89).
-- **Qualquer fonte de dano server-side que registra seu PRÓPRIO
-  `_combat_this_tick` manualmente (reflexo de boneco de treino,
-  retaliation tipo Escudo de Fogo, tick de canalização — qualquer
-  broadcast "fora do call site normal de PvP/PvE")** → precisa também
-  se excluir dos DOIS canais de fallback "mob bateu/errou no player e
-  eu não vi de outra forma" que já existem (`server/world_server.py`/
-  `engine/world_systems.py`), senão qualquer um dos dois descobre o
-  MESMO evento de novo e gera um 2º `combat_this_tick` fantasma (FLT
-  duplicado — dano ou "Errou"):
-  1. `WorldServer._damage_tracker_composite`'s guard — exclui de
-     `_pvp_damage_this_tick`, o que `mob_delta`
-     (`server/combat_processor.py::_process_player_attacks`) usa pra
-     "qualquer perda de HP não explicada por DoT/PvP já rastreado é
-     um golpe de mob não visto". Só cobre dano (`damage>0`, via
-     diff de HP) — miss/dodge/parry não muda HP, não passa por aqui.
-  2. `CombatSystem.mob_avoidance_events` (`engine/world_systems.py`,
-     dentro de `deal_damage`, drenado por `_process_player_attacks`
-     pra dentro de `_pending_mob_attacks`) — equivalente do item 1,
-     mas pra MISS/DODGE/PARRY (sem HP-diff pra detectar esses casos).
-  Os dois guards originais só cobriam "atacante é player" (PvP);
-  qualquer categoria NOVA de atacante não-player-mas-com-registro-
-  próprio (boneco de treino com `reflect_damage`, 07/10/2026) precisa
-  de uma condição a mais em AMBOS, nunca generalizar pra "qualquer
-  atacante não-player" (isso reativaria o bug que os guards existem
-  pra evitar — mob de verdade via `EnemyAISystem` não se auto-
-  registra, depende 100% desses 2 canais pra ser visto, dano OU
-  miss). Ver PROBLEMAS_ARQUITETURA.md §246 (as 2 correções) e
-  `historico/ARQUITETURA ONLINE HISTORICO.md` §34.43 (ocorrência
-  original, só dano/só PvP).
+- **Qualquer ataque contra um player, de QUALQUER atacante (player,
+  mob, torre, minion, boneco de treino, ou categoria futura)** →
+  `CombatSystem.deal_damage` (`engine/world_systems.py`) já é o ponto
+  único onde o outcome (hit/crit/block/miss/dodge/parry) é decidido —
+  é TAMBÉM o ponto único de BROADCAST (07/10/2026, §246 "unificação").
+  Pra qualquer atacante que não seja player, os 2 pontos internos já
+  chamam `_svc.get("emit_combat_event")` sozinhos (branch de avoidance
+  e branch de dano, ambos gated por `self.is_server and not
+  attacker_is_player and target_is_player`) — registrado em
+  `WorldServer._on_mob_combat_event`/`_pending_mob_attacks` (mesma
+  lista que mob-vs-mob/NPC já usa, concatenada SEMPRE antes de
+  `_combat_this_tick` em `_collect_deltas`, pra preservar a ordem
+  "ataque antes de DoT" independente de QUANDO no tick o evento for de
+  fato emitido — ataque ranged só resolve no impacto do projétil,
+  depois do tick de DoT no mesmo tick). **NUNCA crie um canal de
+  broadcast paralelo** (callback próprio tipo o antigo
+  `emit_dummy_reflect`, ou qualquer mecanismo de "deduzir o evento
+  depois por diff de HP") — se o atacante já cai em `deal_damage`
+  (qualquer chamada direta ou via `ProjectileSystem`), o broadcast já
+  está coberto de graça, sem precisar de nenhum código novo no call
+  site. Mecanismo ANTIGO (removido nesta unificação, histórico em
+  PROBLEMAS_ARQUITETURA.md §246 e `historico/ARQUITETURA ONLINE
+  HISTORICO.md` §34.43): existiam 2 canais de DEDUÇÃO (`mob_delta`,
+  diff de HP; `mob_avoidance_events`, miss/dodge/parry sem HP-diff)
+  que "descobriam" o ataque de mob depois, por não ter registro
+  explícito — toda fonte nova que JÁ se auto-registrava (PvP,
+  retaliation, boneco) precisava se excluir manualmente dos 2,
+  duplicado em 2 arquivos — 2 bugs reais de FLT duplicado no mesmo dia
+  provaram que esse padrão não escala. Não existe mais nada pra
+  excluir.
 - **Atributo de combate novo** → par `base_X`/`X` em `CombatStats` + 1 entrada
   em `stat_fns._MODIFIABLE_ATTRS` (+ `_STAT_CLAMPS` se tiver limite).
 - **Qualquer coisa (item, buff, talento) que pode mudar `stamina` (deriva

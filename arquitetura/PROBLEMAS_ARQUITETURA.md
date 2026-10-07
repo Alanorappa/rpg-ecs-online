@@ -25618,3 +25618,113 @@ player mas já se auto-registre em `combat_this_tick` (reflexo de
 boneco é o único caso hoje; um mecanismo futuro parecido teria o
 MESMO problema) precisa se excluir dos DOIS, não só de um. Ver regra
 atualizada em `CLAUDE.md`.
+
+**3ª CORREÇÃO — unificação estrutural (07/10/2026, mesmo dia, a
+pedido explícito do usuário)**: depois das 2 correções acima, o
+usuário perguntou se os 2 bugs no mesmo dia eram sintoma de falta de
+coesão/modularidade — pergunta certa. Resposta: sim. As 2 correções
+anteriores só ADICIONARAM guards de exclusão (1 por mecanismo de
+dedução, duplicando a MESMA checagem de `TrainingDummy` em 2 arquivos
+diferentes) — não resolveram a causa estrutural, só o sintoma de cada
+vez. Usuário decidiu ir pela correção de verdade: eliminar os 2
+mecanismos de DEDUÇÃO por completo (`mob_delta` e
+`mob_avoidance_events`), fazendo TODO atacante não-player se
+auto-registrar explicitamente, igual PvP/retaliation/DoT/boneco já
+faziam.
+
+**Achado-chave da investigação** (agente Explore, antes de qualquer
+código): mob (via `EnemyAISystem`), torre e minion — melee E ranged —
+convergem TODOS em `CombatSystem.deal_damage` (chamada direta ou via
+`ProjectileSystem.update`, que também chama `deal_damage` no impacto
+do projétil), exatamente o MESMO ponto que já decide o outcome
+(hit/crit/block/miss/dodge/parry) pra QUALQUER atacante, inclusive o
+boneco de treino. Ou seja: não foi preciso tocar nos 3 call sites de
+IA/torre/minion — bastou colocar o registro explícito DENTRO do
+próprio `deal_damage`, nos 2 pontos onde o outcome já é determinado
+(branch de avoidance e branch de dano), pra cobrir TODOS de uma vez,
+sem duplicar nada. Habilidades especiais de mob (bleed/poison/burn)
+já tinham registro explícito próprio (`_ServerStatusEffectSystem.
+_emit_damage`) e não foram afetadas.
+
+**Armadilha achada DEPOIS do plano aprovado** (correção de rota
+durante a implementação, não um erro no código final): o plano
+original assumia que escrever DIRETO em `_combat_this_tick` (de
+dentro do `deal_damage`) preservaria a ordem "ataque de mob antes do
+DoT do mesmo tick" naturalmente, por "acontecer mais cedo no tick".
+Falso pra ataque RANGED de mob/torre/minion — o dano de verdade só
+resolve no IMPACTO do projétil
+(`global_systems:projectiles`), que roda DEPOIS de
+`global_systems:status_effects` (tick de DoT) no MESMO tick
+(`server/world_server.py`, ordem real do `_tick()`). Escrever direto
+em `_combat_this_tick` teria INVERTIDO a ordem pra ataque ranged
+especificamente. Fix: o callback novo (`emit_combat_event`) continua
+apendando em `_pending_mob_attacks` (a MESMA lista que mob-vs-mob já
+usava, concatenada SEMPRE antes de `_combat_this_tick` em
+`_collect_deltas`, independente de QUANDO no tick cada evento for de
+fato emitido) — não em `_combat_this_tick` direto. Lição: nenhuma
+suposição de ordem de tick entra num plano sem confirmar a ordem real
+no código (`_perf_push`/`_perf_pop` da função `_tick()` é a fonte de
+verdade), mesmo quando a suposição "parece" óbvia.
+
+**Outro achado durante a implementação** (não coberto pela
+investigação inicial, achado lendo o código antes de remover
+`_pending_mob_attacks` por completo, como o plano original sugeria):
+existe um 4º produtor desta lista, `WorldServer._log_mob_damage_hit`
+— broadcast de combate MOB-vs-MOB/NPC (Sistema de Facções, Fase 5,
+`attacker_eid in self._mob_eids and target_id in self._mob_eids`),
+categoria TOTALMENTE separada de "mob ataca player" e fora do escopo
+desta unificação. `_pending_mob_attacks` continua existindo por causa
+dele — só os produtores de dedução (`mob_delta`/
+`mob_avoidance_events`) foram removidos, não a lista em si.
+
+**Remoções** (líquido: mais código removido que adicionado):
+- `server/combat_processor.py::_process_player_attacks` — seção "Mob
+  → Player: detectado via variação de HP" inteira (bloco `mob_delta`,
+  reverse-map `_mob_attacker_of`, `_last_mob_attacker`). A detecção de
+  MORTE de player por HP-diff continua (não tinha relação com
+  `mob_delta`, só compartilhava o mesmo loop/snapshot).
+- `engine/world_systems.py::CombatSystem` — atributo
+  `mob_avoidance_events` removido; guard `_attacker_is_reflect_dummy`
+  da 2ª correção removido (obsoleto); bloco de reflexo do boneco
+  simplificado (não precisa mais do próprio callback de broadcast —
+  a chamada recursiva já aciona o mecanismo genérico novo sozinha).
+- `server/world_server.py` — `_sfx_damage_players` (dict + acúmulo em
+  `_emit_damage`), `_pvp_damage_this_tick` (dict + os guards
+  `_killer_is_player`/`_killer_is_reflect_dummy` em
+  `_damage_tracker_composite` — o resto da função, arena tracking e
+  `incr_char_stat`, intocado), `_on_dummy_reflect`/
+  `_svc["emit_dummy_reflect"]` (substituído pelo mecanismo genérico).
+
+**Adições**: `_svc["emit_combat_event"]`/`_on_mob_combat_event`
+(`server/world_server.py`, mesmo padrão de `emit_retaliation`) + 2
+pontos de chamada dentro de `CombatSystem.deal_damage`
+(`engine/world_systems.py`, branch de avoidance e branch de dano,
+ambos gated por `self.is_server and not attacker_is_player and
+target_is_player`).
+
+**Testes migrados/novos** (revert-to-confirm real em cada um —
+desabilitei os 2 pontos de emissão novos, confirmei que os 5 testes
+abaixo falham exatamente como esperado, restaurei):
+- `test_flt_dedup.py::TestMobAtacaPlayerViaEmitCombatEvent` — NOVO,
+  substitui `TestPvpDamageTrackingNaoQuebraMobDelta` (testava o
+  mecanismo de dedução que não existe mais); ataque de mob real (via
+  `deal_damage`) contra player gera exatamente 1 evento, hit E miss,
+  com `attacker` correto.
+- `test_flt_dedup.py::TestBonecoReflectMissNaoDuplicaFLT` e
+  `test_training_dummy_reflect.py::test_broadcast_de_rede_registra_
+  boneco_como_atacante` — migrados pra checar `_pending_mob_attacks`
+  em vez de `_combat_this_tick` (mudança de lista, não de
+  comportamento observável pelo cliente).
+- `test_towers.py::test_torre_aparece_como_atacante_no_combat_log_do_
+  player` — reescrito pra exercitar o caminho REAL (`deal_damage`) em
+  vez de mutar HP na mão simulando a dedução antiga que não existe
+  mais.
+
+**Verificação**: suíte focada (`test_flt_dedup.py`,
+`test_training_dummy_reflect.py`, `test_combat.py`, `test_arena.py`,
+`test_bg_queue.py`, `test_char_stats.py`, `test_towers.py`) — 187
+passed. `test_minions.py` tem 2 falhas pré-existentes SEM relação com
+esta mudança (loot de lampião em minion morto, roteamento de
+waypoint) — confirmado rodando as 2 no código original (antes desta
+refatoração, via `git stash`) e vendo as MESMAS 2 falhas lá. Suíte
+completa rodada antes do deploy (ver resultado no commit).

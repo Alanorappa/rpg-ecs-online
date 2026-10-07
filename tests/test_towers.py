@@ -481,15 +481,21 @@ class TestTowerDeathXpGoldRespawn(unittest.TestCase):
         self.assertTrue(data["is_ranged"], "torre deveria sempre reportar is_ranged=True")
 
     def test_torre_aparece_como_atacante_no_combat_log_do_player(self):
-        """Bug real (29/07/2026): `_mob_attacker_of` (server/combat_
-        processor.py) só reconhecia atacante com AIControlled — torre
-        nunca aparecia, então o dano dela em um player resolvia
+        """Bug real original (29/07/2026): `_mob_attacker_of` (server/
+        combat_processor.py) só reconhecia atacante com AIControlled —
+        torre nunca aparecia, então o dano dela em um player resolvia
         attacker=-1 OU (pior) herdava do cache `_last_mob_attacker` o
         atacante ERRADO de um mob real diferente que tivesse batido no
-        player antes. Isso quebrava a atribuição de som/log de combate
-        (relatado pelo usuário: torre de flecha tocando som de
-        attack_melee — na verdade estava tocando o som do ÚLTIMO mob
-        real, não da torre)."""
+        player antes.
+
+        07/10/2026 (§246 "unificação"): o mecanismo de dedução por
+        diff de HP (`mob_delta`/`_mob_attacker_of`/`_last_mob_attacker`)
+        foi removido por completo — o teste agora exercita o caminho
+        REAL (`CombatSystem.deal_damage`, chamado pelo impacto do
+        projétil de verdade via `ProjectileSystem`, aqui simulado
+        diretamente) em vez de mutar HP na mão simulando a dedução
+        antiga. `attacker` nunca mais é ambíguo: é conhecido com 100%
+        de certeza no instante do golpe, nunca deduzido depois."""
         tower_eid = create_tower(self.ws.world, 16, 10, "torre_de_flechas",
                                  faction_id="monstros_hostis")
         self.ws.world.add_component(tower_eid, MapLocation("maps/map_1.csv"))
@@ -497,12 +503,12 @@ class TestTowerDeathXpGoldRespawn(unittest.TestCase):
         tower = self.ws.world.get_component(tower_eid, Tower)
         tower.current_target_eid = self.player_eid
 
-        pcs = self.ws.world.get_component(self.player_eid, CombatStats)
-        hp_before = pcs.current_hp
-        pcs.current_hp = hp_before - 10   # simula o dano já aplicado pelo projétil
-
-        self.ws._process_player_attacks(0.05, {self.player_eid: hp_before})
-        attacks = [a for a in self.ws._pending_mob_attacks if a["target"] == self.player_eid]
+        combat = CombatSystem(self.ws.world, is_server=True)
+        before = len(self.ws._pending_mob_attacks)
+        combat.deal_damage(tower_eid, self.player_eid, "physical",
+                           base_ability_damage=10, apply_armor_reduction=False)
+        attacks = [a for a in self.ws._pending_mob_attacks[before:]
+                  if a["target"] == self.player_eid]
         self.assertTrue(attacks, "deveria ter gerado uma entrada de combate pro player")
         self.assertTrue(any(a["attacker"] == tower_eid for a in attacks),
                         "torre deveria aparecer como atacante, nunca -1 ou outro mob")

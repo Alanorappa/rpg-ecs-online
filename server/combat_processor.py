@@ -256,8 +256,12 @@ class CombatProcessorMixin:
         Processa auto-attacks dos jogadores em mobs.
 
         Usa deal_damage() do offline — mesma fórmula de dano, armor reduction,
-        crit, dodge, parry. Mob→player é tratado detectando a variação de HP
-        após EnemyAISystem rodar (EnemyAISystem chama deal_damage internamente).
+        crit, dodge, parry. Mob→player (07/10/2026, §246 "unificação") é
+        emitido DIRETO por `CombatSystem.deal_damage` via `emit_combat_event`
+        (`engine/world_systems.py`) — não é mais deduzido aqui por diff de HP
+        (ver histórico do mecanismo antigo, `mob_delta`, removido nesta
+        unificação). O snapshot de HP ainda é usado só pra detectar MORTE de
+        player por qualquer fonte neste tick, abaixo.
         """
         # ── Player → Mob ───────────────────────────────────────────────────
         for session_id, player_eid in list(self._player_eids.items()):
@@ -374,93 +378,19 @@ class CombatProcessorMixin:
                 cs.target_entity_id = -1
                 self._attack_timers.pop(session_id, None)
 
-        # ── Mob → Player: detectado via variação de HP após EnemyAISystem ──
-        # EnemyAISystem já chamou deal_damage() nos players. Basta comparar
-        # o snapshot de HP capturado antes dos sistemas rodarem.
-        # IMPORTANTE: subtraímos _sfx_damage_players para não emitir COMBAT_RESULT
-        # duplicado de ticks de DoT/HoT que StatusEffectSystem já reportou separado.
-
-        # Pré-constrói reverse map {player_eid → mob_atacante} UMA VEZ (O(mobs)),
-        # em vez de O(mobs×players_danificados) no loop abaixo.
-        from engine.components import (AIControlled as _AIAtk, PendingDeath as _PD,
-                                       Tower as _TowerAtk, Minion as _MinionAtk)
-        _mob_attacker_of: dict[int, int] = {}
-        for _mb in self._mob_eids:
-            _ai_r = self.world.get_component(_mb, _AIAtk)
-            if _ai_r and _ai_r.state in ("ATTACKING", "CHASING") and _ai_r.target_eid != -1:
-                _mob_attacker_of[_ai_r.target_eid] = _mb
-                # Atualiza cache do último atacante para fallback no mesmo tick
-                self._last_mob_attacker[_ai_r.target_eid] = _mb
-                continue
-            # Torre (29/07/2026): não tem AIControlled (ver engine/
-            # components.py::Tower), então ficava INVISÍVEL a este reverse
-            # map — dano de torre em player sempre resolvia attacker=-1
-            # (ou pior, caía no fallback _last_mob_attacker e herdava o
-            # atacante ERRADO de um mob real anterior), quebrando a
-            # atribuição de som/log de combate (bug real relatado pelo
-            # usuário: torre de flecha tocava som de attack_melee — na
-            # verdade estava tocando o som do ÚLTIMO mob real que bateu
-            # no player, não o da torre).
-            _tw_r = self.world.get_component(_mb, _TowerAtk)
-            if _tw_r and _tw_r.current_target_eid != -1:
-                _mob_attacker_of[_tw_r.current_target_eid] = _mb
-                self._last_mob_attacker[_tw_r.current_target_eid] = _mb
-                continue
-            # Minion (30/07/2026): mesma razão de Torre — sem AIControlled,
-            # invisível a este reverse map sem este bloco (mesma classe de
-            # bug: atribuição errada/perdida de attacker em ataque de
-            # minion contra player).
-            _mn_r = self.world.get_component(_mb, _MinionAtk)
-            if _mn_r and _mn_r.current_target_eid != -1:
-                _mob_attacker_of[_mn_r.current_target_eid] = _mb
-                self._last_mob_attacker[_mn_r.current_target_eid] = _mb
-
-        # Consome avoidances (parry/dodge/miss) de mob→player coletadas em CombatSystem.
-        from engine.world_systems import _svc as _svc_cp
-        _combat_sys_cp = _svc_cp.get('combat')
-        if _combat_sys_cp and _combat_sys_cp.mob_avoidance_events:
-            for _atk_av, _tgt_av, _out_av, _hp_av in _combat_sys_cp.mob_avoidance_events:
-                self._pending_mob_attacks.append({
-                    "attacker": _atk_av,
-                    "target":   _tgt_av,
-                    "damage":   0,
-                    "outcome":  _out_av,
-                    "hp_after": _hp_av,
-                    "source":   "auto",
-                })
-            _combat_sys_cp.mob_avoidance_events.clear()
+        # ── Morte de player por qualquer fonte que zerou HP neste tick ─────
+        # (mob/torre/minion — emitido via emit_combat_event agora, ver
+        # docstring acima — ou DoT/HoT via StatusEffectSystem) continua
+        # detectada aqui via diff do snapshot capturado no início do tick,
+        # já que não existe nenhum outro ponto único de "o HP zerou agora".
+        from engine.components import PendingDeath as _PD
 
         for peid, hp_before in player_hp_snapshot.items():
             pcs = self.world.get_component(peid, CombatStats)
             if not pcs:
                 continue
-            hp_now    = pcs.current_hp
-            sfx_dmg   = self._sfx_damage_players.get(peid, 0)
-            # Subtrai dano PvP (skills + auto-ataque player→player) para não
-            # confundir com dano de mob. Sem isso, dano PvP gerava um segundo
-            # COMBAT_RESULT "de mob" → FLT duplicado na tela do atacante.
-            pvp_dmg   = self._pvp_damage_this_tick.get(peid, 0)
-            mob_delta = (hp_before - sfx_dmg - pvp_dmg) - hp_now
+            hp_now = pcs.current_hp
 
-            if mob_delta > 0:
-                attacker_mob_eid = _mob_attacker_of.get(peid, -1)
-                # Fallback: mob pode ter mudado de estado no mesmo tick após atacar.
-                # Usa o último mob rastreado para este player se disponível.
-                if attacker_mob_eid == -1:
-                    attacker_mob_eid = self._last_mob_attacker.get(peid, -1)
-                elif attacker_mob_eid != -1:
-                    self._last_mob_attacker[peid] = attacker_mob_eid
-
-                self._pending_mob_attacks.append({
-                    "attacker": attacker_mob_eid,
-                    "target":   peid,
-                    "damage":   mob_delta,
-                    "outcome":  "hit",
-                    "hp_after": max(0, hp_now),
-                    "source":   "auto",
-                })
-
-            # Morte: qualquer fonte (mob ou DoT) que zerou HP neste tick
             if hp_now <= 0 and hp_before > 0:
                 # Lê o killer ANTES de remover o PendingDeath — repassado
                 # pro crédito de kill/assist dentro de _handle_player_death
@@ -506,12 +436,6 @@ class CombatProcessorMixin:
                                            attacker_cs, attacker_tm, victim_cs, victim_tm)
         if result is None:
             return
-
-        # Rastreio de _pvp_damage_this_tick (evita FLT duplo via mob_delta)
-        # agora é centralizado em WorldServer._damage_tracker_composite —
-        # o dano já disparou apply_damage_core com killer_eid válido
-        # dentro de _resolve_auto_attack, que já registrou isso (Fase C,
-        # 23/07/2026). Registrar aqui TAMBÉM duplicaria a entrada no dict.
 
         # COMBAT_RESULT → AOI_UPDATE para ambos os clientes
         self._combat_this_tick.append({

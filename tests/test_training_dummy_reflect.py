@@ -161,15 +161,20 @@ class TestDummyReflectDamageApplies(unittest.TestCase):
             "boneco com reflect_damage>0 deveria ter revidado algum dano")
 
     def test_broadcast_de_rede_registra_boneco_como_atacante(self):
-        """Confirma que o hit refletido vira uma entrada real em
-        _combat_this_tick (sem isso, o cliente nunca veria o texto
-        flutuante de dano no player -- mesma indireção de
-        emit_retaliation, _svc não conhece WorldServer diretamente)."""
-        before = len(self.ws._combat_this_tick)
+        """Confirma que o hit refletido vira uma entrada real no delta de
+        combate (sem isso, o cliente nunca veria o texto flutuante de dano
+        no player) -- mesma indireção de emit_retaliation, _svc não conhece
+        WorldServer diretamente. 07/10/2026 (§246 "unificação"): o
+        callback (`emit_combat_event`) registra em `_pending_mob_attacks`,
+        não `_combat_this_tick` direto -- mesma lista que mob-vs-mob já
+        usa, pra preservar a ordem "ataque antes de DoT" independente de
+        QUANDO no tick o evento é emitido (ver comentário em
+        WorldServer.__init__/`_on_mob_combat_event`)."""
+        before = len(self.ws._pending_mob_attacks)
         with patch("random.random", return_value=0.99):
             self.cs_sys.deal_damage(self.player, self.dummy, "physical",
                                     base_ability_damage=9999, apply_armor_reduction=False)
-        new_entries = self.ws._combat_this_tick[before:]
+        new_entries = self.ws._pending_mob_attacks[before:]
         reflect_entries = [e for e in new_entries if e["attacker"] == self.dummy
                           and e["target"] == self.player]
         self.assertTrue(reflect_entries,

@@ -113,11 +113,6 @@ class _ServerStatusEffectSystem:
                     "hp_after": cs.current_hp if cs else 0,
                     "source":   effect_type,
                 })
-                # Acumula dano DoT em players para corrigir snapshot HP
-                # (evita duplo COMBAT_RESULT em _process_player_attacks)
-                if eid in self._srv._player_eids.values():
-                    prev = self._srv._sfx_damage_players.get(eid, 0)
-                    self._srv._sfx_damage_players[eid] = prev + amount
 
             def _emit_heal(self, eid, amount, effect_type, pos, color):
                 from engine.components import CombatStats as _CS
@@ -335,8 +330,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # tx/ty = posição de morte do mob (None para players)
         self._despawned_this_tick: list[dict] = []
         self._combat_this_tick:        list[dict] = []
-        # Mob→player attacks: emitidos ANTES de _combat_this_tick (DOT/HoT) para que o
-        # cliente atualize HP em ordem correta (mob attack → DOT, não DOT → mob attack).
+        # Ataques de atacante NÃO-player (mob/torre/minion/boneco de
+        # treino contra player — via `emit_combat_event`, §246
+        # "unificação", 07/10/2026 — e mob-vs-mob/NPC, Sistema de
+        # Facções Fase 5, via `_log_mob_damage_hit`): emitidos ANTES de
+        # `_combat_this_tick` (DOT/HoT) pra garantir que o cliente anime
+        # a queda de HP em ordem correta (mob attack → DOT, não o
+        # contrário) — concatenado SEMPRE antes em `_collect_deltas`,
+        # independente de QUANDO no tick cada evento foi de fato emitido
+        # (ataque ranged só resolve no impacto do projétil, que roda
+        # DEPOIS do tick de DoT no mesmo tick — por isso a ordem não pode
+        # depender do momento real de emissão).
         self._pending_mob_attacks:     list[dict] = []
         self._player_deaths_this_tick: list[dict] = []   # mortes de players
         # Mortes broadcast pra AOI (corpo visível p/ outros players): {eid, tx, ty}
@@ -347,22 +351,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._ghost_state_updates_this_tick: list[dict] = []
         # Marcadores de corpo de player: player_eid → (tx, ty)
         self._player_corpses: dict[int, tuple[int, int]] = {}
-        # Dano de DoT/HoT por StatusEffectSystem neste tick: player_eid → total
-        # Usado para corrigir o snapshot HP (evitar duplo COMBAT_RESULT)
-        self._sfx_damage_players:      dict[int, int]   = {}
 
         # Rastreamento de dano por mob: mob_eid → {player_eid: total_damage}
         self._mob_damage_log: dict[int, dict[int, int]] = {}
-        # Cache de fallback pra atribuição de attacker mob→player dentro do
-        # MESMO tick (17/09/2026, ver arquitetura/PROJECT_WIDE_REVIEW.md) —
-        # player_eid → mob_eid do último mob rastreado atacando-o
-        # (`combat_processor.py::_process_mob_attacks_on_players`, usado
-        # quando o mob já mudou de estado antes do reverse-map ser lido no
-        # mesmo tick). Antes vivia como atributo de instância criado via
-        # `hasattr()` na primeira chamada — anti-padrão explicitamente
-        # proibido pelo CLAUDE.md ("estado mutável ad-hoc fora do ECS");
-        # aqui, junto do resto do estado de combate por-instância.
-        self._last_mob_attacker: dict[int, int] = {}
         # Kill credit + assist de player (16/08/2026, unificação pedida
         # pelo usuário) — vítima_eid → {atacante_eid: (timestamp, seq)
         # do último hit}, SÓ player→player (diferente de _mob_damage_log
@@ -524,10 +515,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         # Timer de ataque por jogador: session_id → segundos até próximo hit
         self._attack_timers: dict[str, float] = {}
-
-        # Dano PvP (player→player) neste tick: player_eid → total dano sofrido
-        # Inicializado aqui e resetado em _tick para evitar getattr() lazy
-        self._pvp_damage_this_tick: dict[int, int] = {}
 
         # Histórico de snapshots (deque com maxlen evita pop(0) O(n))
         self._snapshots: deque[tuple[int, dict]] = deque(maxlen=SNAPSHOT_HISTORY)
@@ -916,25 +903,40 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             })
         _sys_svc["emit_retaliation"] = _on_retaliation
 
-        # Callback de reflexão de dano do Boneco de Treino (07/10/2026) —
-        # mesma indireção de _on_retaliation acima: deal_damage (código
-        # compartilhado, engine/world_systems.py) não conhece
-        # _combat_this_tick (atributo só do WorldServer), então passa
-        # pelo registro genérico de serviços. Diferente de
-        # emit_retaliation (fields invertidos de propósito, framing do
-        # Escudo de Fogo): aqui o boneco É o atacante de verdade — client
-        # vê "dummy bateu no player" normalmente, igual qualquer mob.
-        def _on_dummy_reflect(dummy_eid: int, player_eid: int, damage: int,
-                              outcome: str, hp_after: int) -> None:
-            _srv_ref._combat_this_tick.append({
-                "attacker": dummy_eid,
-                "target":   player_eid,
+        # Callback ÚNICO de broadcast pra QUALQUER atacante não-player
+        # contra um player (07/10/2026, §246 "unificação") — substitui
+        # os antigos mecanismos de dedução (`mob_delta`/
+        # `mob_avoidance_events`, removidos) E o callback dedicado que o
+        # reflexo do Boneco de Treino tinha (`emit_dummy_reflect`,
+        # removido — o boneco agora cai aqui de graça, mesma condição de
+        # qualquer mob/torre/minion). Chamado DIRETO de dentro de
+        # `CombatSystem.deal_damage` (engine/world_systems.py), nos 2
+        # pontos onde o outcome já é decidido (hit/crit/block e miss/
+        # dodge/parry) — nunca deduzido depois por diff de HP.
+        #
+        # Append em `_pending_mob_attacks` (NUNCA `_combat_this_tick`
+        # direto) — mesma lista que `_log_mob_damage_hit` já usa pra
+        # mob-vs-mob/NPC, por uma razão específica de ORDEM: ataque
+        # ranged de mob/torre/minion só resolve o dano de verdade no
+        # IMPACTO do projétil (`global_systems:projectiles`), que roda
+        # DEPOIS de `global_systems:status_effects` (tick de DoT) no
+        # MESMO tick — escrever direto em `_combat_this_tick` inverteria
+        # a ordem "ataque de mob antes do DoT" que o cliente depende pra
+        # animar a queda de HP em 2 passos visíveis (`_pending_mob_attacks`
+        # é SEMPRE concatenado antes de `_combat_this_tick` em
+        # `_collect_deltas`, independente de QUANDO no tick cada um foi
+        # de fato emitido — ver comentário lá).
+        def _on_mob_combat_event(attacker_id: int, target_id: int, damage: int,
+                                 outcome: str, hp_after: int) -> None:
+            _srv_ref._pending_mob_attacks.append({
+                "attacker": attacker_id,
+                "target":   target_id,
                 "damage":   damage,
                 "outcome":  outcome,
                 "hp_after": hp_after,
                 "source":   "auto",
             })
-        _sys_svc["emit_dummy_reflect"] = _on_dummy_reflect
+        _sys_svc["emit_combat_event"] = _on_mob_combat_event
 
         # P4: injeção direta de serviços por bundle — elimina dependência no global _svc.
         # `perf_push=self._perf_push, perf_pop=self._perf_pop` (Fase 4.5,
@@ -2951,59 +2953,23 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         _lethal_interceptor_composite acima): placar de arena
         (_track_arena_damage, no-op fora de partida) + estatísticas
         acumuladas do personagem pro modal de estatísticas (Fase E,
-        23/07/2026) + registro em _pvp_damage_this_tick (Fase C,
-        23/07/2026 — ver comentário em _pvp_damage_this_tick no __init__).
+        23/07/2026).
 
-        Fase C (FLT duplicado): dano PLAYER→PLAYER (killer E target são
-        players) que passa por apply_damage_core (killer_eid != -1, único
-        jeito deste hook disparar) precisa se excluir de
-        _pvp_damage_this_tick, senão `_process_player_attacks`
-        (server/combat_processor.py) o contabiliza DE NOVO como "dano de
-        mob não rastreado" (mob_delta), gerando um segundo combat_this_tick
-        pro MESMO golpe — 1 real (daqui ou do call site) + 1 fantasma
-        (mob_delta, attacker=-1/mob-errado). Bug real relatado pelo usuário
-        23/07/2026 em 2 skills SEM relação nenhuma entre si (retaliation do
-        Escudo de Fogo — killer=dono do escudo, target=quem atacou o dono;
-        tick de canalização de Calamidade Flamejante — killer=mago,
-        target=vítima), ambas PvP (killer sempre player nos dois casos) e
-        ambas SEM esse rastreio manual — prova que é um buraco SISTÊMICO
-        (qualquer call site novo que esqueça de rastrear cai nele), não um
-        bug específico de uma skill. Fix: centralizar aqui, no ÚNICO ponto
-        que roda pra qualquer dano com killer_eid válido — os 4 call sites
-        que faziam esse rastreio à mão (combat_processor.py::
-        _process_pvp_attack, skill_processor.py, spell_completion_processor.py
-        ×2) tiveram a linha removida, pra não contar 2x o mesmo dano no dict.
-
-        CUIDADO: só quando o KILLER também é player (PvP de verdade) — dano
-        de MOB contra player (auto-attack normal via EnemyAISystem, sem
-        nenhum combat_this_tick próprio) depende INTEIRAMENTE do mob_delta
-        pra ser detectado; excluir esse caso aqui também zeraria o
-        combat_this_tick de todo ataque de mob contra player.
-
-        3ª categoria (07/10/2026, §246 correção — ver PROBLEMAS_ARQUITETURA.md):
-        Boneco de Treino com `reflect_damage` também precisa se excluir
-        daqui, mesma razão de PvP — o reflexo JÁ registra seu próprio
-        `combat_this_tick` manualmente (`_on_dummy_reflect`/
-        `emit_dummy_reflect`, mesma indireção do Escudo de Fogo), mas o
-        boneco NÃO é player, então a condição original (`_killer_is_player`)
-        nunca cobria esse caso — `mob_delta` "descobria" a MESMA perda de HP
-        de novo e gerava um 2º evento fantasma (prova real: FLT do reflexo
-        aparecia 2x na tela, dano real descontado só 1x). NUNCA generalizar
-        pra "qualquer killer não-player" — isso reativaria o mesmo bug que
-        o `_killer_is_player` original evita (mob de verdade via
-        EnemyAISystem não tem registro próprio, depende 100% do mob_delta)."""
+        07/10/2026 (§246 "unificação"): este hook já fez parte, até hoje,
+        de uma exclusão manual (`_pvp_damage_this_tick`) que existia só
+        pra evitar que `mob_delta` (server/combat_processor.py) contasse
+        o MESMO dano 2x — mecanismo removido por completo (ver
+        `CombatSystem.deal_damage`::`emit_combat_event`, novo ponto único
+        de broadcast pra qualquer atacante não-player). Esta função volta
+        a ser só o que o nome diz: tracking de arena + estatística, sem
+        nenhuma bookkeeping pra "enganar" um detector de fallback que não
+        existe mais."""
         self._track_arena_damage(killer_eid, target_id, dmg)
         from engine.components import PlayerControlled as _PC_dmgtrk
-        from engine.components import TrainingDummy as _TD_dmgtrk
         from engine.utils import incr_char_stat
         _target_is_player = self.world.get_component(target_id, _PC_dmgtrk) is not None
-        _killer_is_player = self.world.get_component(killer_eid, _PC_dmgtrk) is not None
-        _killer_is_reflect_dummy = self.world.get_component(killer_eid, _TD_dmgtrk) is not None
         field = "pvp_damage" if _target_is_player else "pve_damage"
         incr_char_stat(self.world, killer_eid, field, dmg)
-        if _target_is_player and (_killer_is_player or _killer_is_reflect_dummy) and dmg > 0:
-            self._pvp_damage_this_tick[target_id] = (
-                self._pvp_damage_this_tick.get(target_id, 0) + dmg)
 
     def set_player_target(self, session_id: str, target_eid: int) -> None:
         """Define o alvo de combate do jogador. target_eid=-1 para parar.
@@ -6011,9 +5977,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         self._tick_respawn_immunity()
         self._tick_ghost_states(dt)
-        # Reseta rastreamento de dano PvP do tick anterior.
-        # Populado por skill_processor e spell_completion_processor além de _process_pvp_attack.
-        self._pvp_damage_this_tick = {}
 
         # Snapshot ANTES dos sistemas:
         #   pre_mob_target: rastreia target_tile (destino do movimento).
@@ -7141,7 +7104,6 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._entity_deaths_this_tick.clear()
         self._player_revives_this_tick.clear()
         self._ghost_state_updates_this_tick.clear()
-        self._sfx_damage_players.clear()
         self._visibility_changed_this_tick.clear()
         self._perf_pop()
 
