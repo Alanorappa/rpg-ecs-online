@@ -25573,3 +25573,48 @@ regra nova em `CLAUDE.md`, seção "Pontos únicos de verdade" —
 qualquer fonte de dano que se auto-registra em `combat_this_tick`
 precisa também se excluir de `mob_delta`, não só quando o atacante é
 player).
+
+**2ª CORREÇÃO (07/10/2026, mesmo dia, depois do fix do dano já estar
+em produção)**: usuário testou de novo e relatou um sintoma IRMÃO —
+agora é o "Errou" (miss) do reflexo que aparece 2x, não o dano. Mesma
+família de bug, canal DIFERENTE: `mob_delta` só existe pra detectar
+dano via DIFF DE HP — uma esquiva não muda HP, então não passa por
+`mob_delta` nenhum. O canal equivalente pra miss/dodge/parry de
+MOB→player é `CombatSystem.mob_avoidance_events` (`engine/
+world_systems.py`, dentro do próprio `deal_damage`, drenado por
+`_process_player_attacks` pra dentro de `_pending_mob_attacks` — ver
+comentário original na linha ~594: "Preenchido em deal_damage;
+consumido e limpo por combat_processor cada tick"). O reflexo do
+boneco já se auto-registra via `emit_dummy_reflect` pra QUALQUER
+outcome (hit OU miss) desde o início — mas o
+`mob_avoidance_events.append(...)` (condição antiga: `if not
+attacker_is_player and target_is_player`) nunca sabia disso e
+alimentava o MESMO evento de novo, só que por este canal em vez de
+`mob_delta`.
+
+**Fix**: mesmo padrão da 1ª correção — condição ganhou `and not
+_attacker_is_reflect_dummy` (checa `TrainingDummy` no atacante), ao
+lado da condição já existente. NUNCA generalizar pra "qualquer
+attacker não-player" (mesmo aviso de sempre — mob de verdade via
+`EnemyAISystem` depende 100% deste canal pra miss ser visto).
+
+**Teste** (revert-to-confirm real):
+`tests/test_flt_dedup.py::TestBonecoReflectMissNaoDuplicaFLT` — força
+o golpe ORIGINAL via `pre_outcome="hit"` (determinístico) e intercepta
+`_calculate_damage` só quando o atacante é o boneco, forçando o
+reflexo a sempre sair "miss" sem depender de RNG. Sem o fix, reproduz
+exatamente a duplicata (`mob_avoidance_events` ganha a entrada
+`(dummy_eid, player_eid, "miss", hp)` que já tinha sido registrada
+também em `_combat_this_tick` via `emit_dummy_reflect`). Com o fix,
+suíte relacionada (`test_flt_dedup.py`, `test_training_dummy_reflect.py`,
+`test_combat.py`, `test_arena.py`, `test_bg_queue.py`,
+`test_char_stats.py`) — 156 passed.
+
+**Padrão a generalizar (atualizado)**: existem HOJE 2 canais de
+fallback "mob bateu/errou no player e eu não vi de outra forma"
+(`mob_delta` pra dano via HP-diff, `mob_avoidance_events` pra miss/
+dodge/parry sem HP-diff) — qualquer atacante NOVO que não seja
+player mas já se auto-registre em `combat_this_tick` (reflexo de
+boneco é o único caso hoje; um mecanismo futuro parecido teria o
+MESMO problema) precisa se excluir dos DOIS, não só de um. Ver regra
+atualizada em `CLAUDE.md`.

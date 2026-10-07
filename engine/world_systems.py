@@ -764,7 +764,22 @@ class CombatSystem(System):
                                           attacker_id, target_id,
                                           attacker_is_player, target_is_player)
             self.last_outcome = outcome   # backward compat offline
-            if not attacker_is_player and target_is_player:
+            # mob_avoidance_events é o MESMO tipo de fallback genérico que
+            # mob_delta (ver _damage_tracker_composite/§246) -- "mob bateu
+            # no player e eu não vi de outra forma, preciso te avisar" --
+            # só que pra MISS/DODGE/PARRY (sem HP-diff pra detectar). O
+            # reflexo do boneco de treino (bloco mais abaixo nesta função)
+            # JÁ se auto-registra via emit_dummy_reflect pra QUALQUER
+            # outcome, hit ou miss -- sem este guard, o "Errou" duplicava
+            # no cliente pelo MESMO motivo do dano duplicar antes do fix
+            # de mob_delta (achado real relatado pelo usuário, 07/10/2026,
+            # ver PROBLEMAS_ARQUITETURA.md §246). NUNCA generalizar pra
+            # "qualquer attacker não-player" -- reativaria o bug original
+            # que este mecanismo existe pra cobrir (mob de verdade via
+            # EnemyAISystem não se auto-registra, depende 100% disto).
+            from engine.components import TrainingDummy as _TDAvoid
+            _attacker_is_reflect_dummy = self.world.get_component(attacker_id, _TDAvoid) is not None
+            if not attacker_is_player and target_is_player and not _attacker_is_reflect_dummy:
                 _tgt_cs_av = self._get_combat_stats(target_id)
                 _hp_av = _tgt_cs_av.current_hp if _tgt_cs_av else 0
                 self.mob_avoidance_events.append((attacker_id, target_id, outcome, _hp_av))

@@ -42,6 +42,7 @@ pygame.init()
 
 from tests.helpers import make_world_server, spawn_player, run_ticks
 from engine.components import FireShieldEffect, CombatState, Channeling, CombatStats
+from engine.world_systems import CombatSystem
 
 
 def run_ticks_per_tick(ws, n: int, dt: float = 0.05) -> list:
@@ -212,6 +213,62 @@ class TestBonecoReflectNaoDuplicaFLT(unittest.TestCase):
                              f"assinatura duplicada no mesmo tick (reflexo do boneco): "
                              f"{[c for c in tick_entries if (c['target'], c['damage'], c['hp_after']) in dupes]}")
         self.assertTrue(any_hit_on_player, "nenhum reflexo conectou em 12s — teste inconclusivo")
+
+
+class TestBonecoReflectMissNaoDuplicaFLT(unittest.TestCase):
+    """Quando o reflexo do boneco ERRA (miss/dodge/parry), o "Errou" não
+    deve duplicar na tela do player -- achado real relatado pelo usuário
+    07/10/2026, depois do fix do dano (classe acima) já estar em produção.
+
+    Causa raiz: diferente do dano (detectado via `mob_delta`, um diff de
+    HP — não existe HP-diff numa esquiva, já que o HP não muda), miss/
+    dodge/parry de MOB→player tem seu PRÓPRIO canal de fallback genérico:
+    `CombatSystem.mob_avoidance_events` (engine/world_systems.py), drenado
+    por `_process_player_attacks` (server/combat_processor.py) pra dentro
+    de `_pending_mob_attacks`. O reflexo do boneco JÁ se auto-registra via
+    `emit_dummy_reflect` pra QUALQUER outcome (hit OU miss) — mas o
+    `mob_avoidance_events.append(...)` dentro do PRÓPRIO `deal_damage`
+    (não sabia disso) alimentava o MESMO evento de novo, só que por outro
+    canal. Mesma classe de bug do dano, 4ª ocorrência desta família na
+    sessão (Escudo de Fogo, Calamidade Flamejante, reflexo/dano, agora
+    reflexo/miss) — ver PROBLEMAS_ARQUITETURA.md §246."""
+
+    def setUp(self):
+        from tests.test_training_dummy_reflect import _make_dummy
+        self.ws = make_world_server()
+        self.player = spawn_player(self.ws, "flt_dummy_miss_p", 130, 374)
+        self.player_cs = self.ws.world.get_component(self.player, CombatStats)
+        self.player_cs.current_hp = self.player_cs.max_hp
+        self.dummy = _make_dummy(self.ws, 131, 374, reflect_damage=20)
+        self.cs_sys = CombatSystem(self.ws.world, is_server=True)
+
+    def test_reflexo_errando_gera_so_1_evento_de_miss(self):
+        # Golpe ORIGINAL (player->boneco) forçado via pre_outcome="hit"
+        # (determinístico, sem depender de RNG) pra garantir que o
+        # reflexo dispara (só dispara com final_damage>0). O reflexo
+        # recursivo (boneco->player) NÃO aceita pre_outcome -- força-se
+        # o outcome dele direto em _calculate_damage, interceptado só
+        # quando o ATACANTE é o boneco (golpe original continua usando a
+        # rolagem real, intocada).
+        orig_calc = self.cs_sys._calculate_damage
+        def _forced_miss_for_dummy(attacker_id, *args, **kwargs):
+            if attacker_id == self.dummy:
+                return 0, "miss"
+            return orig_calc(attacker_id, *args, **kwargs)
+        self.cs_sys._calculate_damage = _forced_miss_for_dummy
+
+        before = len(self.ws._combat_this_tick)
+        self.cs_sys.deal_damage(self.player, self.dummy, "physical",
+                                base_ability_damage=9999, apply_armor_reduction=False,
+                                pre_outcome="hit")
+
+        new_entries = self.ws._combat_this_tick[before:]
+        miss_entries = [e for e in new_entries if e["attacker"] == self.dummy
+                        and e["target"] == self.player and e["outcome"] == "miss"]
+        self.assertEqual(len(miss_entries), 1,
+            f"reflexo errando deveria gerar exatamente 1 evento de miss: {new_entries}")
+        self.assertEqual(self.cs_sys.mob_avoidance_events, [],
+            "reflexo do boneco não deve alimentar mob_avoidance_events (duplicaria o 'Errou')")
 
 
 class TestPvpDamageTrackingNaoQuebraMobDelta(unittest.TestCase):
