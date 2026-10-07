@@ -815,7 +815,17 @@ padrão a quebrar, não só os bugs individuais.
   não tinha NPC pra checar). Pedido explícito do usuário (06/10/2026):
   "para não termos retrabalho futuro" — qualquer sistema de interação
   de NPC novo usa isto desde o primeiro commit, nunca reimplementa uma
-  trava própria.
+  trava própria. Dar/aceitar quest (componente `QuestGiver`, separado
+  de `NPCUnlock`) segue a MESMA filosofia (07/10/2026, pedido do
+  usuário: "todo tipo de entidade que eu criar, eu possa colocar uma
+  quest, todos os NPCs") — TODO `create_*` de NPC de serviço
+  (Merchant/Trainer/Blacksmith/Mailbox, além do `QuestGiver` dedicado)
+  aceita `quest_ids`/`turn_in_ids` e anexa `QuestGiver` se QUALQUER um
+  dos dois for passado — `if quest_ids or turn_in_ids:`, NUNCA só
+  `if quest_ids:` (bug real: um NPC que só ACEITA entrega, sem dar
+  nenhuma quest — ex: "Fabian Hardek" — ficava sem `QuestGiver`
+  nenhum, sem marcador "?" e sem reação a clique. Ver
+  PROBLEMAS_ARQUITETURA.md §245).
 - **SAVE_STATE novo disparado por um evento sem relação com exploração
   de mapa (loot/compra/venda/forja/troca/stats/qualquer futuro)** →
   `_send_save_state(include_fog=False)` (`client/save_sync_handlers.py`)

@@ -642,5 +642,53 @@ class TestMerchantComQuestGiver(unittest.TestCase):
             QUESTS.pop(qid, None)
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# 10) Qualquer tipo de NPC pode dar/aceitar quest (07/10/2026, pedido
+#     explícito do usuário: "eu quero que todo tipo de entidade que eu
+#     criar, eu possa colocar uma quest, todos os NPCs" — generaliza o
+#     fix do §245/Fabian Hardek pros 2 tipos que ainda não tinham isso).
+# ─────────────────────────────────────────────────────────────────────────
+
+class TestBlacksmithEMailboxComQuestGiver(unittest.TestCase):
+
+    def test_create_blacksmith_so_com_turn_in_ids_anexa_questgiver(self):
+        from engine.entity_factory import create_blacksmith
+        from engine.components import QuestGiver
+        from engine.world import World
+        world = World()
+        eid = create_blacksmith(world, 10, 10, turn_in_ids=("alguma_quest",))
+        qg = world.get_component(eid, QuestGiver)
+        self.assertIsNotNone(qg)
+        self.assertEqual(qg.turn_in_ids, ("alguma_quest",))
+
+    def test_create_blacksmith_sem_quest_ids_nem_turn_in_ids_nao_anexa_questgiver(self):
+        """Regressão -- ferreiro comum continua sem QuestGiver."""
+        from engine.entity_factory import create_blacksmith
+        from engine.components import QuestGiver
+        from engine.world import World
+        world = World()
+        eid = create_blacksmith(world, 10, 10)
+        self.assertIsNone(world.get_component(eid, QuestGiver))
+
+    def test_create_mailbox_so_com_turn_in_ids_anexa_questgiver(self):
+        from engine.entity_factory import create_mailbox
+        from engine.components import QuestGiver
+        from engine.world import World
+        world = World()
+        eid = create_mailbox(world, 10, 10, turn_in_ids=("alguma_quest",))
+        qg = world.get_component(eid, QuestGiver)
+        self.assertIsNotNone(qg)
+        self.assertEqual(qg.turn_in_ids, ("alguma_quest",))
+
+    def test_create_mailbox_sem_quest_ids_nem_turn_in_ids_nao_anexa_questgiver(self):
+        """Regressão -- caixa de correio comum continua sem QuestGiver."""
+        from engine.entity_factory import create_mailbox
+        from engine.components import QuestGiver
+        from engine.world import World
+        world = World()
+        eid = create_mailbox(world, 10, 10)
+        self.assertIsNone(world.get_component(eid, QuestGiver))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

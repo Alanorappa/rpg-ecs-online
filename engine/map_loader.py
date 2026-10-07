@@ -343,6 +343,10 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
              b.get("shop_id", "blacksmith"),
              b.get("level", 1),
              b.get("profession", "Ferreiro"),
+             # quest_ids/turn_in_ids (07/10/2026) — qualquer NPC pode dar/
+             # aceitar quest, ver engine.entity_factory.create_blacksmith.
+             tuple(b.get("quest_ids", [])),
+             tuple(b.get("turn_in_ids", [])),
              b.get("unlock_quest_id", ""))
             for b in data["blacksmiths"]
         ]
@@ -369,6 +373,10 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
              mb.get("name", "Correio"),
              mb.get("level", 1),
              mb.get("profession", "Correio"),
+             # quest_ids/turn_in_ids (07/10/2026) — qualquer NPC pode dar/
+             # aceitar quest, ver engine.entity_factory.create_mailbox.
+             tuple(mb.get("quest_ids", [])),
+             tuple(mb.get("turn_in_ids", [])),
              mb.get("unlock_quest_id", ""))
             for mb in data["mailboxes"]
         ]

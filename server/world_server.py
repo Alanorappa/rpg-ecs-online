@@ -1083,8 +1083,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             create_quest_giver as _csn_qg, create_trainer as _csn_trainer,
             create_mailbox as _csn_mailbox,
         )
-        for col, row, name, lvl, prof, unlock_qid in spawn_points.get("mailboxes", []):
+        for col, row, name, lvl, prof, quest_ids, turn_in_ids, unlock_qid in spawn_points.get("mailboxes", []):
             _csn_mailbox(self.world, col, row, name=name, level=lvl, profession=prof,
+                        quest_ids=quest_ids, turn_in_ids=turn_in_ids,
                         unlock_quest_id=unlock_qid)
         for col, row, name, shop_id, lvl, prof, quest_ids, turn_in_ids, unlock_qid in spawn_points.get("merchants", []):
             _csn_merchant(self.world, col, row, name=name, shop_id=shop_id,
@@ -1095,9 +1096,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             _csn_qg(self.world, col, row, name=name,
                    quest_ids=quest_ids, turn_in_ids=turn_in_ids,
                    level=lvl, profession=prof, unlock_quest_id=unlock_qid)
-        for col, row, name, shop_id, lvl, prof, unlock_qid in spawn_points.get("blacksmiths", []):
+        for col, row, name, shop_id, lvl, prof, quest_ids, turn_in_ids, unlock_qid in spawn_points.get("blacksmiths", []):
             _csn_blacksmith(self.world, col, row, name=name,
                            shop_id=shop_id, level=lvl, profession=prof,
+                           quest_ids=quest_ids, turn_in_ids=turn_in_ids,
                            unlock_quest_id=unlock_qid)
         for col, row, name, class_id, quest_ids, turn_in_ids, lvl, prof, unlock_qid in spawn_points.get("trainers", []):
             _csn_trainer(self.world, col, row, name=name,

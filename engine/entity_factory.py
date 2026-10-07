@@ -596,11 +596,18 @@ def create_merchant(world: World, tile_x: int, tile_y: int, shop_id: str = "gene
 def create_mailbox(world: World, tile_x: int, tile_y: int,
                    name: str = "Correio", level: int = 1,
                    profession: str = "Correio",
+                   quest_ids: tuple = (), turn_in_ids: tuple = (),
                    unlock_quest_id: str = "") -> int:
     """NPC "Caixa de Correio" (25/09/2026) com combate genérico (Fase 1 —
     ver create_merchant docstring pro racional completo). Sem catálogo por
     instância (diferente de Merchant/shop_id) — só o componente marcador
-    `Mailbox`, o inbox é por PERSONAGEM, não por caixa física."""
+    `Mailbox`, o inbox é por PERSONAGEM, não por caixa física.
+
+    `quest_ids`/`turn_in_ids` (07/10/2026, pedido do usuário — "todo
+    tipo de NPC que eu criar, eu possa colocar uma quest") — mesmo
+    padrão de `create_merchant`: anexa `QuestGiver` se QUALQUER um dos
+    dois for passado (nunca só `quest_ids` — ver PROBLEMAS_ARQUITETURA.md
+    §245)."""
     eid = _build_combat_entity(
         world, tile_x, tile_y, ENEMY_MELEE_ATTACK_RANGE, False, "normal",
         _SERVICE_NPC_DEFAULT_RACE, "", level, _SERVICE_NPC_FACTION,
@@ -617,6 +624,9 @@ def create_mailbox(world: World, tile_x: int, tile_y: int,
                                         sprite_id="vp_180"))
     world.add_component(eid, NPC(name=name, level=level, profession=profession))
     world.add_component(eid, Mailbox())
+    if quest_ids or turn_in_ids:
+        world.add_component(eid, QuestGiver(quest_ids=tuple(quest_ids),
+                                            turn_in_ids=tuple(turn_in_ids) or tuple(quest_ids)))
     _attach_npc_unlock(world, eid, unlock_quest_id)
     return eid
 
@@ -643,9 +653,16 @@ def create_quest_giver(world: World, tile_x: int, tile_y: int,
 def create_blacksmith(world: World, tile_x: int, tile_y: int,
                       name: str = "Ferreiro", shop_id: str = "blacksmith",
                       level: int = 1, profession: str = "Ferreiro",
+                      quest_ids: tuple = (), turn_in_ids: tuple = (),
                       unlock_quest_id: str = "") -> int:
     """NPC ferreiro (loja + reciclagem/forja) com combate genérico (Fase
-    1 — ver create_merchant docstring pro racional completo)."""
+    1 — ver create_merchant docstring pro racional completo).
+
+    `quest_ids`/`turn_in_ids` (07/10/2026, pedido do usuário — "todo
+    tipo de NPC que eu criar, eu possa colocar uma quest") — mesmo
+    padrão de `create_merchant`: anexa `QuestGiver` se QUALQUER um dos
+    dois for passado (nunca só `quest_ids` — ver PROBLEMAS_ARQUITETURA.md
+    §245)."""
     from content.merchant_data import SHOPS
     shop = SHOPS.get(shop_id, SHOPS.get("blacksmith", {}))
     npc_name = name if name != "Ferreiro" else shop.get("name", name)
@@ -658,6 +675,9 @@ def create_blacksmith(world: World, tile_x: int, tile_y: int,
     world.add_component(eid, NPC(name=npc_name, level=level, profession=profession))
     world.add_component(eid, Merchant(shop_id=shop_id))
     world.add_component(eid, Blacksmith(shop_id=shop_id))
+    if quest_ids or turn_in_ids:
+        world.add_component(eid, QuestGiver(quest_ids=tuple(quest_ids),
+                                            turn_in_ids=tuple(turn_in_ids) or tuple(quest_ids)))
     _attach_npc_unlock(world, eid, unlock_quest_id)
     return eid
 
