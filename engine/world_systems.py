@@ -897,6 +897,9 @@ class CombatSystem(System):
             from engine.components import TrainingDummy as _TDReflect
             _dummy = self.world.get_component(target_id, _TDReflect)
             if _dummy and _dummy.reflect_damage > 0:
+                from debug.aoi_debug import AOI_DBG as _AOI_DBG_dummyref
+                _AOI_DBG_dummyref.log("DUMMY_REFLECT_FIRED", dummy_eid=target_id,
+                                      player_eid=attacker_id, final_damage=final_damage)
                 _att_cs_ref = self._get_combat_stats(attacker_id)
                 _hp_before_ref = _att_cs_ref.current_hp if _att_cs_ref else 0
                 _dead_ref, _outcome_ref = self.deal_damage(
