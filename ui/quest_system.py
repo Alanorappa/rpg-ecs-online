@@ -667,6 +667,19 @@ class QuestDialogSystem(UIScaleMixin, System):
         "locked":      "map_quest_locked",
     }
 
+    # Animação de mundo por estado (09/10/2026, ver CLAUDE.md) — só os 3
+    # estados com arte nova (assets/sprites/quest_*.png); "locked" não
+    # tem animação e continua no ícone estático/fallback de sempre.
+    # NUNCA usado por map_markers.py/MapOverlay/Minimap — só por
+    # render_world() abaixo (pedido explícito do usuário: mapa/minimapa
+    # mantêm o ícone de sempre, só o mundo ganha a animação).
+    _QUEST_WORLD_ANIM = {
+        "map_quest_available": "quest_available",
+        "map_quest_inprogress": "quest_incomplete",
+        "map_quest_complete":  "quest_complete",
+    }
+    _QUEST_WORLD_ANIM_SIZE = 32   # tamanho nativo do quadro — sem redimensionar
+
     def _marker_from_lists(self, avail, completable, inprog, locked) -> "tuple[str, tuple, str] | None":
         """Núcleo de marker_for/marker_for_static — decide (icon_name, cor,
         símbolo) a partir das 4 listas já resolvidas. Nunca duplicar esta
@@ -734,6 +747,7 @@ class QuestDialogSystem(UIScaleMixin, System):
         # mapa/minimapa (23.1/23.2), já que isso nunca mais passa pela
         # escala do mundo.
         icon_size = 8
+        now_ms = pygame.time.get_ticks()
 
         for eid, pos, rend, _, _ in self.world.get_entities_with(Position, Renderable, _QG, Visible):
             marker = self.marker_for(eid)
@@ -741,7 +755,13 @@ class QuestDialogSystem(UIScaleMixin, System):
                 continue
             icon_name, color, symbol = marker
 
-            icon = ICONS.get(icon_name, icon_size)
+            anim_name = self._QUEST_WORLD_ANIM.get(icon_name)
+            icon = None
+            if anim_name is not None:
+                from ui.world_icon_animator import get_frame as _quest_anim_frame
+                icon = _quest_anim_frame(anim_name, self._QUEST_WORLD_ANIM_SIZE, now_ms)
+            if icon is None:
+                icon = ICONS.get(icon_name, icon_size)
             if icon is None:
                 icon = self._fallback_marker_surf(color, symbol)
             WORLD_LABELS.add_icon(pos.x, pos.y - rend.height / 2, icon, stack_key=eid)

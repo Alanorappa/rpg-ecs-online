@@ -304,6 +304,13 @@ rpg_ecs_online/
 │   │   mesclado por tools/build_icon_atlas.py — nunca editar o dict à mão
 │   │   sem seguir o mesmo formato de tupla (script preserva entrada manual)
 │   ├── floating_text.py, effect_animator.py, minimap.py, map_overlay.py
+│   ├── world_icon_animator.py       ← (09/10/2026) ícone ANIMADO de mundo
+│   │   (spritesheet horizontal em assets/sprites/, loop por tempo) — usado
+│   │   hoje só pelo marcador de quest acima da cabeça do NPC
+│   │   (quest_system.py::render_world), genérico pra qualquer ícone
+│   │   animado de mundo futuro. Minimapa/mapa (map_markers.py) continuam
+│   │   no ícone ESTÁTICO de sempre (icon_manager.py/fallback) — só o
+│   │   mundo ganhou a animação, decisão explícita do usuário.
 │   ├── buff_bar.py                  ← barra de buff unificada (31/08/2026),
 │   │   ícone+timer do jogador local, ao lado do minimapa — lê StatusEffects
 │   │   filtrado por is_buff + _gather_extra_buffs() (Escudo de Fogo/Bloco de

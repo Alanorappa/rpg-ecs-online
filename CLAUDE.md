@@ -1340,6 +1340,20 @@ padrão a quebrar, não só os bugs individuais.
   endpoint HTTP novo. Validação de formato (ex: usuário 3–20 chars) é
   espelhada ali porque é a MESMA regra do WS, nunca uma nova.
 
+- **Ícone ANIMADO acima da cabeça de uma entidade, no MUNDO** (marcador
+  de quest, ou categoria futura parecida) → `ui/world_icon_animator.py::
+  get_frame(name, size, now_ms)` — spritesheet horizontal em
+  `assets/sprites/{name}.png` (quadros QUADRADOS, contagem derivada de
+  `largura/altura`, nunca hardcoded), loop por tempo real
+  (`pygame.time.get_ticks()`, mesmo padrão de `character_animation.py`).
+  NUNCA usado por mapa (M)/minimapa (`ui/map_markers.py`) — esses
+  continuam no ícone ESTÁTICO de sempre (`icon_manager.py`/fallback de
+  círculo+glifo), decisão explícita do usuário (09/10/2026): animação
+  só faz sentido vista de perto, no mundo. Categoria de asset PRÓPRIA,
+  separada de `ui/effect_animator.py` (ícone ESTÁTICO de efeito,
+  `assets/effects/`) e `ui/icon_manager.py` (ícones de UI com atlas,
+  `assets/icons/`) — nunca confundir os 3 diretórios/módulos.
+
 ### Abas Entrar/Criar conta no Launcher (09/10/2026)
 `launcher/login_ui.py` espelha a MESMA UX de cadastro que já existe
 dentro do jogo (`ui/login_screen.py`) — mesma validação local (usuário
