@@ -12,6 +12,8 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from launcher import update_client as uc
 from server.http_api import build_app, RELEASES_DIR, ZIP_NAME, SHA_NAME
+from shared.auth_utils import hash_password
+from tests.helpers import isolate_auth_schema, restore_auth_schema
 
 
 class TestGetLocalVersion(unittest.TestCase):
@@ -109,6 +111,7 @@ class TestNetworkAgainstRealServer(unittest.IsolatedAsyncioTestCase):
     ponta a ponta, não só mocka urllib."""
 
     async def asyncSetUp(self):
+        self._orig_schema = await isolate_auth_schema("test_launcher_update_client")
         self.client = TestClient(TestServer(build_app()))
         await self.client.start_server()
         # TestServer já escuta em localhost:<porta aleatoria> — monta a
@@ -117,6 +120,7 @@ class TestNetworkAgainstRealServer(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.client.close()
+        await restore_auth_schema(self._orig_schema)
 
     async def test_fetch_version_manifest_bate_com_o_servidor_real(self):
         manifest = await asyncio_to_thread(uc.fetch_version_manifest, self.base_url, None)
@@ -147,6 +151,27 @@ class TestNetworkAgainstRealServer(unittest.IsolatedAsyncioTestCase):
                     os.remove(p)
             if not os.listdir(releases_dir_abs):
                 os.rmdir(releases_dir_abs)
+
+    async def test_register_account_cria_conta_real_e_login_funciona_depois(self):
+        """Caminho de rede real de update_client.register_account() (não
+        só o aiohttp TestClient direto, como tests/test_launcher_api.py
+        já cobre) — prova que a conta criada pelo Launcher é a mesma
+        tabela que check_login/o jogo usam."""
+        ph = hash_password("senha_launcher_123")
+        data = await asyncio_to_thread(
+            uc.register_account, self.base_url, "launcher_e2e_novo", ph, None)
+        self.assertTrue(data["ok"])
+
+        ok = await asyncio_to_thread(uc.check_login, self.base_url, "launcher_e2e_novo", ph, None)
+        self.assertTrue(ok)
+
+    async def test_register_account_username_duplicado_devolve_reason(self):
+        ph = hash_password("senha_launcher_123")
+        await asyncio_to_thread(uc.register_account, self.base_url, "launcher_e2e_dup", ph, None)
+        data2 = await asyncio_to_thread(
+            uc.register_account, self.base_url, "launcher_e2e_dup", hash_password("outra"), None)
+        self.assertFalse(data2["ok"])
+        self.assertEqual(data2["reason"], "username_taken")
 
 
 def asyncio_to_thread(fn, *args):

@@ -1332,6 +1332,24 @@ padrão a quebrar, não só os bugs individuais.
   alcançável de fora, o firewall é default-deny. Ver
   PROBLEMAS_ARQUITETURA.md §253 (mesmo incidente do Launcher,
   `LAUNCHER_API_PORT`).
+- **Rota HTTP nova no Launcher que precisa criar/validar conta** →
+  `server/http_api.py` delega 100% pra `server/auth.py::register()`/
+  `authenticate()`, as MESMAS funções que o protocolo WebSocket
+  (`server/session.py::_handle_register`/`_handle_login`) já usa —
+  NUNCA reimplementar validação de senha/duplicidade de username num
+  endpoint HTTP novo. Validação de formato (ex: usuário 3–20 chars) é
+  espelhada ali porque é a MESMA regra do WS, nunca uma nova.
+
+### Abas Entrar/Criar conta no Launcher (09/10/2026)
+`launcher/login_ui.py` espelha a MESMA UX de cadastro que já existe
+dentro do jogo (`ui/login_screen.py`) — mesma validação local (usuário
+mín. 3 chars, senha não vazia, confirmação precisa bater,
+`_submit_register`), mesmo comportamento pós-sucesso (NUNCA loga
+automaticamente — volta pra aba de login com usuário preenchido + aviso
+verde). Campo de formulário novo no Launcher → `_field_row()` (label ao
+lado do entry, largura fixa `_FIELD_ENTRY_W`, centralizado como unidade
+dentro do painel) — NUNCA um entry com `width=panel_w` (layout antigo,
+trocado a pedido do usuário por ficar "muito largo").
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

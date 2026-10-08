@@ -105,5 +105,63 @@ class TestLauncherLogin(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resp.status, 400)
 
 
+class TestLauncherRegister(unittest.IsolatedAsyncioTestCase):
+    """Delega 100% pra server/auth.py::register() — MESMA função que o
+    REGISTER via WebSocket já usa (server/session.py::_handle_register),
+    nunca lógica de senha/duplicidade nova (09/10/2026)."""
+
+    async def asyncSetUp(self):
+        self._orig_schema = await isolate_auth_schema("test_launcher_api_register")
+        self.client = TestClient(TestServer(build_app()))
+        await self.client.start_server()
+
+    async def asyncTearDown(self):
+        await self.client.close()
+        await restore_auth_schema(self._orig_schema)
+
+    async def test_conta_nova_ok_true(self):
+        resp = await self.client.post("/launcher/register", json={
+            "username": "launcher_novo", "password_hash": hash_password("senha123"),
+        })
+        self.assertEqual(resp.status, 200)
+        data = await resp.json()
+        self.assertTrue(data["ok"])
+
+    async def test_conta_criada_consegue_logar_depois(self):
+        """Prova que a conta é real (mesma tabela que o jogo usa), não só
+        um 'ok' sintético — chama /launcher/login em seguida."""
+        ch = hash_password("senha123")
+        await self.client.post("/launcher/register", json={
+            "username": "launcher_novo2", "password_hash": ch,
+        })
+        resp = await self.client.post("/launcher/login", json={
+            "username": "launcher_novo2", "password_hash": ch,
+        })
+        data = await resp.json()
+        self.assertTrue(data["ok"])
+
+    async def test_username_duplicado_devolve_ok_false_username_taken(self):
+        ch = hash_password("senha123")
+        await auth.register("ja_existe", ch)
+        resp = await self.client.post("/launcher/register", json={
+            "username": "ja_existe", "password_hash": hash_password("outra_senha"),
+        })
+        data = await resp.json()
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["reason"], "username_taken")
+
+    async def test_username_curto_demais_devolve_400_invalid_input(self):
+        resp = await self.client.post("/launcher/register", json={
+            "username": "ab", "password_hash": hash_password("senha123"),
+        })
+        self.assertEqual(resp.status, 400)
+        data = await resp.json()
+        self.assertEqual(data["reason"], "invalid_input")
+
+    async def test_campos_faltando_devolve_400(self):
+        resp = await self.client.post("/launcher/register", json={"username": "launcher_novo3"})
+        self.assertEqual(resp.status, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

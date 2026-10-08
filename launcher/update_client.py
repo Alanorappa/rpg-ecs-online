@@ -66,6 +66,23 @@ def check_login(base_url: str, username: str, password_hash: str, ssl_context) -
     return bool(data.get("ok"))
 
 
+def register_account(base_url: str, username: str, password_hash: str, ssl_context) -> dict:
+    """POST /launcher/register — cria conta nova, delega 100% pro mesmo
+    server/auth.py::register() que o REGISTER via WebSocket já usa (ver
+    server/http_api.py). Devolve o JSON cru (não só bool, como
+    check_login) porque a UI precisa do campo "reason" pra mostrar a
+    mensagem certa (username_taken vs invalid_input)."""
+    body = json.dumps({"username": username, "password_hash": password_hash}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base_url}/launcher/register", data=body,
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, context=ssl_context, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        return json.loads(e.read().decode("utf-8"))
+
+
 def download_release(base_url: str, dest_path: str, ssl_context,
                      progress_cb=None) -> None:
     """Baixa /launcher/download pra `dest_path` (arquivo temporário —

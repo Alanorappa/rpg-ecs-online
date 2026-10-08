@@ -12,6 +12,11 @@ Visual (08/10/2026, pedido do usuário): arte de fundo própria
 (`assets/hud/Launcher.png`, arte do usuário) — janela do TAMANHO EXATO
 da imagem, widgets posicionados sobre a faixa escura de pedra na
 metade de baixo da arte (reservada pra isso no próprio desenho).
+
+Abas Entrar/Criar conta (09/10/2026, pedido do usuário) — mesma UX do
+cadastro já existente dentro do jogo (`ui/login_screen.py`), mesma
+validação local (usuário mín. 3 chars, senha não vazia, confirmação
+precisa bater) — nunca lógica nova, só espelha o que já existe.
 """
 from __future__ import annotations
 
@@ -33,9 +38,23 @@ _GOLD_DIM   = "#8a7232"   # bordas discretas (entry/separadores)
 _TEXT       = "#e8e1c9"   # texto claro (combina com o pergaminho)
 _TEXT_DIM   = "#a39f8e"
 _ERROR      = "#e05a5a"
+_OK         = "#56c27a"
 _FIELD_BG   = "#2a2d33"
 
 _ASSET_PATH = "assets/hud/Launcher.png"
+
+# Layout compacto de campo (09/10/2026, pedido do usuário — campo "muito
+# largo"): label ao lado do entry (não em cima), largura fixa menor,
+# centralizado como unidade dentro do painel — em vez de ocupar a
+# largura toda. Libera espaço vertical de quebra pra caber a aba nova
+# sem precisar mudar o tamanho da janela (fixo = tamanho da arte).
+_FIELD_LABEL_W = 78
+_FIELD_GAP     = 8
+_FIELD_ENTRY_W = 210
+_FIELD_UNIT_W  = _FIELD_LABEL_W + _FIELD_GAP + _FIELD_ENTRY_W
+
+_TAB_W = 150
+_TAB_H = 26
 
 
 def _base_url(cfg: dict) -> str:
@@ -59,6 +78,15 @@ class LauncherApp(tk.Tk):
         self._logged_username = ""
         self._logged_password_hash = ""
 
+        self._tab = "login"
+        # Mensagem/usuário repassados de uma tela pra outra (ex: cadastro
+        # concluído → volta pro login com usuário preenchido + aviso
+        # verde) — consumidos uma única vez por _build_login_form.
+        self._prefill_username  = ""
+        self._pending_status_msg = ""
+        self._pending_status_ok  = False
+        self._auto_login_attempted = False
+
         self._bg_image = tk.PhotoImage(file=resource_path(_ASSET_PATH))
         W, H = self._bg_image.width(), self._bg_image.height()
 
@@ -72,7 +100,7 @@ class LauncherApp(tk.Tk):
         self._canvas.create_image(0, 0, image=self._bg_image, anchor="nw")
 
         # Faixa escura do painel (reservada na própria arte) — mesmas
-        # margens usadas por TODAS as telas (login/status), só o
+        # margens usadas por TODAS as telas (login/registro/status), só o
         # conteúdo interno muda.
         self._panel_x0, self._panel_y0 = 40, 365
         self._panel_x1, self._panel_y1 = W - 40, H - 25
@@ -102,13 +130,11 @@ class LauncherApp(tk.Tk):
         self._widgets.append(widget)
 
     def _entry(self, textvariable=None, show=None) -> tk.Entry:
-        panel_w = self._panel_x1 - self._panel_x0
-        e = tk.Entry(self._canvas, textvariable=textvariable, show=show,
-                    bg=_FIELD_BG, fg=_TEXT, insertbackground=_TEXT,
-                    relief="flat", highlightthickness=1,
-                    highlightbackground=_GOLD_DIM, highlightcolor=_GOLD,
-                    font=("Georgia", 11), width=1)
-        return e
+        return tk.Entry(self._canvas, textvariable=textvariable, show=show,
+                        bg=_FIELD_BG, fg=_TEXT, insertbackground=_TEXT,
+                        relief="flat", highlightthickness=1,
+                        highlightbackground=_GOLD_DIM, highlightcolor=_GOLD,
+                        font=("Georgia", 11), width=1)
 
     def _label(self, text: str, fg: str = _TEXT, font=("Georgia", 10)) -> tk.Label:
         return tk.Label(self._canvas, text=text, bg=_BG_PANEL, fg=fg, font=font)
@@ -121,20 +147,56 @@ class LauncherApp(tk.Tk):
             font=("Georgia", 11, "bold"), cursor="hand2",
             padx=16, pady=6, bd=0)
 
+    def _field_row(self, label_text: str, textvariable, y: int, show=None) -> tk.Entry:
+        """1 linha label+entry lado a lado, centralizada como unidade
+        dentro do painel (09/10/2026) — substitui o layout antigo de
+        label em cima/entry ocupando a largura toda."""
+        panel_w = self._panel_x1 - self._panel_x0
+        left = (panel_w - _FIELD_UNIT_W) // 2
+        lbl = self._label(label_text, font=("Georgia", 10))
+        lbl.configure(anchor="e", justify="right")
+        self._place(lbl, left, y, width=_FIELD_LABEL_W, height=24)
+        entry = self._entry(textvariable=textvariable, show=show)
+        self._place(entry, left + _FIELD_LABEL_W + _FIELD_GAP, y, width=_FIELD_ENTRY_W)
+        return entry
+
+    def _build_tab_bar(self) -> None:
+        panel_w = self._panel_x1 - self._panel_x0
+        left = (panel_w - _TAB_W * 2) // 2
+        for i, (tid, label) in enumerate((("login", "Entrar"), ("register", "Criar conta"))):
+            active = (tid == self._tab)
+            btn = tk.Button(
+                self._canvas, text=label, command=lambda t=tid: self._switch_tab(t),
+                bg=_GOLD if active else _FIELD_BG,
+                fg="#1b1d21" if active else _TEXT_DIM,
+                activebackground=_GOLD if active else _FIELD_BG,
+                activeforeground="#1b1d21" if active else _TEXT,
+                relief="flat", bd=0, cursor="hand2",
+                font=("Georgia", 10, "bold" if active else "normal"))
+            self._place(btn, left + i * _TAB_W, 0, width=_TAB_W, height=_TAB_H)
+
+    def _switch_tab(self, tab: str) -> None:
+        if tab == self._tab:
+            return
+        if tab == "login":
+            self._build_login_form()
+        else:
+            self._build_register_form()
+
     # ------------------------------------------------------------------
     def _build_login_form(self) -> None:
+        self._tab = "login"
         self._clear_screen()
         panel_w = self._panel_x1 - self._panel_x0
+        left = (panel_w - _FIELD_UNIT_W) // 2
+        self._build_tab_bar()
 
-        self._place(self._label("Usuário"), 0, 0)
-        self.user_var = tk.StringVar(value=self._cfg.get("remembered_username", ""))
-        user_entry = self._entry(textvariable=self.user_var)
-        self._place(user_entry, 0, 22, width=panel_w)
+        self.user_var = tk.StringVar(
+            value=self._prefill_username or self._cfg.get("remembered_username", ""))
+        user_entry = self._field_row("Usuário", self.user_var, 36)
 
-        self._place(self._label("Senha"), 0, 58)
         self.pass_var = tk.StringVar()
-        pass_entry = self._entry(textvariable=self.pass_var, show="•")
-        self._place(pass_entry, 0, 80, width=panel_w)
+        pass_entry = self._field_row("Senha", self.pass_var, 68, show="•")
 
         self.remember_var = tk.BooleanVar(value=self._cfg.get("remember_login", False))
         remember_chk = tk.Checkbutton(
@@ -142,23 +204,56 @@ class LauncherApp(tk.Tk):
             bg=_BG_PANEL, fg=_TEXT_DIM, activebackground=_BG_PANEL,
             activeforeground=_TEXT, selectcolor=_FIELD_BG,
             font=("Georgia", 9), bd=0, highlightthickness=0)
-        self._place(remember_chk, 0, 118)
+        self._place(remember_chk, left + _FIELD_LABEL_W + _FIELD_GAP, 100)
 
-        self.error_label = self._label("", fg=_ERROR, font=("Georgia", 9))
-        self._place(self.error_label, 0, 150, width=panel_w)
+        self.error_label = self._label(
+            self._pending_status_msg, fg=_OK if self._pending_status_ok else _ERROR,
+            font=("Georgia", 9))
+        self._place(self.error_label, 0, 128, width=panel_w)
 
         self.login_btn = self._gold_button("Entrar", self._on_submit)
-        self._place(self.login_btn, panel_w // 2 - 45, 178)
+        self._place(self.login_btn, panel_w // 2 - 50, 150)
 
-        user_entry.focus_set()
+        had_prefill = bool(self._prefill_username)
+        self._prefill_username = ""
+        self._pending_status_msg = ""
+        self._pending_status_ok = False
+        (pass_entry if had_prefill else user_entry).focus_set()
 
         # Login automático se a senha também foi lembrada (hash salvo) —
         # senão o usuário só vê o campo usuário pré-preenchido e ainda
         # precisa digitar a senha (nunca guardamos a senha de verdade
-        # pra reconstituir sozinho sem o hash já pronto).
+        # pra reconstituir sozinho sem o hash já pronto). Só na 1ª
+        # construção da tela (senão reabrir a aba de login depois de
+        # trocar pra "Criar conta" tentaria de novo).
         remembered_hash = self._cfg.get("remembered_password_hash", "")
-        if self._cfg.get("remember_login") and self.user_var.get() and remembered_hash:
+        if (not self._auto_login_attempted and not had_prefill
+                and self._cfg.get("remember_login") and self.user_var.get() and remembered_hash):
+            self._auto_login_attempted = True
             self._do_login(self.user_var.get(), remembered_hash, remember=True)
+
+    def _build_register_form(self) -> None:
+        self._tab = "register"
+        self._clear_screen()
+        panel_w = self._panel_x1 - self._panel_x0
+        self._build_tab_bar()
+
+        self.reg_user_var = tk.StringVar()
+        user_entry = self._field_row("Usuário", self.reg_user_var, 36)
+
+        self.reg_pass_var = tk.StringVar()
+        self._field_row("Senha", self.reg_pass_var, 68, show="•")
+
+        self.reg_pass2_var = tk.StringVar()
+        self._field_row("Confirmar", self.reg_pass2_var, 100, show="•")
+
+        self.reg_error_label = self._label("", fg=_ERROR, font=("Georgia", 9))
+        self._place(self.reg_error_label, 0, 128, width=panel_w)
+
+        self.register_btn = self._gold_button("Criar conta", self._on_register_submit)
+        self._place(self.register_btn, panel_w // 2 - 58, 150)
+
+        user_entry.focus_set()
 
     def _build_status_screen(self, text: str) -> None:
         self._clear_screen()
@@ -171,12 +266,12 @@ class LauncherApp(tk.Tk):
                                         style="Launcher.Horizontal.TProgressbar")
         self._place(self.progress, 0, 100)
 
-    # ------------------------------------------------------------------
+    # ── Login ──────────────────────────────────────────────────────────
     def _on_submit(self) -> None:
         username = self.user_var.get().strip()
         password = self.pass_var.get()
         if not username or not password:
-            self.error_label.config(text="Preencha usuário e senha.")
+            self.error_label.config(text="Preencha usuário e senha.", fg=_ERROR)
             return
         self.login_btn.config(state="disabled")
         self.error_label.config(text="")
@@ -197,12 +292,12 @@ class LauncherApp(tk.Tk):
 
     def _on_login_error(self, message: str) -> None:
         self.login_btn.config(state="normal")
-        self.error_label.config(text=message)
+        self.error_label.config(text=message, fg=_ERROR)
 
     def _on_login_result(self, ok: bool, username: str, password_hash: str, remember: bool) -> None:
         if not ok:
             self.login_btn.config(state="normal")
-            self.error_label.config(text="Usuário ou senha inválidos.")
+            self.error_label.config(text="Usuário ou senha inválidos.", fg=_ERROR)
             return
         # Guardado pra repassar pro jogo em _launch_and_exit (08/10/2026,
         # ver CLAUDE.md) — nunca a senha crua, só o hash já usado pra
@@ -222,6 +317,59 @@ class LauncherApp(tk.Tk):
                 "remembered_password_hash": "",
             })
         self._check_version()
+
+    # ── Cadastro (09/10/2026) ──────────────────────────────────────────
+    def _on_register_submit(self) -> None:
+        """Mesma validação local do cadastro dentro do jogo
+        (ui/login_screen.py::_submit_register) — nunca regra nova."""
+        username = self.reg_user_var.get().strip()
+        password = self.reg_pass_var.get()
+        password2 = self.reg_pass2_var.get()
+        if len(username) < 3:
+            self.reg_error_label.config(text="Usuário: mínimo 3 caracteres.", fg=_ERROR)
+            return
+        if not password:
+            self.reg_error_label.config(text="Senha não pode ser vazia.", fg=_ERROR)
+            return
+        if password != password2:
+            self.reg_error_label.config(text="As senhas não coincidem.", fg=_ERROR)
+            return
+        self.register_btn.config(state="disabled")
+        self.reg_error_label.config(text="")
+        password_hash = hash_password(password)
+
+        def work():
+            base_url = _base_url(self._cfg)
+            ctx = _ssl_context(self._cfg)
+            try:
+                data = uc.register_account(base_url, username, password_hash, ctx)
+            except Exception as e:
+                self.after(0, self._on_register_error, f"Não foi possível contatar o servidor: {e}")
+                return
+            self.after(0, self._on_register_result, data, username)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_register_error(self, message: str) -> None:
+        self.register_btn.config(state="normal")
+        self.reg_error_label.config(text=message, fg=_ERROR)
+
+    def _on_register_result(self, data: dict, username: str) -> None:
+        if data.get("ok"):
+            # Mesmo comportamento do cadastro dentro do jogo: NUNCA loga
+            # automaticamente — volta pro login com usuário preenchido +
+            # aviso de sucesso (ui/login_screen.py linha ~235).
+            self._prefill_username   = username
+            self._pending_status_msg = "Conta criada! Faça login."
+            self._pending_status_ok  = True
+            self._build_login_form()
+            return
+        self.register_btn.config(state="normal")
+        reason = data.get("reason", "")
+        message = {
+            "username_taken": "Nome de usuário já existe.",
+            "invalid_input":  "Dados inválidos (usuário: 3–20 caracteres).",
+        }.get(reason, f"Erro: {reason}")
+        self.reg_error_label.config(text=message, fg=_ERROR)
 
     # ------------------------------------------------------------------
     def _check_version(self) -> None:

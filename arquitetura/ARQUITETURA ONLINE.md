@@ -1574,6 +1574,21 @@ arte do usuário) via `tk.Canvas`, janela do tamanho EXATO da imagem
 dentro do painel escuro reservado na própria arte, paleta
 dourada/pedra escura combinando (nunca cor tkinter padrão de sistema).
 
+**Criar conta pelo Launcher (09/10/2026)**: abas "Entrar"/"Criar conta"
+(mesma UX do cadastro já existente dentro do jogo,
+`ui/login_screen.py`) — `POST /launcher/register`
+(`server/http_api.py`) delega 100% pra `server/auth.py::register()`, a
+MESMA função que o REGISTER via WebSocket já usa, nunca lógica de
+senha/duplicidade nova. Validação local espelha
+`ui/login_screen.py::_submit_register` (usuário mín. 3 chars, senha não
+vazia, confirmação precisa bater). Sucesso NUNCA loga automaticamente —
+volta pra aba de login com usuário preenchido + aviso verde "Conta
+criada! Faça login.", igual o jogo já faz. Campos de usuário/senha
+passaram a layout compacto (label ao lado do entry, largura fixa menor,
+centralizado como unidade) em vez de ocupar a largura toda do painel —
+pedido do usuário, e também o que abriu espaço vertical pra caber a aba
+nova sem mudar o tamanho fixo da janela.
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```
