@@ -5,7 +5,7 @@
   },
   "transitions": [
     {
-      "x": 49,
+      "x": 48,
       "y": 0,
       "target_map": "maps/map_1.csv",
       "target_x": 137,
