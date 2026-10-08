@@ -26025,3 +26025,78 @@ original), restaurado, 7/7 passando. Regressão focada (422 testes:
 render/client-ui/character-animation/nameplate/fog-cache/object-scan/
 portal) — zero falhas novas. Mudança 100% client-side (nenhum arquivo
 de `server/` tocado).
+
+## 251. UI de respawn automático estava acoplada à flag errada — InstanceInventoryUIState em vez de "este conteúdo revive sozinho" (07/10/2026)
+
+**Contexto**: implementando a 1ª dungeon PvE instanciada (Aracnópolis),
+que precisa do MESMO modal de respawn automático que a BG já tem
+("Você morreu" + contagem regressiva, sem botão "Liberar espírito").
+
+**Causa raiz achada**: `client/death_ui_handlers.py::_render_death_modal`
+decidia "mostra respawn automático" checando
+`InstanceInventoryUIState.active` — campo que na verdade significa
+"progressão normalizada da BG está ativa" (nivela o jogador pro nível
+1, zera equipamento/inventário real, ver `server/instance_progression.py`).
+Funcionava pra BG só porque, até agora, BG era o ÚNICO conteúdo com
+respawn automático — a flag nunca precisou significar as duas coisas
+ao mesmo tempo. Reusar essa mesma flag pra dungeon teria 2 efeitos
+errados: (a) sinalizaria "progressão normalizada" pra um sistema que
+nunca chama `enter_normalized_progression`, deixando o campo
+semanticamente mentiroso; (b) na pior hipótese, se algum código futuro
+confiasse nesse campo pra decidir zerar o personagem, zeraria o
+personagem REAL de um jogador de dungeon por engano.
+
+**Fix**: campo novo e dedicado, `GhostState.auto_respawn`/`respawn_s`
+(`engine/components.py`) — calculado em
+`RespawnMixin._handle_player_death` (`server/respawn_system.py`)
+checando `player_eid in self._player_dungeon_instance` OU
+`self._player_bg_match_id`, nunca lendo `InstanceInventoryUIState`.
+Ecoado no payload de `PLAYER_DEATH` (`auto_respawn`/`respawn_s`),
+aplicado em `client/network_handlers.py::_handle_msg_player_death`.
+`death_ui_handlers.py::_render_death_modal` passou a decidir por
+`gst.auto_respawn` — resultado IDÊNTICO pra BG (ela também passa a
+mandar `auto_respawn=True`, confirmado por regressão focada em
+`tests/test_bg_queue.py`/`tests/test_arena.py`, 452 testes passando
+sem nenhuma falha nova), dungeon usa o mesmo caminho sem tocar
+progressão normalizada. `_render_death_modal_battleground` renomeado
+pra `_render_death_modal_auto_respawn`, lendo `gst.respawn_s` do
+payload em vez de importar `DEBUG_BG_RESPAWN_S` direto — cada
+instância manda a própria duração (`DUNGEON_RESPAWN_S` pra dungeon,
+`DEBUG_BG_RESPAWN_S` pra BG).
+
+**2ª armadilha, achada e corrigida ANTES de qualquer deploy**:
+`SpawnZone.respawnable=False` (zona de dungeon sem respawn) tinha um
+bug real na primeira versão — sem um flag adicional, a zona esvaziada
+caía de volta no branch de "preenchimento inicial escalonado" do
+`SpawnZoneSystem` (`engine/world_systems.py`), porque esse branch usa
+a MESMA condição que um spawn morto também satisfaz (`respawn_timers`
+vazio + `alive < max_count`) — a zona se reenchia na hora, anulando
+`respawnable=False` por completo. Corrigido com `SpawnZone.ever_filled`
+(flag runtime: só permite esse branch rodar 1 vez pra zona
+`respawnable=False`). Pego por teste dedicado
+(`tests/test_dungeon.py::test_zona_sem_respawn_fica_vazia_para_sempre_
+depois_de_morrer`) antes de qualquer commit — revert-to-confirm
+reproduziu a falha exata removendo a 2ª checagem.
+
+**Teste**: `tests/test_dungeon.py` (14 testes) — zona respawnable=True
+continua reenchendo (controle), zona respawnable=False fica vazia pra
+sempre e não cai de volta no preenchimento inicial, `CustomLootTable`
+tem prioridade total sobre `MOB_TABLE` (Aranha tem `gold_chance=0.0`
+normal, usado como sinal inequívoco de que o caminho custom rodou),
+grupo cai na mesma instância/solo em instâncias diferentes, saída
+remove membership e último a sair derruba a instância, desconexão
+restaura mapa de origem ANTES do save, morte na dungeon respawna no
+ponto de entrada (nunca `RESPAWN_TILE` global), morte fora de
+dungeon/BG continua sem `auto_respawn` (fluxo manual de sempre).
+Revert-to-confirm real em 2 pontos (`ever_filled` e a branch de
+`CustomLootTable` em `server_death_handler.py`) — os 2 testes
+relevantes falharam exatamente como esperado sem o fix, confirmado
+antes de restaurar. Suíte ampla (dungeon + bg_queue + jungle_camps +
+arena + loot_authoritative + map_filter + map_loader_terrain_parsing +
+party + client_ui, 452 testes) — zero regressão; as únicas 2 falhas
+(`test_jungle_camps.py`, já conhecidas/pré-existentes desta sessão)
+não têm relação com esta mudança.
+
+Ver `CLAUDE.md` (pontos únicos de verdade de dungeon) e
+`arquitetura/ARQUITETURA ONLINE.md` (tabela de status) pro resto da
+feature.

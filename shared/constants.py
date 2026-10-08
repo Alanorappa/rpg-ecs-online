@@ -101,6 +101,11 @@ GHOST_CORPSE_REVIVE_HP_FRAC  = 0.15  # fração de HP ao reviver no corpo
 # acontece) é só server-side (debug_battleground.py::_state["respawn_timers"]).
 DEBUG_BG_RESPAWN_S = 15.0
 
+# Dungeon instanciada (07/10/2026, ver CLAUDE.md): respawn automático igual
+# BG acima (mesma UI de contagem regressiva, sem "Liberar espírito"), mas
+# SEM zerar progressão real do jogador — ver server/dungeon_processor.py.
+DUNGEON_RESPAWN_S = 15.0
+
 # ── Trade (player↔player) ──────────────────────────────────────────────────────
 # Distância máxima (chebyshev) entre os dois players pra abrir/manter um trade.
 # Checada 1x/tick — estourar cancela a sessão (reason="distance").

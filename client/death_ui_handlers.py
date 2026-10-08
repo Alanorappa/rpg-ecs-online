@@ -63,16 +63,18 @@ class DeathUIHandlers:
 
     # ------------------------------------------------------------------
     def _render_death_modal(self) -> None:
-        # Battleground de teste (02/08/2026, pedido do usuário: respawn
-        # automático na base, sem "Liberar espírito") — reaproveita o MESMO
-        # flag que já liga o painel HUD de inventário de instância
-        # (InstanceInventoryUIState.active, eco do campo in_instance de
-        # STATS_UPDATE) pra saber "estou no battleground de teste" sem
-        # precisar de outro campo/mensagem novo.
-        from ui.ui_components import InstanceInventoryUIState as _IIUSDeath
-        _iius_death = self.world.get_component(self.player_entity, _IIUSDeath)
-        if _iius_death is not None and _iius_death.active:
-            self._render_death_modal_battleground()
+        # Respawn automático (BG, dungeon) — decidido pelo servidor no
+        # momento da morte (RespawnMixin._handle_player_death) e ecoado no
+        # payload de PLAYER_DEATH pra GhostState.auto_respawn (07/10/2026,
+        # ver CLAUDE.md). NUNCA checar InstanceInventoryUIState.active aqui
+        # — isso é progressão normalizada (zera equipamento/nível, só BG
+        # usa), um conceito DIFERENTE de "este conteúdo revive sozinho".
+        # Antes desta correção o modal usava aquela flag como proxy pra "é
+        # BG" — funcionava pra BG mas zeraria o personagem real de um
+        # jogador de dungeon se reusada ali sem pensar.
+        gst = self.world.get_component(self.player_entity, GhostState)
+        if gst is not None and gst.auto_respawn:
+            self._render_death_modal_auto_respawn(gst)
             return
 
         surf = self.screen
@@ -101,16 +103,17 @@ class DeathUIHandlers:
         self._death_release_btn = btn_r
 
     # ------------------------------------------------------------------
-    def _render_death_modal_battleground(self) -> None:
-        """Variante do modal de morte pro battleground de teste — respawn
-        AUTOMÁTICO na base do time após DEBUG_BG_RESPAWN_S segundos (servidor
-        já cuida disso de verdade, ver server/debug_battleground.py::
-        _process_respawns), então não há botão "Liberar espírito" aqui, só
-        a contagem regressiva. `self._death_timer` (já acumulado por
-        _update_death_ui desde que gst.is_dead virou True) é a MESMA base
-        de tempo que o servidor usa — nenhuma mensagem nova precisa
-        sincronizar isso."""
-        from shared.constants import DEBUG_BG_RESPAWN_S
+    def _render_death_modal_auto_respawn(self, gst: GhostState) -> None:
+        """Variante do modal de morte pra conteúdo com respawn AUTOMÁTICO
+        (BG, dungeon — servidor já cuida do revive de verdade, ver
+        BgQueueProcessorMixin._tick_bg_respawns/DungeonProcessorMixin.
+        _tick_dungeon_respawns), então não há botão "Liberar espírito" aqui,
+        só a contagem regressiva. `gst.respawn_s` (07/10/2026, ver CLAUDE.md)
+        é a duração que ESTE conteúdo usa — não mais hardcoded pra
+        DEBUG_BG_RESPAWN_S, cada instância manda a própria. `self._death_timer`
+        (já acumulado por _update_death_ui desde que gst.is_dead virou True)
+        é a MESMA base de tempo que o servidor usa — nenhuma mensagem nova
+        precisa sincronizar isso."""
         surf = self.screen
         SW, SH = surf.get_size()
 
@@ -125,8 +128,8 @@ class DeathUIHandlers:
         title_s = self.font_md.render("Você morreu", False, C_RED)
         surf.blit(title_s, (px + (panel_w - title_s.get_width()) // 2, py + 24))
 
-        remaining = max(0, int(DEBUG_BG_RESPAWN_S - self._death_timer + 0.999))
-        info_s = self.font_sm.render(f"Respawn na base em {remaining}s", False, C_YELLOW)
+        remaining = max(0, int(gst.respawn_s - self._death_timer + 0.999))
+        info_s = self.font_sm.render(f"Respawn em {remaining}s", False, C_YELLOW)
         surf.blit(info_s, (px + (panel_w - info_s.get_width()) // 2, py + 92))
 
         self._death_release_btn = None  # sem botão — respawn é automático

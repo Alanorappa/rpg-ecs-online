@@ -219,3 +219,23 @@ def roll_mob_loot(mob_name: str, tier: str) -> list:
         if factory and random.random() < chance * mult:
             result.append(factory())
     return result[:4]
+
+
+# ---------------------------------------------------------------------------
+# Loot de boss específico de uma dungeon instanciada — fonte é
+# engine.components.CustomLootTable (anexado por SpawnZoneSystem._spawn_one a
+# partir do campo "loot" na PRÓPRIA entities.json do mapa, NUNCA MOB_TABLE).
+# Checado em server_death_handler.py ANTES de roll_mob_loot — ver CLAUDE.md.
+# ---------------------------------------------------------------------------
+def roll_custom_loot(loot_def: dict) -> list:
+    """Rola drops de um CustomLootTable (per-boss, per-dungeon). Chances são
+    EXATAS, sem _TIER_MULT — decisão do usuário (07/10/2026): os números do
+    JSON já são a chance final que o autor daquela dungeon quis pra ESTE
+    boss específico, diferente de roll_mob_loot (pensado pra escalar um
+    mesmo mob genérico por tier)."""
+    result = []
+    for item_key, chance in loot_def.items():
+        factory = _T.get(item_key)
+        if factory and random.random() < chance:
+            result.append(factory())
+    return result[:4]

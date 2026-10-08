@@ -2254,6 +2254,8 @@ class NetworkHandlers:
             gst.corpse_ty = payload.get("corpse_ty", -1)
             gst.graveyard_timer = 0.0
             gst.near_corpse = False
+            gst.auto_respawn = payload.get("auto_respawn", False)
+            gst.respawn_s    = payload.get("respawn_s", 0.0)
         combat_state = self.world.get_component(self.player_entity, CombatState)
         if combat_state:
             combat_state.target_entity_id = -1

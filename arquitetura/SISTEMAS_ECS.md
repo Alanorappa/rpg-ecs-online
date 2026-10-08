@@ -360,6 +360,14 @@ _spawn_sys = SpawnZoneSystem(self.world)
 _spawn_sys.ACTIVATION_RADIUS = 999999
 ```
 
+**`SpawnZone.respawnable=False` (07/10/2026, dungeon instanciada):**
+morte NUNCA reagenda `respawn_timers` — zona fica vazia pro resto da
+vida da instância/bundle. `SpawnZone.ever_filled` impede a zona de
+cair de volta no branch de "preenchimento inicial escalonado" depois
+de esvaziada (ver CLAUDE.md pro porquê essa 2ª checagem é necessária).
+Loot de boss por instância (`SpawnZone.loot`/`gold_min`/`gold_max`) é
+anexado como `CustomLootTable` na entidade em `_spawn_one`.
+
 ### EnemyAISystem headless
 
 Parâmetros herdados do offline, funcionam sem mudança:

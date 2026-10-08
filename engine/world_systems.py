@@ -38,7 +38,8 @@ from engine.components import Position, Renderable, PlayerControlled, Camera, Co
                        EnemyAbilities, EnemyAbilitySlot, EntityIdentity, \
                        NpcSounds, PendingDeath, XPReward, SpawnZoneOwner, SpawnZone, \
                        PlayerSkills, NPC, ActiveRegen, ConsumableBar, \
-                       AoeTargeting, RemoteControlled, GhostState, MapLocation, Combatant, Tower, Minion
+                       AoeTargeting, RemoteControlled, GhostState, MapLocation, Combatant, Tower, Minion, \
+                       CustomLootTable
 from engine.world import World
 from engine.tileset import TILE_SIZE, OBJECT_MAPPING, get_collision_offsets
 from engine.utils import chebyshev, in_range, start_tile_movement, is_action_locked, is_movement_locked, SpatialHash
@@ -5010,15 +5011,28 @@ class SpawnZoneSystem(System):
             }
             alive = len(zone.active_entity_ids)
 
-            # Cada morte enfileira um timer independente
+            # Cada morte enfileira um timer independente — EXCETO zona
+            # sem respawn (dungeon instanciada, ver CLAUDE.md): a morte é
+            # absorvida em silêncio, a zona fica vazia pelo resto da vida
+            # desta instância/bundle (uma instância nova nasce com um
+            # SpawnZone novo do zero, cheia de novo).
             deaths = before - alive
-            for _ in range(deaths):
-                zone.respawn_timers.append(zone.respawn_cooldown)
+            if zone.respawnable:
+                for _ in range(deaths):
+                    zone.respawn_timers.append(zone.respawn_cooldown)
 
             # --- Preenchimento inicial: escalonar com timers (evita spike de criação) ---
-            # Inclui mobs já na _spawn_queue (ainda não spawnados) para não exceder max_count
+            # Inclui mobs já na _spawn_queue (ainda não spawnados) para não exceder max_count.
+            # `zone.respawnable or not zone.ever_filled`: zona normal sempre
+            # elegível (comportamento de sempre); zona sem respawn só entra
+            # aqui UMA vez — sem essa 2ª condição, uma morte esvaziando uma
+            # zona respawnable=False cairia de novo neste branch (timers
+            # vazios + alive < max_count) e a reencheria na hora, anulando
+            # o próprio propósito de respawnable=False.
             _pending = getattr(zone, "_pending_spawns", 0)
-            if not zone.respawn_timers and alive + _pending < zone.max_count:
+            if (not zone.respawn_timers and alive + _pending < zone.max_count
+                    and (zone.respawnable or not zone.ever_filled)):
+                zone.ever_filled = True
                 needed = zone.max_count - alive - _pending
                 for i in range(needed):
                     zone.respawn_timers.append(i * 0.15 + random.uniform(0.0, 0.05))
@@ -5089,4 +5103,7 @@ class SpawnZoneSystem(System):
         self.world.add_component(new_eid, SpawnZoneOwner(zone_eid))
         if self._map_filter:
             self.world.add_component(new_eid, MapLocation(self._map_filter))
+        if zone.loot:
+            self.world.add_component(new_eid, CustomLootTable(
+                items=zone.loot, gold_min=zone.gold_min, gold_max=zone.gold_max))
         return new_eid

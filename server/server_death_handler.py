@@ -237,6 +237,14 @@ class ServerDeathHandler:
             from engine.components import JungleMob as _JungleDH
             _jungle_dh = self.world.get_component(eid, _JungleDH)
 
+            # Loot de boss de dungeon instanciada (07/10/2026, pedido do
+            # usuário) — anexado por SpawnZoneSystem._spawn_one a partir do
+            # campo "loot" na PRÓPRIA entities.json do mapa (NUNCA
+            # MOB_TABLE). Checado no passo 5 abaixo, com prioridade sobre o
+            # lookup genérico por nome/tier — ver CLAUDE.md.
+            from engine.components import CustomLootTable as _CustomLootDH
+            _custom_loot_dh = self.world.get_component(eid, _CustomLootDH)
+
             # 2. XP proporcional por dano causado — base por level do mob ×
             # xp_given_by_lvl (mob_definitions.py), modificado pelo
             # multiplicador de tier. Mobs sem cadastro (ex: "Elemental")
@@ -626,6 +634,13 @@ class ServerDeathHandler:
                 # mesmo padrão de minion acima, zero loot.
                 loot_items = []
                 coins = 0
+            elif _custom_loot_dh is not None:
+                # Dungeon instanciada: loot definido no mapa tem prioridade
+                # TOTAL sobre MOB_TABLE — nunca consulta roll_mob_loot aqui.
+                from content.loot_tables import roll_custom_loot as _roll_custom_loot
+                loot_items = _roll_custom_loot(_custom_loot_dh.items)
+                coins = (random.randint(_custom_loot_dh.gold_min, _custom_loot_dh.gold_max)
+                         if _custom_loot_dh.gold_max > 0 else 0)
             else:
                 try:
                     from content.loot_tables import roll_mob_loot, roll_mob_coins as _roll_mob_coins

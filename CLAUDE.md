@@ -1195,6 +1195,66 @@ padrão a quebrar, não só os bugs individuais.
   trocar o ícone inteiro fazia a silhueta do item sumir nas bordas
   quase transparentes da camada de efeito). Ver `ARQUITETURA ONLINE.md`
   §16.
+- **Zona de spawn que não deve respawnar** (dungeon instanciada —
+  mobs/bosses mortos ficam mortos pelo resto da vida DAQUELA instância)
+  → `SpawnZone.respawnable: bool = False` (07/10/2026) — NUNCA um
+  sistema paralelo de "morte permanente". `respawnable=True` (default)
+  preserva 100% do comportamento de sempre pra qualquer zona existente.
+  Campo `ever_filled` no próprio `SpawnZone` é o que impede uma zona
+  esvaziada de cair de volta no branch de "preenchimento inicial
+  escalonado" (mesma condição que o 1º fill usa — timers vazios +
+  `alive < max_count` — ficaria True de novo a cada morte sem essa
+  2ª checagem, reenchendo a zona na hora e anulando `respawnable=False`
+  por completo; achado DURANTE a implementação, nunca chegou a ir pra
+  produção). Uma instância NOVA (`_load_instance`) cria um `SpawnZone`
+  componente do zero, então um grupo diferente entrando na MESMA
+  dungeon sempre começa com a zona cheia — nenhum estado
+  cross-instância é necessário. Gerado automaticamente por
+  `tools/png_to_dungeon.py` a partir de cluster de pixel único na PNG
+  de entidades — ver `arquitetura/GERAR_DUNGEON_PNG.md`.
+- **Loot de boss específico de uma dungeon/instância** (diferente de
+  todo mob normal, cujo loot vem SEMPRE de
+  `content/mob_definitions.py::MOB_TABLE`) → componente
+  `CustomLootTable(items, gold_min, gold_max)` (07/10/2026), anexado
+  por `SpawnZoneSystem._spawn_one` quando a `SpawnZone` tem `loot`
+  preenchido (vindo do campo `"loot"` na PRÓPRIA `_entities.json` do
+  mapa, nunca um catálogo Python novo). Checado em
+  `server/server_death_handler.py` com prioridade TOTAL sobre
+  `roll_mob_loot`/`MOB_TABLE` — mob com este componente NUNCA consulta
+  o catálogo compartilhado. `content/loot_tables.py::roll_custom_loot`
+  usa as chances do JSON EXATAS, sem o multiplicador de tier que
+  `roll_mob_loot` aplica (decisão do usuário, 07/10/2026 — números do
+  mapa já são a chance final calibrada pelo autor daquele boss
+  específico).
+- **Transição de tile que leva a uma INSTÂNCIA por grupo/solo** (em vez
+  de um mapa compartilhado fixo — ex: entrada de dungeon) → chave
+  opcional `"dungeon_key"` no dict de `transitions` de QUALQUER
+  `_entities.json` (07/10/2026), resolvida por
+  `server/dungeon_processor.py::DungeonProcessorMixin.
+  request_dungeon_enter` — NUNCA adicionar lógica de instanciamento
+  direto em `_handle_zone_change_req` fora desse branch dedicado.
+  `content/dungeon_definitions.py::DUNGEON_TABLE` é o catálogo único
+  de `dungeon_key → template_file` (mesmo padrão de `MOB_TABLE`).
+  Reaproveita o instanciamento genérico já usado por Arena/BG
+  (`WorldServer._load_instance`/`_unload_instance`) — instance_key por
+  PARTY (`PartyProcessorMixin.get_party_id_of`) ou solo (o próprio
+  eid), SEM fila/aceite/pareamento de oponente (entrada é imediata ao
+  pisar no tile, diferente de Arena/BG). `WorldServer._load_all_maps`
+  PULA qualquer transição com `dungeon_key` no preload eager depth-1 —
+  o template só carrega sob demanda via `_load_instance`, nunca como
+  bundle compartilhado solto. Morte dentro de uma instância de dungeon
+  revive automaticamente (`DungeonProcessorMixin._tick_dungeon_respawns`,
+  espelho de `BgQueueProcessorMixin._tick_bg_respawns`) — a decisão
+  "este conteúdo revive sozinho" trafega via
+  `GhostState.auto_respawn`/`respawn_s` (calculado em
+  `RespawnMixin._handle_player_death`, ecoado no payload de
+  `PLAYER_DEATH`), **NUNCA** `InstanceInventoryUIState.active` (esse é
+  progressão normalizada — zera equipamento/nível real, só BG usa;
+  dungeon mantém personagem real). `server/session.py::on_disconnect`
+  chama `end_dungeon_of()` ANTES do save, mesmo motivo de
+  `end_matches_of`/`end_bg_matches_of` — sem isso, o save persistiria o
+  map_id SINTÉTICO da instância. Ver `arquitetura/GERAR_DUNGEON_PNG.md`
+  pro pipeline de criação do mapa a partir de PNG.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

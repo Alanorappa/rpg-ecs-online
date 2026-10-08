@@ -568,6 +568,11 @@ class SessionManager:
             # disconnect, este check genérico ainda restaura o estado real.
             from server import debug_battleground as _dbg_bg
             _dbg_bg.on_disconnect(self.world_server, session.entity_id)
+            # Dungeon instanciada (07/10/2026): mesmo motivo de
+            # end_matches_of/end_bg_matches_of acima — sem isso, o save
+            # persistiria o map_id SINTÉTICO da instância (só existe em
+            # memória), deixando o próximo login cair num mapa inexistente.
+            self.world_server.end_dungeon_of(session.entity_id)
             from server.instance_progression import (
                 is_in_normalized_progression as _is_norm_prog,
                 exit_normalized_progression as _exit_norm_prog,
@@ -2306,6 +2311,26 @@ class SessionManager:
         target_x = int(payload.get("target_x", 0))
         target_y = int(payload.get("target_y", 0))
 
+        # Dungeon instanciada (07/10/2026, ver CLAUDE.md) — transição
+        # marcada com "dungeon_key" não leva a um mapa compartilhado fixo,
+        # e sim a uma instância por grupo/solo. Caminho totalmente separado
+        # do resto desta função (nunca toca _map_bundles[to_map] direto —
+        # DungeonProcessorMixin resolve a instance_key sozinho).
+        dungeon_key = payload.get("dungeon_key")
+        if dungeon_key:
+            ok = self.world_server.request_dungeon_enter(
+                session.session_id, session.entity_id, dungeon_key, target_x, target_y)
+            if not ok:
+                log.warning(f"[ZoneChangeReq] dungeon_key desconhecido: {dungeon_key!r}")
+                return
+            instance_key = self.world_server._player_dungeon_instance[session.entity_id]
+            await session.send(MsgType.ZONE_CHANGE, {
+                "map_file": self.world_server._template_file_of(instance_key),
+                "target_x": target_x,
+                "target_y": target_y,
+            })
+            return
+
         # Carrega sob demanda mapas que existem no disco mas nunca foram
         # carregados como bundle standalone (23/07/2026, pedido do usuário
         # — F12→aba Mapa listava TODO maps/*.csv, mas templates só
@@ -2338,6 +2363,12 @@ class SessionManager:
             to_map, target_x, target_y,
             emit_moved_delta=True,
         )
+        # Detecta SAÍDA de uma instância de dungeon (transição de volta pro
+        # mapa aberto, ex: o tile norte no extremo da Aracnópolis) — essa
+        # transição em si é 100% comum, sem "dungeon_key"; quem decide que
+        # isso é uma saída é o próprio DungeonProcessorMixin, comparando
+        # contra a instância em que o player já estava registrado.
+        self.world_server.dungeon_handle_zone_change(session.entity_id, to_map)
 
         # Notifica o cliente para carregar o novo mapa
         await session.send(MsgType.ZONE_CHANGE, {
@@ -4323,6 +4354,8 @@ class SessionManager:
                     "eid":        death["player_eid"],
                     "corpse_tx":  death.get("corpse_tx"),
                     "corpse_ty":  death.get("corpse_ty"),
+                    "auto_respawn": death.get("auto_respawn", False),
+                    "respawn_s":    death.get("respawn_s", 0.0),
                 })
 
     async def _send_entity_deaths(self, deltas: dict) -> None:

@@ -36,7 +36,7 @@ class MsgType(str, Enum):
     # ── Mundo / AOI ───────────────────────────────────────────────
     WORLD_STATE        = "world_state"     # S→C  snapshot inicial ao entrar no mundo
     AOI_UPDATE         = "aoi_update"      # S→C  delta a cada tick: spawn/despawn/move
-    ZONE_CHANGE_REQ    = "zone_change_req" # C→S  {to_map, target_x, target_y}
+    ZONE_CHANGE_REQ    = "zone_change_req" # C→S  {to_map, target_x, target_y, dungeon_key?}
     ZONE_CHANGE        = "zone_change"     # S→C  {map_file, target_x, target_y}
     ENTER_INSTANCE     = "enter_instance"  # C→S  pedir entrada em instância        # TODO: não implementado
 
@@ -103,7 +103,7 @@ class MsgType(str, Enum):
     STATS_UPDATE       = "stats_update"    # S→C  HP/MP/rage/concentration mudou
     LEVEL_UP           = "level_up"        # S→C  jogador levelou
     SKILL_LEVELS_UPDATE = "skill_levels_update"  # S→C  xp/level de skill level mudou (só pro dono, ver SkillLevels)
-    PLAYER_DEATH       = "player_death"    # S→C  player morreu — corpse_tx, corpse_ty
+    PLAYER_DEATH       = "player_death"    # S→C  player morreu — corpse_tx, corpse_ty, auto_respawn, respawn_s
     PLAYER_STATS_SYNC  = "player_stats_sync"  # S→C  sincroniza HP autoritativo do player
 
     # ── Quests ────────────────────────────────────────────────────
@@ -676,9 +676,16 @@ def validate_c2s(msg_type: "MsgType", payload) -> "str | None":
 
 # ── S→C: PLAYER_DEATH ────────────────────────────────────────────────────────
 # {
-#   "eid":       int *   eid do player que morreu
-#   "corpse_tx": int *   tile X onde o corpo ficou
-#   "corpse_ty": int *   tile Y onde o corpo ficou
+#   "eid":           int *   eid do player que morreu
+#   "corpse_tx":     int *   tile X onde o corpo ficou
+#   "corpse_ty":     int *   tile Y onde o corpo ficou
+#   "auto_respawn":  bool    True = conteúdo com revive automático (BG,
+#                            dungeon instanciada) — cliente mostra contagem
+#                            regressiva em vez do botão "Liberar espírito"
+#                            (07/10/2026, ver CLAUDE.md). NUNCA derivado de
+#                            InstanceInventoryUIState (isso é progressão
+#                            normalizada, conceito diferente).
+#   "respawn_s":     float   duração do timer, só relevante se auto_respawn
 # }
 # Enviado APENAS ao dono. Corpo fica visível no AOI normalmente (current_hp==0).
 # Cliente: marca GhostState.is_dead=True, inicia timer de 2s p/ modal "Você morreu".

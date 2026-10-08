@@ -595,6 +595,12 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
                     "race":             sp.get("race", zone.get("race", "Humanoide")),
                     "entity_class":     sp.get("class", zone.get("class", "")),
                     "faction":          sp.get("faction", zone.get("faction", "monstros_hostis")),
+                    # Dungeon instanciada (07/10/2026, ver CLAUDE.md) — zona
+                    # sem respawn + loot de boss específico deste mapa.
+                    "respawnable":      zone.get("respawnable", True),
+                    "loot":             zone.get("loot"),
+                    "gold_min":         zone.get("gold_min", 0),
+                    "gold_max":         zone.get("gold_max", 0),
                 })
         if spawn_points["spawn_zones"]:
             spawn_points["enemies"] = []

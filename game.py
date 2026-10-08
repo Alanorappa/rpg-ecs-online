@@ -2524,11 +2524,18 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     if key in self.transition_tiles and self._net:
                         from shared.messages import MsgType as _MTzc
                         trans = self.transition_tiles[key]
-                        self._net.send(_MTzc.ZONE_CHANGE_REQ, {
+                        _zc_payload = {
                             "to_map":   trans["target_map"],
                             "target_x": trans["target_x"],
                             "target_y": trans["target_y"],
-                        })
+                        }
+                        # Dungeon instanciada (07/10/2026, ver CLAUDE.md) —
+                        # encaminha dungeon_key quando presente; servidor
+                        # decide o resto (instância por grupo/solo), cliente
+                        # nunca calcula instance_key sozinho.
+                        if "dungeon_key" in trans:
+                            _zc_payload["dungeon_key"] = trans["dungeon_key"]
+                        self._net.send(_MTzc.ZONE_CHANGE_REQ, _zc_payload)
                         self._transition_cooldown = 2.0
 
             # Portais com seleção de destino (30/09/2026) — nunca

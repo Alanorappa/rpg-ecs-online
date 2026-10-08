@@ -642,6 +642,13 @@ class GhostState:
     corpse_ty: int = -1
     graveyard_timer: float = 0.0  # segundos contínuos dentro do raio do cemitério
     near_corpse: bool = False     # dentro do raio de revive do corpo
+    # Conteúdo instanciado com respawn automático (BG, dungeon) — calculado
+    # por RespawnMixin._handle_player_death, nunca lido direto de
+    # InstanceInventoryUIState.active (isso é progressão normalizada, um
+    # conceito DIFERENTE — ver CLAUDE.md). True = death_ui_handlers.py mostra
+    # o modal de contagem regressiva em vez do botão "Liberar espírito".
+    auto_respawn: bool = False
+    respawn_s: float = 0.0        # duração do timer, só relevante se auto_respawn
 
 
 @dataclass
@@ -1193,6 +1200,26 @@ class JungleMob:
 
 
 @dataclass
+class CustomLootTable:
+    """Loot de boss definido na PRÓPRIA entities.json de um mapa/dungeon
+    (não `content/mob_definitions.py::MOB_TABLE`) — permite cada dungeon ter
+    loot de boss único sem tocar código compartilhado (07/10/2026, ver
+    CLAUDE.md). Anexado por `SpawnZoneSystem._spawn_one` quando
+    `SpawnZone.loot` está preenchido; checado em `server_death_handler.py`
+    ANTES de `roll_mob_loot`/`MOB_TABLE` (prioridade total — mob com este
+    componente nunca consulta o catálogo compartilhado).
+    `items`: dict item_key (`content/item_table.py`, mesmo namespace que
+    `MOB_TABLE[...]["loot"]` já usa) -> chance EXATA (0.0-1.0, sem
+    multiplicador de tier — decisão do usuário, 07/10/2026: números do mapa
+    já são a chance final desejada pelo autor daquele boss específico).
+    `gold_max == 0` = sem moeda vinda daqui (gold normal do mob, se houver,
+    continua fora deste componente)."""
+    items: dict = field(default_factory=dict)
+    gold_min: int = 0
+    gold_max: int = 0
+
+
+@dataclass
 class Wallet:
     """Moedas do jogador."""
     gold: int = 0
@@ -1646,7 +1673,10 @@ class SpawnZone:
                  respawn_cooldown: float,
                  level_min: int = 1, level_max: int = 1,
                  race: str = "Humanoide", entity_class: str = "",
-                 faction: str = "monstros_hostis"):
+                 faction: str = "monstros_hostis",
+                 respawnable: bool = True,
+                 loot: "dict | None" = None,
+                 gold_min: int = 0, gold_max: int = 0):
         self.center_x = center_x
         self.center_y = center_y
         self.enemy_type = enemy_type        # "melee" ou "ranged"
@@ -1665,8 +1695,31 @@ class SpawnZone:
         # "por acidente" e mudar o balanceamento do jogo sem intenção
         # (ver ARQUITETURA_ONLINE.md, Fase 2 do Sistema de Facções).
         self.faction = faction
+        # False = zona de dungeon instanciada (ver CLAUDE.md) — morte NUNCA
+        # reagenda respawn_timers; a zona fica vazia pelo resto da vida desta
+        # instância/bundle. Uma instância NOVA (_load_instance) cria um
+        # SpawnZone novo do zero, então uma dungeon pra outro grupo nasce
+        # cheia automaticamente — não precisa de nenhum estado cross-instância.
+        self.respawnable = respawnable
+        # Loot customizado de boss definido na PRÓPRIA entities.json do mapa
+        # (não em content/mob_definitions.py::MOB_TABLE) — anexado como
+        # CustomLootTable na entidade spawnada por esta zona quando presente.
+        # Só faz sentido pra zona de boss (count=1); em zona de vários mobs,
+        # TODOS os spawns dessa zona receberiam o mesmo loot (sem ambiguidade
+        # hoje porque toda zona com loot desta feature tem count=1).
+        self.loot = loot
+        self.gold_min = gold_min
+        self.gold_max = gold_max
         self.active_entity_ids: set = set()
         self.respawn_timers: list = []  # um float por morte; cada um corre independentemente
+        # Marca se o preenchimento inicial (escalonado) já rodou — necessário
+        # pra `respawnable=False` não entrar de novo nesse branch depois que
+        # uma morte esvazia a zona (sem isso, "alive < max_count" ficaria
+        # True de novo e a zona "sem respawn" se reencheria na hora,
+        # anulando o próprio propósito de respawnable=False). Zona normal
+        # (respawnable=True) nunca consulta esta flag — segue exatamente o
+        # comportamento de sempre.
+        self.ever_filled: bool = False
 
 
 class SpawnZoneOwner:

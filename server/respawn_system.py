@@ -27,6 +27,8 @@ from shared.constants import (
     GHOST_CORPSE_RADIUS_TILES,
     GHOST_GRAVEYARD_REVIVE_S,
     GHOST_CORPSE_REVIVE_HP_FRAC,
+    DEBUG_BG_RESPAWN_S,
+    DUNGEON_RESPAWN_S,
 )
 
 # Namespace sintético para o eid do marcador de corpo (fora da faixa de
@@ -239,6 +241,23 @@ class RespawnMixin:
         cst = self.world.get_component(player_eid, CombatState)
         gst = self.world.get_component(player_eid, GhostState)
         ctx, cty = (tm.current_tile_x, tm.current_tile_y) if tm else self.RESPAWN_TILE
+
+        # Respawn automático (sem "Liberar espírito") pra conteúdo instanciado
+        # que já tem seu próprio tick de revive — BG (_tick_bg_respawns) e
+        # dungeon (_tick_dungeon_respawns). NUNCA ler InstanceInventoryUIState/
+        # progressão normalizada aqui — esse é um conceito DIFERENTE (zera
+        # equipamento/nível, só BG usa), dungeon quer respawn automático SEM
+        # isso (ver CLAUDE.md). `_player_dungeon_instance` (dungeon_processor.py)
+        # e `_player_bg_match_id` (bg_queue_processor.py) são os únicos 2
+        # chokepoints de membership "jogador está numa partida/instância
+        # ATIVA agora" — Arena fica de fora de propósito (continua manual,
+        # "Liberar espírito", igual sempre foi).
+        _in_dungeon_rs = player_eid in getattr(self, "_player_dungeon_instance", {})
+        _in_bg_rs = player_eid in getattr(self, "_player_bg_match_id", {})
+        _auto_respawn_rs = _in_dungeon_rs or _in_bg_rs
+        _respawn_s_rs = (DUNGEON_RESPAWN_S if _in_dungeon_rs else
+                         (DEBUG_BG_RESPAWN_S if _in_bg_rs else 0.0))
+
         if gst:
             gst.is_dead   = True
             gst.is_ghost  = False
@@ -246,6 +265,8 @@ class RespawnMixin:
             gst.corpse_ty = cty
             gst.graveyard_timer = 0.0
             gst.near_corpse = False
+            gst.auto_respawn = _auto_respawn_rs
+            gst.respawn_s = _respawn_s_rs
         if cst:
             cst.is_visible = True
             cst.target_entity_id = -1
@@ -263,6 +284,8 @@ class RespawnMixin:
             "player_eid": player_eid,
             "corpse_tx":  ctx,
             "corpse_ty":  cty,
+            "auto_respawn": _auto_respawn_rs,
+            "respawn_s":    _respawn_s_rs,
         })
         self._entity_deaths_this_tick.append({
             "eid": player_eid, "tx": ctx, "ty": cty,

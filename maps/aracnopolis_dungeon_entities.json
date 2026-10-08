@@ -1,0 +1,776 @@
+{
+  "player": {
+    "x": 87,
+    "y": 148
+  },
+  "transitions": [
+    {
+      "x": 49,
+      "y": 0,
+      "target_map": "maps/map_1.csv",
+      "target_x": 0,
+      "target_y": 0
+    }
+  ],
+  "spawn_zones": [
+    {
+      "x": 45,
+      "y": 123,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 62,
+      "y": 133,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 4,
+      "y": 118,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 7,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "loot": {},
+      "gold_min": 0,
+      "gold_max": 0,
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "boss",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 84,
+      "y": 133,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 14,
+      "y": 88,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 7,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "loot": {},
+      "gold_min": 0,
+      "gold_max": 0,
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "boss",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 35,
+      "y": 146,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 5,
+      "y": 4,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 3,
+      "y": 126,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 63,
+      "y": 147,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 19,
+      "y": 119,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 92,
+      "y": 78,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 7,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "loot": {},
+      "gold_min": 0,
+      "gold_max": 0,
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "boss",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 84,
+      "y": 100,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 7,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "loot": {},
+      "gold_min": 0,
+      "gold_max": 0,
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "boss",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 12,
+      "y": 34,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 4,
+      "y": 146,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 7,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "loot": {},
+      "gold_min": 0,
+      "gold_max": 0,
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "boss",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 79,
+      "y": 127,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 27,
+      "y": 86,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 54,
+      "y": 113,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 50,
+      "y": 8,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 7,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "loot": {},
+      "gold_min": 0,
+      "gold_max": 0,
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "boss",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 94,
+      "y": 33,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 26,
+      "y": 76,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 7,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "loot": {},
+      "gold_min": 0,
+      "gold_max": 0,
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "boss",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 21,
+      "y": 146,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 49,
+      "y": 52,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 4,
+      "y": 87,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 57,
+      "y": 129,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 4,
+      "y": 107,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 75,
+      "y": 147,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 22,
+      "y": 125,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 28,
+      "y": 123,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 45,
+      "y": 133,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 95,
+      "y": 121,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 97,
+      "y": 146,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 93,
+      "y": 5,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 53,
+      "y": 91,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 55,
+      "y": 146,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 38,
+      "y": 103,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 57,
+      "y": 122,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 79,
+      "y": 122,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 28,
+      "y": 147,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 6,
+      "y": 61,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 95,
+      "y": 66,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "x": 37,
+      "y": 113,
+      "radius": 1,
+      "respawn_cooldown": 90.0,
+      "respawnable": false,
+      "level_min": 5,
+      "level_max": 7,
+      "race": "Aranha",
+      "class": "Guerreiro",
+      "spawns": [
+        {
+          "type": "melee",
+          "tier": "elite",
+          "count": 1
+        }
+      ]
+    }
+  ]
+}

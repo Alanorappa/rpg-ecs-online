@@ -50,6 +50,7 @@ from server.portal_processor import PortalProcessorMixin
 from server.ranking_processor import RankingProcessorMixin
 from server.match_processor import MatchProcessorMixin
 from server.bg_queue_processor import BgQueueProcessorMixin
+from server.dungeon_processor import DungeonProcessorMixin
 from debug.mob_combat_debug import MCL
 
 # move_player() faz snap instantâneo de tile (sem tween real) — esta janela é
@@ -159,6 +160,7 @@ class _MapBundle:
 class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootProcessorMixin,
                    SpellCompletionMixin, TradeProcessorMixin, DuelProcessorMixin, PartyProcessorMixin,
                    PvpZoneProcessorMixin, MatchProcessorMixin, BgQueueProcessorMixin,
+                   DungeonProcessorMixin,
                    BushZoneProcessorMixin, TileLosProcessorMixin, MailProcessorMixin,
                    PortalProcessorMixin, RankingProcessorMixin):
     # Rate-limit de CAST_SKILL por player, por tick (06/09/2026, ver
@@ -513,6 +515,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         self._bg_match_leave_events_this_tick: list[dict] = []
         self._bg_match_result_events_this_tick: list[tuple] = []
 
+        # Dungeon instanciada PvE (07/10/2026, ver CLAUDE.md) — entrada é
+        # imediata ao pisar no tile (sem fila/aceite, diferente de Arena/BG),
+        # instance_key por grupo (party_id) ou solo (o próprio eid). Ver
+        # server/dungeon_processor.py::DungeonProcessorMixin.
+        self._dungeon_instances: dict[str, dict] = {}
+        self._player_dungeon_instance: dict[int, str] = {}
+
         # Timer de ataque por jogador: session_id → segundos até próximo hit
         self._attack_timers: dict[str, float] = {}
 
@@ -764,8 +773,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
         self.tilemap_entity = main_bundle.tilemap_entity
 
-        # Carrega mapas de destino das transições (depth 1)
+        # Carrega mapas de destino das transições (depth 1) — PULA transição
+        # de dungeon (`dungeon_key` presente): o template dela só carrega
+        # sob demanda via `_load_instance`, nunca como bundle compartilhado
+        # solto (senão ficaria um bundle ocioso ticando pra sempre, e
+        # colidiria com a chave que `DungeonProcessorMixin` espera usar).
         for trans in main_bundle.transitions.values():
+            if trans.get("dungeon_key"):
+                continue
             tgt = trans["target_map"]
             if tgt not in self._map_bundles:
                 try:
@@ -976,6 +991,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 "target_map": t["target_map"],
                 "target_x":   int(t["target_x"]),
                 "target_y":   int(t["target_y"]),
+                # Dungeon instanciada (ver CLAUDE.md) — copiado verbatim se
+                # presente, pra `_load_all_maps`/`_handle_zone_change_req`
+                # saberem que esta transição não leva a um mapa compartilhado
+                # fixo, e sim a uma instância por grupo/solo.
+                **({"dungeon_key": t["dungeon_key"]} if "dungeon_key" in t else {}),
             }
 
         bundle = _MapBundle()
@@ -2090,6 +2110,10 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 race           = z.get("race",          "Humanoide"),
                 entity_class   = z.get("entity_class",  ""),
                 faction        = z.get("faction",       "monstros_hostis"),
+                respawnable    = z.get("respawnable",   True),
+                loot           = z.get("loot"),
+                gold_min       = z.get("gold_min", 0),
+                gold_max       = z.get("gold_max", 0),
             ))
 
     # ── API pública para SessionManager ──────────────────────────────────────
@@ -6793,6 +6817,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             self._tick_bg_pending()
             self._tick_bg_results_timeout()
         self._tick_bg_respawns()
+        self._tick_dungeon_respawns()
         self._tick_bg_kda_hud()
         # Bot 100% servidor da fila BG (16/08/2026) — sem custo quando não
         # há bot nenhum (BotControlled vazio). Decisão em si é throttled
