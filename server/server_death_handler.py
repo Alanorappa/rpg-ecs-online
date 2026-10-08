@@ -751,12 +751,21 @@ class ServerDeathHandler:
             #    zone.respawn_cooldown ao detectar deaths na cleanup sweep).
             #    Fazemos aqui para não perder o timer quando SpawnZoneSystem roda
             #    depois e vê before == alive (entidade já removida).
+            #    `zone.respawnable` (07/10/2026, dungeon instanciada — ver
+            #    CLAUDE.md) — bug real: este é o ponto que REALMENTE agenda
+            #    respawn em todo golpe de combate de verdade (o cleanup sweep
+            #    de SpawnZoneSystem.update() é só um FALLBACK pra entidade
+            #    despawnada por outro meio, nunca alcançado numa morte normal
+            #    porque a entidade já foi removida antes dele rodar) — faltava
+            #    esse MESMO guard aqui, então uma zona respawnable=False
+            #    continuava respawnando todo mob morto em combate de verdade.
             szo = self.world.get_component(eid, SpawnZoneOwner)
             if szo is not None:
                 zone = self.world.get_component(szo.zone_entity_id, SpawnZone)
                 if zone is not None:
                     zone.active_entity_ids.discard(eid)
-                    zone.respawn_timers.append(zone.respawn_cooldown)
+                    if zone.respawnable:
+                        zone.respawn_timers.append(zone.respawn_cooldown)
 
             # 6b. Torre respawnável: agenda respawn exato no MESMO tile
             # (NUNCA via SpawnZone, que sorteia tile aleatório — ver

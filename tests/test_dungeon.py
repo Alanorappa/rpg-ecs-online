@@ -7,6 +7,14 @@ dungeon futura), não a Aracnópolis especificamente:
 - SpawnZone.respawnable=False: zona esvaziada por morte NUNCA se
   reenche sozinha (bug seria ela cair no branch de "preenchimento
   inicial" de novo — ver engine/world_systems.py::SpawnZoneSystem).
+  Cobre os 2 pontos REAIS que agendam respawn (achado em produção,
+  08/10/2026, ver PROBLEMAS_ARQUITETURA.md): o cleanup sweep de
+  `SpawnZoneSystem.update()` (fallback, só alcançado quando a entidade
+  some por outro meio que não combate) E o ponto que de fato dispara
+  em TODO combate real, `server/server_death_handler.py` (passo 6) —
+  os testes originais só cobriam o 1º via `world.remove_entity()`
+  direto, que nunca passa pelo 2º; por isso o bug passou pela suíte
+  antes de ser visto em jogo.
 - CustomLootTable tem prioridade total sobre MOB_TABLE
   (server/server_death_handler.py).
 - DungeonProcessorMixin: grupo cai na MESMA instância, solo em
@@ -108,6 +116,69 @@ class TestSpawnZoneNaoRespawnavel(unittest.TestCase):
         self.world.remove_entity(mob_eid)
         self.sys.update(dt=0.2)   # só 1 tick — exatamente onde o bug disparava
         self.assertFalse(zone.active_entity_ids)
+
+
+class TestSpawnZoneNaoRespawnavelViaCombateReal(unittest.TestCase):
+    """Mesma garantia de TestSpawnZoneNaoRespawnavel, mas matando o mob pelo
+    caminho REAL de combate (hp=0 + PendingDeath + tick do WorldServer) em
+    vez de `world.remove_entity()` direto. Bug real achado em produção
+    (08/10/2026, relatado pelo usuário: "matei o último boss mais de uma
+    vez"): `server/server_death_handler.py` (passo 6) agenda o respawn
+    INCONDICIONALMENTE assim que processa uma morte de verdade — é o único
+    ponto que de fato dispara em todo combate real (o cleanup sweep de
+    `SpawnZoneSystem.update()`, já coberto acima, só é alcançado quando a
+    entidade some por outro meio, nunca numa morte normal porque a entidade
+    já foi removida antes dele rodar). Faltava o MESMO guard
+    `zone.respawnable` nesse 2º ponto — por isso os testes com
+    `world.remove_entity()` direto passavam mesmo com o bug presente."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+
+    def test_mob_morto_em_combate_real_nao_respawna(self):
+        self.ws._create_spawn_zones_for_map([{
+            "x": 60, "y": 60, "radius": 1, "enemy_type": "melee",
+            "enemy_tier": "boss", "count": 1, "respawn_cooldown": 1.0,
+            "level_min": 7, "level_max": 7, "race": "Aranha",
+            "respawnable": False,
+        }], self.ws._map_file)
+        # `_create_spawn_zones_for_map` chamado direto (fora do fluxo normal
+        # de `_load_map_for`, que anexa MapLocation automaticamente a toda
+        # entidade nova via diff de snapshot) precisa do MESMO MapLocation
+        # na mão, senão o SpawnZoneSystem por-bundle (filtrado por mapa)
+        # ignora a zona inteira.
+        zone_eid_new = next(eid for eid, z in self.ws.world.get_entities_with(SpawnZone)
+                           if (z.center_x, z.center_y) == (60, 60))
+        self.ws.world.add_component(zone_eid_new, MapLocation(self.ws._map_file))
+
+        killer = spawn_player(self.ws, "skr", 60, 60)
+        # map_1 (mapa default de teste) tem muitas outras zonas competindo
+        # pelo mesmo orçamento de SpawnZoneSystem.MAX_SPAWNS_PER_FRAME (2
+        # por tick, global) no preenchimento inicial — folga bem maior que
+        # o necessário só pra ESTA zona, pra não depender de quantas outras
+        # zonas o mapa de teste tem no momento.
+        run_ticks(self.ws, 400)
+
+        # map_1 (mapa default de teste) já tem zonas/mobs próprios — acha
+        # especificamente a zona nova criada acima (centro 60,60), nunca
+        # "o primeiro Enemy encontrado" (podia ser de outra zona qualquer).
+        zone = next(z for _, z in self.ws.world.get_entities_with(SpawnZone)
+                   if (z.center_x, z.center_y) == (60, 60))
+        self.assertTrue(zone.active_entity_ids)
+        mob_eid = next(iter(zone.active_entity_ids))
+
+        cs = self.ws.world.get_component(mob_eid, CombatStats)
+        cs.current_hp = 0
+        self.ws.world.add_component(mob_eid, PendingDeath(killer_entity_id=killer))
+        run_ticks(self.ws, 1)   # processa a morte de verdade via ServerDeathHandler
+
+        self.assertEqual(zone.respawn_timers, [],
+                         "morte em combate real NUNCA deveria agendar respawn_timer "
+                         "numa zona respawnable=False")
+
+        run_ticks(self.ws, 60)  # bem além do respawn_cooldown=1.0s
+        self.assertFalse(zone.active_entity_ids,
+                         "mob não deveria ter voltado depois de morto em combate real")
 
 
 # ── CustomLootTable — prioridade total sobre MOB_TABLE ──────────────────────
