@@ -1,20 +1,25 @@
 """Contorno de seleção de alvo (25-26/09/2026, pedido do usuário).
 
-Antes: retângulo sólido amarelo fixo em volta do alvo (ui/render_system.py).
-Agora: `pygame.mask.Mask.outline()` traça o contorno real do sprite (ou
-do frame de personagem) — contínuo, não tracejado (correção do usuário
-26/09/2026) — já ignorando a sombra "assada" no PNG (sombra tem alpha
-~89, objeto tem alpha 255, e o threshold padrão do pygame, 127, separa
-os dois sozinho). `pygame.draw.polygon(..., width)` desenha esse
-contorno fechado direto. Cor por disposição (mesmo esquema da barra de
-HP: hostil=vermelho, amigável=verde, neutro=amarelo). Sem sprite/frame
-disponível, cai no retângulo de sempre — só que colorido por disposição
-também, em vez do amarelo fixo.
+Histórico: retângulo sólido amarelo fixo (original) → `Mask.outline()`
+traçando a borda exata da silhueta, `pygame.draw.polygon` (26/09/2026)
+→ **anel externo dilatado** (07/10/2026, pedido do usuário: o contorno
+por `outline()` ficava "na frente" do sprite E bem em cima da própria
+borda — metade do traço caía DENTRO da área opaca, só a metade fina de
+fora era visível, quase imperceptível). `_get_selection_ring_mask`
+(`ui/render_system.py`) dilata a silhueta por alguns pixels e REMOVE a
+original (`Mask.erase`) — o que resta nunca sobrepõe o sprite, então
+não importa mais se é desenhado antes ou depois dele. Cor por
+disposição (mesmo esquema da barra de HP: hostil=vermelho,
+amigável=verde, neutro=amarelo). Sem sprite/frame disponível, cai no
+retângulo de sempre — só que colorido por disposição também, em vez do
+amarelo fixo.
 
 Estes testes cobrem os 3 caminhos (sprite de objeto, frame de
-personagem, retângulo simples) verificando que o desenho certo
-(pygame.draw.polygon OU pygame.draw.rect) acontece com a cor certa, sem
-travar.
+personagem, retângulo simples): pra sprite/frame, confirma que nem
+`pygame.draw.polygon` (mecanismo antigo) nem o fallback de retângulo
+disparam — só o `blit` do anel (verificado separadamente, na unidade,
+pelo teste de `_get_selection_ring_mask` abaixo). Pra retângulo simples
+(sem sprite), o fallback continua sendo `pygame.draw.rect`, inalterado.
 """
 import unittest
 import pygame
@@ -66,11 +71,63 @@ def _spy_pygame_draw():
     return calls_poly, calls_rect, _restore
 
 
+class TestSelectionRingMask(unittest.TestCase):
+    """Unidade: `_get_selection_ring_mask` (ui/render_system.py) — a
+    dilatação em si, isolada da renderização completa."""
+
+    def _make_square_surface(self):
+        surf = pygame.Surface((20, 20), pygame.SRCALPHA)
+        surf.fill((0, 0, 0, 0))
+        pygame.draw.rect(surf, (255, 0, 0, 255), (5, 5, 10, 10))
+        return surf
+
+    def test_anel_nao_fica_vazio_pra_sprite_real(self):
+        from ui.systems import RenderSystem
+        from engine.world import World
+        rs = RenderSystem(World(), pygame.display.get_surface())
+        ring = rs._get_selection_ring_mask(self._make_square_surface())
+        self.assertGreater(ring.count(), 0, "anel não deveria ficar vazio pra um sprite real")
+
+    def test_anel_nunca_sobrepoe_a_silhueta_original(self):
+        """O MESMO teste que validei manualmente antes de implementar —
+        formalizado aqui: AND bit a bit entre o anel e a máscara original
+        tem que ser SEMPRE zero (nenhum pixel em comum)."""
+        from ui.systems import RenderSystem
+        from engine.world import World
+        surf = self._make_square_surface()
+        rs = RenderSystem(World(), pygame.display.get_surface())
+        ring = rs._get_selection_ring_mask(surf)
+        base = rs._get_mask(surf)
+        overlap = base.overlap_area(ring, (0, 0))
+        self.assertEqual(overlap, 0, "anel de seleção nunca pode sobrepor o sprite real")
+
+    def test_anel_fica_fora_do_raio_de_dilatacao(self):
+        """Ponto bem no canto da superfície (fora do raio de 2px a partir
+        da borda do quadrado) não deveria fazer parte do anel."""
+        from ui.systems import RenderSystem
+        from engine.world import World
+        surf = self._make_square_surface()
+        rs = RenderSystem(World(), pygame.display.get_surface())
+        ring = rs._get_selection_ring_mask(surf)
+        self.assertFalse(ring.get_at((0, 0)), "canto da superfície está fora do raio de dilatação")
+
+    def test_cache_devolve_a_mesma_instancia(self):
+        from ui.systems import RenderSystem
+        from engine.world import World
+        surf = self._make_square_surface()
+        rs = RenderSystem(World(), pygame.display.get_surface())
+        self.assertIs(rs._get_selection_ring_mask(surf), rs._get_selection_ring_mask(surf))
+
+
 class TestSelecaoUsaSilhuetaDeSprite(unittest.TestCase):
     """Alvo com sprite real de objeto (mesmo padrão da caixa de correio,
-    vp_180) — contorno deve seguir Mask.outline(), não um retângulo."""
+    vp_180) — contorno novo (anel dilatado, blit) em vez do mecanismo
+    antigo (`Mask.outline()` + `draw.polygon`) ou do fallback de
+    retângulo. A correção da FORMA do anel já está coberta, na unidade,
+    por `TestSelectionRingMask` acima — aqui só confirma que nenhum dos
+    2 caminhos ANTIGOS dispara pra um alvo com sprite real."""
 
-    def test_sprite_usa_draw_polygon_com_cor_hostil(self):
+    def test_sprite_nao_usa_mais_polygon_nem_cai_no_fallback_de_retangulo(self):
         from engine.world import World
         from engine.components import Position, Renderable, Faction
         from ui.systems import RenderSystem
@@ -91,20 +148,17 @@ class TestSelecaoUsaSilhuetaDeSprite(unittest.TestCase):
         finally:
             restore()
 
-        self.assertEqual(len(calls_poly), 1, "sprite deveria gerar contorno por silhueta")
-        _, color, points, width = calls_poly[0][0]
-        self.assertEqual(color, (200, 40, 40))   # DISPOSITION_HP_COLORS["hostil"]
-        self.assertTrue(points, "contorno nao deveria vir vazio pro sprite vp_180")
-        self.assertGreater(width, 0, "contorno tem que ser so a borda, nunca preenchido")
-        # Nenhum draw.rect deveria ter essa cor (nao caiu no fallback de retangulo)
-        self.assertFalse(any(a[1] == (200, 40, 40) for a, _ in calls_rect))
+        self.assertEqual(calls_poly, [], "mecanismo antigo (Mask.outline + draw.polygon) não deveria mais disparar")
+        _HOSTIL = (200, 40, 40)   # DISPOSITION_HP_COLORS["hostil"]
+        self.assertFalse(any(a[1] == _HOSTIL for a, _ in calls_rect),
+                         "não deveria ter caído no fallback de retângulo (sprite real tem anel não-vazio)")
 
 
 class TestSelecaoUsaSilhuetaDePersonagem(unittest.TestCase):
-    """Alvo com frame de personagem animado (player remoto) — mesmo
-    mecanismo, cor amigável."""
+    """Alvo com frame de personagem animado (player remoto) — mesma
+    verificação de ausência dos 2 caminhos antigos."""
 
-    def test_frame_de_personagem_usa_draw_polygon_com_cor_amigavel(self):
+    def test_frame_nao_usa_mais_polygon_nem_cai_no_fallback_de_retangulo(self):
         from engine.world import World
         from engine.components import Position, Renderable, RemoteControlled, TileMovement, Faction
         from ui.systems import RenderSystem
@@ -129,11 +183,10 @@ class TestSelecaoUsaSilhuetaDePersonagem(unittest.TestCase):
         finally:
             restore()
 
-        self.assertEqual(len(calls_poly), 1, "frame de personagem deveria gerar contorno por silhueta")
-        _, color, points, width = calls_poly[0][0]
-        self.assertEqual(color, (0, 200, 60))   # DISPOSITION_HP_COLORS["amigavel"] (HP_COLOR)
-        self.assertTrue(points, "contorno nao deveria vir vazio pro frame do guerreiro")
-        self.assertGreater(width, 0)
+        self.assertEqual(calls_poly, [], "mecanismo antigo (Mask.outline + draw.polygon) não deveria mais disparar")
+        _AMIGAVEL = (0, 200, 60)   # DISPOSITION_HP_COLORS["amigavel"]
+        self.assertFalse(any(a[1] == _AMIGAVEL for a, _ in calls_rect),
+                         "não deveria ter caído no fallback de retângulo (frame real tem anel não-vazio)")
 
 
 class TestSelecaoSemSpriteCaiNoRetangulo(unittest.TestCase):

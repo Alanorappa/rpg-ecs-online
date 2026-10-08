@@ -25974,3 +25974,54 @@ STATS_UPDATE seta/desmarca alvo. Revert-to-confirm no campo novo da
 tupla de dirty-check — 2 testes falharam exatamente como esperado sem
 ele. Suíte completa (2225 passed, 8 failed — mesma lista já conhecida
 de pré-existentes/flaky desta sessão, nenhuma nova).
+
+## 250. Contorno de seleção de alvo quase invisível — linha em cima da borda, metade escondida (07/10/2026)
+
+**Sintoma relatado pelo usuário**: ao selecionar um alvo, o contorno
+colorido aparecia NA FRENTE do sprite e como uma linha fina em cima da
+própria borda — "quero que fique atrás, e que seja externo não
+interno, se não, não vai aparecer".
+
+**Causa raiz**: o mecanismo (`RenderSystem.render()`,
+`ui/render_system.py`) traçava a silhueta exata do sprite via
+`pygame.mask.Mask.outline(3)` e desenhava essa linha com
+`pygame.draw.polygon(..., width=2)` DEPOIS do blit do sprite. Uma linha
+de 2px centrada bem na fronteira da máscara fica ~metade DENTRO da área
+que já é opaca (desenhada por cima do próprio sprite, cortando a arte
+na borda) e a outra metade fora, fina e fácil de perder contra o fundo
+do mapa — resultado: contorno quase invisível e visualmente "colado"
+na frente do personagem, exatamente o sintoma relatado.
+
+**Fix**: `RenderSystem._get_selection_ring_mask(surf, radius=2)` —
+dilata a máscara original por um raio circular de offsets
+(`Mask.draw(base_mask, (dx,dy))` pra todo `dx²+dy²<=radius²`) e depois
+REMOVE a silhueta original (`Mask.erase(base_mask, (0,0))`), sobrando
+só o "halo" externo, sem nenhum pixel em comum com o sprite — provado
+antes de implementar com um script de verificação de pixel isolado, e
+depois formalizado em teste (`overlap_area(base, ring) == 0`). Como o
+anel nunca sobrepõe o sprite, a ORDEM de desenho (antes/depois do blit)
+deixou de ter qualquer efeito sobre a correção — ficou depois só porque
+já estava naquela posição no código. Desenhado via
+`ring_mask.to_surface(setcolor=..., unsetcolor=(0,0,0,0))` + `blit()`,
+não mais `draw.polygon`. Cache por `id(surf)`
+(`self._selection_ring_mask_cache`, mesmo padrão de
+`self._occlusion_mask_cache`). Fallback de retângulo (mob sem
+sprite/frame resolvível) inalterado.
+
+**Teste**: `tests/test_selection_outline.py` reescrito — nova classe
+`TestSelectionRingMask` (4 testes: anel não-vazio pra sprite real, anel
+nunca sobrepõe a silhueta original, pixel fora do raio de dilatação
+fica de fora, cache devolve a mesma instância) + 2 testes de integração
+reescritos pra confirmar que nem o mecanismo antigo
+(`draw.polygon`) nem o fallback de retângulo disparam mais pra
+sprite/frame reais. `pygame.Surface.blit` não é monkeypatchável em
+pygame-ce (confirmado: "cannot set 'blit' attribute of immutable type
+'pygame.surface.Surface'") — por isso a prova do caminho novo é
+indireta (ausência dos 2 caminhos antigos) combinada com o teste de
+unidade direto sobre `_get_selection_ring_mask`. Revert-to-confirm no
+`Mask.erase()`: substituído temporariamente por `pass`, o teste de
+não-sobreposição falhou com `overlap == 100` (área cheia do quadrado
+original), restaurado, 7/7 passando. Regressão focada (422 testes:
+render/client-ui/character-animation/nameplate/fog-cache/object-scan/
+portal) — zero falhas novas. Mudança 100% client-side (nenhum arquivo
+de `server/` tocado).

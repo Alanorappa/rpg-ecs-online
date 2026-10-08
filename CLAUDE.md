@@ -1024,6 +1024,21 @@ padrão a quebrar, não só os bugs individuais.
   `pygame.mask`, escopo só do jogador LOCAL, cobertura mínima
   `RenderSystem._OCCLUSION_COVERAGE_THRESHOLD`). Ver
   PROBLEMAS_ARQUITETURA.md §188.
+- **Contorno de seleção de alvo** (destacar o alvo atualmente selecionado
+  com uma borda colorida) → `RenderSystem._get_selection_ring_mask(surf,
+  radius=2)` (07/10/2026) — anel EXTERNO dilatado (`Mask.draw` em
+  círculo de offsets + `Mask.erase` da silhueta original), nunca
+  `Mask.outline()` + `pygame.draw.polygon()` (mecanismo antigo: a linha
+  ficava bem em cima da borda, metade escondida DENTRO da área opaca do
+  sprite, quase invisível — ver PROBLEMAS_ARQUITETURA.md §250). O anel
+  dilatado nunca sobrepõe o sprite original (by construction, testado em
+  `tests/test_selection_outline.py::TestSelectionRingMask`), então a
+  ORDEM de desenho (antes/depois do blit do sprite) deixa de importar —
+  continua desenhado depois só por não ter motivo pra mudar. Cache por
+  `id(surf)` em `self._selection_ring_mask_cache` (mesmo padrão de
+  `self._occlusion_mask_cache`). Alvo sem sprite/frame resolvível
+  continua caindo no fallback de retângulo (`pygame.draw.rect`),
+  inalterado.
 - **Objeto de mapa que emite luz própria (lampião/tocha/fogueira, base
   do sistema de dia/noite)** → 12º campo posicional (`light`) na tupla
   do tile em `OBJECT_SHEET_FAMILIES` (modo catálogo,

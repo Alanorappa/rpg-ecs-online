@@ -265,6 +265,14 @@ class RenderSystem(System):
         # documentado pra esses 2 caches: espaço de chaves fixo, limitado
         # pelo catálogo/classes do jogo, não por quantos frames rodaram).
         self._occlusion_mask_cache: "dict[int, pygame.mask.Mask]" = {}
+        # Anel de seleção (07/10/2026, pedido do usuário — contorno externo,
+        # nunca sobrepõe o próprio sprite) — mesmo raciocínio de cache do
+        # `_occlusion_mask_cache` acima (chave = id da Surface, espaço fixo
+        # pelo catálogo do jogo). Guarda a MÁSCARA dilatada (já com a
+        # silhueta original removida via `erase`) — a cor por disposição
+        # (hostil/amigável/neutro) é aplicada depois, em `to_surface()`,
+        # barato o bastante pra não precisar cachear por cor também.
+        self._selection_ring_mask_cache: "dict[int, pygame.mask.Mask]" = {}
 
     def _get_mask(self, surf: "pygame.Surface") -> "pygame.mask.Mask":
         key = id(surf)
@@ -273,6 +281,35 @@ class RenderSystem(System):
             mask = pygame.mask.from_surface(surf)
             self._occlusion_mask_cache[key] = mask
         return mask
+
+    def _get_selection_ring_mask(self, surf: "pygame.Surface",
+                                radius: int = 2) -> "pygame.mask.Mask":
+        """Máscara do anel de seleção: a silhueta de `surf` DILATADA por
+        `radius` pixels, com a silhueta ORIGINAL removida (`Mask.erase`) —
+        o que resta é só o "halo" externo, nunca a área que o sprite real
+        já cobre. Kernel CIRCULAR (`dx²+dy² <= radius²`), não quadrado —
+        um kernel quadrado deixaria os cantos da silhueta com "bigodes"
+        retos de 45°, visivelmente diferentes da curva real do sprite.
+        Como o anel nunca sobrepõe o sprite original (confirmado pixel a
+        pixel antes de implementar), a ORDEM de desenho entre os dois
+        deixa de importar — desenhar o anel antes ("atrás") ou depois
+        ("na frente") do sprite dá o MESMO resultado visual."""
+        key = id(surf)
+        ring = self._selection_ring_mask_cache.get(key)
+        if ring is not None:
+            return ring
+        base_mask = self._get_mask(surf)
+        ring = pygame.mask.Mask(base_mask.get_size())
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                if dx * dx + dy * dy > radius * radius:
+                    continue
+                ring.draw(base_mask, (dx, dy))
+        ring.erase(base_mask, (0, 0))
+        self._selection_ring_mask_cache[key] = ring
+        return ring
 
     def set_name_font(self, font: "pygame.font.Font") -> None:
         """GameEngine injeta self.font_sm aqui (logo após construir este
@@ -818,23 +855,25 @@ class RenderSystem(System):
                 _sel_tier = get_relationship_between(self.world, entity_id, _local_player_eid_draw)
                 _sel_color = DISPOSITION_HP_COLORS.get(_sel_tier, DISPOSITION_HP_COLORS["hostil"])
                 if _sel_outline_surf is not None:
-                    # Contorno acompanhando a SILHUETA real do sprite (não
-                    # tracejado — contínuo, pedido do usuário 26/09/2026) —
-                    # Mask.outline() traça o contorno já EXCLUINDO a sombra
-                    # (sombra vem com alpha ~89 nas folhas "with Shadow",
-                    # objeto vem com alpha 255; o threshold padrão de
-                    # pygame.mask.from_surface, 127, já separa os dois sem
-                    # ajuste nenhum — confirmado pixel a pixel antes de
-                    # implementar). `every=3` decima os pontos do contorno
-                    # (retorno bruto tem ~1px entre pontos) pra um contorno
-                    # mais leve sem perder a forma geral. pygame.draw.polygon
-                    # já desenha fechado (liga o último ponto ao primeiro).
-                    _sel_mask = self._get_mask(_sel_outline_surf)
-                    _sel_pts_local = _sel_mask.outline(3)
-                    if _sel_pts_local:
-                        _ox, _oy = _sel_outline_offset
-                        _sel_pts = [(px + _ox, py + _oy) for px, py in _sel_pts_local]
-                        pygame.draw.polygon(self.world_surf, _sel_color, _sel_pts, 2)
+                    # Contorno acompanhando a SILHUETA real do sprite —
+                    # anel EXTERNO (07/10/2026, pedido do usuário: o
+                    # contorno antigo, via `Mask.outline()`, traçava a
+                    # linha EXATAMENTE na borda da silhueta — metade do
+                    # traço caía DENTRO da área opaca do sprite, metade
+                    # fora; como o traço era desenhado DEPOIS do sprite
+                    # ["na frente"], a metade interna ficava visível por
+                    # cima do próprio desenho e a metade externa, fina,
+                    # quase não aparecia). `_get_selection_ring_mask`
+                    # devolve a silhueta DILATADA com a original já
+                    # removida (`Mask.erase`) — o anel nunca sobrepõe o
+                    # sprite, então a ordem de desenho (antes/depois) deixa
+                    # de importar; mantido aqui, na mesma posição de
+                    # sempre, só a FORMA mudou.
+                    _sel_ring_mask = self._get_selection_ring_mask(_sel_outline_surf)
+                    if _sel_ring_mask.count() > 0:
+                        _ring_surf = _sel_ring_mask.to_surface(
+                            setcolor=(*_sel_color, 255), unsetcolor=(0, 0, 0, 0))
+                        self.world_surf.blit(_ring_surf, _sel_outline_offset)
                     else:
                         pygame.draw.rect(self.world_surf, _sel_color, rect, 2)
                 else:
