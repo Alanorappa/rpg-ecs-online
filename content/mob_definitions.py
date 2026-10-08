@@ -109,9 +109,9 @@ PROJECTILE_BY_CLASS: dict[str, dict] = {
 # lógica que a consome em vez de perto do resto do dado de balanceamento).
 ENEMY_TIER_CONFIGS: dict[str, dict] = {
     "normal": {"hp": 1.0, "dmg": 1.0, "xp": 1,  "size": 24, "col_melee": (0, 0, 255),     "col_ranged": (0, 0, 200)},
-    "elite":  {"hp": 2.0, "dmg": 2.5, "xp": 2,  "size": 28, "col_melee": (140, 140, 255),  "col_ranged": (100, 100, 220)},
-    "rare":   {"hp": 3.0, "dmg": 1.0, "xp": 3,  "size": 30, "col_melee": (255, 165, 0),    "col_ranged": (220, 130, 0)},
-    "boss":   {"hp": 5.0, "dmg": 3.0, "xp": 10, "size": 40, "col_melee": (180, 0, 180),    "col_ranged": (140, 0, 140)},
+    "elite":  {"hp": 5.0, "dmg": 3.5, "xp": 2,  "size": 28, "col_melee": (140, 140, 255),  "col_ranged": (100, 100, 220)},
+    "rare":   {"hp": 3.0, "dmg": 2.5, "xp": 3,  "size": 30, "col_melee": (255, 165, 0),    "col_ranged": (220, 130, 0)},
+    "boss":   {"hp": 10.0, "dmg": 5.0, "xp": 10, "size": 40, "col_melee": (180, 0, 180),    "col_ranged": (140, 0, 140)},
 }
 
 # Tempo de respawn tradicional (segundos) por tier — mesma razão de estar
