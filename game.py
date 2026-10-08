@@ -162,7 +162,7 @@ def compute_window_geometry(mode: str, scale: float) -> tuple:
 class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, InventoryHandlers, TooltipHandlers, DebugHandlers, MenuHandlers, HotbarEditorHandlers, HabilidadesHandlers, OnlineModeHandlers, HotbarHandlers, ConsumableBarHandlers, HudHandlers, DeathUIHandlers, ModalStackHandlers, TradeHandlers, DuelHandlers, PartyHandlers, PvpZoneHandlers, ArenaHandlers, BattlegroundHandlers, BgQueueHandlers, ChatHandlers, PortalHandlers):
     def __init__(self, scale: float = 1.0, char_data: "dict | None" = None,
                  save_slot: int = 0,
-                 net_user: str = "", net_pass: str = "",
+                 net_user: str = "", net_pass: str = "", net_password_hash: str = "",
                  net_client=None):
         pygame.init()
         # Vincula a façade fx aos gerenciadores reais (FLT/SOUNDS/etc.) —
@@ -174,6 +174,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._save_slot  = save_slot
         self._net_user    = net_user
         self._net_pass    = net_pass
+        # Auto-login vindo do Launcher (08/10/2026, ver CLAUDE.md) — "" pra
+        # sessão de login manual/--user --password (reconecta com net_pass
+        # de verdade, hasheado na hora); preenchido só quando a sessão
+        # inteira começou via Launcher (nunca tem a senha crua disponível
+        # pra re-hashear depois) — client/online_mode_handlers.py usa isto
+        # pra reconectar sem redigitar senha.
+        self._net_password_hash = net_password_hash
         self._net         = net_client  # usa cliente existente se fornecido
         self._my_eid      = -1       # entity_id atribuído pelo servidor
         self.is_gm        = False    # setado por LOGIN_OK — gate real do F12 (server/auth.py::is_gm)

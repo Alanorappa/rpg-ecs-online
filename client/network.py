@@ -125,10 +125,16 @@ class NetworkClient:
             asyncio.run_coroutine_threadsafe(self._close(), self._loop)
 
     def login(self, username: str, password: str,
-              ap: float = 0.0, max_hp: int = 0) -> None:
-        """Envia LOGIN com stats reais do personagem para o servidor usar."""
+              ap: float = 0.0, max_hp: int = 0, password_hash: str = "") -> None:
+        """Envia LOGIN com stats reais do personagem para o servidor usar.
+
+        `password_hash` (08/10/2026, ver CLAUDE.md — auto-login vindo do
+        Launcher): quando preenchido, usa ESSE hash direto, sem hashear
+        `password` de novo — o Launcher só tem o hash (nunca guarda a
+        senha crua pra "lembrar login"), então não tem como repassar a
+        senha original pro jogo. `password` pode vir vazio nesse caso."""
         from shared.auth_utils import hash_password
-        ph = hash_password(password)
+        ph = password_hash or hash_password(password)
         # Guarda credenciais para re-login automático após reconnect
         self._login_username      = username
         self._login_password_hash = ph

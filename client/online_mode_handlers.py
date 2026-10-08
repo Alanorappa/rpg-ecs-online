@@ -41,7 +41,8 @@ class OnlineModeHandlers:
             cs  = self.world.get_component(self.player_entity, CombatStats)
             ap      = float(cs.attack_power) if cs else 0.0
             max_hp  = int(cs.max_hp)         if cs else 0
-            self._net.login(self._net_user, self._net_pass, ap=ap, max_hp=max_hp)
+            self._net.login(self._net_user, self._net_pass, ap=ap, max_hp=max_hp,
+                            password_hash=getattr(self, "_net_password_hash", ""))
         else:
             import threading
             threading.Timer(1.0, self._do_login).start()

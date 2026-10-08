@@ -45,8 +45,9 @@ class _FakeNetworkClient:
     def connect(self):
         self.connected = self.CONNECT_SUCCEEDS
 
-    def login(self, username, password):
+    def login(self, username, password, password_hash=""):
         self._logged_in_as = (username, password)
+        self._logged_in_hash = password_hash
 
     def poll(self):
         if self._poll_i < len(self.POLL_SEQUENCE):

@@ -113,10 +113,20 @@ def apply_update(zip_path: str, install_dir: str) -> None:
         zf.extractall(install_dir)
 
 
-def launch_game(install_dir: str) -> None:
-    """Sobe RPG_Online.exe com a env var que main.py::__main__ exige
-    (ver CLAUDE.md) e retorna na hora — NUNCA espera o jogo fechar."""
+def launch_game(install_dir: str, username: str = "", password_hash: str = "") -> None:
+    """Sobe RPG_Online.exe com a env var que main.py::__main__ exige (ver
+    CLAUDE.md) e retorna na hora — NUNCA espera o jogo fechar.
+
+    `username`/`password_hash` (08/10/2026, ver CLAUDE.md — bug real
+    relatado pelo usuário: logar no Launcher e ter que digitar
+    usuário/senha DE NOVO no jogo) — repassados por env var
+    (RPG_PRELOGIN_USER/RPG_PRELOGIN_HASH), lidos por main.py pra pular a
+    tela de login automaticamente. SÓ o hash, nunca a senha crua (o
+    Launcher nunca guarda/repassa a senha de verdade pra lugar nenhum)."""
     exe_path = os.path.join(install_dir, GAME_EXE)
     env = dict(os.environ)
     env["RPG_LAUNCHED_BY_LAUNCHER"] = "1"
+    if username and password_hash:
+        env["RPG_PRELOGIN_USER"] = username
+        env["RPG_PRELOGIN_HASH"] = password_hash
     subprocess.Popen([exe_path], cwd=install_dir, env=env)

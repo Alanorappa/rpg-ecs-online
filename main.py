@@ -99,7 +99,7 @@ def _parse_args():
 
 
 def _connect_and_login(host: str, port: int, username: str, password: str,
-                       use_tls: bool = False):
+                       use_tls: bool = False, password_hash: str = ""):
     """Conecta e loga sem UI — usado no fast-path --user/--password e ao
     reconectar depois de "Deslogar" (reaproveita usuário/senha já guardados
     em memória, sem pedir de novo — mesmo mecanismo de re-login automático
@@ -126,7 +126,7 @@ def _connect_and_login(host: str, port: int, username: str, password: str,
         try: net.disconnect()
         except Exception: pass
         return None, []
-    net.login(username, password)
+    net.login(username, password, password_hash=password_hash)
 
     char_list = None
     _got_response = False
@@ -151,7 +151,7 @@ def _connect_and_login(host: str, port: int, username: str, password: str,
 
 
 def _reconnect_or_login_screen(screen, host: str, port: int, username: str, password: str,
-                               use_tls: bool = False):
+                               use_tls: bool = False, password_hash: str = ""):
     """Wrapper de `_connect_and_login` pros 2 pontos que reconectam sem
     passar pela tela de login normal (fast-path --user/--password e
     "Deslogar") — se a reconexão falhar/expirar, cai na tela de login de
@@ -161,7 +161,8 @@ def _reconnect_or_login_screen(screen, host: str, port: int, username: str, pass
     (username, password, net, char_list) — mesmo shape de
     `ui.login_screen.run` — ou None se o usuário fechar a janela na tela
     de fallback."""
-    net, char_list = _connect_and_login(host, port, username, password, use_tls=use_tls)
+    net, char_list = _connect_and_login(host, port, username, password, use_tls=use_tls,
+                                       password_hash=password_hash)
     if net is not None:
         return username, password, net, char_list
 
@@ -207,10 +208,27 @@ if __name__ == "__main__":
     port = int(cfg.get("server_port", 8765))
     use_tls = bool(cfg.get("use_tls", False))
 
-    # --user/--password só pula a tela de login na PRIMEIRA volta — se o
-    # jogador apertar ESC na seleção de personagem (quer trocar de conta),
-    # a volta seguinte já mostra a tela de login de verdade.
+    # Auto-login vindo do Launcher (08/10/2026, ver CLAUDE.md) — env vars
+    # setadas por launcher/update_client.py::launch_game no
+    # subprocess.Popen. SÓ o hash (o Launcher nunca tem/guarda a senha
+    # crua) — client/network.py::NetworkClient.login aceita password_hash
+    # pronto em vez de hashear de novo. Sem isso, o jogador já tinha
+    # logado no Launcher e teria que digitar usuário/senha DE NOVO aqui
+    # (bug real relatado pelo usuário).
+    _launcher_user = os.environ.get("RPG_PRELOGIN_USER", "")
+    _launcher_hash = os.environ.get("RPG_PRELOGIN_HASH", "")
+
+    # --user/--password (CLI, dev) ou o par acima (Launcher) só pulam a
+    # tela de login na PRIMEIRA volta — se o jogador apertar ESC na
+    # seleção de personagem (quer trocar de conta), a volta seguinte já
+    # mostra a tela de login de verdade.
     use_dev_login = bool(args.user and args.password)
+    use_launcher_login = bool(_launcher_user and _launcher_hash)
+    # Persiste entre reconexões da MESMA conta (ESC → outra conta zera isso
+    # de novo, ver cada branch abaixo) — só o caminho do Launcher preenche
+    # com um valor real; login manual/--user/--password sempre tem a senha
+    # crua de verdade em `net_pass`, não precisa do hash separado.
+    net_password_hash = ""
 
     while True:
         # ── Etapa 1: Login / Cadastro ─────────────────────────────────────────────
@@ -222,6 +240,16 @@ if __name__ == "__main__":
                 pygame.quit()
                 raise SystemExit(0)
             net_user, net_pass, net, char_list = result
+            net_password_hash = ""
+        elif use_launcher_login:
+            use_launcher_login = False
+            result = _reconnect_or_login_screen(screen, host, port, _launcher_user, "",
+                                                use_tls=use_tls, password_hash=_launcher_hash)
+            if result is None:
+                pygame.quit()
+                raise SystemExit(0)
+            net_user, net_pass, net, char_list = result
+            net_password_hash = _launcher_hash
         else:
             from ui.login_screen import run as _login_run
             result = _login_run(screen, host, port, use_tls=use_tls)
@@ -229,6 +257,7 @@ if __name__ == "__main__":
                 pygame.quit()
                 raise SystemExit(0)
             net_user, net_pass, net, char_list = result
+            net_password_hash = ""
 
         # ── Etapa 2/3: Seleção de personagem <-> Jogo ─────────────────────────────
         # ESC na seleção de personagem => volta pro login (outra conta).
@@ -247,7 +276,7 @@ if __name__ == "__main__":
             pygame.display.init()
             game_engine = GameEngine(
                 scale=scale, char_data=None, save_slot=0,
-                net_user=net_user, net_pass=net_pass,
+                net_user=net_user, net_pass=net_pass, net_password_hash=net_password_hash,
                 net_client=net,          # NetworkClient já conectado, com LOGIN_OK na fila
             )
             try:
@@ -282,11 +311,13 @@ if __name__ == "__main__":
             pygame.display.set_caption("RPG ECS [ONLINE]")
 
             result = _reconnect_or_login_screen(screen, host, port, net_user, net_pass,
-                                                use_tls=use_tls)
+                                                use_tls=use_tls, password_hash=net_password_hash)
             if result is None:
                 pygame.quit()
                 raise SystemExit(0)
             net_user, net_pass, net, char_list = result
+            # net_password_hash continua o mesmo — mesma conta, mesmo hash
+            # (só reseta ao logar com OUTRA conta, topo do loop).
 
         if back_to_login:
             continue
