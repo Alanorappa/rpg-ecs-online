@@ -491,6 +491,7 @@ class RespawnMixin:
             "level":    char.level if char else 1,
             "effects":  [],
             **self.player_faction_field(player_eid),
+            **self.player_target_field(player_eid),
         })
 
     def _auto_revive_on_disconnect(self, player_eid: int) -> None:

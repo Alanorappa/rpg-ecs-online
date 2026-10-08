@@ -255,6 +255,7 @@ class NetworkHandlers:
                     "level":    ent.get("level", 1),
                     "kind":     kind,
                     **({"faction": ent["faction"]} if "faction" in ent else {}),
+                    **({"target_eid": ent["target_eid"]} if "target_eid" in ent else {}),
                 })
 
     def _handle_msg_entity_spawn(self, payload: dict) -> None:
@@ -290,6 +291,12 @@ class NetworkHandlers:
                     "light_intensity_pct": payload.get("light_intensity_pct", 0),
                     "light_radius_tiles": payload.get("light_radius_tiles", 0)}
                    if payload.get("light_active") else {}),
+                # target_eid (07/10/2026, direção de player remoto parado)
+                # — mesma classe de bug já documentada pra faction/luz
+                # acima: cada handler reconstrói o dict de spawn na mão
+                # com uma allowlist própria, precisando ser estendida UMA
+                # POR UMA pra cada campo novo do servidor.
+                **({"target_eid": payload["target_eid"]} if "target_eid" in payload else {}),
             })
 
     def _handle_msg_player_light_update(self, payload: dict) -> None:
@@ -1275,6 +1282,10 @@ class NetworkHandlers:
                         "light_intensity_pct": sp.get("light_intensity_pct", 0),
                         "light_radius_tiles": sp.get("light_radius_tiles", 0)}
                        if sp.get("light_active") else {}),
+                    # target_eid (07/10/2026, direção de player remoto
+                    # parado) — mesma paridade que falta pra faction/luz
+                    # entre os 3 pontos (ver comentário acima).
+                    **({"target_eid": sp["target_eid"]} if "target_eid" in sp else {}),
                 })
         for m in payload.get("moved", []):
             eid = m.get("eid", -1)
@@ -2194,6 +2205,32 @@ class NetworkHandlers:
                 # no mesmo broadcast de HP — level-up sempre muda max_hp).
                 if "level" in payload:
                     rc.level = payload["level"]
+                # target_eid (07/10/2026, direção de player remoto parado)
+                # — _sync_player_hp_dirty manda SEMPRE (inclusive -1,
+                # "alvo desmarcado") junto com hp/level nesse mesmo
+                # broadcast. Resolve servidor→local igual em qualquer
+                # outro ponto deste arquivo (_apply_combat_result) — não
+                # resolvido (alvo ainda não conhecido por este cliente)
+                # cai em -1, nunca um valor velho "preso".
+                if "target_eid" in payload:
+                    from engine.components import CombatState as _CStStats
+                    cst = self.world.get_component(local_eid, _CStStats)
+                    if cst is not None:
+                        _target_server_su = payload["target_eid"]
+                        _target_local_su = -1
+                        # NUNCA "a.get(x) or b.get(x) or -1" -- eid local 0
+                        # é falsy em Python, cairia pro fallback errado.
+                        # -1 checado primeiro e à parte: "sem alvo" nunca
+                        # pode coincidir com _my_eid (ex.: ainda não
+                        # atribuído/placeholder -1 antes do login real).
+                        if _target_server_su != -1:
+                            if _target_server_su == self._my_eid:
+                                _target_local_su = self.player_entity
+                            elif _target_server_su in self._remote_players:
+                                _target_local_su = self._remote_players[_target_server_su]
+                            elif _target_server_su in self._remote_mobs:
+                                _target_local_su = self._remote_mobs[_target_server_su]
+                        cst.target_entity_id = _target_local_su
         elif eid in self._remote_mobs:
             _meta_ehp = self._meta(eid)
             if _meta_ehp and "hp" in payload:

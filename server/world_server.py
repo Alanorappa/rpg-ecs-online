@@ -2396,6 +2396,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "level":    char_data.get("level", 1),
             "effects":  [],
             **self.player_faction_field(eid),
+            **self.player_target_field(eid),
         })
 
         log.info(f"[World] spawn player eid={eid}  tile=({tx},{ty})  "
@@ -2882,6 +2883,25 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "light_radius_tiles":   pls.radius_tiles,
         }
 
+    def player_target_field(self, eid: int) -> dict:
+        """Campo opcional `{"target_eid": ...}` pra incluir em QUALQUER
+        payload de ENTITY_SPAWN de player (07/10/2026) — mesmo padrão de
+        `player_faction_field`/`player_light_field` acima. Sem isso, um
+        jogador que ENTRA no campo de visão de outro já em combate só
+        descobriria o alvo dele na PRÓXIMA troca (`_sync_player_hp_dirty`
+        só alcança quem já estava perto no momento da mudança) — mesma
+        classe de bug já documentada pra faction/light. Usado pra virar o
+        personagem remoto pro alvo quando parado (mesmo mecanismo que já
+        faz isso pro player local, `TileMovementSystem`, `engine/
+        world_systems.py`) — ver PROBLEMAS_ARQUITETURA.md.
+        `CombatState.target_entity_id == -1` (padrão, sem alvo
+        selecionado) devolve `{}`, cliente cai no "sem alvo" de sempre."""
+        from engine.components import CombatState as _CStField
+        cst = self.world.get_component(eid, _CStField)
+        if cst is None or cst.target_entity_id == -1:
+            return {}
+        return {"target_eid": cst.target_entity_id}
+
     def get_players_in_aoi(self, center_session: str, radius: int) -> list[dict]:
         """
         Retorna lista de EntitySpawn para todos os jogadores dentro do raio
@@ -2913,6 +2933,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                     "tx": tm.current_tile_x, "ty": tm.current_tile_y,
                     "session_id": sid,
                     **self.player_faction_field(eid),
+                    **self.player_target_field(eid),
                 })
         return result
 
@@ -4847,7 +4868,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         (se houver) como sujo em `_party_state_events_this_tick`, reusando
         o MESMO pipe que já reenvia PARTY_STATE pro grupo inteiro — sem
         precisar de um pipeline de replicação novo."""
-        from engine.components import CombatStats as _CSD, CharacterStats as _CharD
+        from engine.components import CombatStats as _CSD, CharacterStats as _CharD, CombatState as _CStD
         _already = {e["eid"]: e for e in self._player_hp_broadcasts_this_tick}
         for peid in list(self._player_eids.values()):
             cs = self.world.get_component(peid, _CSD)
@@ -4855,17 +4876,25 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 continue
             char  = self.world.get_component(peid, _CharD)
             level = char.level if char else 1
+            # target_eid (07/10/2026, direção de player remoto parado) —
+            # mesma disciplina de `level`: entra na MESMA tupla/broadcast
+            # já existente, nenhum sistema novo. Ver player_target_field
+            # pro racional completo (payload de ENTITY_SPAWN cobre quem
+            # já estava por perto; isto cobre TROCA de alvo depois).
+            _cst_dirty = self.world.get_component(peid, _CStD)
+            target_eid = _cst_dirty.target_entity_id if _cst_dirty else -1
             _prev = self._player_hp_cache.get(peid)
-            cur = (cs.current_hp, cs.max_hp, level)
+            cur = (cs.current_hp, cs.max_hp, level, target_eid)
             if cur != _prev:
                 self._player_hp_cache[peid] = cur
                 _existing = _already.get(peid)
                 if _existing is not None:
                     _existing["level"] = level
+                    _existing["target_eid"] = target_eid
                 else:
                     self._player_hp_broadcasts_this_tick.append({
                         "eid": peid, "hp": cs.current_hp, "hp_max": cs.max_hp,
-                        "level": level,
+                        "level": level, "target_eid": target_eid,
                     })
                 # Notifica o PRÓPRIO dono também (01/09/2026) — o broadcast
                 # acima exclui o dono de propósito (server/session.py,

@@ -1391,6 +1391,32 @@ class RemoteEntityHandlers:
             hp_max=data.get("hp_max", 100),
             level=data.get("level", 1),
         ))
+        # CombatState (07/10/2026, direção de player remoto parado) — só
+        # existe pra dar ao espelho remoto a MESMA informação que o
+        # TileMovementSystem já usa pro jogador LOCAL (virar o sprite pro
+        # alvo quando parado, engine/world_systems.py). Nasce com os
+        # outros campos em default (is_stunned/in_combat=False etc.) —
+        # seguro, nada mais no cliente escreve neles pra entidade remota
+        # (BaseCombatStateSystem._tick_combat_timer/_tick_stun_timer só
+        # agem quando esses campos já são True, nunca ficam True sozinhos
+        # aqui). target_eid vem de player_target_field (server/
+        # world_server.py) — ausente/`-1` = sem alvo, igual sempre.
+        from engine.components import CombatState as _CStSpawn
+        _target_server = data.get("target_eid", -1)
+        _target_local = -1
+        if _target_server != -1:
+            if _target_server == self._my_eid:
+                _target_local = self.player_entity
+            elif _target_server in self._remote_players:
+                _target_local = self._remote_players[_target_server]
+            elif _target_server in self._remote_mobs:
+                _target_local = self._remote_mobs[_target_server]
+            # NUNCA usar "a.get(x) or b.get(x) or -1" aqui -- eid local 0
+            # (entidade real válida, World.create_entity começa em 0) é
+            # falsy em Python, o "or" cairia pro próximo fallback errado.
+        _cst_spawn = _CStSpawn()
+        _cst_spawn.target_entity_id = _target_local
+        self.world.add_component(local_eid, _cst_spawn)
         # Faction real (16/08/2026) — só presente quando o servidor já
         # anexou uma (contexto de time: BG/arena, ver WorldServer.
         # player_faction_field). Sem Faction: get_entity_faction cai no

@@ -2204,6 +2204,7 @@ class SessionManager:
             "level":    char_data.get("level", 1), "effects": [],
             **self.world_server.player_faction_field(eid),
             **self.world_server.player_light_field(eid),
+            **self.world_server.player_target_field(eid),
         })
         for s in self._sessions.values():
             if s.authenticated and s.session_id != session.session_id:
@@ -3401,6 +3402,13 @@ class SessionManager:
                     _hp_payload = {"eid": _caster_eid, "hp": _hp_upd["hp"], "hp_max": _hp_upd["hp_max"]}
                     if "level" in _hp_upd:
                         _hp_payload["level"] = _hp_upd["level"]
+                    # target_eid (07/10/2026) — sempre presente em _hp_upd
+                    # (_sync_player_hp_dirty), inclusive -1 (alvo foi
+                    # DESMARCADO) — precisa chegar explícito, senão o
+                    # espelho remoto nunca descobre que o player parou de
+                    # atacar e fica com um alvo antigo "preso".
+                    if "target_eid" in _hp_upd:
+                        _hp_payload["target_eid"] = _hp_upd["target_eid"]
                     # exclude_sid: não envia ao próprio caster (já tem via STATS_UPDATE)
                     _hp_map = self.world_server.get_entity_map(_caster_eid)
                     for s in self._sessions_in_aoi(_cx, _cy, _hp_map,
@@ -4193,6 +4201,7 @@ class SessionManager:
                     "is_ghost": bool(_ogst and _ogst.is_ghost),
                     **self.world_server.player_faction_field(other_eid),
                     **self.world_server.player_light_field(other_eid),
+                    **self.world_server.player_target_field(other_eid),
                 }
                 result.setdefault("spawned", []).append(spawn_payload)
                 session.known_eids.add(other_eid)

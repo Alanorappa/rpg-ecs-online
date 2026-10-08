@@ -563,7 +563,29 @@ padrão a quebrar, não só os bugs individuais.
   tick pra acompanhar um alvo que se move — 09/09/2026, bug real
   relatado pelo usuário: atacava um mob atrás dele "olhando" pra outro
   lado. Os dois casos via `engine.utils.facing_from_delta` — NUNCA
-  recalcular esse delta em outro lugar). `facing_from_delta` corta por
+  recalcular esse delta em outro lugar). **Player REMOTO parado
+  "olhando" pra direção errada** (07/10/2026, bug real relatado pelo
+  usuário — `TileMovementSystem` já é genérico, roda em QUALQUER
+  entidade com `CombatState`, mas o espelho de um player remoto nunca
+  tinha esse componente, então o bloco "parado vira pro alvo" acima
+  nunca disparava pra eles) → servidor sincroniza
+  `CombatState.target_entity_id` de CADA player pros outros via
+  `WorldServer.player_target_field(eid)` (mesmo padrão de
+  `player_faction_field`/`player_light_field`, 5 pontos de payload de
+  ENTITY_SPAWN — `_create_player_entity`/`get_players_in_aoi`
+  (`world_server.py`), login + "entrou no meu AOI" (`session.py`),
+  respawn (`respawn_system.py`)) + `_sync_player_hp_dirty` (dirty-check
+  já existente, estendido pra incluir `target_entity_id` na tupla
+  comparada — TROCA de alvo depois do spawn). Cliente anexa
+  `CombatState` ao espelho remoto (`client/remote_entity_handlers.py::
+  _spawn_remote_player_entity`) e aplica o campo em
+  `_handle_msg_stats_update` — **NUNCA** `a.get(x) or b.get(x) or -1`
+  pra resolver servidor→local (eid local `0`, entidade real válida, é
+  falsy em Python — cairia no fallback errado); sempre `if x in dict:
+  dict[x]` explícito, ou checar `x == -1` primeiro à parte de qualquer
+  comparação com `_my_eid`. Nenhuma lógica de giro nova — o mecanismo
+  já genérico passou a "ver" os remotos de graça. Ver
+  PROBLEMAS_ARQUITETURA.md. `facing_from_delta` corta por
   ÂNGULO a partir do eixo vertical (0°=reto pra baixo/cima), não por
   magnitude relativa — down/up só dentro de
   `_VERTICAL_FACING_HALF_ANGLE_DEG` (20°) de cada lado do vertical;

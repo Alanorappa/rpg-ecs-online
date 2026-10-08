@@ -25902,3 +25902,75 @@ queimando o alvo de propósito), revisitar com:
    mágicos) pra só anexar efeito quando o dano direto não foi
    bloqueado — bug separado, não introduzido por esta tarefa, mas
    que precisaria ser corrigido junto se o item 1 acima for feito.
+
+## 249. Player remoto parado "olhando" pra direção errada (07/10/2026)
+
+**Sintoma relatado pelo usuário**: entrar no meio de uma luta de outro
+player (ou só olhar pra ele parado atacando um mob) mostrava o
+personagem dele virado pra direção ERRADA — ex: atacando um mob à
+direita mas "olhando" pra baixo.
+
+**Causa raiz**: `TileMovement.facing` só é recalculado em 2 lugares
+(`TileMovementSystem`, `engine/world_systems.py`): durante um PASSO de
+movimento real, e quando a entidade está PARADA com
+`CombatState.target_entity_id` setado (gira pro alvo — mecanismo já
+existia desde 09/09/2026, mas só pro PRÓPRIO jogador). O 2º mecanismo
+já é genérico ("roda em QUALQUER entidade com CombatState") — nunca foi
+estendido pra players remotos só porque o ESPELHO local de um player
+remoto (`client/remote_entity_handlers.py`) nunca recebia esse
+componente. Sem ele, `target_entity_id` fica sempre -1 pro espelho, o
+bloco de correção nunca dispara, e `facing` fica travado no valor do
+ÚLTIMO passo de movimento real.
+
+**Decisão do usuário**: sincronizar o alvo de combate DE VERDADE
+(servidor manda quem cada player está de olho), não só reagir a golpes
+confirmados — o personagem vira pro alvo SELECIONADO, igual já
+acontece pro próprio jogador.
+
+**Fix**: `WorldServer.player_target_field(eid)` (novo, mesmo padrão de
+`player_faction_field`/`player_light_field`) incluído nos 5 pontos
+reais que montam payload de ENTITY_SPAWN de player (achados por
+`grep` em `player_faction_field(` pra ter certeza da paridade completa
+— `world_server.py::_create_player_entity`/`get_players_in_aoi`,
+`session.py` login + "entrou no meu AOI", `respawn_system.py`).
+`_sync_player_hp_dirty` (dirty-check já existente, já usado pra
+hp/max_hp/level) ganhou `target_entity_id` na tupla comparada — TROCA
+de alvo depois do spawn inicial, sem sistema novo. Cliente anexa
+`CombatState` ao espelho remoto e aplica o campo em
+`_handle_msg_stats_update`.
+
+**Armadilha achada e corrigida durante a implementação (não chegou a
+ir pra produção)**: 3 pontos no cliente (`_handle_msg_entity_spawn`,
+`_handle_msg_world_state`, AOI_UPDATE "spawned") reconstroem o dict de
+spawn MANUALMENTE com uma allowlist própria de campos — exatamente a
+MESMA classe de bug já documentada pra `faction`/luz de item (campo
+novo do servidor nunca chega ao cliente até alguém lembrar de estender
+os 3 pontos, um por um). Os 3 foram corrigidos juntos, no mesmo commit
+desta feature — achado via teste automatizado que falhava silenciosamente
+(`target_eid` chegava no payload do servidor mas nunca no componente).
+
+**2ª armadilha achada e corrigida**: a primeira tentativa de resolver
+"eid do servidor → eid local" usava o padrão `a.get(x) or b.get(x) or
+-1` (já replicado em outros pontos do código, ex: `_apply_combat_result`
+debug-only) — eid local `0` (entidade real válida, `World.create_entity`
+começa em 0) é FALSY em Python, então o `or` cairia no fallback errado
+pra qualquer remoto cujo eid local calhasse de ser 0. Corrigido pra
+checagem explícita (`if x in dict: dict[x]`) nos 2 pontos novos — o
+padrão antigo (debug-only, baixo risco) não foi tocado, mas fica
+registrado aqui como risco latente se algum dia for reusado em código
+que decide algo de verdade.
+
+**3ª armadilha**: `target_eid == -1` (sem alvo) podia coincidir com
+`self._my_eid` quando este ainda não foi atribuído (ex: estado inicial
+de teste/conexão) — `-1 == -1` resolvia incorretamente pro PRÓPRIO
+player em vez de "sem alvo". Corrigido checando `!= -1` ANTES de
+qualquer comparação com `_my_eid`.
+
+**Teste**: `tests/test_remote_target_facing.py` (15 testes) —
+`player_target_field` vazio/populado; `_sync_player_hp_dirty` dispara
+SÓ com troca de alvo (sem mudança de hp/level); resolução cliente
+(player conhecido, mob conhecido, eu mesmo, desconhecido, eid local 0);
+STATS_UPDATE seta/desmarca alvo. Revert-to-confirm no campo novo da
+tupla de dirty-check — 2 testes falharam exatamente como esperado sem
+ele. Suíte completa (2225 passed, 8 failed — mesma lista já conhecida
+de pré-existentes/flaky desta sessão, nenhuma nova).
