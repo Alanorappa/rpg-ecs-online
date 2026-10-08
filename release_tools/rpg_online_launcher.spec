@@ -6,6 +6,19 @@
 # Diferente de rpg_online_client.spec: inclui tkinter (UI do launcher) e
 # EXCLUI pygame/websockets/asyncpg (o launcher nunca roda gameplay nem
 # fala com o banco -- so HTTP pra server/http_api.py, via stdlib urllib).
+#
+# contents_directory="_internal_launcher" (09/10/2026, ver CLAUDE.md/
+# PROBLEMAS_ARQUITETURA.md) -- NUNCA deixar no default "_internal". O
+# Launcher e o jogo moram na MESMA pasta final (release_client.ps1
+# funde dist\Launcher dentro de dist\RPG_Online) -- com os dois usando
+# "_internal" por padrao, o robocopy da fusao SOBRESCREVE arquivo de
+# dependencia com nome igual (ex: libcrypto-1_1.dll, usada por ambos)
+# com a copia de QUALQUER UM dos dois bundles. Bug real: Launcher
+# aberto mantem esse arquivo em uso: pelo Windows -- a auto-atualizacao
+# falhava com PermissionError ao tentar reescrever o MESMO arquivo (que
+# tambem pertence ao jogo). Pasta separada pro Launcher elimina
+# qualquer nome em comum entre os dois bundles -- "_internal" fica
+# 100% exclusivo do jogo, nunca mais tocado por este build.
 
 import os
 
@@ -40,6 +53,7 @@ exe = EXE(
     upx=False,
     console=False,
     icon=None,
+    contents_directory="_internal_launcher",
 )
 
 coll = COLLECT(

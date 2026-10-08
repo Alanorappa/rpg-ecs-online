@@ -1332,6 +1332,17 @@ padrão a quebrar, não só os bugs individuais.
   alcançável de fora, o firewall é default-deny. Ver
   PROBLEMAS_ARQUITETURA.md §253 (mesmo incidente do Launcher,
   `LAUNCHER_API_PORT`).
+- **Executável PyInstaller onedir novo que vai morar na MESMA pasta
+  final de outro já existente** (ex: Launcher.exe + RPG_Online.exe) →
+  `contents_directory="<nome único>"` passado pro `EXE()` (NUNCA pro
+  `COLLECT()` — é lido de `arg.contents_directory` de uma instância
+  `EXE`, passar em `COLLECT()` é aceito em silêncio mas não tem efeito
+  nenhum) — nunca deixar os dois bundles no `_internal` padrão. Bug
+  real: dois bundles com dependência em comum (`libcrypto-1_1.dll`, via
+  `ssl`/`hashlib`) sobrescreviam a pasta de dependência um do outro ao
+  fundir numa pasta só, travando a auto-atualização com
+  `PermissionError` sempre que o OUTRO executável estivesse aberto. Ver
+  PROBLEMAS_ARQUITETURA.md §255.
 - **Rota HTTP nova no Launcher que precisa criar/validar conta** →
   `server/http_api.py` delega 100% pra `server/auth.py::register()`/
   `authenticate()`, as MESMAS funções que o protocolo WebSocket

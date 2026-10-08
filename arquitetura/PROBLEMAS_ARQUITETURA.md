@@ -26248,3 +26248,68 @@ restaurado.
 **Aproveitado no mesmo pedido do usuário**: Launcher ganhou arte de
 fundo própria (`assets/hud/Launcher.png`) — ver `ARQUITETURA ONLINE.md`
 §27 pra detalhes visuais (fora do escopo deste bug, mas mesma sessão).
+
+## 255. Auto-atualização do Launcher falhava com PermissionError numa DLL compartilhada com o jogo (09/10/2026)
+
+**Bug real relatado pelo usuário**: ao testar a auto-atualização numa
+instalação de verdade (pasta renomeada só pra preservar uma "versão
+antiga" pra testar contra ela), a atualização falhava com:
+`[Errno 13] Permission denied:
+'...\RPG_Online_0.51.1\_internal\libcrypto-1_1.dll'`.
+
+**Causa raiz**: `release_tools/rpg_online_launcher.spec` e
+`rpg_online_client.spec` usavam os dois o nome PADRÃO do PyInstaller
+onedir pra pasta de dependências (`_internal`, implícito quando
+`contents_directory` não é passado pra `EXE()`). `release_tools/
+release_client.ps1` funde `dist\Launcher` DENTRO de `dist\RPG_Online`
+(robocopy `/E`, passo 5, pedido do usuário 08/10/2026 — "quero que os
+arquivos fiquem dentro da mesma pasta") — como os DOIS bundles usam o
+MESMO nome de pasta (`_internal`), o robocopy sobrescreve qualquer
+arquivo de dependência com nome igual entre os dois (`libcrypto-1_1.dll`
+é usada tanto pelo jogo quanto pelo Launcher, via `ssl`/`hashlib`) com
+a cópia de QUALQUER UM dos dois bundles — a instalação final tem uma
+pasta `_internal` "Frankenstein", misturando arquivos de dependência
+dos dois executáveis.
+
+Enquanto o Launcher está ABERTO, o Windows mantém um lock nos arquivos
+que ele carregou na memória — incluindo esse `libcrypto-1_1.dll`
+compartilhado. Quando a auto-atualização tenta sobrescrever a cópia do
+JOGO desse mesmo arquivo (mesmo PATH, já que a pasta é compartilhada),
+o Windows recusa — ainda que o Launcher nunca tenha pedido pra
+atualizar A SI MESMO (o zip de auto-atualização nunca contém
+`Launcher.exe`, isso já era garantido desde a implementação original),
+o compartilhamento de pasta criou um acoplamento indireto que o design
+original não previa.
+
+**Fix**: `contents_directory="_internal_launcher"` no `EXE()` do
+`rpg_online_launcher.spec` (NUNCA em `COLLECT()` — o parâmetro é lido
+de `arg.contents_directory` de uma instância `EXE`, `COLLECT()` só
+repassa; passar em `COLLECT()` é aceito silenciosamente — `**kwargs`
+sem validação — mas não tem efeito nenhum, o build continua saindo com
+`_internal` do mesmo jeito, erro real cometido na 1ª tentativa desta
+sessão, achado lendo o código-fonte do PyInstaller 6.21 diretamente
+depois do build não mudar nada). Com pastas de nome diferente
+(`_internal` só do jogo, `_internal_launcher` só do Launcher), o
+robocopy da fusão nunca mais sobrescreve nada entre os dois bundles —
+nenhum arquivo em comum, nenhum lock cruzado possível.
+
+**Verificação**: build real com o fix, cópia isolada do resultado
+marcada artificialmente como versão antiga, `Launcher.exe` REAL aberto
+a partir dessa cópia (processo rodando de verdade, DLLs carregadas),
+e `launcher.update_client.apply_update()` chamado contra essa MESMA
+pasta com o Launcher ainda aberto — sucesso, `version.txt` virou a
+versão nova, zero `PermissionError`. Reproduz o mecanismo exato do bug
+relatado (Launcher aberto + sobrescrita de arquivo compartilhado),
+não só um cenário sintético genérico.
+
+**Lição**: "tudo numa pasta só" (pedido legítimo do usuário, resolve um
+problema real de distribuição) e "dois executáveis PyInstaller onedir
+independentes" têm um conflito estrutural que só aparece quando os dois
+bundles têm alguma dependência em comum com o MESMO nome de arquivo —
+nenhum teste automatizado (os existentes só validam a LÓGICA de
+update_client.py com mocks/servidor de teste, nunca o PACOTE
+PyInstaller de verdade) pegaria isso; só apareceu rodando contra uma
+instalação real, com o Launcher de fato aberto. Qualquer native/onedir
+bundle novo que precise compartilhar pasta com outro já existente tem
+que usar `contents_directory` único — nunca assumir que "funcionou no
+teste automatizado" cobre o empacotamento final.
