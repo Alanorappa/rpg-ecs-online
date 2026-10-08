@@ -1316,6 +1316,22 @@ padrão a quebrar, não só os bugs individuais.
   `subprocess.Popen`. É uma checagem de conveniência (evita abrir o exe
   sem querer), NUNCA segurança de verdade — decisão explícita do
   usuário de recusar TOTAL (mensagem + `sys.exit`), não só avisar.
+- **`requirements_server.txt` ganhou dependência nova** → `deploy_server.ps1`
+  só envia CÓDIGO (`git archive HEAD`), nunca instala pacote Python
+  novo na VPS — rodar `ssh ... "venv/bin/pip install -r
+  requirements_server.txt"` no servidor ANTES/DEPOIS do próximo deploy
+  que importa essa dependência, ou o processo entra em crash-loop
+  (`systemd Restart=always` reinicia a cada poucos segundos,
+  `systemctl is-active` continua devolvendo `active` mesmo assim —
+  NUNCA confiar só nisso pra validar um deploy, checar fim-a-fim de
+  FORA da VPS). Incidente real: `aiohttp` (Launcher) derrubou o
+  servidor em produção por esse gap, ver PROBLEMAS_ARQUITETURA.md §253.
+- **Serviço novo abrindo porta TCP própria** (além das já existentes —
+  8765 jogo) → checar/abrir no `ufw` da VPS explicitamente
+  (`ufw allow <porta>/tcp`) — porta escutando (`ss -tlnp`) NÃO significa
+  alcançável de fora, o firewall é default-deny. Ver
+  PROBLEMAS_ARQUITETURA.md §253 (mesmo incidente do Launcher,
+  `LAUNCHER_API_PORT`).
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

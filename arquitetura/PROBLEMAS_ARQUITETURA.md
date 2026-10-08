@@ -26156,3 +26156,56 @@ Bug 2 relatado na MESMA sessão de teste (algo bateu no personagem sem
 aparecer na tela, logo após entrar na dungeon e aggrar o 1º/2º mob) —
 em investigação, ainda sem causa raiz confirmada; ver próxima entrada
 quando fechada.
+
+## 253. Deploy do Launcher derrubou o servidor em produção — dependência nova não instalada + porta nova sem regra de firewall (08/10/2026)
+
+**Incidente real**: ao fazer o primeiro `deploy_server.ps1` depois de
+implementar o Launcher (`server/http_api.py`, que importa `aiohttp`,
+dependência NOVA adicionada só em `requirements_server.txt`), o
+servidor entrou em crash-loop (`systemd` com `Restart=always,
+RestartSec=5` reiniciando a cada ~7s, `ModuleNotFoundError: No module
+named 'aiohttp'`) — **zero jogador conseguia se conectar** durante essa
+janela, porque `deploy_server.ps1` só envia o CÓDIGO (`git archive
+HEAD`), nunca instala dependências Python novas na VPS.
+
+**Causa raiz**: `requirements_server.txt` documentado localmente não
+tem efeito nenhum em produção até alguém rodar `pip install -r
+requirements_server.txt` dentro do venv da VPS
+(`/opt/rpg_ecs_online/venv`) — isso nunca foi automatizado, e nenhum
+deploy anterior tinha adicionado uma dependência nova desde que o
+servidor foi provisionado, então o gap nunca tinha aparecido.
+
+**2º problema, achado na sequência**: mesmo depois de instalar
+`aiohttp` e o servidor subir sem crashar, a porta nova
+(`LAUNCHER_API_PORT=8766`) ainda não respondia de fora — `ufw status`
+revelou que o firewall só libera `22/tcp` (SSH) e `8765/tcp` (jogo)
+por padrão-deny; qualquer porta TCP nova que um serviço novo abre
+precisa de `ufw allow <porta>/tcp` EXPLÍCITO, não é automático só por
+o processo começar a escutar nela.
+
+**Fix aplicado** (produção já restaurada, incidente fechado):
+1. `ssh ... "venv/bin/pip install -r requirements_server.txt"` —
+   instala `aiohttp` (e qualquer dependência nova futura) no venv real
+   da VPS.
+2. `systemctl restart rpg-server` — sai do crash-loop.
+3. `ufw allow 8766/tcp` — libera a porta nova.
+4. Confirmado fim-a-fim: `/launcher/version` (sha256 bate com o zip
+   publicado) e `/launcher/login` (credencial válida aceita, inválida
+   recusada) testados contra o servidor real, de fora, depois do fix.
+
+**Regra nova daqui pra frente** (ver CLAUDE.md): toda vez que
+`requirements_server.txt` ganhar uma dependência nova, rodar o `pip
+install` na VPS (passo manual, igual a migração deste incidente) ANTES
+ou imediatamente DEPOIS do próximo `deploy_server.ps1` que carrega
+código que a importa — nunca assumir que o arquivo de requirements por
+si só já propaga pra produção. Toda vez que um serviço novo abrir uma
+porta TCP própria, checar/abrir no `ufw` explicitamente — a porta
+escutando (`ss -tlnp`) não significa alcançável de fora.
+
+**Lição mais ampla**: depois de QUALQUER deploy que adiciona uma peça
+de infraestrutura nova (processo, porta, dependência), verificar fim-a-
+fim de FORA da VPS (não só `systemctl is-active`, que não pega
+crash-loop silenciosamente "ativo" entre reinícios) antes de considerar
+o deploy concluído — `systemctl is-active` sozinho devolveu `active`
+mesmo durante o crash-loop, porque o scheduler já tinha reiniciado o
+processo de novo bem na hora da checagem.
