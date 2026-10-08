@@ -26209,3 +26209,42 @@ crash-loop silenciosamente "ativo" entre reinícios) antes de considerar
 o deploy concluído — `systemctl is-active` sozinho devolveu `active`
 mesmo durante o crash-loop, porque o scheduler já tinha reiniciado o
 processo de novo bem na hora da checagem.
+
+## 254. Launcher autenticava mas o client pedia login de novo — credencial nunca repassada (08/10/2026)
+
+**Bug real relatado pelo usuário**: "quando eu logo no launcher, está
+pedindo para logar novamente no client" — login no Launcher tinha
+sucesso (`/launcher/login` confirmava), mas ao abrir `RPG_Online.exe` a
+tela de login normal aparecia de novo, pedindo usuário/senha.
+
+**Causa raiz**: `launcher/update_client.py::launch_game()` só fazia
+`subprocess.Popen([exe_path], ...)` com a env var de autorização
+(`RPG_LAUNCHED_BY_LAUNCHER=1`) — nunca repassava a credencial validada
+pro processo do jogo. O Launcher nunca guarda a senha crua (só o hash
+SHA-256, mesmo usado por "Lembrar login"), então não dava pra
+simplesmente reenviar a senha original.
+
+**Fix**: `password_hash` (nunca a senha crua) passa a viajar via env
+vars novas (`RPG_PRELOGIN_USER`/`RPG_PRELOGIN_HASH`) —
+`launch_game(install_dir, username, password_hash)` →
+`main.py::__main__` lê as env vars → `GameEngine(net_password_hash=...)`
+→ `client/online_mode_handlers.py::_do_login()` →
+`NetworkClient.login(..., password_hash=...)`, que usa o hash DIRETO
+sem hashear de novo (`ph = password_hash or hash_password(password)`
+— hashear de novo daria hash-do-hash, senha errada). Auditados os 3
+call sites que reusam credencial guardada (login inicial via Launcher,
+reconexão de "Deslogar", reconexão automática dentro do jogo) pra
+garantir que o hash certo é threaded em todos, nunca só no caminho
+feliz.
+
+**Teste**: `tests/test_network_login_hash.py` (4 casos — hash pronto é
+usado direto, nunca re-hasheado; hash pronto nunca é confundido com
+hash de senha vazia; hash é guardado pra re-login automático) +
+`tests/test_main_reconnect_login_fallback.py` atualizado (fixture de
+rede precisa aceitar o parâmetro novo). Revert-to-confirm: removendo
+`password_hash or` da linha, 3 dos 4 testes novos quebravam —
+restaurado.
+
+**Aproveitado no mesmo pedido do usuário**: Launcher ganhou arte de
+fundo própria (`assets/hud/Launcher.png`) — ver `ARQUITETURA ONLINE.md`
+§27 pra detalhes visuais (fora do escopo deste bug, mas mesma sessão).

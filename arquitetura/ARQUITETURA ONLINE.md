@@ -1559,6 +1559,21 @@ desatualizado.
 Ver `CLAUDE.md` (pontos únicos de verdade) e `PROBLEMAS_ARQUITETURA.md`
 pra detalhes de implementação/limites aceitos.
 
+**Auto-login do Launcher pro client (08/10/2026, corrigido no mesmo
+dia — ver PROBLEMAS_ARQUITETURA.md §254)**: `password_hash` (nunca a
+senha crua — Launcher só guarda hash) viaja do login HTTP do Launcher
+até `NetworkClient.login()` via env vars
+`RPG_PRELOGIN_USER`/`RPG_PRELOGIN_HASH` (`launcher/update_client.py::
+launch_game()` → `main.py` → `GameEngine.__init__` →
+`client/online_mode_handlers.py::_do_login()`) — sem isso, o client
+sempre pedia login de novo mesmo com o Launcher já autenticado.
+
+**Visual do Launcher**: arte de fundo própria (`assets/hud/Launcher.png`,
+arte do usuário) via `tk.Canvas`, janela do tamanho EXATO da imagem
+(500×601) — `launcher/login_ui.py` posiciona os widgets (login/status)
+dentro do painel escuro reservado na própria arte, paleta
+dourada/pedra escura combinando (nunca cor tkinter padrão de sistema).
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```
