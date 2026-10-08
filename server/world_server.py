@@ -2114,6 +2114,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 loot           = z.get("loot"),
                 gold_min       = z.get("gold_min", 0),
                 gold_max       = z.get("gold_max", 0),
+                name           = z.get("name", ""),
             ))
 
     # ── API pública para SessionManager ──────────────────────────────────────

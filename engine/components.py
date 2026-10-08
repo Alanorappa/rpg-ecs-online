@@ -1676,7 +1676,8 @@ class SpawnZone:
                  faction: str = "monstros_hostis",
                  respawnable: bool = True,
                  loot: "dict | None" = None,
-                 gold_min: int = 0, gold_max: int = 0):
+                 gold_min: int = 0, gold_max: int = 0,
+                 name: str = ""):
         self.center_x = center_x
         self.center_y = center_y
         self.enemy_type = enemy_type        # "melee" ou "ranged"
@@ -1710,6 +1711,15 @@ class SpawnZone:
         self.loot = loot
         self.gold_min = gold_min
         self.gold_max = gold_max
+        # Nome exibido customizado (08/10/2026, pedido do usuário — bosses
+        # de dungeon com nome próprio em vez de mostrar a raça crua, ex:
+        # "Rainha Aracne" em vez de "Aranha"). "" (default) = comportamento
+        # de sempre (mostra a raça) — repassado como `identity_name` pro
+        # `create_enemy()` já existente (mesmo parâmetro que NPCs com nome
+        # próprio e mobs de jungle já usam), NUNCA um componente/mecanismo
+        # novo. `race` continua definindo stats/sprite/aparência — só o
+        # NOME exibido muda.
+        self.name = name
         self.active_entity_ids: set = set()
         self.respawn_timers: list = []  # um float por morte; cada um corre independentemente
         # Marca se o preenchimento inicial (escalonado) já rodou — necessário

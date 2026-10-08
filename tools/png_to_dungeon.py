@@ -18,12 +18,16 @@ exemplos. Resumo:
     vermelho (255,0,0), clusterizado por CONECTIVIDADE 8 (pixels
     adjacentes/diagonais do MESMO cluster):
       cluster de 1 pixel  → zona de spawn de mob elite (sem respawn)
-      cluster de 4 pixels → zona de spawn de BOSS (sem respawn, loot
-                             customizado — stub vazio pro autor preencher)
+      cluster de 4 pixels → zona de spawn de BOSS (sem respawn, nome/
+                             loot/gold customizados — stub pro autor
+                             preencher, "name": "EDIT_ME"/"loot": {})
       qualquer outro tamanho → AVISO, pulado (fail loud — não adivinha)
     amarelo (251,242,54), exatamente 2 pixels esperados:
-      o de MENOR y (mais ao norte) → transição de SAÍDA (placeholder,
-                                      target_map/x/y "EDIT_ME")
+      o de MENOR y (mais ao norte) → transição de SAÍDA (placeholder
+                                      NUMÉRICO seguro — maps/map_1.csv
+                                      em (0,0) — EDITE pro destino real;
+                                      nunca string tipo "EDIT_ME" aqui,
+                                      quebraria o int() no carregamento)
       o de MAIOR y (mais ao sul)   → ponto de chegada/respawn ("player")
 
 Uso:
@@ -193,7 +197,7 @@ def convert_dungeon_entities(entities_png: str, json_path: str,
                 "respawnable": False,
                 "level_min": boss_level, "level_max": boss_level,
                 "race": race, "class": entity_class,
-                "loot": {}, "gold_min": 0, "gold_max": 0,
+                "name": "EDIT_ME", "loot": {}, "gold_min": 0, "gold_max": 0,
                 "spawns": [{"type": "melee", "tier": "boss", "count": 1}],
             })
         else:
@@ -234,7 +238,7 @@ def convert_dungeon_entities(entities_png: str, json_path: str,
     print(f"JSON   : {json_path}  ✓")
     print(f"\nEntidades encontradas:")
     print(f"  Elite (sem respawn) : {n_elite}")
-    print(f"  Boss  (sem respawn) : {n_boss}  (edite loot/gold_min/gold_max no JSON)")
+    print(f"  Boss  (sem respawn) : {n_boss}  (edite name/loot/gold_min/gold_max no JSON)")
     if n_skipped:
         print(f"  Clusters ignorados  : {n_skipped}")
     print(f"  Entrada/respawn     : {player_pos if player_pos else 'NÃO ENCONTRADO'}")

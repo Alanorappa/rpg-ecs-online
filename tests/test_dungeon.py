@@ -181,6 +181,62 @@ class TestSpawnZoneNaoRespawnavelViaCombateReal(unittest.TestCase):
                          "mob não deveria ter voltado depois de morto em combate real")
 
 
+# ── SpawnZone.name — nome exibido customizado (08/10/2026) ──────────────────
+
+class TestSpawnZoneNomeCustomizado(unittest.TestCase):
+    """`SpawnZone.name` repassado como `identity_name` pro create_enemy() já
+    existente — boss de dungeon com nome próprio (ex: "Rainha Aracne") sem
+    deixar de usar "Aranha" como raça (stats/sprite)."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+
+    def test_zona_com_name_sobrescreve_nome_exibido_mas_nao_a_raca(self):
+        from engine.components import EntityIdentity
+        self.ws._create_spawn_zones_for_map([{
+            "x": 65, "y": 65, "radius": 1, "enemy_type": "melee",
+            "enemy_tier": "boss", "count": 1, "respawn_cooldown": 90.0,
+            "level_min": 7, "level_max": 7, "race": "Aranha",
+            "name": "Rainha Aracne",
+        }], self.ws._map_file)
+        zone_eid_new = next(eid for eid, z in self.ws.world.get_entities_with(SpawnZone)
+                           if (z.center_x, z.center_y) == (65, 65))
+        self.ws.world.add_component(zone_eid_new, MapLocation(self.ws._map_file))
+
+        spawn_player(self.ws, "snb", 65, 65)
+        run_ticks(self.ws, 400)
+
+        zone = next(z for _, z in self.ws.world.get_entities_with(SpawnZone)
+                   if (z.center_x, z.center_y) == (65, 65))
+        self.assertTrue(zone.active_entity_ids)
+        mob_eid = next(iter(zone.active_entity_ids))
+        ident = self.ws.world.get_component(mob_eid, EntityIdentity)
+        self.assertEqual(ident.name, "Rainha Aracne")
+        self.assertEqual(ident.race, "Fera",
+                         "race (stats/MOB_TABLE) continua Aranha->Fera — só o nome exibido muda")
+
+    def test_zona_sem_name_continua_mostrando_a_raca_como_sempre(self):
+        from engine.components import EntityIdentity
+        self.ws._create_spawn_zones_for_map([{
+            "x": 66, "y": 66, "radius": 1, "enemy_type": "melee",
+            "enemy_tier": "elite", "count": 1, "respawn_cooldown": 90.0,
+            "level_min": 5, "level_max": 5, "race": "Aranha",
+        }], self.ws._map_file)
+        zone_eid_new2 = next(eid for eid, z in self.ws.world.get_entities_with(SpawnZone)
+                            if (z.center_x, z.center_y) == (66, 66))
+        self.ws.world.add_component(zone_eid_new2, MapLocation(self.ws._map_file))
+
+        spawn_player(self.ws, "snb2", 66, 66)
+        run_ticks(self.ws, 400)
+
+        zone = next(z for _, z in self.ws.world.get_entities_with(SpawnZone)
+                   if (z.center_x, z.center_y) == (66, 66))
+        self.assertTrue(zone.active_entity_ids)
+        mob_eid = next(iter(zone.active_entity_ids))
+        ident = self.ws.world.get_component(mob_eid, EntityIdentity)
+        self.assertEqual(ident.name, "Aranha", "sem 'name', comportamento de sempre (mostra a raça)")
+
+
 # ── CustomLootTable — prioridade total sobre MOB_TABLE ──────────────────────
 
 class TestCustomLootTablePrioridadeSobreMobTable(unittest.TestCase):

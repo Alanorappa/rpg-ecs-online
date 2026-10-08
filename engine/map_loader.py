@@ -595,6 +595,10 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
                     "race":             sp.get("race", zone.get("race", "Humanoide")),
                     "entity_class":     sp.get("class", zone.get("class", "")),
                     "faction":          sp.get("faction", zone.get("faction", "monstros_hostis")),
+                    # Nome exibido customizado (08/10/2026, ver CLAUDE.md) —
+                    # "" (default) = mostra a raça, igual sempre. Mesmo
+                    # fallback por-spawn/por-zona de race/class acima.
+                    "name":             sp.get("name", zone.get("name", "")),
                     # Dungeon instanciada (07/10/2026, ver CLAUDE.md) — zona
                     # sem respawn + loot de boss específico deste mapa.
                     "respawnable":      zone.get("respawnable", True),

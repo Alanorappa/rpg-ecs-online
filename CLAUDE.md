@@ -1224,6 +1224,17 @@ padrão a quebrar, não só os bugs individuais.
   mudar só um é um gate pela metade que parece corrigido em teste
   sintético (`world.remove_entity()` direto) mas continua quebrado em
   combate real.
+- **Nome exibido customizado de um mob criado via `SpawnZone`** (boss
+  de dungeon/elite raro com nome próprio, ex: "Rainha Aracne" em vez
+  da raça crua "Aranha") → campo `SpawnZone.name` (08/10/2026),
+  repassado como `identity_name` pro `create_enemy()` JÁ EXISTENTE
+  (`engine/entity_factory.py` — mesmo parâmetro que NPCs com nome
+  próprio e mobs de jungle já usam, nenhum componente/mecanismo novo).
+  `"name"` no JSON do mapa (`_entities.json::spawn_zones[].spawns[]`
+  ou no nível da zona, mesmo fallback por-spawn/por-zona que
+  `race`/`class` já têm) — "" (default) = comportamento de sempre
+  (mostra a raça). `race` continua definindo stats/sprite/aparência —
+  só o NOME exibido muda, nunca confundir os dois.
 - **Loot de boss específico de uma dungeon/instância** (diferente de
   todo mob normal, cujo loot vem SEMPRE de
   `content/mob_definitions.py::MOB_TABLE`) → componente

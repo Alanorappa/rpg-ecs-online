@@ -5098,6 +5098,7 @@ class SpawnZoneSystem(System):
             race=zone.race,
             entity_class=zone.entity_class,
             level=level,
+            identity_name=zone.name,
             faction=zone.faction,
         )
         self.world.add_component(new_eid, SpawnZoneOwner(zone_eid))
