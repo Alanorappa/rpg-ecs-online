@@ -126,7 +126,7 @@
       "name": "Caterina Alisarf",
       "level": 60,
       "profession": "Anfitriã",
-      "quest_ids": ["bem_vindo_guerreiro"],
+      "quest_ids": ["bem_vindo_guerreiro", "bem_vindo_arqueiro"],
       "turn_in_ids": ["artefato_misterioso"]
     },
     {
@@ -177,8 +177,8 @@
       "class_id": "arqueiro",
       "level": 60,
       "profession": "Mestre Arqueiro",
-      "quest_ids": [],
-      "turn_in_ids": []
+      "quest_ids": ["primeiros_tiros", "antes_da_batalha"],
+      "turn_in_ids": ["bem_vindo_arqueiro", "primeiros_tiros", "antes_da_batalha"]
     }
   ],
   "training_dummies": [

@@ -599,6 +599,61 @@ QUESTS: dict[str, QuestDef] = {
         "A propósito, tenho um novo desafio para você!",
     ),
 
+    # ── Quests Arqueiro ──────────────────────────────────────────────────────────
+
+    "bem_vindo_arqueiro": QuestDef(
+        title="Bem-vindo!",
+        description="Bem-vindo, {player_name}. Por aqui, quem erra o primeiro tiro raramente "
+                    "vive pro segundo. Os guerreiros levam o corte na cara, os magos queimam o "
+                    "que veem — você vai ficar longe, atirar rápido, e nunca deixar ninguém chegar "
+                    "perto o bastante pra te tocar. Pelo menos essa é a teoria. Vá falar com André "
+                    "Von Han'Duch, o Mestre Arqueiro — ele te dá o que precisa pra não morrer na "
+                    "primeira semana.",
+        objectives=(
+            ObjectiveDef(type="talk_to_npc", target="Andre Von Han'Duch", count=1),
+        ),
+        reward=QuestReward(xp=10, items=("short_bow", "basic_quiver")),
+        class_req="arqueiro",
+        completion="Então é você que a Caterina mandou. Vamos ver se aguenta. Toma esse arco "
+                    "curto e essa aljava básica — não é grande coisa, mas já separa quem atira de "
+                    "quem só segura um arco. Volte quando souber usar os dois.",
+    ),
+
+    "primeiros_tiros": QuestDef(
+        title="Primeiros Tiros",
+        description="Um arco na mão não faz de você um arqueiro — só faz de você alguém "
+                    "segurando um arco. Antes de ensinar qualquer coisa, quero ver se você "
+                    "consegue acertar um alvo PARADO. Vai até o boneco de treino ali na frente e "
+                    "desfira uns tiros básicos. Dez acertos. Sem desculpa.",
+        objectives=(
+            ObjectiveDef(type="auto_attack_hit", target="Boneco de treino", count=10),
+        ),
+        reward=QuestReward(xp=15, items=(("arrow", 100),), skill="recarregar"),
+        class_req="arqueiro",
+        requires=("bem_vindo_arqueiro",),
+        completion="Não foi perfeito, mas acertou mais do que errou — o suficiente pra eu não "
+                    "me arrepender. Toma essas cem flechas, vai precisar. E aprenda isso agora, "
+                    "porque vou cobrar depois: Recarregar. Sua aljava não é infinita, e descobrir "
+                    "isso no meio de uma luta é a última coisa que você descobre na vida.",
+    ),
+
+    "antes_da_batalha": QuestDef(
+        title="Antes da Batalha",
+        description="Flechas acabam. Sempre acabam. E não importa o quão bom seu olho seja, um "
+                    "arqueiro sem munição é só um alvo parado esperando a vez dele. Por isso: use "
+                    "Recarregar AGORA, só pra eu ver que entendeu — e nunca mais esqueça de "
+                    "recarregar ANTES de entrar numa luta de verdade, nunca no meio dela.",
+        objectives=(
+            ObjectiveDef(type="use_skill", target="recarregar", count=1),
+        ),
+        reward=QuestReward(xp=25),
+        class_req="arqueiro",
+        requires=("primeiros_tiros",),
+        completion="Viu como é simples? Um segundo de atenção agora economiza sua vida depois. "
+                    "Guarde esse hábito: recarregue ANTES da batalha — no meio dela, você não vai "
+                    "ter esse segundo.",
+    ),
+
     # ── Equipamento ───────────────────────────────────────────────────────────
     "first_equip": QuestDef(
         title="Armado e Perigoso",
