@@ -122,6 +122,11 @@ _RAW_ITEMS = {
         modifiers=[Modifier("armor", 5)],
         rarity="common", value=8),
 
+    "quitino_shield": lambda: Item(
+        "Escudo de Quitino", "shield", "offhand",
+        modifiers=[Modifier("armor", 12)],
+        rarity="uncommon", value=25),
+
     "iron_sword": lambda: Item(
         "Espada de Ferro", "weapon", "mainhand",
         modifiers=[Modifier("crit_rating", 0.01)], rarity="uncommon", value=35,
