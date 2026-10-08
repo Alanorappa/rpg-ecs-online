@@ -50,6 +50,10 @@
 | Ranking Geral — servidor (consulta no banco) | `server/auth.py` | `get_ranking(category)` — level via coluna, skill via `skill_levels_json` lido em Python, até 100 entradas |
 | Ranking Geral — servidor (bridge/handler) | `server/ranking_processor.py`, `server/session.py` | `RankingProcessorMixin.process_ranking_request`; `_handle_ranking_request` |
 | Ranking Geral — cliente | `ui/ranking_system.py` | `RankingSystem` — modal read-only (tecla K), sidebar de categorias + tabela rolável, cache por categoria |
+| Launcher — API HTTP do servidor | `server/http_api.py` | `aiohttp`, porta própria (`LAUNCHER_API_PORT`), mesmo processo/TLS do WebSocket — `/launcher/version`/`/launcher/login`/`/launcher/download` |
+| Launcher — hash de senha compartilhado | `shared/auth_utils.py` | `hash_password()` — usado por `client/network.py` e `launcher/login_ui.py` |
+| Launcher — cliente (login + auto-update) | `launcher_main.py`, `launcher/update_client.py`, `launcher/login_ui.py` | `update_client.py` = lógica pura (versão/download/sha256/extração/spawn do jogo); `login_ui.py` = tkinter |
+| Launcher — build/release | `release_tools/rpg_online_launcher.spec`, `release_tools/build_launcher.ps1`, `release_tools/release_client.ps1` | `release_client.ps1` builda os 2 exes, publica zip de auto-atualização em `releases/` no servidor (sem reiniciar o jogo) |
 | Duelo — servidor | `server/duel_processor.py` | `DuelProcessorMixin` — `_duel_pairs`, convites, tick de distância, interceptor de golpe letal |
 | Duelo — cliente | `client/duel_handlers.py` | `DuelHandlers` — modal de convite, contexto PvP client-side, avisos, nameplate vermelho do oponente |
 | Party/Grupo — servidor | `server/party_processor.py` | `PartyProcessorMixin` — `_parties`/`_player_party_id` (N-ário), convites, líder, XP compartilhado (`_party_members_in_range`) |
@@ -360,6 +364,7 @@ rpg_ecs_online/
 │   │                                  contra `_portal_gates_by_map` (nunca via ZONE_CHANGE_REQ)
 │   ├── ranking_processor.py         ← RankingProcessorMixin: Ranking Geral (06/10/2026),
 │   │                                  bridge fino pra auth.get_ranking (level/skill level, todos os personagens)
+│   ├── http_api.py                  ← API HTTP do Launcher (08/10/2026) — aiohttp, mesmo processo/TLS do WS
 │   ├── party_processor.py           ← PartyProcessorMixin: grupo N-ário, convites, líder, XP compartilhado
 │   ├── pvp_zone_processor.py        ← PvpZoneProcessorMixin: zona PvP (Fase F), stateless, sem tick-check
 │   ├── bush_zone_processor.py       ← BushZoneProcessorMixin: stealth de bush estilo MOBA, stateless, sem tick-check

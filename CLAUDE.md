@@ -1278,6 +1278,44 @@ padrão a quebrar, não só os bugs individuais.
   `end_matches_of`/`end_bg_matches_of` — sem isso, o save persistiria o
   map_id SINTÉTICO da instância. Ver `arquitetura/GERAR_DUNGEON_PNG.md`
   pro pipeline de criação do mapa a partir de PNG.
+- **Hash de senha do cliente** (antes de sair pela rede — nunca texto
+  puro, ver "Segurança" abaixo) → `shared/auth_utils.hash_password()`
+  (08/10/2026) — fonte ÚNICA, usada por `client/network.py` (login E
+  registro) e pelo Launcher (`launcher/login_ui.py`) — NUNCA reimplementar
+  `hashlib.sha256(...)` inline num 3º lugar.
+- **Nova API HTTP server-side** (fora do protocolo WebSocket de
+  gameplay — ex: o Launcher) → `server/http_api.py` (08/10/2026,
+  `aiohttp`, único HTTP real do projeto) — roda DENTRO do mesmo
+  processo/event loop de `server/main.py` (`start_http_api`, chamado
+  antes do `async with websockets.serve`), porta própria
+  (`LAUNCHER_API_PORT`, `shared/constants.py`), MESMO certificado TLS
+  autoassinado já usado pelo WebSocket — NUNCA gerar certificado novo
+  nem subir um serviço systemd separado pra isso. Qualquer rota nova
+  que precise de autenticação delega 100% pra `server/auth.py::
+  authenticate()` já existente — nunca reimplementar verificação de
+  senha num endpoint HTTP.
+- **Publicar uma versão nova do CLIENTE** → `release_tools/
+  release_client.ps1` (08/10/2026) — builda jogo+launcher, zipa
+  `dist/RPG_Online` (NUNCA inclui `Launcher.exe` — ver próximo bullet),
+  calcula sha256, `scp` pra `releases/` no servidor. **Independente de
+  `deploy_server.ps1`** — publicar cliente novo NUNCA reinicia o
+  servidor do jogo (processo/sessões de quem já está conectado
+  continuam intactos).
+- **Launcher nunca se autossubstitui** — o zip de auto-atualização
+  (`release_tools/release_client.ps1`) NUNCA contém `Launcher.exe`, só
+  os arquivos do jogo — elimina de vez o problema de Windows não deixar
+  um `.exe` sobrescrever a si mesmo rodando. `launcher/update_client.py`
+  (lógica pura, sem tkinter — testável sem abrir UI) é o ÚNICO lugar
+  que baixa/confere sha256 (fail-closed: hash vazio NUNCA passa,
+  `verify_sha256`)/extrai — nunca duplicar essa lógica dentro de
+  `launcher/login_ui.py` (só UI, chama as funções puras).
+- **`RPG_Online.exe` recusa abrir fora do Launcher** (`main.py`, só em
+  build `frozen` — `python main.py` em dev continua livre) — checagem
+  de `os.environ.get("RPG_LAUNCHED_BY_LAUNCHER") != "1"`, variável
+  setada por `launcher/update_client.py::launch_game` no
+  `subprocess.Popen`. É uma checagem de conveniência (evita abrir o exe
+  sem querer), NUNCA segurança de verdade — decisão explícita do
+  usuário de recusar TOTAL (mensagem + `sys.exit`), não só avisar.
 
 ### Atualização coesa ao adicionar sistema novo (22/07/2026 — feedback recorrente do usuário)
 - **Nunca** deixar uma atualização acontecer "de carona" em outra ação sem

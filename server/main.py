@@ -51,7 +51,7 @@ _gc.disable()   # GC manual — evita pauses de 50-200ms no loop de ticks.
 from server.auth         import init_db
 from server.world_server import WorldServer
 from server.session      import SessionManager
-from shared.constants    import SERVER_HOST, SERVER_PORT, PROTOCOL_VERSION
+from shared.constants    import SERVER_HOST, SERVER_PORT, PROTOCOL_VERSION, LAUNCHER_API_PORT
 
 
 def _build_server_ssl_context(cert_path: str, key_path: str) -> "ssl.SSLContext | None":
@@ -138,6 +138,14 @@ async def main(host: str, port: int) -> None:
     log.info(f"[Server] WebSocket em {scheme}://{host}:{port}")
     log.info(f"[Server] Ctrl+C para encerrar\n")
 
+    # API HTTP do Launcher (08/10/2026, ver CLAUDE.md) — mesmo processo/
+    # event loop, porta própria, MESMO certificado TLS do WebSocket. Sobe
+    # ANTES do `async with websockets.serve` pra já estar de pé assim que
+    # o servidor aceita conexões de jogo; cleanup no mesmo `finally` que
+    # já existe pro Ctrl+C.
+    from server.http_api import start_http_api
+    http_runner = await start_http_api(host, LAUNCHER_API_PORT, ssl_context)
+
     # Roda servidor WebSocket e loop de ticks em paralelo
     async with websockets.serve(
         lambda ws: handle_connection(ws, mgr),
@@ -172,6 +180,7 @@ async def main(host: str, port: int) -> None:
             # ImportError cosmético já com o interpretador em desligamento
             # (ver SessionManager.shutdown_dispatch_tasks).
             await mgr.shutdown_dispatch_tasks()
+            await http_runner.cleanup()
             raise
 
 

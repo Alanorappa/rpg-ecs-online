@@ -9,6 +9,21 @@ import sys
 if getattr(sys, "frozen", False):
     os.chdir(os.path.dirname(sys.executable))
 
+# Guarda do Launcher (08/10/2026, pedido do usuário — ver CLAUDE.md):
+# recusa rodar se não foi aberto pelo Launcher.exe (RPG_LAUNCHED_BY_
+# LAUNCHER=1, setado por launcher_main.py no subprocess.Popen). Só em
+# build empacotado (`frozen`) — rodar via `python main.py` em dev
+# continua livre, sem precisar do launcher nem da env var. Checagem de
+# variável de ambiente, NÃO é segurança de verdade (qualquer um
+# tecnicamente capaz contorna) — resolve exatamente o problema pedido
+# (abrir o exe sem querer, por engano/hábito), não um usuário mal-
+# intencionado. Roda ANTES de qualquer import pesado (pygame/rede).
+if getattr(sys, "frozen", False) and os.environ.get("RPG_LAUNCHED_BY_LAUNCHER") != "1":
+    import ctypes as _ctypes_guard
+    _ctypes_guard.windll.user32.MessageBoxW(
+        0, "Abra o jogo pelo Launcher.exe", "RPG Online", 0)
+    sys.exit(1)
+
 # TEMPORÁRIO (29/09/2026) — investigações em aberto do Interceptar (§217)
 # e do mundo preto ao sair da BG (§219): promove flags de config.json pra
 # env var ANTES de qualquer módulo debug.* ser importado (todos leem a env

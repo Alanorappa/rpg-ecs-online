@@ -45,6 +45,14 @@ robocopy "maps" (Join-Path $dist "maps") /E /NFL /NDL /NJH /NJS `
 Write-Host "== Copiando certs/ para $dist =="
 robocopy "certs" (Join-Path $dist "certs") /E /NFL /NDL /NJH /NJS | Out-Null
 
+# version.txt (08/10/2026, ver CLAUDE.md) -- lido por launcher/update_
+# client.py::get_local_version() pra decidir se tem atualizacao nova.
+# Fonte UNICA: shared/constants.py::GAME_VERSION (nunca duplicar o
+# numero aqui).
+$GameVersion = (py -3.10 -c "from shared.constants import GAME_VERSION; print(GAME_VERSION)").Trim()
+Write-Host "== Gravando version.txt ($GameVersion) =="
+$GameVersion | Out-File -FilePath (Join-Path $dist "version.txt") -Encoding ascii -NoNewline
+
 # TLS (02/10/2026): o certificado autoassinado foi gerado com SAN = IP
 # real do servidor -- so faz sentido pra quem conecta nesse IP. Build
 # local (-ServerHost localhost) nao tem certificado pra "localhost",

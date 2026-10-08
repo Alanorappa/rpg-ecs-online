@@ -36,6 +36,14 @@ DEFAULTS = {
     "use_tls":       False,
     "net_user":      "teste",
     "net_pass":      "123456",
+    # "Lembrar login" do Launcher (08/10/2026, ver CLAUDE.md) — NUNCA a
+    # senha em texto puro, só o MESMO hash SHA-256 que já viaja pra rede
+    # hoje (shared/auth_utils.hash_password). "" = nada lembrado.
+    # Campo separado dos net_user/net_pass acima (legado, nunca ligado à
+    # UI de login real — ver launcher_main.py).
+    "remember_login":           False,
+    "remembered_username":     "",
+    "remembered_password_hash": "",
     "music_volume":  0.4,
     "sfx_volume":    1.0,
     "music_enabled": True,

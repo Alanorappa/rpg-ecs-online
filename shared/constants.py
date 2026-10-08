@@ -7,6 +7,11 @@ Qualquer valor aqui deve ser idêntico nos dois lados.
 # ── Rede ──────────────────────────────────────────────────────────────────────
 SERVER_HOST        = "localhost"
 SERVER_PORT        = 8765
+# API HTTP do Launcher (08/10/2026, ver CLAUDE.md) — porta PRÓPRIA, processo/
+# event loop compartilhado com o WebSocket do jogo (server/main.py), nunca um
+# serviço systemd separado. Só version/login/download do launcher — nada de
+# gameplay passa por aqui.
+LAUNCHER_API_PORT  = 8766
 TICK_RATE          = 30          # ticks por segundo
 TICK_INTERVAL      = 1.0 / TICK_RATE   # ~33ms
 

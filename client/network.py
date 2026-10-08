@@ -127,8 +127,8 @@ class NetworkClient:
     def login(self, username: str, password: str,
               ap: float = 0.0, max_hp: int = 0) -> None:
         """Envia LOGIN com stats reais do personagem para o servidor usar."""
-        import hashlib
-        ph = hashlib.sha256(password.encode()).hexdigest()
+        from shared.auth_utils import hash_password
+        ph = hash_password(password)
         # Guarda credenciais para re-login automático após reconnect
         self._login_username      = username
         self._login_password_hash = ph
@@ -145,8 +145,8 @@ class NetworkClient:
     def register(self, username: str, password: str,
                  class_id: str = "guerreiro", char_name: str = "") -> None:
         """Envia pedido de cadastro. Resposta chega como REGISTER_OK / REGISTER_ERROR."""
-        import hashlib
-        ph = hashlib.sha256(password.encode()).hexdigest()
+        from shared.auth_utils import hash_password
+        ph = hash_password(password)
         self.send(MsgType.REGISTER, {
             "username":  username,
             "password":  ph,

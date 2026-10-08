@@ -1512,6 +1512,53 @@ foi filtrar, não deletar. Teste novo:
 (mesma limitação de ambiente já registrada acima — não executado nesta
 sessão).
 
+### 27. Launcher com auto-atualização (08/10/2026)
+
+Pedido do usuário: testers paravam de precisar voltar na itch.io a
+cada build — um `Launcher.exe` próprio (não o app oficial da itch.io,
+descartado explicitamente pelo usuário) faz login, checa versão,
+oferece atualizar, e só então abre `RPG_Online.exe`.
+
+**API HTTP nova** (`server/http_api.py`, `aiohttp` — único HTTP real do
+projeto até agora) roda DENTRO do mesmo processo/event loop de
+`server/main.py`, porta própria (`LAUNCHER_API_PORT=8766`,
+`shared/constants.py`), MESMO certificado TLS autoassinado já usado
+pelo WebSocket (nunca gera certificado novo, nunca sobe serviço
+systemd separado):
+- `GET /launcher/version` → `{version, sha256}` (version = `GAME_VERSION`
+  já existente; sha256 lido de `releases/RPG_Online.sha256`, gravado
+  por `release_tools/release_client.ps1`).
+- `POST /launcher/login` → `{ok}` — delega 100% pra
+  `server/auth.py::authenticate()` já existente, NUNCA abre sessão de
+  jogo real (isso acontece de novo via WS quando `RPG_Online.exe` sobe).
+- `GET /launcher/download` → stream do zip mais recente
+  (`releases/RPG_Online.zip`).
+
+**Publicar uma versão nova do cliente é independente de reiniciar o
+servidor do jogo** — `release_tools/release_client.ps1` só faz
+`scp` pra `releases/` no servidor, nunca reinicia `rpg-server.service`
+(diferente de `deploy_server.ps1`, que é sobre o CÓDIGO do servidor).
+
+**Launcher nunca se autossubstitui**: o zip de auto-atualização NUNCA
+contém `Launcher.exe` (só os arquivos do jogo) — elimina de vez o
+problema clássico de Windows não deixar um `.exe` sobrescrever a si
+mesmo rodando. `launcher/update_client.py` (lógica pura, sem UI) baixa
+→ confere sha256 (fail-closed: hash vazio nunca passa) → extrai por
+cima da pasta → `subprocess.Popen` do jogo com
+`RPG_LAUNCHED_BY_LAUNCHER=1`.
+
+**`RPG_Online.exe` recusa abrir fora do launcher** (`main.py`, só em
+build `frozen` — `python main.py` em dev continua livre) — checagem de
+env var, não é segurança de verdade, só evita abrir o exe por engano
+(decisão explícita do usuário: recusa TOTAL, não só aviso).
+
+**Fluxo "Não atualizar" bloqueia** (decisão explícita do usuário): se
+tem versão nova e o tester recusa, volta pro login — nunca abre o jogo
+desatualizado.
+
+Ver `CLAUDE.md` (pontos únicos de verdade) e `PROBLEMAS_ARQUITETURA.md`
+pra detalhes de implementação/limites aceitos.
+
 ## Fluxo de tick — `WorldServer._tick(dt)` — ordem exata
 
 ```
