@@ -270,6 +270,14 @@
       "target_map": "maps/map_cave_east.csv",
       "target_x": 1,
       "target_y": 34
+    },
+    {
+      "x": 137,
+      "y": 411,
+      "target_map": "maps/aracnopolis_dungeon.csv",
+      "dungeon_key": "aracnopolis",
+      "target_x": 87,
+      "target_y": 148
     }
 
   ],
