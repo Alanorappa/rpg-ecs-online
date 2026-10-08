@@ -1211,7 +1211,19 @@ padrão a quebrar, não só os bugs individuais.
   dungeon sempre começa com a zona cheia — nenhum estado
   cross-instância é necessário. Gerado automaticamente por
   `tools/png_to_dungeon.py` a partir de cluster de pixel único na PNG
-  de entidades — ver `arquitetura/GERAR_DUNGEON_PNG.md`.
+  de entidades — ver `arquitetura/GERAR_DUNGEON_PNG.md`. **`zone.
+  respawnable` tem DOIS pontos que agendam respawn, não um** (bug real
+  em produção, 08/10/2026, ver PROBLEMAS_ARQUITETURA.md §252) — o
+  cleanup sweep de `SpawnZoneSystem.update()` (só fallback, alcançado
+  quando a entidade some por outro meio que não combate) E
+  `server/server_death_handler.py` (passo 6, "Notifica SpawnZone"),
+  que é quem REALMENTE agenda em toda morte de combate de verdade (o
+  sweep de `update()` nunca alcança esse caso — a entidade já foi
+  removida antes dele rodar). Os DOIS precisam do guard
+  `if zone.respawnable:` antes de `zone.respawn_timers.append(...)` —
+  mudar só um é um gate pela metade que parece corrigido em teste
+  sintético (`world.remove_entity()` direto) mas continua quebrado em
+  combate real.
 - **Loot de boss específico de uma dungeon/instância** (diferente de
   todo mob normal, cujo loot vem SEMPRE de
   `content/mob_definitions.py::MOB_TABLE`) → componente

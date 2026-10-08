@@ -26100,3 +26100,59 @@ não têm relação com esta mudança.
 Ver `CLAUDE.md` (pontos únicos de verdade de dungeon) e
 `arquitetura/ARQUITETURA ONLINE.md` (tabela de status) pro resto da
 feature.
+
+## 252. Zona sem respawn da dungeon continuava respawnando em morte real de combate (08/10/2026)
+
+**Sintoma relatado pelo usuário, em teste real na Aracnópolis**: "matei
+o último boss mais de uma vez, e outros mobs inúmeras vezes" — apesar
+de toda zona da dungeon ter `respawnable=False` (§251/CLAUDE.md).
+
+**Investigação**: reproduzi o cenário exato (não um teste sintético)
+usando o `aracnopolis_dungeon_entities.json` REAL já deployado —
+entrei numa instância, deixei as 41 zonas povoarem, matei TODAS via
+`world.remove_entity()` direto, esperei bem além do cooldown: zero
+respawn, resultado correto. Ou seja, o teste "óbvio" (mesmo padrão dos
+testes automatizados já escritos pra este bug) não reproduzia o
+sintoma relatado — sinal de que a causa raiz estava em outro lugar,
+não no mecanismo que eu já tinha mexido.
+
+**Causa raiz**: existe um SEGUNDO ponto, completamente separado, que
+agenda respawn de `SpawnZone` — `server/server_death_handler.py`
+(passo 6, "Notifica SpawnZone"), chamado em TODA morte real de
+combate. Por design, é DELIBERADAMENTE redundante com o cleanup sweep
+de `SpawnZoneSystem.update()` (comentário original já explicava o
+motivo: "Fazemos aqui para não perder o timer quando SpawnZoneSystem
+roda depois e vê before == alive" — ou seja, numa morte REAL a
+entidade já foi removida ANTES do sweep de `update()` rodar, então
+esse sweep NUNCA pega uma morte de combate de verdade, só entidades
+que somem por outro meio). Eu só tinha colocado o guard
+`if zone.respawnable:` no sweep de `update()` (o fallback) — o ponto
+que de fato dispara sempre (`server_death_handler.py`) continuava
+incondicional. `world.remove_entity()` direto nos meus testes originais
+exercitava EXATAMENTE o caminho que tem o guard (o fallback), nunca o
+caminho real de combate — por isso a suíte passava com o bug presente.
+
+**Fix**: mesmo guard `if zone.respawnable:` adicionado em
+`server_death_handler.py` antes de `zone.respawn_timers.append(...)`.
+
+**Lição**: "matar" um mob num teste sintetizando a remoção direta da
+entidade (`world.remove_entity()`) não é o mesmo caminho de código que
+uma morte de combate real (`CombatStats.current_hp=0` +
+`PendingDeath` + tick) — pra qualquer mecanismo ligado a MORTE de
+mob/player, mapear TODOS os pontos que reagem a morte antes de
+assumir que um teste sintético cobre o caminho real (mesma classe de
+lição já registrada pra `on_kill` em §130/§132, agora reafirmada pro
+par `SpawnZoneSystem.update()`/`server_death_handler.py`).
+
+**Teste**: `tests/test_dungeon.py::TestSpawnZoneNaoRespawnavelViaCombateReal`
+— mata o mob pelo caminho real (hp=0 + PendingDeath + `run_ticks`),
+não por `remove_entity()`. Revert-to-confirm: removendo o guard,
+`zone.respawn_timers` ganhava `[1.0]` em vez de ficar vazio —
+reproduzido, confirmado, restaurado. Suíte focada (dungeon + jungle_camps
++ server + map_filter, 125 passed, 3 failed — mesma lista já conhecida
+de pré-existentes/flaky, nenhuma nova).
+
+Bug 2 relatado na MESMA sessão de teste (algo bateu no personagem sem
+aparecer na tela, logo após entrar na dungeon e aggrar o 1º/2º mob) —
+em investigação, ainda sem causa raiz confirmada; ver próxima entrada
+quando fechada.
