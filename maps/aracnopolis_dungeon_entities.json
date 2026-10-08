@@ -411,7 +411,8 @@
       "loot": {"arcane_wand": 0.15,
                "hunter_bow": 0.15,
                "quitino_shield": 0.15,
-               "savage_shoulders": 0.15},
+               "savage_shoulders": 0.15,
+               "leather_vest": 0.15},
       "gold_min": 150,
       "gold_max": 300,
       "spawns": [
