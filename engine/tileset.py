@@ -196,7 +196,7 @@ ARENA_GATE_TILE = TileType("ArenaGate", (200,  50,  50), is_solid=True,  vision_
 #  Edite o JSON gerado para ajustar level/tier de cada zona.
 
 TILE_PALETTE: dict[tuple, str] = {
-    (  0, 200,   0): "G",   # Grama
+    (114, 117,  27): "G",   # Grama
     (200, 200, 200): ".",   # Piso de pedra (cidade)
     (240, 200,  60): "~",   # Areia
     (160, 100,  30): "f",   # Terra batida
