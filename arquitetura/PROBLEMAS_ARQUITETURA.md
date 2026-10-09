@@ -26479,3 +26479,39 @@ aplicar" (regra já existente no CLAUDE.md) precisa ser interpretado
 como "reproduzi o cenário REPRESENTATIVO", não só "reproduzi uma
 versão simplificada que toca na mesma função" — a simplificação em si
 pode esconder exatamente o efeito colateral que mais importa.
+
+## 259. Auto-atualização do Launcher apagava o config.json do jogador (09/10/2026)
+
+**Pergunta do usuário, não um bug observado em jogo**: "quando
+atualizamos o jogo pelo launcher, o arquivo config também é
+substituído?" — investigação confirmou que sim, e que isso era um
+problema real ainda não notado.
+
+**Causa raiz**: `release_tools/build_client.ps1` grava um
+`config.json` NOVO e PARCIAL em todo build (só `server_host`/`porta`/
+`use_tls`/`scale`/`ui_scale`/`music_volume`/`sfx_volume` — o resto vem
+dos `DEFAULTS` de `config.py` em runtime). Esse arquivo vai dentro do
+zip de auto-atualização igual qualquer outro. `launcher/
+update_client.py::apply_update()` fazia só `zipfile.ZipFile.
+extractall(install_dir)` — extração de arquivo SUBSTITUI o arquivo
+inteiro, nunca mescla conteúdo JSON. Resultado: toda atualização
+aplicada por cima de uma instalação existente apagava o `config.json`
+REAL do jogador (hotbar configurada, atalhos de menu customizados,
+modo de janela, ajustes do F12) e — como o Launcher usa o MESMO
+arquivo/mesma pasta (`config.py::CONFIG_FILE` resolve pelo diretório
+do executável, e Launcher.exe/RPG_Online.exe moram juntos desde a
+fusão de pastas, ver §255) — também apagava o login lembrado no
+próprio Launcher.
+
+**Fix**: `apply_update()` passa a pular `config.json` da extração
+SE já existir um na pasta de instalação (update real) — só deixa o
+`config.json` do zip chegar quando NÃO existe nenhum ainda (1ª
+instalação). Resto do zip continua extraído normalmente.
+
+**Teste**: `tests/test_launcher_update_client.py::TestApplyUpdate` —
+`test_preserva_config_json_existente_do_jogador` (config.json do
+jogador intacto depois do update, resto do zip aplicado normalmente)
++ `test_instalacao_nova_sem_config_json_recebe_o_do_zip` (1ª instalação
+continua recebendo o config.json do zip). Revert-to-confirm via `git
+stash`: sem o fix, o 1º teste falha reproduzindo o bug exato
+(config.json do jogador vira o do zip) — restaurado.

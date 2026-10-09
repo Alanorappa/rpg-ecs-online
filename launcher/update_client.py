@@ -119,15 +119,34 @@ def verify_sha256(file_path: str, expected: str) -> bool:
     return h.hexdigest() == expected
 
 
+_CONFIG_FILENAME = "config.json"   # mesmo nome que config.py::CONFIG_FILE usa
+
+
 def apply_update(zip_path: str, install_dir: str) -> None:
     """Extrai por cima da pasta de instalação. Seguro porque o zip
     publicado por release_tools/release_client.ps1 NUNCA contém
     Launcher.exe (só os arquivos do jogo) — o processo do launcher
     nunca precisa se autossubstituir, elimina o problema de arquivo
-    travado do Windows por completo."""
+    travado do Windows por completo.
+
+    `config.json` do jogador é PRESERVADO se já existir (09/10/2026,
+    bug real relatado pelo usuário) — o zip sempre inclui um
+    `config.json` novo (gravado por build_client.ps1, só com
+    server_host/porta/scale/volume, nunca a configuração completa do
+    jogador), e `extractall` sozinho SOBRESCREVE o arquivo inteiro,
+    apagando hotbar/atalhos/modo de janela/login lembrado no Launcher
+    (mesmo arquivo) a cada atualização. Instalação NOVA (sem
+    config.json ainda) continua recebendo o arquivo do zip normalmente
+    — só update por cima de uma instalação existente preserva."""
+    import os
     import zipfile
+    config_path = os.path.join(install_dir, _CONFIG_FILENAME)
+    preserve_config = os.path.isfile(config_path)
     with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(install_dir)
+        for member in zf.namelist():
+            if member == _CONFIG_FILENAME and preserve_config:
+                continue
+            zf.extract(member, install_dir)
 
 
 def launch_game(install_dir: str, username: str = "", password_hash: str = "") -> None:

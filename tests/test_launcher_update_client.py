@@ -104,6 +104,52 @@ class TestApplyUpdate(unittest.TestCase):
             uc.apply_update(zip_path, install_dir)
             self.assertEqual(open(launcher_path).read(), original_content)
 
+    def test_preserva_config_json_existente_do_jogador(self):
+        """Bug real relatado pelo usuário (09/10/2026): config.json do
+        zip (parcial, só server_host/porta/scale/volume, gravado por
+        build_client.ps1) sobrescrevia o config.json COMPLETO do
+        jogador a cada update, apagando hotbar/atalhos/login lembrado
+        no Launcher (mesmo arquivo)."""
+        with tempfile.TemporaryDirectory() as src_dir, \
+             tempfile.TemporaryDirectory() as install_dir:
+            player_config_path = os.path.join(install_dir, "config.json")
+            player_config = '{"hotbar": {"slots": ["bola_de_fogo"]}, "scale": 2.0}'
+            with open(player_config_path, "w") as f:
+                f.write(player_config)
+
+            with open(os.path.join(src_dir, "RPG_Online.exe"), "w") as f:
+                f.write("jogo novo")
+            with open(os.path.join(src_dir, "config.json"), "w") as f:
+                f.write('{"server_host": "novo.host", "scale": 1.25}')
+            zip_path = os.path.join(src_dir, "release.zip")
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.write(os.path.join(src_dir, "RPG_Online.exe"), "RPG_Online.exe")
+                zf.write(os.path.join(src_dir, "config.json"), "config.json")
+
+            uc.apply_update(zip_path, install_dir)
+
+            self.assertEqual(open(player_config_path).read(), player_config,
+                             "config.json do jogador não pode ser sobrescrito por um update")
+            # resto do update continua aplicado normalmente
+            self.assertTrue(os.path.isfile(os.path.join(install_dir, "RPG_Online.exe")))
+
+    def test_instalacao_nova_sem_config_json_recebe_o_do_zip(self):
+        """Sem config.json pré-existente (1ª instalação) — o do zip
+        precisa continuar chegando normalmente, só updates por cima de
+        uma instalação existente preservam."""
+        with tempfile.TemporaryDirectory() as src_dir, \
+             tempfile.TemporaryDirectory() as install_dir:
+            with open(os.path.join(src_dir, "config.json"), "w") as f:
+                f.write('{"server_host": "novo.host"}')
+            zip_path = os.path.join(src_dir, "release.zip")
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.write(os.path.join(src_dir, "config.json"), "config.json")
+
+            uc.apply_update(zip_path, install_dir)
+
+            with open(os.path.join(install_dir, "config.json")) as f:
+                self.assertEqual(f.read(), '{"server_host": "novo.host"}')
+
 
 class TestNetworkAgainstRealServer(unittest.IsolatedAsyncioTestCase):
     """Sobe o MESMO server/http_api.py::build_app() de verdade (aiohttp

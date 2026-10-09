@@ -1330,6 +1330,14 @@ padrão a quebrar, não só os bugs individuais.
   que baixa/confere sha256 (fail-closed: hash vazio NUNCA passa,
   `verify_sha256`)/extrai — nunca duplicar essa lógica dentro de
   `launcher/login_ui.py` (só UI, chama as funções puras).
+  **`apply_update()` NUNCA sobrescreve um `config.json` já existente**
+  (09/10/2026, ver PROBLEMAS_ARQUITETURA.md §259) — o zip sempre traz um
+  `config.json` parcial (gravado por `build_client.ps1`, só server_host/
+  porta/scale/volume), e `extractall` sozinho troca o arquivo INTEIRO;
+  sem o guard, cada update apagava hotbar/atalhos/modo de janela do
+  jogador E o login lembrado no Launcher (mesmo arquivo/mesma pasta).
+  Só pula a extração desse 1 arquivo quando já existe um — 1ª instalação
+  continua recebendo o do zip normalmente.
 - **`RPG_Online.exe` recusa abrir fora do Launcher** (`main.py`, só em
   build `frozen` — `python main.py` em dev continua livre) — checagem
   de `os.environ.get("RPG_LAUNCHED_BY_LAUNCHER") != "1"`, variável
