@@ -1171,7 +1171,21 @@ padrão a quebrar, não só os bugs individuais.
   início do `render()`, junto do gate de instância. Novo mapa fechado
   futuro (dungeon, mina, etc.) → só adicionar essa 1 chave no JSON dele,
   nunca checar nome/prefixo de arquivo em runtime. Ver
-  PROBLEMAS_ARQUITETURA.md §206.
+  PROBLEMAS_ARQUITETURA.md §206. **Curva de queda do brilho de uma luz
+  (lampião/item)** → `DayNightSystem._get_light_add_gradient()`, sempre
+  `(1 - dist/raio) ** _FALLOFF_EXPONENT` (hoje 0.4), NUNCA reta
+  (`1 - dist/raio` puro, valor antigo) — reta faz a metade externa do
+  raio contribuir pouco sozinha; 2 luzes que só se tocam pela PONTA
+  (nenhuma perto do centro da outra) somavam "fraco + fraco" exatamente
+  ali, parecendo um anel escuro entre elas mesmo a soma acontecendo
+  certo (bug real relatado pelo usuário via screenshot, 09/10/2026, ver
+  PROBLEMAS_ARQUITETURA.md §257). Centro (t=0) e borda (t=1) continuam
+  255/0 com QUALQUER expoente — só a forma da transição no meio muda;
+  mudar o expoente de novo exige aprovação do usuário (afeta o visual
+  de toda luz do jogo, não só casos de sobreposição) e comparação visual
+  antes/depois, nunca só pela matemática. `_get_warm_glow_gradient`
+  (tingimento de cor, bem mais sutil) continua na curva reta de
+  propósito — nunca confundir os dois.
 - **Item de bag aceso sob demanda pelo jogador (clique direito, emite
   luz ao redor de si)** → campo `Item.light_source: dict | None`
   (`{"intensity_pct", "radius_tiles"}`) no catálogo (hoje só `lampiao`,

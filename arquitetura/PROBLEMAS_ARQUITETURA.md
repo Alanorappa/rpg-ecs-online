@@ -26370,3 +26370,55 @@ de tela/jogo rodando), nunca inferido de um comentário — mesma classe
 de lição de `PROBLEMAS_ARQUITETURA.md §11/§23` (não confiar em análise
 de terceiro — aqui a "análise de terceiro" foi meu próprio comentário
 antigo no código).
+
+## 257. Duas luzes (lampião/item) se tocando só pelas pontas pareciam formar um "anel escuro" entre elas (09/10/2026)
+
+**Relatado pelo usuário via screenshot**: uma mancha escura, parada
+num ponto fixo do mapa, aparecia exatamente entre dois postes de luz —
+sumia se as duas luzes apagassem, mas não mudava de forma ao andar ao
+redor (descartando sombra de linha de visão). O próprio usuário
+identificou a geometria exata: "é o anel que fica em volta da luz (onde
+acaba a luz de um poste) porém está dentro da luz de outro poste,
+então era pra se somarem".
+
+**Investigação**: antes de mexer em qualquer código, reproduzi a
+hipótese mais óbvia (ADD de duas luzes se SUBTRAINDO/cancelando) num
+script isolado, usando a `DayNightSystem` real — resultado: a soma
+aditiva nunca fica mais escura que o ambiente ao redor, confirmando que
+o mecanismo ADD/MULT em si está matematicamente correto (nenhuma
+subtração escondida). Só depois de reproduzir a geometria EXATA
+descrita pelo usuário (duas luzes cujos raios só se alcançam pela
+região MAIS EXTERNA de cada uma, nenhuma perto do centro da outra) o
+efeito apareceu visualmente idêntico ao screenshot.
+
+**Causa raiz**: `DayNightSystem._get_light_add_gradient()` usava queda
+LINEAR (`255 * (1 - dist/raio)`) — a metade externa do raio de
+qualquer luz já contribui pouco (ex: a 80% do raio, só 20% do pico).
+Quando duas luzes se tocam exatamente nessa faixa externa de ambas (sem
+alcançar o centro uma da outra), a SOMA de "fraco + fraco" continua
+fraca — visualmente indistinguível de um anel escuro, mesmo a soma
+tecnicamente acontecendo (nunca houve bug de subtração, só pouca
+contribuição dos dois lados).
+
+**Fix**: curva de queda trocada pra `(1 - dist/raio) ** 0.4`
+(`DayNightSystem._FALLOFF_EXPONENT`) — mantém o brilho alto por boa
+parte do raio e só cai forte bem perto da borda de verdade. Centro
+(t=0) e borda (t=1) continuam exatamente 255/0 como antes — só a forma
+da transição no meio muda. Verificado visualmente ANTES de aplicar no
+código real (script de comparação lado a lado, reta vs. curva nova,
+aprovado pelo usuário) — e depois confirmado rodando a `DayNightSystem`
+de verdade (não uma reimplementação paralela) com a mesma geometria do
+bug relatado.
+
+**Teste**: `tests/test_day_night_light_falloff.py` — centro/borda
+continuam 255/0 (nenhuma regressão de contrato), ponto a 70% do raio
+fica mais forte que a reta antiga, e o ponto médio entre 2 luzes
+tocando-se pelas pontas soma mais da metade do pico (antes ficava bem
+abaixo). Revert-to-confirm via `git stash` na curva antiga: 2 dos 5
+testes falham exatamente como esperado (um deles reproduz o valor
+numérico — 102 — previsto à mão antes mesmo de rodar).
+
+**Escopo**: só `_get_light_add_gradient` (brilho ADITIVO) mudou —
+`_get_warm_glow_gradient` (tingimento de cor, bem mais sutil, opacidade
+máxima 90/255) continua na curva reta de propósito, fora do relato do
+usuário.

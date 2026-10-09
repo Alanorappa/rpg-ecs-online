@@ -338,16 +338,33 @@ class DayNightSystem(System):
         # ~6-8ms/frame desenhando cada luz separada TODO frame).
         self._static_clusters: list[dict] = []
 
+    # Expoente da curva de queda do gradiente aditivo (09/10/2026, ver
+    # CLAUDE.md/PROBLEMAS_ARQUITETURA.md) — < 1.0 mantém o brilho ALTO
+    # por boa parte do raio e só cai forte bem perto da borda de
+    # verdade (curva `(1-t)**p`, t=dist/raio). Com p=1.0 (reta, valor
+    # antigo) a metade externa do raio já contribui pouco sozinha; 2
+    # postes que só se tocam pelas PONTAS (nenhum perto do centro do
+    # outro) somavam "fraco + fraco" bem no meio dos dois, visível como
+    # um "anel escuro" entre eles — bug real relatado pelo usuário via
+    # screenshot. p=0.4 testado visualmente (script de verificação,
+    # antes de aplicar): 2 luzes se tocando pela ponta ficam bem mais
+    # próximas de somar de verdade, sem eliminar o formato circular de
+    # cada luz individual. Só afeta ESTE gradiente (brilho aditivo) —
+    # `_get_warm_glow_gradient` (tingimento de cor, bem mais sutil,
+    # opacidade máxima 90/255) continua na curva reta de propósito,
+    # fora de escopo deste bug.
+    _FALLOFF_EXPONENT = 0.4
+
     def _get_light_add_gradient(self, radius_px: int, intensity_pct: int) -> "pygame.Surface":
         """Gradiente radial ADITIVO cacheado por (raio, intensidade) —
         branco (255,255,255) no centro ESCALADO pela intensidade,
-        decaindo linearmente até preto (0,0,0) na borda. Usado com
-        BLEND_RGBA_ADD sobre a camada de escuridão (que começa ESCURA,
-        ver `_MULT_IDENTITY`): somar clareia de volta em direção ao
-        branco — a borda soma (0,0,0), no-op, then o centro soma o
-        máximo permitido pela intensidade. NUNCA usar `set_alpha()` pra
-        modular a força — ver comentário do cache acima, não tem efeito
-        nenhum nesse blend flag.
+        decaindo (via `_FALLOFF_EXPONENT`, ver comentário acima) até
+        preto (0,0,0) na borda. Usado com BLEND_RGBA_ADD sobre a camada
+        de escuridão (que começa ESCURA, ver `_MULT_IDENTITY`): somar
+        clareia de volta em direção ao branco — a borda soma (0,0,0),
+        no-op, then o centro soma o máximo permitido pela intensidade.
+        NUNCA usar `set_alpha()` pra modular a força — ver comentário do
+        cache acima, não tem efeito nenhum nesse blend flag.
 
         27/09/2026 (achado da revisão de performance, documento do plano
         de ação): o cache já evita recalcular pra um (raio, intensidade)
@@ -364,6 +381,7 @@ class DayNightSystem(System):
         if cached is not None:
             return cached
         strength = max(0.0, min(1.0, intensity_pct / 100.0))
+        p = self._FALLOFF_EXPONENT
         d = radius_px * 2
         if _NUMPY_OK:
             xs = np.arange(d)[:, None]
@@ -371,7 +389,7 @@ class DayNightSystem(System):
             dist = np.sqrt((xs - radius_px) ** 2 + (ys - radius_px) ** 2)
             v = np.zeros((d, d), dtype=np.float64)
             mask = dist <= radius_px
-            v[mask] = 255 * (1.0 - dist[mask] / radius_px) * strength
+            v[mask] = 255 * ((1.0 - dist[mask] / radius_px) ** p) * strength
             v = np.round(v).astype(np.uint8)
             arr = np.repeat(v[:, :, None], 3, axis=2)
             surf = pygame.surfarray.make_surface(arr)
@@ -382,7 +400,7 @@ class DayNightSystem(System):
                 for x in range(d):
                     dist_ = ((x - radius_px) ** 2 + (y - radius_px) ** 2) ** 0.5
                     if dist_ <= radius_px:
-                        v_ = round(255 * (1.0 - dist_ / radius_px) * strength)
+                        v_ = round(255 * ((1.0 - dist_ / radius_px) ** p) * strength)
                         surf.set_at((x, y), (v_, v_, v_))
         self._light_gradient_cache[key] = surf
         return surf
