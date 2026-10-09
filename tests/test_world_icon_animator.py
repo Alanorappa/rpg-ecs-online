@@ -36,14 +36,16 @@ class TestGetFrame(unittest.TestCase):
         self.assertEqual(frame.get_size(), (16, 16))
 
     def test_avanca_de_quadro_com_o_tempo(self):
-        """10 quadros, DEFAULT_FRAME_MS=120 — quadro 0 != quadro em
-        now_ms=120 (1 quadro adiante), prova que o tempo realmente
-        avança a animação."""
-        f0 = wia.get_frame("quest_available", 32, 0)
-        f1 = wia.get_frame("quest_available", 32, wia.DEFAULT_FRAME_MS)
-        # Mesmo tamanho, mas regiões diferentes do sheet — comparar bytes.
-        self.assertNotEqual(pygame.image.tobytes(f0, "RGBA"),
-                            pygame.image.tobytes(f1, "RGBA"))
+        """10 quadros — percorrendo o ciclo inteiro, nem todos os quadros
+        podem ser idênticos (prova que o tempo realmente avança a
+        animação). Não assume que quadros ADJACENTES específicos
+        diferem — a arte pode legitimamente segurar a mesma pose por 2+
+        quadros seguidos (ex: "preparação" antes do pulo), então só
+        comparar quadro 0 vs 1 é frágil demais; percorrer o ciclo
+        inteiro é robusto a qualquer desenho de animação."""
+        frames = [pygame.image.tobytes(wia.get_frame("quest_available", 32, i * wia.DEFAULT_FRAME_MS), "RGBA")
+                  for i in range(10)]
+        self.assertGreater(len(set(frames)), 1, "animação deveria ter pelo menos 2 quadros distintos")
 
     def test_loop_volta_ao_quadro_0_apos_ciclo_completo(self):
         """Sheet real tem 10 quadros — em now_ms = 10*frame_ms deveria
