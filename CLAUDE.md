@@ -457,10 +457,18 @@ padrão a quebrar, não só os bugs individuais.
 - **Texto de tooltip de qualquer buff/efeito** → campo `description` em
   `content/status_effects_data.py::EFFECT_DEFS` (01/09/2026) — mesmo
   catálogo central que já dá label/cor/ícone, NUNCA um bloco de texto
-  calculado na mão por `effect_type` (é exatamente o padrão que o
-  tooltip de skill tem, `client/tooltip_handlers.py::
-  _skill_tooltip_lines`'s cadeia de `if sid == "golpe_poderoso": ...` —
-  pedido explícito do usuário pra não repetir isso aqui). Geometria de
+  calculado na mão por `effect_type`. **Texto de tooltip de QUALQUER
+  skill** → campo `"desc"` do `SKILL_CATALOG`
+  (`content/skill_config.py`), lido via `skill.description`
+  (`client/tooltip_handlers.py::_skill_tooltip_lines`) — mesma regra,
+  NUNCA um `if sid == "golpe_poderoso": ...` por skill calculando
+  dano/efeito na mão (09/10/2026, pedido explícito do usuário — essa
+  cadeia existia e foi removida; nunca reintroduzir um 3º lugar com
+  texto hardcoded por skill_id). Se a skill precisa mostrar um NÚMERO
+  calculado (dano real do jogador, por exemplo), isso é um problema
+  de **UX perdida**, não motivo pra reverter — decisão consciente do
+  usuário de priorizar consistência (1 fonte de texto) sobre o cálculo
+  dinâmico que existia antes. Geometria de
   hit-test (qual ícone está sob o mouse) vem de `ui/render_system.py::
   _build_effects_row()`, que devolve `(surface, rects)` — o MESMO
   `ix`/`ICON` já usados pra desenhar, nunca duplicar esse cálculo num

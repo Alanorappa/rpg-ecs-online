@@ -21,40 +21,9 @@ class TooltipHandlers:
     # Helpers de tooltip de habilidades
     # ------------------------------------------------------------------
 
-    def _player_spell_dmg(self, dmg_weapon_pct: float = 0.0,
-                          sp_coeff: float = 1.0) -> int:
-        """Calcula dano de magia usando a fórmula de _spell_damage (média de arma)."""
-        cs = self.world.get_component(self.player_entity, CombatStats)
-        if not cs:
-            return 0
-        from engine.components import Equipment as _EqSpell
-        equip  = self.world.get_component(self.player_entity, _EqSpell)
-        weapon = equip.slots.get("mainhand") if equip else None
-        if weapon and getattr(weapon, "damage_min", 0) > 0:
-            weapon_avg = (weapon.damage_min + weapon.damage_max) / 2.0
-        else:
-            weapon_avg = float(cs.base_physical_damage)
-        return max(1, int(weapon_avg * dmg_weapon_pct + cs.spell_power * sp_coeff))
-
-    def _player_dmg_range(self, multiplier: float = 1.0) -> tuple[int, int]:
-        """Retorna (min, max) de dano físico do jogador × multiplier."""
-        cs = self.world.get_component(self.player_entity, CombatStats)
-        if not cs:
-            return (0, 0)
-        from engine.components import Equipment as _Eq
-        equip = self.world.get_component(self.player_entity, _Eq)
-        weapon = equip.slots.get("mainhand") if equip else None
-        if weapon and weapon.damage_min > 0:
-            base_min = cs.attack_power + weapon.damage_min
-            base_max = cs.attack_power + weapon.damage_max
-        else:
-            base = cs.attack_power + cs.base_physical_damage
-            base_min = base_max = base
-        return (int(base_min * multiplier), int(base_max * multiplier))
-
     def _skill_tooltip_lines(self, skill, is_procced: bool, visual_ready: bool,
                               target_hp_ratio: float, player_rage: int) -> list:
-        """Monta linhas de tooltip no formato: Dano / Cooldown / Status."""
+        """Monta linhas de tooltip no formato: Descrição / Cooldown / Status."""
         C_INFO   = (180, 180, 180)
         C_OK     = (80, 220, 80)
         C_WARN   = (220, 150, 50)
@@ -64,80 +33,14 @@ class TooltipHandlers:
         sid = skill.skill_id
         lines = []
 
-        # ── Dano / Efeito ────────────────────────────────────────────────
-        if sid == "golpe_poderoso":
-            lo, hi = self._player_dmg_range(3.0)
-            lines.append((f"Dano: {lo}–{hi}  (3× dano físico)", C_INFO))
-
-        elif sid == "impacto":
-            lo, hi = self._player_dmg_range(0.5)
-            lines.append((f"Dano: {lo}–{hi}  (50% dano físico — área 3 tiles)", C_INFO))
-
-        elif sid == "executar":
-            lo, hi = self._player_dmg_range(5.0)
-            lines.append((f"Dano: {lo}–{hi}  (5× dano físico)", C_INFO))
-            hp_txt = f"Alvo: {target_hp_ratio*100:.0f}% HP" if target_hp_ratio < 1.0 else "Alvo: —"
-            lines.append((hp_txt, C_WARN if target_hp_ratio > 0.30 else C_OK))
-
-        elif sid == "vitoria_iminente":
-            cs = self.world.get_component(self.player_entity, CombatStats)
-            cura = int(cs.max_hp * 0.30) if cs else 0
-            lines.append((f"Cura: {cura} HP  (30% do HP máximo)", C_HEAL))
-            lines.append((f"Cargas: {skill.charges}/{skill.max_charges}", C_INFO))
-
-        elif sid == "interceptar":
-            lines.append(("Dano: nenhum  (dash até o alvo)", C_INFO))
-
-        elif sid == "golpe_debilitante":
-            lo, hi = self._player_dmg_range(0.5)
-            lines.append((f"Dano: {lo}–{hi}  (50% dano físico)", C_INFO))
-            lines.append(("-50% velocidade do alvo por 5s", C_WARN))
-
-        elif sid == "punho_no_queixo":
-            cs = self.world.get_component(self.player_entity, CombatStats)
-            dmg = int((cs.attack_power if cs else 0) * 0.45)
-            lines.append((f"Dano: {dmg}  (45% do poder de ataque)", C_INFO))
-            lines.append(("Atordoa o alvo por 3s", C_WARN))
-
-        elif sid == "fatiador_de_corpos":
-            lo, hi = self._player_dmg_range(0.45)
-            lines.append((f"Dano: {lo}–{hi}/s por 5s  (45% dano físico — AoE)", C_INFO))
-
-        elif sid == "brado_provocativo":
-            lines.append(("Enlouquece inimigos em raio 3 tiles por 10s", C_WARN))
-            lines.append(("+5% dano causado  /  +10% dano recebido", C_INFO))
-
-        # ── Skills do Mago ───────────────────────────────────────────────
-        elif sid == "bola_de_fogo":
-            dmg = self._player_spell_dmg(0.5, 1.0)
-            lines.append((f"Dano: ~{dmg}  (50% arma + 100% SP)", C_INFO))
-
-        elif sid == "nova_congelante":
-            dmg = self._player_spell_dmg(0.0, 0.5)
-            lines.append((f"Dano: ~{dmg}  (50% SP)", C_INFO))
-            lines.append(("Enraíza inimigos a 3 tiles por 5s", C_WARN))
-
-        elif sid == "bloco_de_gelo":
-            cs = self.world.get_component(self.player_entity, CombatStats)
-            cura_s = int((cs.max_hp if cs else 0) * 0.10)
-            lines.append(("Imunidade total por 5s  (imóvel)", C_WARN))
-            lines.append((f"Regenera +{cura_s} HP/s  (10% HP máx)", C_HEAL))
-
-        elif sid == "polimorfia":
-            lines.append(("Transforma o alvo: perde controle", C_WARN))
-            cs = self.world.get_component(self.player_entity, CombatStats)
-            char = self.world.get_component(self.player_entity, CharacterStats)
-            regen = int((cs.max_hp if cs else 0) * 0.10)
-            lines.append((f"Alvo regenera +{regen} HP/s por 6s", C_INFO))
-            lines.append(("Quebra ao receber dano", C_WARN))
-
-        elif sid == "calamidade_flamejante":
-            dmg = self._player_spell_dmg(0.15, 1.0)
-            lines.append((f"Dano: ~{dmg}/s por 5s  (área 2 tiles)", C_INFO))
-            lines.append(("-50% velocidade dos alvos por 5s", C_WARN))
-
-        else:
-            lines.append((skill.description, C_INFO))
+        # ── Descrição ────────────────────────────────────────────────────
+        # SEMPRE o campo "desc" do SKILL_CATALOG (content/skill_config.py)
+        # — ponto único de verdade do texto, nunca recalculado/hardcoded
+        # aqui por skill (09/10/2026, pedido explícito do usuário — antes
+        # cada skill tinha dano/efeito calculado na mão num if/elif só
+        # pra essa skill, igual o problema já documentado pro tooltip de
+        # item: "NUNCA um bloco de texto calculado na mão por effect_type").
+        lines.append((skill.description, C_INFO))
 
         lines.append(("", C_INFO))  # separador
 
