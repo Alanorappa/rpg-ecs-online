@@ -338,22 +338,25 @@ class DayNightSystem(System):
         # ~6-8ms/frame desenhando cada luz separada TODO frame).
         self._static_clusters: list[dict] = []
 
-    # Expoente da curva de queda do gradiente aditivo (09/10/2026, ver
-    # CLAUDE.md/PROBLEMAS_ARQUITETURA.md) — < 1.0 mantém o brilho ALTO
-    # por boa parte do raio e só cai forte bem perto da borda de
-    # verdade (curva `(1-t)**p`, t=dist/raio). Com p=1.0 (reta, valor
-    # antigo) a metade externa do raio já contribui pouco sozinha; 2
-    # postes que só se tocam pelas PONTAS (nenhum perto do centro do
-    # outro) somavam "fraco + fraco" bem no meio dos dois, visível como
-    # um "anel escuro" entre eles — bug real relatado pelo usuário via
-    # screenshot. p=0.4 testado visualmente (script de verificação,
-    # antes de aplicar): 2 luzes se tocando pela ponta ficam bem mais
-    # próximas de somar de verdade, sem eliminar o formato circular de
-    # cada luz individual. Só afeta ESTE gradiente (brilho aditivo) —
-    # `_get_warm_glow_gradient` (tingimento de cor, bem mais sutil,
-    # opacidade máxima 90/255) continua na curva reta de propósito,
-    # fora de escopo deste bug.
-    _FALLOFF_EXPONENT = 0.4
+    # Expoente da curva de queda do gradiente aditivo — REVERTIDO pra
+    # 1.0 (reta) em 09/10/2026, ver PROBLEMAS_ARQUITETURA.md §257/§258.
+    # Uma tentativa com p=0.4 (< 1.0, mantém brilho alto por boa parte
+    # do raio, só cai forte bem perto da borda) resolvia o caso estreito
+    # de 2 luzes se tocando só pelas PONTAS (ver §257), mas criava um
+    # problema PIOR e bem mais comum: qualquer p<1 tem derivada que
+    # tende a infinito perto de t=1 (queda quase vertical na pontinha
+    # final do raio) — em uma cena com VÁRIAS luzes próximas (cerca com
+    # postes em fileira, cena real relatada pelo usuário), isso criava
+    # bordas circulares NÍTIDAS e visíveis (efeito "diagrama de Venn"),
+    # pior do que o anel escuro original. Confirmado com script de
+    # comparação ANTES de reverter (reta vs. p=0.4 vs. 2 variantes de
+    # plateau+smoothstep, numa cena com 6 luzes sobrepostas igual à
+    # relatada) — reta é a única das 4 sem nenhuma borda dura visível
+    # nesse caso, que é bem mais frequente que o caso estreito que
+    # motivou a mudança original. NUNCA reintroduzir p<1.0 sem testar
+    # contra uma cena com VÁRIAS luzes sobrepostas (não só um par) —
+    # essa foi a lacuna real da 1ª tentativa.
+    _FALLOFF_EXPONENT = 1.0
 
     def _get_light_add_gradient(self, radius_px: int, intensity_pct: int) -> "pygame.Surface":
         """Gradiente radial ADITIVO cacheado por (raio, intensidade) —

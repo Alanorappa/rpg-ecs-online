@@ -26422,3 +26422,60 @@ numérico — 102 — previsto à mão antes mesmo de rodar).
 `_get_warm_glow_gradient` (tingimento de cor, bem mais sutil, opacidade
 máxima 90/255) continua na curva reta de propósito, fora do relato do
 usuário.
+
+## 258. O fix do §257 (expoente<1.0) criou um problema PIOR e mais comum — revertido (09/10/2026)
+
+**Relatado pelo usuário via screenshot, minutos depois do deploy do
+§257**: "não resolveu, ficou ainda mais estranho" — print mostrando uma
+cerca com vários postes de luz em fileira, cada um com uma borda
+CIRCULAR nítida e claramente visível, formando um padrão tipo
+"diagrama de Venn" entre os círculos vizinhos. Pior que o anel escuro
+original (que pelo menos era discreto).
+
+**Causa raiz da 2ª tentativa falhar**: o §257 testou a curva
+`(1-t)**0.4` só contra um PAR de luzes isolado — caso em que ela
+realmente resolve o problema relatado. Mas qualquer expoente p<1.0
+nessa família de curva tem uma propriedade que não foi conferida: a
+DERIVADA tende a infinito quando t→1 (perto da borda verdadeira).
+Na prática isso significa que a curva segura brilho alto por quase
+todo o raio e então CAI QUASE NA VERTICAL nos últimos 1-2% — criando
+uma borda circular nítida pra CADA luz individual. Com só 2 luzes
+isoladas (o teste do §257) isso quase não aparece; com 5-6 luzes
+próximas numa cena real (cerca, vila, qualquer área bem iluminada),
+cada borda nítida fica visível e os círculos se sobrepõem num padrão
+óbvio e artificial — exatamente o que o usuário reportou.
+
+**Fix**: revertido `_FALLOFF_EXPONENT` de volta pra `1.0` (reta,
+comportamento original). Confirmado via script de comparação (reta vs.
+p=0.4 vs. 2 variantes de "plateau + smoothstep" que também foram
+cogitadas e descartadas pelo mesmo motivo — qualquer coisa que force
+brilho alto por mais tempo e desce rápido no fim acaba criando uma
+borda visível quando várias luzes se sobrepõem) rodando uma cena com 6
+luzes espalhadas, parecida com a real — reta foi a ÚNICA das 4 sem
+nenhuma borda dura visível nesse teste mais realista.
+
+**O anel escuro original (§257) continua sem solução** — decidir com o
+usuário se vale a pena perseguir uma correção diferente (ex: ajustar
+posição/raio específico dos postes que causam o anel na prática, em
+vez de uma mudança GLOBAL na curva de queda) ou se é um artefato menor
+aceitável, já que a correção global tentada custou mais do que valeu.
+
+**Teste**: `tests/test_day_night_light_falloff.py` reescrito —
+(1) pino explícito em `_FALLOFF_EXPONENT == 1.0` com docstring
+apontando pra esta seção; (2) teste CURVA-AGNÓSTICO que amostra o
+gradiente em passos finos (1% do raio) do centro até quase a borda e
+verifica que o ÚLTIMO passo (mais perto da borda) não é muito mais
+íngreme que a média dos passos anteriores — pega QUALQUER curva futura
+com essa mesma característica de "derivada explode perto da borda",
+não só um expoente específico. Revert-to-confirm: com p=0.4
+reintroduzido à mão, os 2 testes falham (ratio medido ~6x o passo
+médio, bem acima do limite de 3x) — restaurado.
+
+**Lição mais ampla, a real desta vez**: testar uma mudança de curva de
+luz contra um PAR isolado não é suficiente — o caso que IMPORTA de
+verdade pra qualidade visual é uma cena com VÁRIAS luzes próximas ao
+mesmo tempo (o caso comum, não o raro). "Reproduzi o cenário antes de
+aplicar" (regra já existente no CLAUDE.md) precisa ser interpretado
+como "reproduzi o cenário REPRESENTATIVO", não só "reproduzi uma
+versão simplificada que toca na mesma função" — a simplificação em si
+pode esconder exatamente o efeito colateral que mais importa.

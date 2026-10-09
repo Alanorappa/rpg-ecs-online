@@ -1,15 +1,26 @@
 """
 tests/test_day_night_light_falloff.py
 Curva de queda do gradiente ADITIVO de luz (09/10/2026, ver CLAUDE.md/
-PROBLEMAS_ARQUITETURA.md) — bug real relatado pelo usuário via
-screenshot: 2 postes de luz que só se tocam pelas PONTAS (nenhum perto
-do centro do outro) somavam "fraco + fraco" ali, aparecendo como um
-anel escuro entre os dois, mesmo cada um tecnicamente alcançando o
-outro. Causa: a curva de queda era uma RETA (`1 - dist/raio`) — a
-metade externa do raio já contribui pouco sozinha. Fix: curva
-`(1-dist/raio)**p` com p<1 (`DayNightSystem._FALLOFF_EXPONENT`),
-que segura o brilho alto por mais tempo e só cai forte bem perto da
-borda de verdade.
+PROBLEMAS_ARQUITETURA.md §257/§258) — história em 2 atos:
+
+§257: usuário relatou um "anel escuro" entre 2 postes que só se tocavam
+pelas PONTAS (nenhum perto do centro do outro) — causa: queda LINEAR
+faz a metade externa do raio contribuir pouco sozinha, "fraco + fraco"
+ainda fica fraco. Tentativa de fix: expoente < 1.0 na curva
+`(1-t)**p`, que segura o brilho alto por mais tempo.
+
+§258: essa tentativa criou um problema PIOR — qualquer p<1 tem
+derivada que tende a infinito perto de t=1 (queda quase vertical bem
+na pontinha final do raio). Numa cena com VÁRIAS luzes próximas (cerca
+com postes em fileira, cena real do usuário), isso virou bordas
+circulares NÍTIDAS e visíveis ("diagrama de Venn"), pior que o anel
+escuro original. Revertido pra p=1.0 (reta) — reta é a única curva
+testada sem borda dura visível numa cena com várias luzes sobrepostas.
+
+Os 2 testes abaixo existem pra NUNCA MAIS deixar alguém reintroduzir
+essa classe de regressão sem perceber — o 1º é um guard explícito no
+valor; o 2º é curva-agnóstico (detecta QUALQUER curva futura com
+derivada íngreme perto da borda, não só um expoente específico).
 """
 import os, sys, unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,91 +34,50 @@ from ui.day_night_system import DayNightSystem
 
 
 def _pixel_value(surf: "pygame.Surface", x: int, y: int) -> int:
-    return surf.get_at((x, y))[0]   # gradiente é cinza (R=G=B) — 1 canal basta
+    return surf.get_at((x, y))[0]
 
 
-class TestFalloffCurvaMantemBrilhoPertoDaBorda(unittest.TestCase):
+class TestFalloffExponentPermaneceLinear(unittest.TestCase):
 
-    def setUp(self):
-        world = World()
-        player = world.create_entity()
-        self.dns = DayNightSystem(world, player)
-        self.radius_px = 160
-        self.intensity_pct = 100
-        self.surf = self.dns._get_light_add_gradient(self.radius_px, self.intensity_pct)
-
-    def test_centro_continua_no_maximo(self):
-        """t=0 — (1-0)**p == 1 pra qualquer p; centro sempre no pico,
-        independente da curva escolhida."""
-        c = self.radius_px
-        self.assertEqual(_pixel_value(self.surf, c, c), 255)
-
-    def test_borda_continua_zero(self):
-        """t=1 — (1-1)**p == 0 pra qualquer p; borda sempre no-op pro
-        BLEND_RGBA_ADD, igual sempre foi."""
-        c = self.radius_px
-        # pixel a EXATAMENTE radius_px de distância do centro (x=0,y=c)
-        # -- dist == radius_px bate a condição "<=", inclusa no círculo.
-        self.assertEqual(_pixel_value(self.surf, 0, c), 0)
-
-    def test_regiao_proxima_da_borda_fica_mais_forte_que_a_reta_antiga(self):
-        """Ponto a 70% do raio (bem dentro da faixa que causava o anel
-        escuro quando 2 luzes se tocavam só pelas pontas) precisa ficar
-        MAIS BRILHANTE do que a fórmula reta antiga (`255*(1-t)`) dava —
-        é exatamente essa diferença que resolve o bug: uma luz que
-        chega "fraca" nessa faixa somada com a outra luz, também
-        fraca ali, não cria mais um vale escuro perceptível."""
-        c = self.radius_px
-        t = 0.7
-        x = c + round(t * self.radius_px)
-        actual = _pixel_value(self.surf, x, c)
-        old_linear_value = round(255 * (1.0 - t))
-        self.assertGreater(actual, old_linear_value,
-                           "a 70% do raio, a curva nova precisa ser mais forte que a reta antiga")
-
-    def test_intensidade_ainda_escala_o_pico(self):
-        """strength (intensity_pct) continua multiplicando o resultado
-        inteiro — não foi substituído pelo expoente novo."""
-        surf_50 = self.dns._get_light_add_gradient(self.radius_px, 50)
-        c = self.radius_px
-        self.assertEqual(_pixel_value(surf_50, c, c), round(255 * 0.5))
+    def test_falloff_exponent_e_1_0_ver_historico_de_regressao(self):
+        """Pino explícito — mudar este valor exige reler
+        PROBLEMAS_ARQUITETURA.md §257/§258 e retestar contra uma cena
+        com VÁRIAS luzes sobrepostas (não só um par), nunca só a
+        matemática isolada."""
+        self.assertEqual(DayNightSystem._FALLOFF_EXPONENT, 1.0)
 
 
-class TestDuasLuzesTocandoPelasPontasNaoCriaAnelEscuro(unittest.TestCase):
-    """Reprodução direta do sintoma relatado: 2 luzes com raios que só se
-    tocam na parte externa (nenhuma chega perto do centro da outra) —
-    o PONTO MÉDIO entre as duas precisa somar uma luminosidade real,
-    não ficar quase zero feito antes."""
+class TestSemQuedaAbruptaPertoDaBorda(unittest.TestCase):
+    """Curva-agnóstico: detecta qualquer formato de queda (expoente,
+    plateau, etc.) cuja derivada vire íngreme perto da borda — é
+    EXATAMENTE essa característica que cria a borda circular nítida e
+    visível quando várias luzes se sobrepõem (§258), independente de
+    qual curva específica causou isso."""
 
-    def test_soma_no_meio_fica_claramente_acima_de_cada_luz_isolada_ali(self):
+    def test_passo_perto_da_borda_nao_e_muito_maior_que_a_media(self):
         world = World()
         player = world.create_entity()
         dns = DayNightSystem(world, player)
-        radius_px = 160
-        # Centros a 256px de distância -- overlap só nos últimos 64px de
-        # cada (raio 160 cada, soma 320 > 256), igual o caso real.
-        gradient = dns._get_light_add_gradient(radius_px, 100)
+        radius_px = 200
+        surf = dns._get_light_add_gradient(radius_px, 100)
+        c = radius_px
 
-        def value_at_dist(dist: float) -> int:
-            d = radius_px * 2
-            c = radius_px
-            x = min(d - 1, max(0, c + round(dist)))
-            return _pixel_value(gradient, x, c)
+        # Amostra fina do centro até quase a borda (passos de 1% do
+        # raio) -- uma curva com derivada íngreme perto de t=1 (ex:
+        # qualquer expoente < 1.0 na família `(1-t)**p`) só aparece
+        # nos últimos 1-2%; uma amostragem grossa (passos de 5%+)
+        # não pega o efeito (confirmado: ratio ~2.6x com p=0.4 em
+        # passos de 5%, só aparece de verdade — ~6x — em passos de 1%).
+        ts = [i / 100 for i in range(1, 100)]   # 0.01 .. 0.99
+        values = [_pixel_value(surf, c + round(t * radius_px), c) for t in ts]
+        steps = [values[i] - values[i + 1] for i in range(len(values) - 1)]
+        avg_step = sum(steps) / len(steps)
+        last_step = steps[-1]   # entre t=0.98 e t=0.99 -- bem perto da borda
 
-        dist_between_centers = 256
-        midpoint = dist_between_centers / 2   # 128px de CADA centro
-
-        # Contribuição de 1 luz sozinha no ponto médio (a 128px do SEU
-        # próprio centro, raio 160 -> t=0.8).
-        single_contribution = value_at_dist(midpoint)
-        total_at_midpoint = single_contribution * 2   # as 2 luzes contribuem igual ali (simetria)
-
-        # Bug antigo (reta): a 80% do raio, reta dava só 255*0.2=51 por
-        # luz -> total ~102, bem mais escuro que o pico de qualquer uma
-        # das duas sozinha no CENTRO dela (255). Com a curva nova, o
-        # total no meio precisa continuar relevante (> metade do pico).
-        self.assertGreater(total_at_midpoint, 255 * 0.5,
-                           "o meio de 2 luzes se tocando pelas pontas não pode ficar escuro")
+        self.assertLessEqual(
+            last_step, avg_step * 3,
+            "queda perto da borda não pode ser muito mais íngreme que a média "
+            "(sinal de borda circular dura e visível quando várias luzes se sobrepõem)")
 
 
 if __name__ == "__main__":
