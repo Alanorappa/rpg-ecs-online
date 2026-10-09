@@ -26313,3 +26313,60 @@ instalação real, com o Launcher de fato aberto. Qualquer native/onedir
 bundle novo que precise compartilhar pasta com outro já existente tem
 que usar `contents_directory` único — nunca assumir que "funcionou no
 teste automatizado" cobre o empacotamento final.
+
+## 256. Marcador de quest/correio aparecia ABAIXO do nome do NPC em jogo online real (09/10/2026)
+
+**Relatado pelo usuário via screenshot**: a animação nova de quest
+(ver §254/CLAUDE.md) aparecia ABAIXO do nome do NPC ("Andre Von
+Han'Duch"), não acima — mesmo depois de eu confirmar com o usuário que
+a posição ficaria "igual a de hoje" (acima do nome) antes de
+implementar a animação.
+
+**Causa raiz**: `game.py` chamava `quest_dialog.render_world()`/
+`mail_system.render_world()` ANTES de `_draw_mob_hp_bars()` no loop de
+frame. `WORLD_LABELS` (`ui/world_labels.py`) empilha por ORDEM DE
+CHAMADA — quem adiciona por ÚLTIMO fica no topo (gap acumulado maior).
+Isso SÓ funcionava certo pro caminho de NPC LOCAL/offline
+(`ui/render_system.py::RenderSystem`, que monta badge+nome e roda
+ANTES de `quest_dialog.render_world()`) — mas todo NPC SINCRONIZADO
+VIA REDE (a imensa maioria em jogo online de verdade, incluindo
+QUALQUER quest giver — ver "Fase 1 de combate genérico pra NPC de
+serviço", 21/07/2026) tem badge+nome montados em
+`client/remote_entity_handlers.py::_draw_mob_hp_bars()`, chamado DEPOIS
+de `quest_dialog.render_world()` — então pro caso real (NPC remoto), o
+ícone de quest empilhava com gap MENOR que o nome, ficando abaixo
+dele.
+
+**Por que passou despercebido ao pedir confirmação ao usuário antes de
+implementar**: eu descrevi "a posição de hoje é acima do nome" com base
+num comentário desatualizado no código (`ui/render_system.py`, que só
+descrevia o caminho LOCAL/offline, nunca testado em jogo online de
+verdade) — nunca tinha visto o resultado real em tela antes do
+usuário mandar o screenshot. O usuário respondeu "sim, mantém a posição
+de hoje" confiando na minha descrição, que estava errada pro caso que
+realmente acontece em jogo online.
+
+**Fix**: `game.py` passa a chamar `quest_dialog.render_world()`/
+`mail_system.render_world()` DEPOIS de `_draw_mob_hp_bars()` — garante
+que o ícone de quest/correio sempre empilha por ÚLTIMO (maior gap,
+topo), tanto pro caminho local quanto pro remoto.
+
+**Teste**: `tests/test_quest_marker_above_remote_npc_name.py` — 3
+casos: (1) chamando na ordem CORRETA, quest fica acima; (2) prova
+negativa — chamando na ordem ERRADA (a que causava o bug), quest fica
+abaixo, documentando o mecanismo; (3) guarda direta no texto-fonte de
+`game.py` (índice de string), garantindo que `_draw_mob_hp_bars`
+sempre precede as duas chamadas — qualquer reordenação futura acidental
+quebra este teste imediatamente. Revert-to-confirm feito via `git
+stash`: com a ordem antiga, o teste (3) falhava exatamente como
+esperado.
+
+**Lição mais ampla**: um comentário no código afirmando "X acontece
+nesta ordem" não é verificação — só *um* dos 2+ caminhos de código que
+levam ao mesmo resultado visual foi realmente conferido. Pedir
+confirmação ao usuário sobre "manter o comportamento atual" só é
+confiável se esse comportamento atual foi observado de verdade (captura
+de tela/jogo rodando), nunca inferido de um comentário — mesma classe
+de lição de `PROBLEMAS_ARQUITETURA.md §11/§23` (não confiar em análise
+de terceiro — aqui a "análise de terceiro" foi meu próprio comentário
+antigo no código).

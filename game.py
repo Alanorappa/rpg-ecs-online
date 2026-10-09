@@ -2702,12 +2702,22 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 self._render_system.render(cam_x, cam_y, world_objects=_world_objs,
                                            nameplate_mode=self._nameplate_mode)
             self._shop_system.render_world(cam_x, cam_y)
-            self._mail_system.render_world(cam_x, cam_y)
-            self._quest_dialog.render_world(cam_x, cam_y, self._zoom)
             self._crafting_system.render_world(cam_x, cam_y)
             self._trainer_system.render_world(cam_x, cam_y)
             self._draw_remote_players(cam_x, cam_y)
             self._draw_mob_hp_bars(cam_x, cam_y)
+            # Quest/correio DEPOIS de _draw_mob_hp_bars (09/10/2026, bug
+            # real relatado pelo usuário via screenshot — ver
+            # PROBLEMAS_ARQUITETURA.md): NPC SINCRONIZADO via rede (todo
+            # quest giver em jogo online de verdade) ganha nome/badge
+            # aqui, não em RenderSystem.render() acima — chamar quest/
+            # correio ANTES disso empilhava o ícone com um gap MENOR,
+            # ficando abaixo do nome em vez de acima (só não aparecia pra
+            # NPC local/offline, que passa por RenderSystem.render(),
+            # chamado antes de tudo). Mesmo stack_key=eid em WORLD_LABELS
+            # nos dois casos — quem empilha por ÚLTIMO fica no topo.
+            self._mail_system.render_world(cam_x, cam_y)
+            self._quest_dialog.render_world(cam_x, cam_y, self._zoom)
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
             self._tile_render_system.render_fog()

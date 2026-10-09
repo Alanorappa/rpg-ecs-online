@@ -1028,10 +1028,18 @@ class RenderSystem(System):
             # de mob (build_mob_hud), só sem barra de HP (NPC não-combatente
             # não tem CombatStats). Pedido do usuário 15/07/2026: "NPCs
             # também quero que tenham nameplates igual aos mobs". Ícone de
-            # quest (QuestDialogSystem.render_world, chamado depois deste
-            # passe em game.py) empilha ACIMA via o mesmo stack_key=eid em
+            # quest/correio (QuestDialogSystem.render_world/MailSystem.
+            # render_world) empilha ACIMA via o mesmo stack_key=eid em
             # WORLD_LABELS — nunca desenhado direto no world_surf (mesmo
-            # motivo do nome do mob acima).
+            # motivo do nome do mob acima). game.py chama os dois DEPOIS
+            # de `_draw_mob_hp_bars()` (09/10/2026, ver
+            # PROBLEMAS_ARQUITETURA.md) — NUNCA antes: todo NPC
+            # SINCRONIZADO via rede (a imensa maioria em jogo online de
+            # verdade) ganha nome/badge em `_draw_mob_hp_bars`
+            # (client/remote_entity_handlers.py), não aqui — chamar
+            # quest/correio antes empilhava com gap MENOR, ficando abaixo
+            # do nome em vez de acima (só não aparecia pro NPC local/
+            # offline, que passa por ESTE loop, sempre chamado primeiro).
             #
             # Exclui quem tem RemoteEntityMeta (21/07/2026 — Fase 1 de
             # combate genérico pra NPC de serviço): esses NPCs agora
