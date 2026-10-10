@@ -6,6 +6,9 @@
   "use_tls": true,
   "net_user": "teste",
   "net_pass": "123456",
+  "remember_login": false,
+  "remembered_username": "",
+  "remembered_password_hash": "",
   "music_volume": 0.046218487394957986,
   "sfx_volume": 0.14705882352941177,
   "music_enabled": true,
@@ -55,9 +58,9 @@
           "punho_no_queixo",
           "fatiador_de_corpos",
           "golpe_debilitante",
-          null,
-          null,
-          null,
+          "interceptar",
+          "vitoria_iminente",
+          "impacto",
           null,
           null
         ],
@@ -95,7 +98,10 @@
         "brado_provocativo": 1,
         "punho_no_queixo": 2,
         "fatiador_de_corpos": 3,
-        "golpe_debilitante": 4
+        "golpe_debilitante": 4,
+        "interceptar": 5,
+        "vitoria_iminente": 6,
+        "impacto": 7
       }
     },
     "teste2": {
@@ -184,6 +190,13 @@
           118,
           98
         ]
+      },
+      "skill_slot_prefs": {
+        "pirofagia": 0,
+        "nova_congelante": 1,
+        "bola_de_fogo": 2,
+        "bloco_de_gelo": 3,
+        "polimorfia": 4
       }
     },
     "Handuch": {
