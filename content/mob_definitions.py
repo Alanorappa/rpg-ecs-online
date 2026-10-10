@@ -147,7 +147,7 @@ MOB_TABLE: dict[str, dict] = {
         "color": (55, 42, 62),   # cinza-roxo escuro
         "attributes": {
             "health": 20, "armor": 5,
-            "attack_min": 1, "attack_max": 2, "attack_power": 5,
+            "attack_min": 2, "attack_max": 4, "attack_power": 1,
             "move_speed_pct": 80, "attack_speed": 2.0,
             "acerto": 82, "crit_chance": 8,
         },
