@@ -3824,11 +3824,29 @@ class EnemyAISystem(System):
                 else:
                     SOUNDS.play_emote_attack(is_player=False, mob_sounds_comp=_ms_atk)
                     SOUNDS.play_mob_sounds(_ms_atk, _atk_event, dedup_key=str(enemy_id))
+                    # DEBUG TEMPORARIO (09/10/2026) -- investigando dano baixo
+                    # relatado pelo usuario (Aranha elite lvl 17 batendo 3-8 em
+                    # vez dos ~256-260 esperados pela formula). Remover apos
+                    # diagnostico, ver PROBLEMAS_ARQUITETURA.md.
+                    _dbg_tgt_cs = self.world.get_component(ai_control.target_eid, CombatStats)
+                    _dbg_hp_before = _dbg_tgt_cs.current_hp if _dbg_tgt_cs else -1
+                    print(f"[DANO_DEBUG] atacante={_dbg_name} eid={enemy_id} "
+                          f"attack_power={enemy_combat_stats.attack_power:.1f} "
+                          f"base_attack_power={enemy_combat_stats.base_attack_power:.1f} "
+                          f"phys_min={enemy_combat_stats.base_physical_damage:.1f} "
+                          f"phys_max={enemy_combat_stats.base_physical_damage_max:.1f} "
+                          f"damage_type={damage_type_to_use} "
+                          f"tgt_armor={_dbg_tgt_cs.armor if _dbg_tgt_cs else '?'} "
+                          f"tgt_hp_antes={_dbg_hp_before:.1f}", flush=True)
                     _atk_dead, _atk_outcome = deal_damage(
                         attacker_id=enemy_id,
                         target_id=ai_control.target_eid,
                         damage_type=damage_type_to_use
                     )
+                    _dbg_hp_after = _dbg_tgt_cs.current_hp if _dbg_tgt_cs else -1
+                    print(f"[DANO_DEBUG] resultado outcome={_atk_outcome} "
+                          f"tgt_hp_depois={_dbg_hp_after:.1f} "
+                          f"dano_aplicado={(_dbg_hp_before - _dbg_hp_after):.1f}", flush=True)
                     enemy_combat_stats.attack_cooldown_timer = enemy_combat_stats.get_attack_cooldown()
                     if _MCL:
                         try:
