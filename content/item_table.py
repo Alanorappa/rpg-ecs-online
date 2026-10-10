@@ -808,6 +808,157 @@ _RAW_ITEMS = {
         "Lampião", "ferramenta", slot=None,
         rarity="common", value=15, max_stack=1,
         light_source={"intensity_pct": 50, "radius_tiles": 7}),
+
+# aracnopolis_items.py
+# Itens de boss da masmorra Aracnópolis — trecho para colar dentro de _RAW_ITEMS
+# em content/item_table.py (antes do "}" que fecha o dict).
+#
+# Base: itens "uncommon" existentes, com um pequeno ganho (~+1 em armadura/atributo,
+# +1 de dano) por serem drop de boss. Todos os values ficam dentro de 15-45, a faixa
+# uncommon de _VALUE_RANGES, então o item_level derivado continua na banda uncommon.
+# level_requirement fica no default (1), exceto o anel (12, igual ao Anel de Aço).
+# Ajuste "value" e level_requirement conforme o nível da masmorra.
+
+    # ================================================================ ARACNÓPOLIS — ARMAS E ACESSÓRIOS
+    "arac_venom_fang": lambda: Item(
+        "Presa Venenosa", "weapon", "mainhand",
+        modifiers=[Modifier("crit_rating", 0.02)], rarity="uncommon", value=38,
+        damage_min=3, damage_max=6, attack_speed=1.9, subtype="Sword"),
+
+    "arac_cocoon_mace": lambda: Item(
+        "Maça do Casulo", "weapon", "mainhand",
+        modifiers=[Modifier("strength", 2)], rarity="uncommon", value=34,
+        damage_min=2, damage_max=6, attack_speed=2.1, subtype="Mace"),
+
+    "arac_chelicera_axe": lambda: Item(
+        "Machadão da Quelícera", "weapon", "mainhand",
+        modifiers=[Modifier("crit_rating", 0.02)], rarity="uncommon", value=45,
+        damage_min=2, damage_max=7, attack_speed=2.6, two_handed=True, subtype="Axe"),
+
+    "arac_silk_bow": lambda: Item(
+        "Arco de Seda Peçonhenta", "weapon", "mainhand",
+        modifiers=[Modifier("crit_rating", 0.02)],
+        rarity="uncommon", value=42,
+        damage_min=7, damage_max=33, attack_speed=2.0, subtype="Bow", cast_range=6),
+
+    "arac_weaver_wand": lambda: Item(
+        "Varinha da Fiandeira", "weapon", "mainhand",
+        modifiers=[Modifier("spell_power", 16), Modifier("stamina", 2)],
+        rarity="uncommon", value=36,
+        damage_min=10, damage_max=19, attack_speed=1.3, subtype="Wand"),
+
+    "arac_carapace_shield": lambda: Item(
+        "Escudo de Carapaça", "shield", "offhand",
+        modifiers=[Modifier("armor", 14), Modifier("stamina", 3)],
+        rarity="uncommon", value=42),
+
+    "arac_web_quiver": lambda: Item(
+        "Aljava de Teia", "quiver", "offhand",
+        modifiers=[Modifier("crit_rating", 0.02)], rarity="uncommon", value=28,
+        arrow_count=110, max_arrows=110, subtype="arrow"),
+
+    "arac_widow_ring": lambda: Item(
+        "Anel do Ferrão da Viúva", "jewelry", "ring",
+        modifiers=[Modifier("attack_power", 5), Modifier("stamina", 2)],
+        rarity="uncommon", value=42, level_requirement=12),
+
+    "arac_venom_arrow": lambda: Item(
+        "Flecha Peçonhenta", "ammo", "",
+        modifiers=[], rarity="uncommon", value=3,
+        damage_min=5, damage_max=9, max_stack=750),
+
+    # ================================================================ ARACNÓPOLIS — PLACA (Carapaça)
+    "arac_carapace_helm": lambda: Item(
+        "Elmo de Carapaça", "armor", "head",
+        modifiers=[Modifier("armor", 8), Modifier("stamina", 4)],
+        rarity="uncommon", value=31, armor_class="placa"),
+
+    "arac_carapace_chest": lambda: Item(
+        "Peitoral de Carapaça", "armor", "chest",
+        modifiers=[Modifier("armor", 11), Modifier("stamina", 5)],
+        rarity="uncommon", value=41, armor_class="placa"),
+
+    "arac_carapace_shoulders": lambda: Item(
+        "Ombreiras de Carapaça", "armor", "shoulders",
+        modifiers=[Modifier("armor", 8), Modifier("stamina", 4)],
+        rarity="uncommon", value=29, armor_class="placa"),
+
+    "arac_carapace_boots": lambda: Item(
+        "Botas de Carapaça", "armor", "boots",
+        modifiers=[Modifier("armor", 8), Modifier("stamina", 4)],
+        rarity="uncommon", value=29, armor_class="placa"),
+
+    "arac_carapace_wrists": lambda: Item(
+        "Punhos de Carapaça", "armor", "wrists",
+        modifiers=[Modifier("armor", 6), Modifier("stamina", 3)],
+        rarity="uncommon", value=25, armor_class="placa"),
+
+    "arac_carapace_gauntlets": lambda: Item(
+        "Manoplas de Carapaça", "armor", "gloves",
+        modifiers=[Modifier("armor", 7), Modifier("attack_power", 4)],
+        rarity="uncommon", value=27, armor_class="placa"),
+
+    # ================================================================ ARACNÓPOLIS — COURO (Viúva-Negra)
+    "arac_widow_hood": lambda: Item(
+        "Capuz da Viúva-Negra", "armor", "head",
+        modifiers=[Modifier("armor", 7), Modifier("crit_rating", 0.04)],
+        rarity="uncommon", value=29, armor_class="couro"),
+
+    "arac_widow_vest": lambda: Item(
+        "Colete da Viúva-Negra", "armor", "chest",
+        modifiers=[Modifier("armor", 10), Modifier("crit_rating", 0.04)],
+        rarity="uncommon", value=39, armor_class="couro"),
+
+    "arac_widow_shoulders": lambda: Item(
+        "Ombros da Viúva-Negra", "armor", "shoulders",
+        modifiers=[Modifier("armor", 7), Modifier("crit_rating", 0.03)],
+        rarity="uncommon", value=27, armor_class="couro"),
+
+    "arac_widow_gloves": lambda: Item(
+        "Luvas da Viúva-Negra", "armor", "gloves",
+        modifiers=[Modifier("armor", 6), Modifier("attack_power", 3)],
+        rarity="uncommon", value=25, armor_class="couro"),
+
+    "arac_widow_boots": lambda: Item(
+        "Botas da Viúva-Negra", "armor", "boots",
+        modifiers=[Modifier("armor", 7), Modifier("crit_rating", 0.03)],
+        rarity="uncommon", value=27, armor_class="couro"),
+
+    "arac_widow_wrists": lambda: Item(
+        "Pulsos da Viúva-Negra", "armor", "wrists",
+        modifiers=[Modifier("armor", 5), Modifier("crit_rating", 0.03)],
+        rarity="uncommon", value=23, armor_class="couro"),
+
+    # ================================================================ ARACNÓPOLIS — TECIDO (Tecelã)
+    "arac_weaver_hood": lambda: Item(
+        "Capuz da Tecelã", "armor", "head",
+        modifiers=[Modifier("armor", 5), Modifier("spell_power", 7)],
+        rarity="uncommon", value=27, armor_class="tecido"),
+
+    "arac_weaver_robe": lambda: Item(
+        "Manto da Tecelã", "armor", "chest",
+        modifiers=[Modifier("armor", 7), Modifier("spell_power", 10)],
+        rarity="uncommon", value=37, armor_class="tecido"),
+
+    "arac_weaver_shoulders": lambda: Item(
+        "Ombros da Tecelã", "armor", "shoulders",
+        modifiers=[Modifier("armor", 5), Modifier("spell_power", 7)],
+        rarity="uncommon", value=25, armor_class="tecido"),
+
+    "arac_weaver_gloves": lambda: Item(
+        "Luvas da Tecelã", "armor", "gloves",
+        modifiers=[Modifier("armor", 4), Modifier("spell_power", 6)],
+        rarity="uncommon", value=23, armor_class="tecido"),
+
+    "arac_weaver_boots": lambda: Item(
+        "Botas da Tecelã", "armor", "boots",
+        modifiers=[Modifier("armor", 5), Modifier("spell_power", 6)],
+        rarity="uncommon", value=25, armor_class="tecido"),
+
+    "arac_weaver_wrists": lambda: Item(
+        "Pulsos da Tecelã", "armor", "wrists",
+        modifiers=[Modifier("armor", 4), Modifier("spell_power", 6)],
+        rarity="uncommon", value=21, armor_class="tecido"),        
 }
 
 
