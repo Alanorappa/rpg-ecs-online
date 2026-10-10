@@ -147,7 +147,7 @@ MOB_TABLE: dict[str, dict] = {
         "color": (55, 42, 62),   # cinza-roxo escuro
         "attributes": {
             "health": 20, "armor": 5,
-            "attack_min": 1, "attack_max": 2, "attack_power": 0,
+            "attack_min": 1, "attack_max": 2, "attack_power": 5,
             "move_speed_pct": 80, "attack_speed": 2.0,
             "acerto": 82, "crit_chance": 8,
         },
@@ -155,7 +155,16 @@ MOB_TABLE: dict[str, dict] = {
         "loot": {"padded_gloves": 0.05, "cloth_wrists": 0.03, "worn_hood": 0.02},
         "gold_chance": 0.0,   # Fera — não faz sentido carregar moedas
         "xp_given_by_lvl": 10,
-        "sounds": _NO_SOUNDS,
+        "sounds": {
+            "aggro":            "mob_aranha_aggro",
+            "death":            "mob_aranha_death",
+            "attack_melee":     "mob_bite_melee",
+            "attack_ranged":    None,
+            "attack_magic":     None,
+            "crit":             "mob_bite_crit",
+            "emote_attack":     "mob_aranha_emote_attack",
+            "emote_get_crit":   "mob_aranha_get_crit",
+        },
     },
     "Escorpião": {
         "race": "Fera", "entity_class": "Warrior", "is_ranged": False,
