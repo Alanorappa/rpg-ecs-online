@@ -538,7 +538,6 @@ QUESTS: dict[str, QuestDef] = {
                 count=1),
         ),
         reward=QuestReward(xp=30, gold=5),
-        requires=[],
         completion="Bons contatos valem ouro nesse mundo. Você está aprendendo rápido.",
     ),
 
