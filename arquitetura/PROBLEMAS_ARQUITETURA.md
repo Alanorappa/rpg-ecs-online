@@ -26515,3 +26515,42 @@ jogador intacto depois do update, resto do zip aplicado normalmente)
 continua recebendo o config.json do zip). Revert-to-confirm via `git
 stash`: sem o fix, o 1º teste falha reproduzindo o bug exato
 (config.json do jogador vira o do zip) — restaurado.
+
+## 260. Fechar o jogo nunca avisava o servidor — login novo batia em "already_online" (09/10/2026)
+
+**Relatado pelo usuário**: fechou o jogo (cliente que estava logado) e,
+ao tentar logar de novo na hora pelo comando de dev, o servidor disse
+que a conta já estava online.
+
+**Causa raiz**: `main.py`, bloco principal — depois de
+`game_engine.run()` retornar, `if action != "logout": raise
+SystemExit(0)` saía do processo SEM chamar `net.disconnect()`. Só o
+branch `"logout"` (menu "Deslogar") chamava. Como fechar a janela
+(botão X, `pygame.QUIT`) E "Sair do jogo" no menu de pausa os DOIS
+terminam em `action=None` (não `"logout"`, ver `game.py` linha ~3260,
+`pygame.quit(); return None`), nenhum dos dois jeitos "normais" de
+fechar o jogo nunca enviava o frame de close do WebSocket.
+`server/session.py::_handle_login` recusa login novo pra um username
+já com `authenticated=True` em alguma sessão viva
+(`_sessions.values()`) — e `on_disconnect()` só remove a sessão
+morta quando o servidor detecta o fechamento de verdade, que sem um
+close explícito só acontece via `ping_timeout` (60s,
+`server/main.py`). Mesmo mecanismo já catalogado em §119 (lá era um
+vazamento de conexão num BOT de loadtest; aqui é o cliente de
+verdade nunca fechando a conexão no quit normal — raiz igual,
+gatilho diferente).
+
+**Fix**: `net.disconnect()` adicionado no branch `action != "logout"`,
+antes do `raise SystemExit(0)` — mesma chamada que o branch
+`"logout"` já fazia, agora nos 2 caminhos de saída normal.
+
+**Teste**: `tests/test_main_disconnect_on_quit.py` — guarda por
+inspeção de fonte (não dá pra montar um `GameEngine` real num teste
+automatizado) garantindo que `net.disconnect()` aparece dentro do
+branch antes do `SystemExit`. Revert-to-confirm via `git stash`: sem
+o fix, o teste falha. **Verificação adicional contra o servidor de
+produção de verdade** (não só o teste sintético — `client/network.py::
+NetworkClient` real, conta de teste real): login → `disconnect()`
+limpo → login imediato de novo, mesmos 500ms de respiro que o usuário
+teria entre fechar e reabrir — `AUTH_OK` confirmado na hora, sem
+esperar nenhum timeout.

@@ -290,7 +290,20 @@ if __name__ == "__main__":
                 raise
 
             if action != "logout":
-                raise SystemExit(0)   # "Sair do jogo" ou fechar a janela
+                # "Sair do jogo" ou fechar a janela (pygame.QUIT) — bug
+                # real relatado pelo usuário (09/10/2026): esse caminho
+                # NUNCA chamava net.disconnect() (só o "Deslogar" logo
+                # abaixo chamava), então o servidor só percebia a queda
+                # via ping_timeout (60s, server/main.py) — login novo
+                # nesse meio-tempo batia em `already_online` porque a
+                # sessão antiga ainda estava em `SessionManager.
+                # _sessions` (server/session.py::on_disconnect só limpa
+                # ao detectar o fechamento de verdade). Fechar aqui
+                # dispara o close da própria conexão WebSocket, que o
+                # servidor processa na hora (mesmo mecanismo que já
+                # funcionava pra "Deslogar"), sem esperar o timeout.
+                net.disconnect()
+                raise SystemExit(0)
 
             # "Deslogar": run() não chamou pygame.quit() — só reseta o
             # display (GameEngine deixou seu próprio modo/legenda) e
