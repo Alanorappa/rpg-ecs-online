@@ -26554,3 +26554,49 @@ NetworkClient` real, conta de teste real): login → `disconnect()`
 limpo → login imediato de novo, mesmos 500ms de respiro que o usuário
 teria entre fechar e reabrir — `AUTH_OK` confirmado na hora, sem
 esperar nenhum timeout.
+
+## 261. Aranha da Aracnópolis batia 3-8 de dano em vez de ~256-260 — fix real estava no working tree, nunca foi deployado (09/10/2026)
+
+**Relatado pelo usuário**: Aranha elite nível 15-17 (dungeon
+Aracnópolis) batendo "3 a 8 de dano" num personagem nível 23/122
+armadura — valor muito abaixo do esperado pra um mob elite daquele
+nível.
+
+**Investigação (ordem real, nenhum atalho)**: 1) tracei a fórmula
+inteira (tier×level em `attack_power`, só tier em `attack_min/max`,
+`damage_calculator.calculate_base_damage`, `apply_armor_reduction`) —
+matematicamente consistente, previa ~256-260 de dano líquido com 122
+de armadura; 2) criei a entidade de verdade (`create_enemy(tier=
+'elite', race='Aranha', level=17, ...)`) num teste isolado e confirmei
+`attack_power=289` — bateu com a conta; 3) rodei a fórmula de dano
+nesses stats reais contra um alvo com 122 de armadura — confirmou
+~256-260, não reproduzindo o sintoma; 4) como a investigação estática
+não convergia com o relato, adicionei um log temporário no PONTO REAL
+de ataque (`EnemyAISystem`, `engine/world_systems.py`, onde `deal_
+damage` é chamado de verdade pro golpe corpo-a-corpo do mob), deployei,
+usuário lutou uma vez, log mostrou `attack_power=0.0` pro ataque real
+(`phys_min/max` corretos em 3.0/7.0, confirmando tier aplicado —
+só `attack_power` zerado).
+
+**Causa raiz**: `content/mob_definitions.py` tinha `"attack_power": 0`
+pra Aranha no COMMIT que estava deployado — o usuário já tinha
+corrigido isso localmente pra `5` (o valor certo, o mesmo que todo meu
+cálculo teórico assumiu), mas essa correção estava só no working tree,
+nunca commitada nem publicada. Ou seja: a fórmula do jogo sempre
+esteve certa — o bug era puramente "correção pronta, nunca chegou no
+servidor".
+
+**Fix**: commit real da correção (`attack_power: 0 → 5`) +
+`deploy_server.ps1`. Log de debug temporário revertido (`git revert`)
+assim que o diagnóstico foi confirmado.
+
+**Lição**: antes de assumir "a fórmula está errada" num caso onde o
+cálculo teórico diverge muito do observado, checar `git status`/`git
+diff` nos arquivos de conteúdo envolvidos — um valor "certo" visto ao
+ler o arquivo (via Read tool, que mostra o WORKING TREE) pode nunca
+ter sido commitado/deployado, fazendo a leitura do código enganar sobre
+o que está rodando de verdade em produção. `git diff` nesses arquivos
+deveria ter sido o 1º passo, não o último — economizaria toda a
+investigação de fórmula (que não estava errada) e o ciclo de log
+temporário (que confirmou, mas um `git diff` mais cedo já apontava
+direto pra causa).
