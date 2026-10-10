@@ -63,7 +63,8 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_ignores_cost": False,
         "class_id":         "guerreiro",
         "effects":          {"impact": {"sound": "skill_golpe_poderoso"}},
-        "params": {"damage_multiplier": 0.75},
+        "params": {"damage_multiplier": 0.75,
+                   "dmg_weapon_pct": 1.0,},
     },
     "vitoria_iminente": {
         "name":             "Vitória Iminente",
@@ -88,7 +89,8 @@ SKILL_CATALOG: dict[str, dict] = {
         "needs_target":     False,
         "class_id":         "guerreiro",
         "effects":          {"impact": {"sound": "skill_impacto"}},
-        "params": {"damage_multiplier": 0.75, 
+        "params": {"damage_multiplier": 0.25,
+                   "dmg_weapon_pct": 0.5, 
                    "radius_tiles": 3},
     },
     "executar": {
@@ -100,7 +102,8 @@ SKILL_CATALOG: dict[str, dict] = {
         "proc_ignores_cost": True,
         "class_id":         "guerreiro",
         "effects":          {"impact": {"sound": "skill_executar"}},
-        "params": {"damage_multiplier": 3.0, 
+        "params": {"damage_multiplier": 3.0,
+                   "dmg_weapon_pct": 1.5,  
                    "hp_threshold": 0.30},
     },
     "interceptar": {
@@ -121,13 +124,14 @@ SKILL_CATALOG: dict[str, dict] = {
     "golpe_debilitante": {
         "name":             "Golpe Debilitante",
         "desc":             "Mira nas pernas do alvo, diminuindo sua velocidade de movimento significativamente",
-        "cooldown":         0.0,
+        "cooldown":         5.0,
         "rage_cost":        5,
         "proc_attr":        "",
         "proc_ignores_cost": False,
         "class_id":         "guerreiro",
         "effects":          {"impact": {"sound": "skill_golpe_debilitante"}},
-        "params": {"damage_multiplier": 0.50, 
+        "params": {"damage_multiplier": 0.50,
+                   "dmg_weapon_pct": 0.50,
                    "slow_pct": 0.50, 
                    "slow_duration": 5.0},
     },
@@ -177,6 +181,7 @@ SKILL_CATALOG: dict[str, dict] = {
         "effects":          {"impact": {"sound": "skill_fatiador_de_corpos"}},
         "params": {
             "damage_multiplier": 1.75,   # % do AP por tick (arma soma por padrão)
+            "dmg_weapon_pct": 0.5, 
             "duration":          5.0,
             "tick_interval":     1.0,
             "radius_tiles":      2,
