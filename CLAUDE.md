@@ -1307,6 +1307,22 @@ padrão a quebrar, não só os bugs individuais.
   `end_matches_of`/`end_bg_matches_of` — sem isso, o save persistiria o
   map_id SINTÉTICO da instância. Ver `arquitetura/GERAR_DUNGEON_PNG.md`
   pro pipeline de criação do mapa a partir de PNG.
+- **Jogador pode ser teleportado/spawnado/respawnado EM CIMA de um tile
+  de transição** (entrada de dungeon, saída de caverna, qualquer
+  `self.transition_tiles` — `return_pos` de dungeon é o caso real, mas
+  vale pra qualquer spawn/respawn/teleporte futuro) → o disparo
+  automático de transição (`game.py`, `# --- Detecção de transição
+  ---`) exige `key != self._last_transition_check_tile` (jogador
+  CHEGOU ali andando desde o frame anterior) — NUNCA só "está parado
+  num tile de transição agora", que dispara igual pra quem só apareceu
+  ali (login, respawn, teleporte). `_last_transition_check_tile` é
+  resetado em TODA chamada de `_build_transition_tiles` (spawn inicial
+  E toda troca de mapa) — sem o reset, comparar contra um tile de um
+  mapa ANTERIOR por engano. Bug real: `return_pos` de dungeon sempre
+  devolve o jogador pro PRÓPRIO tile de transição (é a posição de
+  quando ele entrou); sem este guard, relogar nascia o personagem
+  nesse tile e o frame seguinte reentrava a dungeon sozinho — loop que
+  se mantinha a cada relog. Ver PROBLEMAS_ARQUITETURA.md §262.
 - **Hash de senha do cliente** (antes de sair pela rede — nunca texto
   puro, ver "Segurança" abaixo) → `shared/auth_utils.hash_password()`
   (08/10/2026) — fonte ÚNICA, usada por `client/network.py` (login E

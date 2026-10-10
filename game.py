@@ -415,6 +415,12 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._current_map_file: str = MAP_FILES[0]
         self.transition_tiles: dict = {}   # (tile_x, tile_y) → trans_dict
         self._transition_cooldown = 0.0
+        # Último tile onde o check de transição rodou (None = ainda não
+        # observado neste mapa/spawn) — 10/10/2026, ver PROBLEMAS_ARQUITETURA.md.
+        # Reset em TODO _build_transition_tiles (spawn inicial E qualquer
+        # troca de mapa) — nunca só setado uma vez, senão carrega tile de
+        # um mapa anterior por engano.
+        self._last_transition_check_tile: "tuple | None" = None
         self._map_title_timer = 0.0
         self._cam_x = 0.0
         self._cam_y = 0.0
@@ -844,6 +850,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         for t in spawn_points.get("transitions", []):
             key = (t["x"], t["y"])
             self.transition_tiles[key] = t
+        # Novo mapa/spawn — "esquece" o último tile observado, pra não
+        # comparar contra um tile de um mapa ANTERIOR por acidente (ver
+        # declaração de _last_transition_check_tile no __init__).
+        self._last_transition_check_tile = None
 
     def _load_ambient_zones(self, spawn_points: dict):
         """Armazena zonas de ambient do mapa recém-carregado e pré-carrega todos os áudios."""
@@ -2528,7 +2538,20 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 player_tm = self.world.get_component(self.player_entity, TileMovement)
                 if player_tm and not player_tm.is_moving:
                     key = (player_tm.current_tile_x, player_tm.current_tile_y)
-                    if key in self.transition_tiles and self._net:
+                    # Só dispara se o jogador CHEGOU aqui andando (tile
+                    # mudou desde o frame anterior) — nunca só por estar
+                    # parado em cima (10/10/2026, bug real: login/respawn/
+                    # retorno de dungeon pode colocar o jogador exatamente
+                    # EM CIMA do tile de transição sem ele ter andado até
+                    # lá; sem este guard, o check antigo disparava sozinho
+                    # no frame seguinte ao spawn, reentrando a dungeon a
+                    # cada relog — ver PROBLEMAS_ARQUITETURA.md).
+                    _arrived_by_movement = (
+                        self._last_transition_check_tile is not None
+                        and key != self._last_transition_check_tile
+                    )
+                    self._last_transition_check_tile = key
+                    if _arrived_by_movement and key in self.transition_tiles and self._net:
                         from shared.messages import MsgType as _MTzc
                         trans = self.transition_tiles[key]
                         _zc_payload = {

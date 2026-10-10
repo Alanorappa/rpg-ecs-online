@@ -26600,3 +26600,57 @@ deveria ter sido o 1º passo, não o último — economizaria toda a
 investigação de fórmula (que não estava errada) e o ciclo de log
 temporário (que confirmou, mas um `git diff` mais cedo já apontava
 direto pra causa).
+
+## 262. Relogar sempre jogava o personagem de volta pra dentro da dungeon (10/10/2026)
+
+**Relatado pelo usuário**: personagem (Xadread) aparecia DENTRO da
+Aracnópolis Dungeon, no ponto de entrada dela, toda vez que relogava.
+Confirmou que começou depois de ter desconectado enquanto ainda estava
+dentro da dungeon.
+
+**Investigação**: consultei o banco de produção pro personagem real —
+`map_id='maps/map_1.csv'`, `tile=(137,411)`. Primeira vista parecia
+contradizer o sintoma (mapa salvo é o mundo aberto, não uma instância
+sintética) — mas `(137,411)` é EXATAMENTE a transição com
+`"dungeon_key": "aracnopolis"` em `map_1_entities.json`. O personagem
+estava salvo em cima do próprio tile que leva pra dungeon.
+
+**Causa raiz**: duas peças que isoladamente fazem sentido, mas compõem
+mal:
+1. `DungeonProcessorMixin.request_dungeon_enter`
+   (`server/dungeon_processor.py`) grava `return_pos[player_eid]` como
+   a posição do jogador NO MOMENTO em que ele pisou no tile de
+   transição — ou seja, por definição, sempre o próprio tile de
+   transição.
+2. `end_dungeon_of` (desconexão dentro da dungeon) teleporta o jogador
+   de volta pra esse `return_pos` — colocando-o de novo exatamente em
+   cima do tile de transição — e isso fica salvo no personagem.
+3. `game.py`, loop principal (`# --- Detecção de transição ---`): todo
+   frame, se o jogador está PARADO (não `is_moving`) num tile que bate
+   com `self.transition_tiles`, manda `ZONE_CHANGE_REQ` sozinho — sem
+   checar se ele CHEGOU ali andando ou só estava/apareceu ali. Login
+   seguinte nasce o personagem de novo nesse tile → primeiro frame já
+   dispara a transição de novo → reentra a dungeon → se desconectar de
+   novo, `return_pos` grava o MESMO tile de transição de novo — loop
+   que se mantém sozinho pra sempre, a cada relog.
+
+**Fix**: `game.py` ganhou `self._last_transition_check_tile` (reset em
+`_build_transition_tiles`, chamado tanto no spawn inicial quanto em
+toda troca de mapa) — o disparo de `ZONE_CHANGE_REQ` agora exige
+`key != self._last_transition_check_tile` (o jogador mudou de tile
+desde o frame anterior, ou seja, chegou andando), nunca só "está parado
+em cima". Resolve a classe inteira, não só o caso de dungeon: qualquer
+spawn/respawn/teleporte futuro que caia sobre um tile de transição por
+acidente também fica protegido, sem precisar de guard dedicado em
+`dungeon_processor.py` nem em nenhum outro ponto que teleporte jogador.
+
+**Teste**: `tests/test_transition_requires_movement.py` — guarda por
+inspeção de fonte (mesmo padrão de
+`test_main_disconnect_on_quit.py`, GameEngine real demais pra montar
+num teste automatizado). Revert-to-confirm via `git stash`: os 3 testes
+falham sem o fix.
+
+**Nota**: a correção destrava sozinha o personagem já preso nesse
+estado (Xadread) — como `_last_transition_check_tile` começa `None` a
+cada spawn, o primeiro frame depois do login nunca dispara mais,
+independente de qual tile o personagem estava salvo.
