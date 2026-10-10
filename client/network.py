@@ -119,10 +119,27 @@ class NetworkClient:
         return messages
 
     def disconnect(self) -> None:
-        """Encerra a conexão permanentemente (sem reconnect)."""
+        """Encerra a conexão permanentemente (sem reconnect).
+
+        BLOQUEIA até o close de verdade sair (timeout curto de rede morta) —
+        09/10/2026, ver PROBLEMAS_ARQUITETURA.md. `_close()` roda na thread
+        de rede, que é daemon (`self._thread`, `daemon=True`); sem esperar o
+        Future aqui, `main.py` seguia pra `SystemExit(0)` imediatamente
+        depois de chamar `disconnect()`, e o processo podia morrer ANTES da
+        thread daemon ter chance de rodar `await self._ws.close()` — corrida
+        que fazia o close nem sempre chegar ao servidor, reproduzindo
+        `already_online` de novo mesmo com o fix de `main.py` (§260) no
+        lugar certo. Timeout de 2s: se a rede já estiver morta/travada, não
+        trava o quit do jogo pra sempre — pior caso volta a ser o
+        comportamento antigo (ping_timeout do servidor limpa depois).
+        """
         self._stop = True
         if self._loop:
-            asyncio.run_coroutine_threadsafe(self._close(), self._loop)
+            future = asyncio.run_coroutine_threadsafe(self._close(), self._loop)
+            try:
+                future.result(timeout=2.0)
+            except Exception:
+                pass
 
     def login(self, username: str, password: str,
               ap: float = 0.0, max_hp: int = 0, password_hash: str = "") -> None:
