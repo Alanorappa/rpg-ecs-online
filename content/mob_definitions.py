@@ -146,7 +146,7 @@ MOB_TABLE: dict[str, dict] = {
         "race": "Fera", "entity_class": "Warrior", "is_ranged": False,
         "color": (55, 42, 62),   # cinza-roxo escuro
         "attributes": {
-            "health": 20, "armor": 5,
+            "health": 20, "armor": 25,
             "attack_min": 2, "attack_max": 4, "attack_power": 1,
             "move_speed_pct": 80, "attack_speed": 2.0,
             "acerto": 82, "crit_chance": 8,
@@ -170,7 +170,7 @@ MOB_TABLE: dict[str, dict] = {
         "race": "Fera", "entity_class": "Warrior", "is_ranged": False,
         "color": (158, 138, 36), # amarelo-oliva
         "attributes": {
-            "health": 22, "armor": 8,
+            "health": 22, "armor": 35,
             "attack_min": 1, "attack_max": 2, "attack_power": 1,
             "move_speed_pct": 55, "attack_speed": 2.6,
             "acerto": 80, "crit_chance": 8,
@@ -401,7 +401,7 @@ MOB_TABLE: dict[str, dict] = {
             "attack_min": 1, "attack_max": 3, 
             "attack_power": 1,
             "move_speed_pct": 50, 
-            "attack_speed": 3.2,
+            "attack_speed": 2.8,
             "acerto": 65, 
             "crit_chance": 15,
         },
