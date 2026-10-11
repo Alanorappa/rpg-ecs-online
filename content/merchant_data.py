@@ -142,15 +142,15 @@ SHOPS = {
             # --- Armas 1H físicas ---
             {"factory": _I["bone_dagger"],       "price": 30},
             {"factory": _I["iron_sword"],        "price": 904},   # "Espada de Ferro"
-            {"factory": _I["shadow_blade"],      "price": 6570},
+            {"factory": _I["shadow_blade"],      "price": 3170},
             # --- Arma mágica ---
             {"factory": _I["oak_wand"],          "price": 45},
             # --- Arqueiro: arco, aljava, flechas ---
             {"factory": _I["short_bow"],         "price": 35},   # "Arco Curto"
             {"factory": _I["basic_quiver"],      "price": 15},   # "Aljava Básica"
             {"factory": _I["arrow"],             "price": 1},    # "Flecha"
-            {"factory": _I["arrow_broadhead"],   "price": 688},    # "Flecha Perfurante"
-            {"factory": _I["arrow_heavy"],       "price": 1562},   # "Flecha Pesada"
+            {"factory": _I["arrow_broadhead"],   "price": 2},    # "Flecha Perfurante"
+            {"factory": _I["arrow_heavy"],       "price": 3},   # "Flecha Pesada"
             # --- Escudo ---
             {"factory": _I["wood_shield"],       "price": 32},
             # --- Armaduras ---
@@ -161,7 +161,7 @@ SHOPS = {
             {"factory": _I["leather_gloves"],    "price": 484},   # "Luvas de Couro"
             {"factory": _I["iron_wristguards"],  "price": 30},
             # --- Joias ---
-            {"factory": _I["simple_amulet"],     "price": 48},
+            {"factory": _I["simple_amulet"],     "price": 480},
         ],
     },
 
@@ -170,21 +170,21 @@ SHOPS = {
         "color": (180, 120, 40),
         "stock": [
             # --- Materiais (caros para incentivar reciclagem) ---
-            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["fragmento_ferro"](),  "price": 500},
-            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["fibra_madeira"](),    "price": 300},
-            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["tira_couro"](),       "price": 300},
-            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["fibra_resistente"](), "price": 700},
-            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["po_de_joia"](),       "price": 400},
-            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["fio_de_prata"](),     "price": 800},
-            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["essencia_comum"](),   "price": 1000},
-            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["essencia_arcana"](),  "price": 2000},
-            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["joia_bruta"](),       "price": 2500},
-            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["cristal_poder"](),    "price": 5000},
+            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["fragmento_ferro"](),  "price": 50},
+            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["fibra_madeira"](),    "price": 30},
+            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["tira_couro"](),       "price": 30},
+            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["fibra_resistente"](), "price": 70},
+            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["po_de_joia"](),       "price": 40},
+            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["fio_de_prata"](),     "price": 80},
+            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["essencia_comum"](),   "price": 100},
+            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["essencia_arcana"](),  "price": 200},
+            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["joia_bruta"](),       "price": 250},
+            {"factory": lambda: __import__("content.crafting_data", fromlist=["MATERIALS"]).MATERIALS["cristal_poder"](),    "price": 500},
             # --- Receitas ---
-            {"factory": lambda: __import__("content.crafting_data", fromlist=["RECIPE_ITEMS"]).RECIPE_ITEMS["espada_afiada"](),    "price": 200},
-            {"factory": lambda: __import__("content.crafting_data", fromlist=["RECIPE_ITEMS"]).RECIPE_ITEMS["cota_reforcada"](),   "price": 200},
-            {"factory": lambda: __import__("content.crafting_data", fromlist=["RECIPE_ITEMS"]).RECIPE_ITEMS["amuleto_protecao"](), "price": 350},
-            {"factory": lambda: __import__("content.crafting_data", fromlist=["RECIPE_ITEMS"]).RECIPE_ITEMS["espada_runica"](),    "price": 1200},
+            {"factory": lambda: __import__("content.crafting_data", fromlist=["RECIPE_ITEMS"]).RECIPE_ITEMS["espada_afiada"](),    "price": 20},
+            {"factory": lambda: __import__("content.crafting_data", fromlist=["RECIPE_ITEMS"]).RECIPE_ITEMS["cota_reforcada"](),   "price": 20},
+            {"factory": lambda: __import__("content.crafting_data", fromlist=["RECIPE_ITEMS"]).RECIPE_ITEMS["amuleto_protecao"](), "price": 35},
+            {"factory": lambda: __import__("content.crafting_data", fromlist=["RECIPE_ITEMS"]).RECIPE_ITEMS["espada_runica"](),    "price": 120},
         ],
     },
 
