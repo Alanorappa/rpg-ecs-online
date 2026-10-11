@@ -27,8 +27,8 @@ from content.item_table import ITEMS as _I
 # ============================================================================
 
 INSTANCE_SHOP_RARITY_PRICE = {
-    "common": 25, "uncommon": 50, "rare": 100,
-    "epic": 150, "legendary": 200, "mythic": 250,
+    "common": 25, "uncommon": 833, "rare": 2742,
+    "epic": 7327, "legendary": 57236, "mythic": 135937,
 }
 
 INSTANCE_SHOP_WEAPON_SUBTYPES = {
@@ -133,16 +133,16 @@ SHOPS = {
 
             # --- Armas 1H físicas ---
             {"factory": _I["bone_dagger"],       "price": 30},
-            {"factory": _I["iron_sword"],        "price": 55},   # "Espada de Ferro"
-            {"factory": _I["shadow_blade"],      "price": 185},
+            {"factory": _I["iron_sword"],        "price": 904},   # "Espada de Ferro"
+            {"factory": _I["shadow_blade"],      "price": 6570},
             # --- Arma mágica ---
             {"factory": _I["oak_wand"],          "price": 45},
             # --- Arqueiro: arco, aljava, flechas ---
             {"factory": _I["short_bow"],         "price": 35},   # "Arco Curto"
             {"factory": _I["basic_quiver"],      "price": 15},   # "Aljava Básica"
             {"factory": _I["arrow"],             "price": 1},    # "Flecha"
-            {"factory": _I["arrow_broadhead"],   "price": 5},    # "Flecha Perfurante"
-            {"factory": _I["arrow_heavy"],       "price": 10},   # "Flecha Pesada"
+            {"factory": _I["arrow_broadhead"],   "price": 688},    # "Flecha Perfurante"
+            {"factory": _I["arrow_heavy"],       "price": 1562},   # "Flecha Pesada"
             # --- Escudo ---
             {"factory": _I["wood_shield"],       "price": 32},
             # --- Armaduras ---
@@ -150,7 +150,7 @@ SHOPS = {
             {"factory": _I["leather_mail"],      "price": 55},
             {"factory": _I["traveler_cloak"],    "price": 30},
             {"factory": _I["iron_greaves"],      "price": 42},   # "Grevas de Ferro"
-            {"factory": _I["leather_gloves"],    "price": 28},   # "Luvas de Couro"
+            {"factory": _I["leather_gloves"],    "price": 484},   # "Luvas de Couro"
             {"factory": _I["iron_wristguards"],  "price": 30},
             # --- Joias ---
             {"factory": _I["simple_amulet"],     "price": 48},
