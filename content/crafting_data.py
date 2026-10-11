@@ -44,7 +44,7 @@ def _mat(name: str, rarity: str = "common", value: int = 0):
 # injetando a chave em cada factory (mesmo princípio de
 # item_table.py::_with_derived_level).
 _RAW_MATERIALS: dict = {
-    "fragmento_ferro":  _mat("Fragmento de Ferro",  "common",   50),
+    "fragmento_ferro":  _mat("Fragmento de Ferro",   "common",   500),
     "fibra_madeira":    _mat("Fibra de Madeira",     "common",   300),
     "tira_couro":       _mat("Tira de Couro",        "common",   300),
     "fibra_resistente": _mat("Fibra Resistente",     "uncommon", 700),
