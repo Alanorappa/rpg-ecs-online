@@ -3749,7 +3749,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         return {"success": True, "skill_id": skill_id, "name": name, "new_gold": wallet.gold}
 
     # ---- sell ratio igual ao ShopSystem do cliente ----
-    _SELL_RATIO = 0.4
+    _SELL_RATIO = 0.1
 
     def process_shop_sell(self, session_id: str, item_name: str,
                           client_value: int, stack_sold: int = 1,
