@@ -1,11 +1,11 @@
 {
   "player": {
-    "x": 87,
+    "x": 94,
     "y": 148
   },
   "transitions": [
     {
-      "x": 48,
+      "x": 54,
       "y": 0,
       "target_map": "maps/map_1.csv",
       "target_x": 137,
@@ -14,7 +14,7 @@
   ],
   "spawn_zones": [
     {
-      "x": 45,
+      "x": 50,
       "y": 123,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -32,7 +32,7 @@
       ]
     },
     {
-      "x": 62,
+      "x": 67,
       "y": 133,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -50,7 +50,7 @@
       ]
     },
     {
-      "x": 4,
+      "x": 10,
       "y": 118,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -60,11 +60,13 @@
       "name": "Sargento Fiandeiro",
       "race": "Aranha",
       "class": "Guerreiro",
-      "loot": { "arac_weaver_robe": 0.20,
-                "arac_weaver_shoulders": 0.25,
-                "arac_weaver_gloves": 0.30,
-                "arac_weaver_boots": 0.30,
-                "arac_weaver_wrists": 0.35},
+      "loot": {
+        "arac_weaver_robe": 0.2,
+        "arac_weaver_shoulders": 0.25,
+        "arac_weaver_gloves": 0.3,
+        "arac_weaver_boots": 0.3,
+        "arac_weaver_wrists": 0.35
+      },
       "gold_min": 150,
       "gold_max": 300,
       "spawns": [
@@ -76,7 +78,7 @@
       ]
     },
     {
-      "x": 84,
+      "x": 89,
       "y": 133,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -94,28 +96,30 @@
       ]
     },
     {
-      "x": 14,
+      "x": 20,
       "y": 88,
       "radius": 1,
       "respawn_cooldown": 90.0,
       "respawnable": false,
       "level_min": 17,
       "level_max": 17,
-      "name": "Capitão Presa-Negra",      
+      "name": "Capitão Presa-Negra",
       "race": "Aranha",
       "class": "Guerreiro",
-      "loot": { "arcane_wand": 0.15,
-                "hunter_bow": 0.15,
-                "quitino_shield": 0.15,
-                "savage_shoulders": 0.15,
-                "steel_ring": 0.15,
-                "arac_widow_hood": 0.25,
-                "arac_widow_vest": 0.20,
-                "arac_widow_shoulders": 0.25,
-                "arac_widow_gloves": 0.30,
-                "arac_widow_boots": 0.30,
-                "arac_widow_wrists": 0.35,
-                "arac_weaver_hood": 0.25},
+      "loot": {
+        "arcane_wand": 0.15,
+        "hunter_bow": 0.15,
+        "quitino_shield": 0.15,
+        "savage_shoulders": 0.15,
+        "steel_ring": 0.15,
+        "arac_widow_hood": 0.25,
+        "arac_widow_vest": 0.2,
+        "arac_widow_shoulders": 0.25,
+        "arac_widow_gloves": 0.3,
+        "arac_widow_boots": 0.3,
+        "arac_widow_wrists": 0.35,
+        "arac_weaver_hood": 0.25
+      },
       "gold_min": 150,
       "gold_max": 300,
       "spawns": [
@@ -127,7 +131,7 @@
       ]
     },
     {
-      "x": 35,
+      "x": 40,
       "y": 146,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -145,7 +149,7 @@
       ]
     },
     {
-      "x": 5,
+      "x": 10,
       "y": 4,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -163,7 +167,7 @@
       ]
     },
     {
-      "x": 3,
+      "x": 8,
       "y": 126,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -181,7 +185,7 @@
       ]
     },
     {
-      "x": 63,
+      "x": 68,
       "y": 147,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -199,7 +203,7 @@
       ]
     },
     {
-      "x": 19,
+      "x": 24,
       "y": 119,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -217,28 +221,29 @@
       ]
     },
     {
-      "x": 92,
+      "x": 96,
       "y": 78,
       "radius": 1,
       "respawn_cooldown": 90.0,
       "respawnable": false,
       "level_min": 17,
       "level_max": 17,
-      "name": "Major Tarântulo",      
+      "name": "Major Tarântulo",
       "race": "Aranha",
       "class": "Guerreiro",
-      "loot": { "arcane_wand": 0.15,
-                "hunter_bow": 0.15,
-                "quitino_shield": 0.15,
-                "savage_shoulders": 0.15,
-                "steel_ring": 0.15,
-                "arac_carapace_helm": 0.25,
-                "arac_carapace_chest": 0.20,
-                "arac_carapace_shoulders": 0.25,
-                "arac_carapace_boots": 0.30,
-                "arac_carapace_wrists": 0.35,
-                "arac_carapace_gauntlets": 0.30
-              },
+      "loot": {
+        "arcane_wand": 0.15,
+        "hunter_bow": 0.15,
+        "quitino_shield": 0.15,
+        "savage_shoulders": 0.15,
+        "steel_ring": 0.15,
+        "arac_carapace_helm": 0.25,
+        "arac_carapace_chest": 0.2,
+        "arac_carapace_shoulders": 0.25,
+        "arac_carapace_boots": 0.3,
+        "arac_carapace_wrists": 0.35,
+        "arac_carapace_gauntlets": 0.3
+      },
       "gold_min": 150,
       "gold_max": 300,
       "spawns": [
@@ -250,21 +255,23 @@
       ]
     },
     {
-      "x": 84,
+      "x": 88,
       "y": 100,
       "radius": 1,
       "respawn_cooldown": 90.0,
       "respawnable": false,
       "level_min": 17,
       "level_max": 17,
-      "name": "General Quelícera Rubra",      
+      "name": "General Quelícera Rubra",
       "race": "Aranha",
       "class": "Guerreiro",
-      "loot": {"arcane_wand": 0.15,
-               "hunter_bow": 0.15,
-               "quitino_shield": 0.15,
-               "savage_shoulders": 0.15,
-               "steel_ring": 0.15},
+      "loot": {
+        "arcane_wand": 0.15,
+        "hunter_bow": 0.15,
+        "quitino_shield": 0.15,
+        "savage_shoulders": 0.15,
+        "steel_ring": 0.15
+      },
       "gold_min": 150,
       "gold_max": 300,
       "spawns": [
@@ -276,7 +283,7 @@
       ]
     },
     {
-      "x": 12,
+      "x": 17,
       "y": 34,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -294,30 +301,32 @@
       ]
     },
     {
-      "x": 4,
+      "x": 8,
       "y": 146,
       "radius": 1,
       "respawn_cooldown": 90.0,
       "respawnable": false,
       "level_min": 17,
       "level_max": 17,
-      "name": "Acraxxidae, o Obstinado",      
+      "name": "Acraxxidae, o Obstinado",
       "race": "Aranha",
       "class": "Guerreiro",
-      "loot": { "arcane_wand": 0.15,
-                "hunter_bow": 0.15,
-                "quitino_shield": 0.15,
-                "savage_shoulders": 0.15,
-                "steel_ring": 0.15,
-                "arac_venom_fang": 0.15,
-                "arac_cocoon_mace": 0.25,
-                "arac_chelicera_axe": 0.15,
-                "arac_silk_bow": 0.15,
-                "arac_weaver_wand": 0.20,
-                "arac_carapace_shield": 0.20,
-                "arac_web_quiver": 0.25,
-                "arac_widow_ring": 0.15,
-                "arac_venom_arrow": 0.35},
+      "loot": {
+        "arcane_wand": 0.15,
+        "hunter_bow": 0.15,
+        "quitino_shield": 0.15,
+        "savage_shoulders": 0.15,
+        "steel_ring": 0.15,
+        "arac_venom_fang": 0.15,
+        "arac_cocoon_mace": 0.25,
+        "arac_chelicera_axe": 0.15,
+        "arac_silk_bow": 0.15,
+        "arac_weaver_wand": 0.2,
+        "arac_carapace_shield": 0.2,
+        "arac_web_quiver": 0.25,
+        "arac_widow_ring": 0.15,
+        "arac_venom_arrow": 0.35
+      },
       "gold_min": 150,
       "gold_max": 300,
       "spawns": [
@@ -329,7 +338,7 @@
       ]
     },
     {
-      "x": 79,
+      "x": 84,
       "y": 127,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -347,7 +356,7 @@
       ]
     },
     {
-      "x": 27,
+      "x": 32,
       "y": 86,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -365,7 +374,7 @@
       ]
     },
     {
-      "x": 54,
+      "x": 59,
       "y": 113,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -383,33 +392,35 @@
       ]
     },
     {
-      "x": 50,
+      "x": 54,
       "y": 8,
       "radius": 1,
       "respawn_cooldown": 90.0,
       "respawnable": false,
       "level_min": 17,
       "level_max": 17,
-      "name": "Rainha da teia",      
+      "name": "Rainha da teia",
       "race": "Aranha",
       "class": "Guerreiro",
-      "loot": { "arcane_wand": 0.15,
-                "hunter_bow": 0.15,
-                "quitino_shield": 0.15,
-                "savage_shoulders": 0.15,
-                "steel_ring": 0.15, 
-                "arac_widow_hood": 0.25,
-                "arac_widow_vest": 0.20,
-                "arac_widow_shoulders": 0.25,
-                "arac_widow_gloves": 0.30,
-                "arac_widow_boots": 0.30,
-                "arac_widow_wrists": 0.35,
-                "arac_weaver_hood": 0.25,
-                "arac_weaver_robe": 0.20,
-                "arac_weaver_shoulders": 0.25,
-                "arac_weaver_gloves": 0.30,
-                "arac_weaver_boots": 0.30,
-                "arac_weaver_wrists": 0.35},
+      "loot": {
+        "arcane_wand": 0.15,
+        "hunter_bow": 0.15,
+        "quitino_shield": 0.15,
+        "savage_shoulders": 0.15,
+        "steel_ring": 0.15,
+        "arac_widow_hood": 0.25,
+        "arac_widow_vest": 0.2,
+        "arac_widow_shoulders": 0.25,
+        "arac_widow_gloves": 0.3,
+        "arac_widow_boots": 0.3,
+        "arac_widow_wrists": 0.35,
+        "arac_weaver_hood": 0.25,
+        "arac_weaver_robe": 0.2,
+        "arac_weaver_shoulders": 0.25,
+        "arac_weaver_gloves": 0.3,
+        "arac_weaver_boots": 0.3,
+        "arac_weaver_wrists": 0.35
+      },
       "gold_min": 300,
       "gold_max": 700,
       "spawns": [
@@ -421,7 +432,7 @@
       ]
     },
     {
-      "x": 94,
+      "x": 99,
       "y": 33,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -439,36 +450,38 @@
       ]
     },
     {
-      "x": 26,
+      "x": 30,
       "y": 76,
       "radius": 1,
       "respawn_cooldown": 90.0,
       "respawnable": false,
       "level_min": 17,
       "level_max": 17,
-      "name": "Kriddix, Baluarte da teia",      
+      "name": "Kriddix, Baluarte da teia",
       "race": "Aranha",
       "class": "Guerreiro",
-      "loot": { "arcane_wand": 0.15,
-                "hunter_bow": 0.15,
-                "quitino_shield": 0.15,
-                "savage_shoulders": 0.15,
-                "leather_vest": 0.15,
-                "arac_venom_fang": 0.15,
-                "arac_cocoon_mace": 0.25,
-                "arac_chelicera_axe": 0.15,
-                "arac_silk_bow": 0.15,
-                "arac_weaver_wand": 0.20,
-                "arac_carapace_shield": 0.20,
-                "arac_web_quiver": 0.25,
-                "arac_widow_ring": 0.15,
-                "arac_venom_arrow": 0.15,
-                "arac_carapace_helm": 0.10,
-                "arac_carapace_chest": 0.20,
-                "arac_carapace_shoulders": 0.25,
-                "arac_carapace_boots": 0.15,
-                "arac_carapace_wrists": 0.15,
-                "arac_carapace_gauntlets": 0.10},
+      "loot": {
+        "arcane_wand": 0.15,
+        "hunter_bow": 0.15,
+        "quitino_shield": 0.15,
+        "savage_shoulders": 0.15,
+        "leather_vest": 0.15,
+        "arac_venom_fang": 0.15,
+        "arac_cocoon_mace": 0.25,
+        "arac_chelicera_axe": 0.15,
+        "arac_silk_bow": 0.15,
+        "arac_weaver_wand": 0.2,
+        "arac_carapace_shield": 0.2,
+        "arac_web_quiver": 0.25,
+        "arac_widow_ring": 0.15,
+        "arac_venom_arrow": 0.15,
+        "arac_carapace_helm": 0.1,
+        "arac_carapace_chest": 0.2,
+        "arac_carapace_shoulders": 0.25,
+        "arac_carapace_boots": 0.15,
+        "arac_carapace_wrists": 0.15,
+        "arac_carapace_gauntlets": 0.1
+      },
       "gold_min": 150,
       "gold_max": 300,
       "spawns": [
@@ -480,7 +493,7 @@
       ]
     },
     {
-      "x": 21,
+      "x": 26,
       "y": 146,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -498,7 +511,7 @@
       ]
     },
     {
-      "x": 49,
+      "x": 54,
       "y": 52,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -516,7 +529,7 @@
       ]
     },
     {
-      "x": 4,
+      "x": 9,
       "y": 87,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -534,7 +547,7 @@
       ]
     },
     {
-      "x": 57,
+      "x": 62,
       "y": 129,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -552,7 +565,7 @@
       ]
     },
     {
-      "x": 4,
+      "x": 9,
       "y": 107,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -570,7 +583,7 @@
       ]
     },
     {
-      "x": 75,
+      "x": 80,
       "y": 147,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -588,7 +601,7 @@
       ]
     },
     {
-      "x": 22,
+      "x": 27,
       "y": 125,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -606,7 +619,7 @@
       ]
     },
     {
-      "x": 28,
+      "x": 33,
       "y": 123,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -624,7 +637,7 @@
       ]
     },
     {
-      "x": 45,
+      "x": 50,
       "y": 133,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -642,7 +655,7 @@
       ]
     },
     {
-      "x": 95,
+      "x": 100,
       "y": 121,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -660,7 +673,7 @@
       ]
     },
     {
-      "x": 97,
+      "x": 102,
       "y": 146,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -678,7 +691,7 @@
       ]
     },
     {
-      "x": 93,
+      "x": 98,
       "y": 5,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -696,7 +709,7 @@
       ]
     },
     {
-      "x": 53,
+      "x": 58,
       "y": 91,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -714,7 +727,7 @@
       ]
     },
     {
-      "x": 55,
+      "x": 60,
       "y": 146,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -732,7 +745,7 @@
       ]
     },
     {
-      "x": 38,
+      "x": 43,
       "y": 103,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -750,7 +763,7 @@
       ]
     },
     {
-      "x": 57,
+      "x": 62,
       "y": 122,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -768,7 +781,7 @@
       ]
     },
     {
-      "x": 79,
+      "x": 84,
       "y": 122,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -786,7 +799,7 @@
       ]
     },
     {
-      "x": 28,
+      "x": 33,
       "y": 147,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -804,7 +817,7 @@
       ]
     },
     {
-      "x": 6,
+      "x": 11,
       "y": 61,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -822,7 +835,7 @@
       ]
     },
     {
-      "x": 95,
+      "x": 100,
       "y": 66,
       "radius": 1,
       "respawn_cooldown": 90.0,
@@ -840,7 +853,7 @@
       ]
     },
     {
-      "x": 37,
+      "x": 42,
       "y": 113,
       "radius": 1,
       "respawn_cooldown": 90.0,

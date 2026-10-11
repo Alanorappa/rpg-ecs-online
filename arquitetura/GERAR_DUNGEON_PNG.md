@@ -82,3 +82,54 @@ Qualquer dungeon FUTURA usa o MESMO script — nunca escrever um
 conversor novo por dungeon. Ajustar a convenção de cores (ex: um 2º
 tipo de mob) é editar `tools/png_to_dungeon.py` uma vez só, não
 duplicar lógica.
+
+## Re-regenerar uma dungeon JÁ EM PRODUÇÃO (10/10/2026) — NUNCA rodar o
+## script direto por cima do `_entities.json` real
+
+Depois que uma dungeon já tem o `_entities.json` editado à mão (nome de
+boss, loot, gold, destino da transição de saída — a edição obrigatória
+do item anterior), **rodar `convert()`/`png_to_dungeon.py` direto por
+cima do arquivo real APAGA tudo isso** — `convert_dungeon_entities()`
+sempre escreve zonas com stub (`"name": "EDIT_ME"`, `"loot": {}`), sem
+exceção, mesmo que só o TERRENO tenha mudado (ex: autor só adicionou
+borda no `_map.png`, sem tocar no `_entities.png` de propósito).
+
+Pior ainda: se o PNG mudou de TAMANHO (borda adicionada = canvas
+cresceu), as coordenadas de toda entidade existente **também mudam** —
+não dá pra só "regenerar o terreno e deixar o JSON antigo intacto",
+porque os bosses/elites ficariam nas coordenadas ANTIGAS, fora de
+lugar no mapa NOVO (ou dentro de parede).
+
+**Fluxo seguro pra esse caso** (usado de verdade na dungeon
+Aracnópolis, bordas adicionadas ao redor do mapa inteiro):
+1. `convert_dungeon_tiles()` do terreno pro CSV real — sempre seguro,
+   só lê o `_map.png`, nunca toca em entidade.
+2. `convert_dungeon_entities()` do PNG de entidades pra um JSON
+   **temporário** (nunca o caminho real) — dá as coordenadas NOVAS e
+   corretas, mas com nome/loot stub.
+3. Carrega o `_entities.json` REAL (antigo, com todo o conteúdo já
+   escrito à mão) e o JSON temporário (coordenadas novas).
+4. Casa cada zona ANTIGA com a zona NOVA mais próxima usando
+   **correspondência ótima bipartida** (`scipy.optimize.
+   linear_sum_assignment`, minimiza a soma total de distância de TODOS
+   os pares ao mesmo tempo) — NUNCA correspondência gulosa (pegar a
+   mais próxima zona por zona, em ordem de lista): gulosa pode "roubar"
+   o par certo de uma zona processada depois só por ordem, gerando
+   casamentos errados de 30+ tiles de distância (achado real rodando
+   isso pela 1ª vez — a versão gulosa produziu 4 casamentos visivelmente
+   errados; a ótima produziu 41/41 corretos, todos a 4-6 tiles de
+   distância, consistente com o deslocamento real da borda).
+5. Pra cada zona casada: copia as coordenadas NOVAS por cima da zona
+   ANTIGA (que mantém nome/loot/gold/level/race/class intactos). Mesma
+   lógica pro `"player"` (só coordenada, sem customização — usa a nova
+   direto) e pra `"transitions"` (usa `x`/`y` novos — posição da saída
+   DENTRO da dungeon — mas preserva `target_map`/`target_x`/`target_y`,
+   que é a configuração real já corrigida, nunca o placeholder).
+6. Valida (JSON parse + `request_dungeon_enter` de teste real, ver
+   `tests/helpers.py`) ANTES de considerar pronto.
+
+Script usado (não commitado — é uma ferramenta de uma vez, não parte
+do pipeline permanente; se uma 2ª dungeon precisar do mesmo
+retrabalho, vale promover isso pra dentro de
+`tools/png_to_dungeon.py` como uma flag `--merge-existing`, em vez de
+reescrever o script toda vez).
