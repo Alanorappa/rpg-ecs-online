@@ -193,8 +193,8 @@ SKILL_CATALOG: dict[str, dict] = {
         "name":              "Bola de Fogo",
         "desc":              "Lança uma bola de fogo no alvo.",
         "cooldown":          0.0,
-        "mana_cost":         25,
-        "cast_time":         1.5,
+        "mana_cost":         15,
+        "cast_time":         1.2,
         # cast_range nivelado em 6 (14/09/2026, decisão do usuário — mesmo
         # nivelamento das skills de alvo único do arqueiro; passou por 6→5→7
         # antes de fechar em 6: 7 media 6 tiles LIVRES até o alvo, não 5
@@ -225,7 +225,7 @@ SKILL_CATALOG: dict[str, dict] = {
         # 3 (14/09/2026, decisão do usuário) — alcance efetivo total era
         # cast_range + radius_tiles (8+3=11, longe demais pra um mago); agora
         # 3+3=6. radius_tiles (raio da explosão em si) INTOCADO de propósito.
-        "cast_range":       3,
+        "cast_range":       4,
         "is_channeled":     True,
         "channel_duration": 5.0,
         "needs_aoe_target": True,
@@ -237,7 +237,7 @@ SKILL_CATALOG: dict[str, dict] = {
             "radius_tiles":   3.0,
             "slow_pct":       0.75,
             "dmg_weapon_pct": 0.15,
-            "dmg_sp_coeff":   1.0,
+            "dmg_sp_coeff":   0.75,
         },
     },
     "nova_congelante": {
