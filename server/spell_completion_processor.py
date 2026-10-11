@@ -686,8 +686,18 @@ class SpellCompletionMixin:
                         continue
                     dmg = max(1, int(cs_p.base_physical_damage * ch.dmg_weapon_pct
                                      + sp * ch.dmg_sp_coeff)) if cs_p else 1
+                    # Talentos de fogo GERAIS (Pirotecnia/Crematória/Choque
+                    # Térmico/Chama Interna/Lapso Elemental) — ver
+                    # _apply_general_fire_talent_bonus, mesmo ponto único
+                    # usado por Bola de Fogo/Calcinar (10/10/2026, bug real
+                    # relatado pelo usuário: Choque Térmico não funcionava
+                    # aqui, PROBLEMAS_ARQUITETURA.md).
+                    dmg = self._apply_general_fire_talent_bonus(cs_p, target_eid, mob_cs, dmg)
                     self._server_apply_magic_damage(player_eid, target_eid, dmg,
                                                      roll_crit=True, report=True, school="fogo")
+                    self._trigger_general_fire_talent_procs(
+                        player_eid, cs_p, char,
+                        getattr(self, "_last_magic_is_crit", False))
                     if ch.slow_pct > 0:
                         apply_effect(self.world, target_eid, "slow", 2.0, 1.0 - ch.slow_pct)
 
@@ -937,10 +947,83 @@ class SpellCompletionMixin:
             return True
         return False
 
+    # ── Talentos de fogo GERAIS (ponto único, 10/10/2026) ────────────────────
+    #
+    # Bug real relatado pelo usuário: Choque Térmico funcionava em Bola de
+    # Fogo/Calcinar mas não em Calamidade Flamejante — ela usa um caminho de
+    # dano TOTALMENTE separado (_process_player_channeling, tick de
+    # Channeling) que nunca replicava os checks de talento escritos à mão
+    # dentro de _server_bola_de_fogo/_server_calcinar. Extraído aqui pra
+    # nunca mais divergir — chamado pelos 3 lugares que causam dano de fogo
+    # (Bola de Fogo, Calcinar, tick da Calamidade Flamejante).
+    #
+    # Escopo: só os talentos cuja PRÓPRIA descrição fala de "fogo"/
+    # "habilidades de fogo" em geral (Pirotecnia, Crematória, Choque
+    # Térmico, Chama Interna, Lapso Elemental — content/talent_data.py).
+    # Queimaduras Profundas e Exaustão ficam de FORA de propósito — a
+    # descrição dos dois cita "Bola de Fogo" especificamente, não fogo em
+    # geral, então continuam só dentro de _server_bola_de_fogo. Ver
+    # PROBLEMAS_ARQUITETURA.md.
+    def _apply_general_fire_talent_bonus(self, player_cs, target_id: int,
+                                         target_cs, dmg: int) -> int:
+        """Multiplicadores de dano (Pirotecnia/Crematória/Choque Térmico) —
+        chamar ANTES de _server_apply_magic_damage."""
+        if not player_cs:
+            return dmg
+        from engine.components import StatusEffects
+        _pyr = getattr(player_cs, "pyromania_bonus", 0.0)
+        if _pyr > 0:
+            dmg = int(dmg * (1.0 + _pyr))
+        if getattr(player_cs, "crematoria_enabled", False):
+            if target_cs.max_hp > 0 and target_cs.current_hp / target_cs.max_hp < 0.20:
+                dmg = int(dmg * 1.25)
+        if getattr(player_cs, "thermal_shock_enabled", False):
+            _sfx = self.world.get_component(target_id, StatusEffects)
+            if _sfx and _sfx.has("root"):
+                dmg = int(dmg * 2.0)
+        return dmg
+
+    def _trigger_general_fire_talent_procs(self, player_eid: int, player_cs,
+                                           char_stats, is_crit: bool) -> None:
+        """Procs pós-dano (Lapso Elemental, Chama Interna) — chamar DEPOIS de
+        _server_apply_magic_damage. `self._proj_spell_result["lapso_proc"]`
+        só é lido de verdade pelo caminho de projétil (BdF/Calcinar/Nova
+        Congelante, ver _proj_spell_result mais acima) — escrever aqui
+        durante um tick de canalização (Calamidade Flamejante) é inofensivo,
+        fica sem leitor até o próximo reset (linha ~453), nunca vaza pra
+        outro resultado."""
+        if not player_cs:
+            return
+        from engine.core_systems import apply_effect
+
+        if is_crit:
+            player_cs.fire_crit_counter = getattr(player_cs, "fire_crit_counter", 0) + 1
+            player_cs.fire_crit_timer   = 6.0
+            _lapse = getattr(player_cs, "elemental_lapse_crit_bonus", 0.0)
+            if getattr(player_cs, "fire_crit_counter", 0) >= 3 and _lapse > 0:
+                player_cs.fire_crit_counter = 0
+                player_cs.fire_crit_timer   = 0.0
+                apply_effect(self.world, player_eid, "elemental_lapse", 5.0, 0)
+                from engine.components import Modifier
+                from engine.stat_fns import add_timed_modifier
+                from engine.core_systems import grant_visible_buff
+                _lapse_mod = Modifier("crit_rating", _lapse, "flat", source="buff")
+                grant_visible_buff(self.world, player_eid, "lapso_elemental_crit", 5.0,
+                                   lambda: add_timed_modifier(player_cs, _lapse_mod, 5.0, "lapso_elemental"))
+                self._proj_spell_result["lapso_proc"] = {"bonus": _lapse, "duration": 5.0}
+
+        if char_stats:
+            _proc_chance = getattr(player_cs, "fire_instant_proc_chance", 0.0)
+            if _proc_chance > 0 and random.random() < _proc_chance:
+                if not char_stats.fire_instant_ready:
+                    char_stats.fire_instant_ready = True
+                    from engine.effect_order import mark_activated
+                    mark_activated(self.world, player_eid, "chama_interna")
+
     # ── Handlers de conclusão de cada spell ──────────────────────────────────
 
     def _server_bola_de_fogo(self, player_eid: int, target_id: int, entry: dict) -> None:
-        from engine.components import CombatStats, StatusEffects, CharacterStats
+        from engine.components import CombatStats, CharacterStats
         from engine.core_systems import apply_effect
         from engine.damage_calculator import CRITICAL_DAMAGE_MULTIPLIER, resolve_attack_outcome
         from content.skill_config import SKILL_CATALOG as _SC_bdf
@@ -972,46 +1055,22 @@ class SpellCompletionMixin:
         is_crit    = (outcome == "crit")
         final_dmg  = int(base_dmg * CRITICAL_DAMAGE_MULTIPLIER) if is_crit else base_dmg
 
-        if player_cs:
-            _pyr = getattr(player_cs, "pyromania_bonus", 0.0)
-            if _pyr > 0:
-                final_dmg = int(final_dmg * (1.0 + _pyr))
-            if getattr(player_cs, "crematoria_enabled", False):
-                if target_cs.max_hp > 0 and target_cs.current_hp / target_cs.max_hp < 0.20:
-                    final_dmg = int(final_dmg * 1.25)
-            if getattr(player_cs, "thermal_shock_enabled", False):
-                _sfx = self.world.get_component(target_id, StatusEffects)
-                if _sfx and _sfx.has("root"):
-                    final_dmg = int(final_dmg * 2.0)
+        final_dmg = self._apply_general_fire_talent_bonus(player_cs, target_id, target_cs, final_dmg)
 
         self._proj_spell_result["is_crit"] = is_crit
         self._server_apply_magic_damage(player_eid, target_id, final_dmg, is_crit, school="fogo")
 
-        # Queimaduras Profundas
+        # Queimaduras Profundas (exclusivo de Bola de Fogo — ver descrição
+        # do talento, content/talent_data.py::pir_queimaduras)
         if is_crit and player_cs and getattr(player_cs, "fire_burns_on_crit", False):
             burn_dmg = max(1, int(player_cs.spell_power * 0.3))
             burn_dur = getattr(player_cs, "fire_burn_duration", 3.0)
             apply_effect(self.world, target_id, "burn", burn_dur, burn_dmg)
 
-        # Lapso Elemental: conta crits de fogo
-        if is_crit and player_cs:
-            player_cs.fire_crit_counter = getattr(player_cs, "fire_crit_counter", 0) + 1
-            player_cs.fire_crit_timer   = 6.0
-            _lapse = getattr(player_cs, "elemental_lapse_crit_bonus", 0.0)
-            if getattr(player_cs, "fire_crit_counter", 0) >= 3 and _lapse > 0:
-                player_cs.fire_crit_counter = 0
-                player_cs.fire_crit_timer   = 0.0
-                apply_effect(self.world, player_eid, "elemental_lapse", 5.0, 0)
-                from engine.components import Modifier
-                from engine.stat_fns import add_timed_modifier
-                from engine.core_systems import grant_visible_buff
-                _lapse_mod = Modifier("crit_rating", _lapse, "flat", source="buff")
-                grant_visible_buff(self.world, player_eid, "lapso_elemental_crit", 5.0,
-                                   lambda: add_timed_modifier(player_cs, _lapse_mod, 5.0, "lapso_elemental"))
-                # Notifica o cliente para aplicar o modificador visual e mostrar PROC
-                self._proj_spell_result["lapso_proc"] = {"bonus": _lapse, "duration": 5.0}
+        self._trigger_general_fire_talent_procs(player_eid, player_cs, char_stats, is_crit)
 
-        # Exaustão: slow progressivo por BdF consecutiva
+        # Exaustão: slow progressivo por BdF consecutiva (exclusivo de Bola
+        # de Fogo — ver descrição do talento, pir_exaustao)
         if player_cs and getattr(player_cs, "fire_exhaustion_enabled", False):
             from engine.components import ActiveEffect as _AEX, StatusEffects as _SFX2
             _exh_dur = _bdf_data.get("effect_durations", {}).get("exhaustion", 6.0)
@@ -1036,17 +1095,8 @@ class SpellCompletionMixin:
                 else:
                     _t_sfx.effects["slow"] = _AEX("slow", _exh_dur, 1.0 - _slow_pct, 0.0)
 
-        # Chama Interna: proc após hit de spell de fogo
-        if player_cs and char_stats:
-            _proc_chance = getattr(player_cs, "fire_instant_proc_chance", 0.0)
-            if _proc_chance > 0 and random.random() < _proc_chance:
-                if not char_stats.fire_instant_ready:
-                    char_stats.fire_instant_ready = True
-                    from engine.effect_order import mark_activated
-                    mark_activated(self.world, player_eid, "chama_interna")
-
     def _server_calcinar(self, player_eid: int, target_id: int, _entry: dict) -> None:
-        from engine.components import CombatStats, StatusEffects, CharacterStats
+        from engine.components import CombatStats, CharacterStats
         from content.skill_config import SKILL_CATALOG as _SC_cal
         _cal = _SC_cal.get("calcinar", {})
 
@@ -1065,28 +1115,15 @@ class SpellCompletionMixin:
         _base = _cal.get("base_dmg",    50)
         _coef = _cal.get("dmg_sp_coeff", 0.25)
         base_dmg = max(1, _base + int(sp * _coef))
-        if player_cs:
-            _pyr = getattr(player_cs, "pyromania_bonus", 0.0)
-            if _pyr > 0:
-                base_dmg = int(base_dmg * (1.0 + _pyr))
-            if getattr(player_cs, "crematoria_enabled", False):
-                if target_cs.max_hp > 0 and target_cs.current_hp / target_cs.max_hp < 0.20:
-                    base_dmg = int(base_dmg * 1.25)
-            if getattr(player_cs, "thermal_shock_enabled", False):
-                _sfx = self.world.get_component(target_id, StatusEffects)
-                if _sfx and _sfx.has("root"):
-                    base_dmg = int(base_dmg * 2.0)
+        base_dmg = self._apply_general_fire_talent_bonus(player_cs, target_id, target_cs, base_dmg)
 
         self._server_apply_magic_damage(player_eid, target_id, base_dmg, roll_crit=True, school="fogo")
 
-        # Chama Interna: proc após hit de fogo
-        if player_cs and char_stats:
-            _proc_chance = getattr(player_cs, "fire_instant_proc_chance", 0.0)
-            if _proc_chance > 0 and random.random() < _proc_chance:
-                if not char_stats.fire_instant_ready:
-                    char_stats.fire_instant_ready = True
-                    from engine.effect_order import mark_activated
-                    mark_activated(self.world, player_eid, "chama_interna")
+        # roll_crit=True acima -> crit só é conhecido DEPOIS da chamada
+        # (self._last_magic_is_crit, ver _server_apply_magic_damage).
+        self._trigger_general_fire_talent_procs(
+            player_eid, player_cs, char_stats,
+            getattr(self, "_last_magic_is_crit", False))
 
     def _server_nova_congelante(self, player_eid: int, target_id: int, entry: dict) -> None:
         from engine.components import CombatStats, TileMovement

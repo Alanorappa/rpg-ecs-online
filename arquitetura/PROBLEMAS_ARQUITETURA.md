@@ -26654,3 +26654,55 @@ falham sem o fix.
 estado (Xadread) — como `_last_transition_check_tile` começa `None` a
 cada spawn, o primeiro frame depois do login nunca dispara mais,
 independente de qual tile o personagem estava salvo.
+
+## 263. Choque Térmico não funcionava na Calamidade Flamejante (10/10/2026)
+
+**Relatado pelo usuário**: o talento Choque Térmico (dano de fogo +100%
+em alvo enraizado pela Nova Congelante) funcionava em Bola de Fogo e
+Calcinar, mas não em Calamidade Flamejante — mesmo a escola dela já
+estando corretamente marcada como "fogo" em `skill_config.py`.
+
+**Investigação**: `_server_apply_magic_damage` (a função que de fato
+aplica o dano, chamada pelos 3 skills) só usa `school` pra aplicar
+`resist_<school>` do alvo — ela não sabe nada sobre talentos de mago.
+Cada talento de fogo (Pirotecnia, Crematória, Choque Térmico, Chama
+Interna, Lapso Elemental) era um bloco de código escrito à mão DENTRO
+de `_server_bola_de_fogo`/`_server_calcinar`, nunca dentro da função
+genérica. Calamidade Flamejante usa um caminho de dano TOTALMENTE
+separado (`_process_player_channeling`, tick do componente
+`Channeling`) que nunca replicava nenhum desses blocos — não só Choque
+Térmico, os 5 talentos de fogo geral estavam ausentes dali.
+
+**Achado extra durante a investigação**: a descrição de "Lapso
+Elemental" fala em "3 crits de **fogo** em 6s" (fogo em geral, não
+"Bola de Fogo" especificamente, diferente de Queimaduras Profundas e
+Exaustão, que citam Bola de Fogo na própria descrição) — mas a
+implementação só existia dentro de `_server_bola_de_fogo`. Ou seja, o
+Calcinar também não contava pro contador de Lapso Elemental antes
+desta correção, um 2º bug real da mesma causa raiz, achado por ler a
+descrição de cada talento contra onde cada `cs_flag` era checado no
+código (nunca assumir que o nome do campo sozinho basta).
+
+**Fix**: `_apply_general_fire_talent_bonus()` (multiplicadores:
+Pirotecnia/Crematória/Choque Térmico) e
+`_trigger_general_fire_talent_procs()` (procs pós-dano: Lapso Elemental/
+Chama Interna) — `server/spell_completion_processor.py`, ponto único
+chamado pelos 3 lugares que causam dano de fogo (Bola de Fogo, Calcinar,
+tick de Calamidade Flamejante). Queimaduras Profundas e Exaustão
+continuam FORA de propósito — a descrição dos dois cita "Bola de Fogo"
+especificamente (ver CLAUDE.md pro critério de escopo: só entra no
+ponto único o talento cuja PRÓPRIA descrição fala de fogo em geral).
+
+Durante a extração também foi removido um bloco de "Chama Interna"
+duplicado que sobrava no fim de `_server_bola_de_fogo` (resquício de
+antes da extração — rolava a chance de proc 2x por golpe, dobrando a
+chance real sem ninguém perceber porque o guard `fire_instant_ready`
+mascarava o efeito na maioria dos casos).
+
+**Teste**: `tests/test_fire_talents_general.py` — unitário determinístico
+da função de multiplicador (sem RNG) + teste de wiring que reproduz o
+cast real de Calamidade Flamejante (fila de skill do servidor) contra
+um alvo enraizado, confirmando que a função é chamada de dentro do tick
+de canalização de verdade. Revert-to-confirm via `git stash`: os 4
+testes falham sem o fix (`AttributeError`, função nem existia ainda no
+caminho da Calamidade).

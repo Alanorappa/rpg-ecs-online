@@ -526,6 +526,26 @@ padrão a quebrar, não só os bugs individuais.
   num call site novo de habilidade de mob — os 2 pontos existentes
   (`engine/world_systems.py`, corpo-a-corpo e projétil) chamam essa
   função, um 3º ponto que reimplemente a conta vira código paralelo.
+- **Dano de qualquer habilidade da escola de FOGO do mago** (nova skill
+  de fogo futura, ou qualquer call site que já cause dano `school="fogo"`)
+  → `_apply_general_fire_talent_bonus()` (multiplicadores: Pirotecnia/
+  Crematória/Choque Térmico) ANTES de `_server_apply_magic_damage`, e
+  `_trigger_general_fire_talent_procs()` (procs pós-dano: Lapso Elemental/
+  Chama Interna) DEPOIS — ambas em `server/spell_completion_processor.py`
+  (10/10/2026). `_server_apply_magic_damage` em si só usa `school` pra
+  aplicar `resist_<school>` do alvo — NUNCA sabe de talento nenhum, não
+  adianta só passar `school="fogo"` achando que os talentos vêm de
+  graça. **Critério pra saber se um talento entra nessas funções**: ler
+  a PRÓPRIA descrição do talento em `content/talent_data.py` — se fala
+  "skills/habilidades de fogo" em GERAL, entra; se cita uma skill
+  específica por nome (ex: Queimaduras Profundas/Exaustão citam "Bola
+  de Fogo" explicitamente), fica de fora, só no handler daquela skill
+  mesmo. Bug real: Calamidade Flamejante usa um caminho de dano
+  separado (`_process_player_channeling`, tick de `Channeling`) que
+  nunca replicava os 5 talentos gerais — Choque Térmico nunca
+  funcionava nela; Lapso Elemental (que também é "geral" pela própria
+  descrição) nem no Calcinar funcionava, só existia dentro do handler
+  da Bola de Fogo. Ver PROBLEMAS_ARQUITETURA.md §263.
 - **Broadcast direto novo (fora do AOI_UPDATE)** →
   `SessionManager._sessions_in_aoi(tx, ty, map_file, origin_eid=...)` —
   NUNCA iterar `self._sessions` com check de distância à mão (classe de bug:
