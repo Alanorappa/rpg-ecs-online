@@ -26814,3 +26814,46 @@ conferir o arquivo em disco) — é exatamente o padrão já registrado em
 §261 ("git diff deveria ter sido o 1º passo"), só que da forma
 inversa: aqui o arquivo em disco estava certo, mas não era o arquivo
 que o código realmente carregava.
+
+## 266. Jogador nascia dentro de parede ao entrar na dungeon regenerada — o `"player"` do `_entities.json` da dungeon é só informativo (10/10/2026)
+
+**Relatado pelo usuário**: depois do fix de §265 (terreno carregando
+110x160 corretamente), o personagem continuava nascendo dentro de
+parede ao entrar na Aracnópolis.
+
+**Investigação**: conferi pixel a pixel que `aracnopolis_dungeon_
+entities.json` batia exatamente com o PNG (`player: (94,148)`,
+`transition: (54,0)`, 41 zonas = 62 pixels vermelhos) — tudo
+consistente, e o tile `(94,148)` no terreno novo É chão (`_`), não
+parede. A causa não estava em nenhum arquivo que eu tinha mexido.
+
+**Causa raiz**: o campo `"player"` do `_entities.json` DA DUNGEON
+nunca é lido pelo mecanismo real de spawn — é só um valor informativo
+que `tools/png_to_dungeon.py` imprime no terminal pra o autor copiar à
+mão (ver `GERAR_DUNGEON_PNG.md`, edição manual obrigatória, item 3).
+Quem decide de verdade onde o jogador nasce é `target_x`/`target_y` da
+transição com `"dungeon_key"` no `_entities.json` do MAPA ABERTO
+(`map_1_entities.json`) — arquivo totalmente diferente, fora do
+alcance do merge de entidades da PRÓPRIA dungeon (§anterior). Esse
+campo ainda apontava pro valor ANTIGO, de antes da borda
+(`target_x: 87`, deveria ser `94` depois do deslocamento) — nunca
+atualizado porque a regeneração de §265 nem sabia que esse 2º arquivo
+existia.
+
+**Fix**: `map_1_entities.json`, transição `dungeon_key="aracnopolis"`
+→ `target_x` 87→94 (`target_y` 148 não mudou, só o eixo X foi afetado
+pelo deslocamento da borda, mesmo padrão já visto nas outras
+entidades).
+
+**Teste real**: diferente da validação de §265 (que passava
+`entrance_x`/`entrance_y` direto pro `request_dungeon_enter`, provando
+só que o MECANISMO funciona), desta vez o teste leu
+`target_x`/`target_y` do PRÓPRIO `map_1_entities.json` — o mesmo
+caminho que o jogo realmente percorre — e confirmou o tile de destino
+como chão. **Lição**: testar um mecanismo com valores hardcoded no
+teste prova que o código funciona pros valores que EU escolhi, não
+que os dados de configuração reais estão certos — mesma classe de
+lição de §261/§265, água de moinhos diferentes (formula vs. arquivo
+certo vs., agora, campo de configuração espalhado em 2 arquivos
+diferentes que "parecem" redundantes mas um é decorativo e o outro é
+o de verdade).

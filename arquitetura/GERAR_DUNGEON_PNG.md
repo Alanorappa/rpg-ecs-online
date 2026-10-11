@@ -148,6 +148,28 @@ Aracnópolis, bordas adicionadas ao redor do mapa inteiro):
    em disco: o arquivo certo pode estar correto e mesmo assim nunca
    ser o que o jogo carrega de verdade (§265 — exatamente o que
    aconteceu na 1ª tentativa desta mesma regeneração).
+7. **O campo `"player"` do `_entities.json` da DUNGEON é só informativo —
+   NUNCA é lido pelo spawn de verdade.** Quem decide onde o jogador
+   nasce ao entrar é `target_x`/`target_y` da transição com
+   `"dungeon_key"` no `_entities.json` do MAPA ABERTO (ex:
+   `map_1_entities.json`) — o mesmo campo que a edição manual obrigatória
+   original (passo 3 acima) pede pra preencher na 1ª vez que a dungeon é
+   criada. **Re-regenerar uma dungeon com coordenadas deslocadas
+   (passos 1-6 acima) NUNCA atualiza esse campo sozinho** — é um arquivo
+   completamente diferente, fora do escopo do merge de `_entities.json`
+   da própria dungeon. Bug real, 10/10/2026: regenerei a Aracnópolis com
+   sucesso (zonas/player/exit todos corretos no `_entities.json` DELA),
+   mas o jogador continuava nascendo dentro de parede — porque
+   `map_1_entities.json` ainda apontava pro `target_x`/`target_y`
+   ANTIGO (87,148), nunca atualizado pro novo (94,148). Testei
+   errado também: validar só via `request_dungeon_enter(..., entrance_x,
+   entrance_y)` passando as coordenadas NOVAS manualmente (como no passo
+   6) prova que o MECANISMO funciona, mas não prova que o jogo vai
+   passar as coordenadas certas de verdade — só testar o fluxo REAL (ler
+   `target_x`/`target_y` do `map_1_entities.json`, não hardcoded no
+   teste) pega esse tipo de gap. Sempre que o `"player"` da dungeon
+   mudar de posição numa regeneração, atualizar o `target_x`/`target_y`
+   correspondente no mapa aberto NO MESMO commit.
 
 Script usado (não commitado — é uma ferramenta de uma vez, não parte
 do pipeline permanente; se uma 2ª dungeon precisar do mesmo
