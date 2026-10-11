@@ -35,11 +35,17 @@ Uso:
                                            [--boss-level N] [--race NOME]
         → lê  <map_base>_map.png
                <map_base>_entities.png
-        → gera maps/<nome>.csv
+        → gera maps/<nome>_terrain.csv (terreno)
+               maps/<nome>_objects.csv (vazio — pipeline de PNG ainda
+                                         não tem camada de objetos)
                maps/<nome>_entities.json
     (nome = basename de <map_base>, sem o diretório de origem — os PNGs
     costumam morar em assets/maps/, o CSV/JSON gerado sempre vai pra maps/,
-    mesma pasta que o resto do jogo já lê.)
+    mesma pasta que o resto do jogo já lê. SEMPRE o par _terrain.csv/
+    _objects.csv, nunca um "<nome>.csv" único — engine/map_loader.py dá
+    prioridade a esse par sobre o arquivo único sempre que os dois
+    existirem, então gerar só o único pode ficar invisível/nunca ser lido
+    se o par já existir de alguma origem anterior.)
 
 Ambos os arquivos de saída precisam de edição manual depois (o script
 avisa no terminal): loot/gold_min/gold_max de cada boss, e
@@ -250,18 +256,42 @@ def convert_dungeon_entities(entities_png: str, json_path: str,
 # Entrada principal
 # ---------------------------------------------------------------------------
 
+def _write_empty_objects_csv(objects_path: str, width: int, height: int) -> None:
+    """Grade vazia (so ".") do tamanho do terreno -- o pipeline de PNG de
+    dungeon nao tem conceito de camada de objetos ainda; engine/map_loader.py
+    exige os DOIS arquivos (_terrain.csv + _objects.csv) presentes pra
+    priorizar o formato de 2 camadas sobre o de 1 arquivo so (ver
+    GERAR_DUNGEON_PNG.md, "formato de arquivo real")."""
+    os.makedirs(os.path.dirname(os.path.abspath(objects_path)), exist_ok=True)
+    with open(objects_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        for _ in range(height):
+            writer.writerow(["."] * width)
+    print(f"Objects: {objects_path}  ✓ (vazio, {width}x{height})")
+
+
 def convert(map_base: str, out_name: str, race: str, entity_class: str,
             elite_level_min: int, elite_level_max: int, boss_level: int) -> None:
-    tiles_png = map_base + "_map.png"
-    ent_png   = map_base + "_entities.png"
-    csv_path  = os.path.join("maps", out_name + ".csv")
-    json_path = os.path.join("maps", out_name + "_entities.json")
+    tiles_png    = map_base + "_map.png"
+    ent_png      = map_base + "_entities.png"
+    # engine/map_loader.py::load_map_csv DA PRIORIDADE a um par
+    # "<nome>_terrain.csv"+"<nome>_objects.csv" sobre um "<nome>.csv" único
+    # SEMPRE que os dois primeiros existirem (checa ANTES do arquivo único,
+    # nunca o contrário) -- escrever só "<nome>.csv" aqui era invisível e
+    # nunca lido de verdade sempre que esse par já existia (achado real,
+    # 10/10/2026, ver GERAR_DUNGEON_PNG.md). Gerar DIRETO no par evita essa
+    # armadilha pra qualquer dungeon, nova ou já existente.
+    terrain_path = os.path.join("maps", out_name + "_terrain.csv")
+    objects_path = os.path.join("maps", out_name + "_objects.csv")
+    json_path    = os.path.join("maps", out_name + "_entities.json")
 
     print(f"\n{'─'*60}")
     print(f"Convertendo dungeon: {map_base}")
     print(f"{'─'*60}")
 
-    size = convert_dungeon_tiles(tiles_png, csv_path)
+    size = convert_dungeon_tiles(tiles_png, terrain_path)
+    if size is not None:
+        _write_empty_objects_csv(objects_path, size[0], size[1])
     convert_dungeon_entities(ent_png, json_path, expected_size=size,
                              race=race, entity_class=entity_class,
                              elite_level_min=elite_level_min,

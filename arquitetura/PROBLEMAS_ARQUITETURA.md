@@ -26746,3 +26746,71 @@ NOVO adicionado a skills de cast único (talento, concessão de XP,
 proc, etc.) precisa ser checado explicitamente contra ESSE caminho
 também antes de considerar "pronto pra todo mago", não só os 2 cast
 únicos de fogo. Ver CLAUDE.md.
+
+## 265. `tools/png_to_dungeon.py` gerava um CSV que o jogo nunca lia — câmera continuava travando na borda mesmo com mapa maior (10/10/2026)
+
+**Relatado pelo usuário**: adicionou borda ao redor do mapa da dungeon
+Aracnópolis pra câmera parar de travar perto da entrada (personagem
+aparecendo grudado na parte de baixo da tela). Depois do regen +
+deploy (ver §entrada anterior, sem número próprio ainda na época),
+testou e "parece que não mudou nada".
+
+**Investigação (ordem real)**: 1) calculei a teoria de clamp de câmera
+(`engine/utils.py::get_camera_offset`) com os números reais de
+resolução/zoom do jogo — a matemática dizia que o buffer novo (12
+tiles ao sul da entrada) deveria ser mais que suficiente, contradizendo
+o relato; 2) adicionei um log temporário em `get_camera_offset`
+(`DEBUG_CAM_CLAMP=1`, revertido depois) — usuário rodou localmente
+(`python main.py`, lê código-fonte direto) e o log mostrou
+`map_tiles=(100x150)` — as dimensões ANTIGAS, mesmo com o arquivo
+`maps/aracnopolis_dungeon.csv` (gerado por `png_to_dungeon.py`)
+corretamente em 110x160 tanto local quanto no servidor de produção
+(conferido via SSH); 3) o usuário mencionou de passagem a existência
+de 2 arquivos extras na pasta `maps/`:
+`aracnopolis_dungeon_terrain.csv` e `aracnopolis_dungeon_objects.csv`
+— nenhum dos dois tocado pela regeneração.
+
+**Causa raiz**: `engine/map_loader.py::load_map_csv()` **sempre**
+prioriza o par `<nome>_terrain.csv` + `<nome>_objects.csv` sobre o
+arquivo único `<nome>.csv`, se os dois primeiros existirem:
+```python
+base   = os.path.splitext(filepath)[0]
+t_path = base + "_terrain.csv"
+o_path = base + "_objects.csv"
+if os.path.exists(t_path) and os.path.exists(o_path):
+    ... usa o par, NUNCA olha pro filepath original
+elif os.path.exists(filepath):
+    ... só cai aqui se o par NÃO existir
+```
+A dungeon Aracnópolis já tinha esse par (datado de 08/10/2026, de
+ANTES do pipeline de PNG existir/ser adotado — provavelmente criado
+manualmente ou por outro processo). `tools/png_to_dungeon.py` sempre
+escreveu só `maps/<nome>.csv` (arquivo único) — formato que o loader
+só usa como FALLBACK, nunca checado primeiro. Resultado: toda vez que
+alguém rodou o script pra ESSA dungeon, o CSV gerado era
+**silenciosamente ignorado** — nem erro, nem aviso, o jogo sempre
+carregava o par antigo por baixo dos panos. Já tinha acontecido pelo
+menos 1 vez antes desta investigação (a 1ª regeneração de borda, ver
+registro anterior — o merge de entidades funcionou normalmente porque
+usa `_entities.json`, um caminho totalmente separado, só o TERRENO
+ficou invisível).
+
+**Fix**: `tools/png_to_dungeon.py` reescrito pra gerar DIRETO no par
+`_terrain.csv`+`_objects.csv` (objects sempre vazio — o pipeline de PNG
+não tem conceito de camada de objeto ainda), nunca mais o arquivo único
+— elimina a ambiguidade pra qualquer dungeon, nova ou já existente.
+Removido o `maps/aracnopolis_dungeon.csv` órfão (nunca lido por
+ninguém). Confirmado via teste real: `load_map_csv()` E
+`request_dungeon_enter()` (fluxo completo do servidor) agora reportam
+`110x160` — bate com o PNG.
+
+**Lição**: "o servidor tem o arquivo certo" (confirmado via SSH) e "o
+script rodou sem erro" NÃO provam que o jogo está LENDO aquele arquivo
+— existe lógica de prioridade entre formatos que pode fazer um arquivo
+gerado corretamente nunca ser alcançado. Antes de confiar que uma
+regeneração de conteúdo "pegou", testar o carregamento de ponta a
+ponta (`load_map_csv()`/`request_dungeon_enter()` reais, não só
+conferir o arquivo em disco) — é exatamente o padrão já registrado em
+§261 ("git diff deveria ter sido o 1º passo"), só que da forma
+inversa: aqui o arquivo em disco estava certo, mas não era o arquivo
+que o código realmente carregava.

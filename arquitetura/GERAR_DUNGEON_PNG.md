@@ -57,7 +57,16 @@ py tools/png_to_dungeon.py assets/maps/<nome>_dungeon \
 
 Lê `assets/maps/<nome>_dungeon_map.png` +
 `assets/maps/<nome>_dungeon_entities.png`, gera
-`maps/<nome>_dungeon.csv` + `maps/<nome>_dungeon_entities.json`.
+`maps/<nome>_dungeon_terrain.csv` + `maps/<nome>_dungeon_objects.csv`
+(vazio) + `maps/<nome>_dungeon_entities.json`.
+
+**NUNCA gera um `maps/<nome>.csv` único** (10/10/2026, bug real corrigido,
+ver PROBLEMAS_ARQUITETURA.md §265) — `engine/map_loader.py::load_map_csv()`
+prioriza SEMPRE o par `_terrain.csv`+`_objects.csv` sobre um arquivo único,
+se os dois existirem. Gerar só o único era invisível/nunca lido de verdade
+sempre que esse par já existisse por qualquer motivo (ex: dungeon criada
+manualmente antes de adotar este script) — sem erro nenhum, o jogo
+simplesmente carregava o par antigo por baixo dos panos.
 
 ## Edição manual obrigatória depois de gerar
 
@@ -102,8 +111,15 @@ lugar no mapa NOVO (ou dentro de parede).
 
 **Fluxo seguro pra esse caso** (usado de verdade na dungeon
 Aracnópolis, bordas adicionadas ao redor do mapa inteiro):
-1. `convert_dungeon_tiles()` do terreno pro CSV real — sempre seguro,
-   só lê o `_map.png`, nunca toca em entidade.
+1. `convert_dungeon_tiles()` do terreno pro `_terrain.csv` REAL (nunca
+   um `<nome>.csv` único — ver §265 logo acima: o loader prioriza o
+   par `_terrain.csv`/`_objects.csv` sobre o arquivo único, então
+   escrever no arquivo errado fica SILENCIOSAMENTE ignorado, sem erro
+   nenhum) — sempre seguro, só lê o `_map.png`, nunca toca em entidade.
+   `_objects.csv` preenchido vazio (mesmo tamanho do terreno novo) se
+   a dungeon nunca teve objeto nenhum nessa camada — se já tiver objeto
+   de verdade colocado à mão, ele também precisa do MESMO deslocamento
+   do passo 4 abaixo (não coberto automaticamente por este fluxo).
 2. `convert_dungeon_entities()` do PNG de entidades pra um JSON
    **temporário** (nunca o caminho real) — dá as coordenadas NOVAS e
    corretas, mas com nome/loot stub.
@@ -126,7 +142,12 @@ Aracnópolis, bordas adicionadas ao redor do mapa inteiro):
    DENTRO da dungeon — mas preserva `target_map`/`target_x`/`target_y`,
    que é a configuração real já corrigida, nunca o placeholder).
 6. Valida (JSON parse + `request_dungeon_enter` de teste real, ver
-   `tests/helpers.py`) ANTES de considerar pronto.
+   `tests/helpers.py`) ANTES de considerar pronto — **confira as
+   dimensões REPORTADAS pelo `Tilemap` carregado** (`ws._map_bundles[...]`,
+   `tm.map_width_tiles`/`map_height_tiles`), nunca só `wc -l` no arquivo
+   em disco: o arquivo certo pode estar correto e mesmo assim nunca
+   ser o que o jogo carrega de verdade (§265 — exatamente o que
+   aconteceu na 1ª tentativa desta mesma regeneração).
 
 Script usado (não commitado — é uma ferramenta de uma vez, não parte
 do pipeline permanente; se uma 2ª dungeon precisar do mesmo
