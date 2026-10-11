@@ -9,9 +9,17 @@ QUAIS itens do catálogo aparecem em cada loja e por quanto.
 Para adicionar um novo comerciante:
   1. Crie uma nova entrada em SHOPS com um shop_id único.
   2. Adicione itens ao "stock" com factory (referência a item_table.ITEMS[...],
-     ou de outro catálogo, ex. crafting_data) e price.
+     ou de outro catálogo, ex. crafting_data) e price (opcional — ver abaixo).
   3. Coloque o char 'N' (ou registre outro char em MERCHANT_TILE_CHARS) no CSV.
   4. No map_loader.py MERCHANT_TILE_CHARS mapeie char → shop_id.
+
+"price" por entrada de stock é OPCIONAL (10/10/2026, pedido do usuário) —
+quando ausente, `_fill_missing_prices()` (fim deste arquivo) preenche com o
+`.value` do próprio item, sem markup nenhum. Resolvido 1x na carga do
+módulo (nunca por frame/venda) — `ui/shop_system.py` (cliente) e
+`server/world_server.py::_build_item_caches`/`process_shop_buy` (servidor)
+continuam lendo `entry["price"]` exatamente como sempre leram, já
+preenchido quando chega neles — nenhum dos dois precisou mudar.
 """
 from content.item_table import ITEMS as _I
 
@@ -197,3 +205,20 @@ SHOPS = {
         "stock": _INSTANCE_SHOP_FULL_STOCK,
     },
 }
+
+
+def _fill_missing_prices(shops: dict) -> None:
+    """Preenche "price" ausente/None de qualquer entrada de stock com o
+    .value do próprio item (sem markup) — mutado 1x na carga do módulo,
+    nunca por frame/venda. Loja continua podendo fixar um "price" manual
+    (markup acima do value, como general/blacksmith já fazem hoje) — só
+    cai pro .value quando a entrada NÃO define price nenhum.
+    "instance_shop" já tem "price" resolvido por _instance_shop_price()
+    (raridade/value próprios) — nunca None, este loop não mexe nela."""
+    for shop in shops.values():
+        for entry in shop.get("stock", []):
+            if entry.get("price") is None:
+                entry["price"] = int(entry["factory"]().value)
+
+
+_fill_missing_prices(SHOPS)
