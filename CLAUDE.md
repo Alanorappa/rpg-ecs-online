@@ -546,6 +546,31 @@ padrão a quebrar, não só os bugs individuais.
   funcionava nela; Lapso Elemental (que também é "geral" pela própria
   descrição) nem no Calcinar funcionava, só existia dentro do handler
   da Bola de Fogo. Ver PROBLEMAS_ARQUITETURA.md §263.
+- **`_process_player_channeling` (Calamidade Flamejante) é um caminho de
+  dano/custo SEPARADO de `_process_spell_cast_completions` (cast único
+  de Bola de Fogo/Calcinar/Nova Congelante)** — qualquer mecanismo NOVO
+  ligado a "lançar uma skill de fogo"/"gastar mana numa skill" (talento,
+  XP de skill, proc, etc.) precisa ser checado explicitamente contra
+  ESSE caminho de canalização também, nunca assumir que os 2 handlers de
+  cast único cobrem "toda skill de mago". Bug real duplo, mesmo dia
+  (10/10/2026): Choque Térmico (§263) e concessão de XP de Magic (§264)
+  — os dois só existiam no cast único, nunca replicados pro tick de
+  canalização. Magic XP é concedida dentro do bloco de dedução de mana
+  por tick (`grant_skill_xp(..., "magic", 1)`, mesma regra do cast
+  único: custo efetivo de mana > 0, independente de acerto/dano).
+- **Decidir "esse fix precisa de build de cliente?" exige olhar `git log
+  <última tag de release_client.ps1>..HEAD` inteiro, nunca só o commit
+  que acabou de ser feito** — bug real (§264a): deploy só de servidor
+  pro fix de §263 (`spell_completion_processor.py`, correto, é
+  server-only de verdade) esqueceu que havia um 2º commit no meio
+  (checkpoint do usuário em `content/skill_config.py`) que TAMBÉM
+  precisava de cliente (`SKILL_CATALOG` é lido por `ui/spell_system.py`
+  pra montar a barra de cast local client-side,
+  `engine/components.py::Skill._make_skill`) — tester no executável
+  empacotado ficou vendo cast_time desatualizado. `content/*.py`
+  (catálogos — skill/item/talent/merchant) é quase sempre client-
+  relevante; `server/*.py` isolado quase sempre não é — mas a checagem
+  tem que ser por COMMIT, nunca só pelo arquivo do fix mais recente.
 - **Broadcast direto novo (fora do AOI_UPDATE)** →
   `SessionManager._sessions_in_aoi(tx, ty, map_file, origin_eid=...)` —
   NUNCA iterar `self._sessions` com check de distância à mão (classe de bug:

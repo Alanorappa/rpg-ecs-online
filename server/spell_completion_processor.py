@@ -664,6 +664,19 @@ class SpellCompletionMixin:
                 if ch.mana_timer >= ch.tick_interval:
                     ch.mana_timer -= ch.tick_interval
                     char.mana = max(0, char.mana - ch.mana_per_tick)
+                    # Skill Magic — mesma regra de _process_spell_cast_completions
+                    # (concedido por gasto de mana com custo efetivo > 0,
+                    # independente de acerto/dano) — nunca disparava aqui, bug
+                    # real relatado pelo usuário (10/10/2026): tick de
+                    # Calamidade Flamejante nunca subia Magic, só o cast
+                    # único de Bola de Fogo/Calcinar/Nova Congelante
+                    # concedia. Ver PROBLEMAS_ARQUITETURA.md.
+                    from engine.components import SkillLevels as _SKLch
+                    skl_ch = self.world.get_component(player_eid, _SKLch)
+                    cs_magic_ch = self.world.get_component(player_eid, _CS)
+                    if skl_ch and cs_magic_ch:
+                        from engine.stats_system import grant_skill_xp as _grant_magic_xp_ch
+                        _grant_magic_xp_ch(skl_ch, cs_magic_ch, "magic", 1)
                     if char.mana == 0:
                         _to_remove.append(player_eid)
                         continue

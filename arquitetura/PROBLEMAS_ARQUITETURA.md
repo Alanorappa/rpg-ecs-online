@@ -26706,3 +26706,43 @@ um alvo enraizado, confirmando que a função é chamada de dentro do tick
 de canalização de verdade. Revert-to-confirm via `git stash`: os 4
 testes falham sem o fix (`AttributeError`, função nem existia ainda no
 caminho da Calamidade).
+
+## 264. Dois bugs irmãos achados no mesmo dia que §263 (10/10/2026)
+
+**a) Deploy de cliente esquecido** — ao publicar o fix de §263, respondi
+"server-only" olhando só pro arquivo que eu tinha acabado de mudar
+(`spell_completion_processor.py`, que é mesmo só servidor). Esqueci que
+`git log v0.54.14..HEAD` tinha um 2º commit no meio — um checkpoint do
+próprio usuário em `content/skill_config.py` (cast_time de Bola de Fogo
+1.5→1.2, mana_cost 25→15, cast_range/dmg_sp_coeff de Calamidade
+Flamejante) — que ESSE sim precisa de build de cliente
+(`SKILL_CATALOG` é lido por `ui/spell_system.py` pra montar a barra de
+cast local, `engine/components.py::Skill._make_skill`). Resultado: um
+tester jogando pelo executável empacotado continuou vendo cast_time
+antigo (1.5s, "1 seg" com Bola de Fogo Aperfeiçoada 5/5: 1.5-0.5=1.0 —
+bateu exato com o valor antigo, confirmando a causa). **Lição**: decidir
+"precisa de cliente?" olhando só o PRÓPRIO commit que acabei de fazer é
+insuficiente — preciso checar TODOS os commits desde o último
+`release_client.ps1` (`git log <última tag de cliente>..HEAD`), não só o
+mais recente.
+
+**b) Calamidade Flamejante nunca concedia XP de skill Magic** —
+relatado pelo usuário junto com (a). Mesma causa raiz de §263: XP de
+Magic é concedido em `_process_spell_cast_completions` (cast único de
+Bola de Fogo/Calcinar/Nova Congelante — deduz mana 1x, chama
+`grant_skill_xp(..., "magic", 1)` no mesmo golpe), mas Calamidade
+Flamejante deduz mana por TICK dentro de `_process_player_channeling`
+— o mesmo caminho separado de §263, e de novo nunca replicava um
+mecanismo que só existia no caminho de cast único. Fix: mesmo
+`grant_skill_xp` chamado dentro do bloco de dedução de mana por tick,
+mesma regra (custo efetivo de mana > 0, independente de acerto/dano).
+Teste: `tests/test_channeling_grants_magic_skill_xp.py`, revert-to-
+confirm.
+
+**Padrão a generalizar**: `_process_player_channeling` (Calamidade
+Flamejante) é um caminho de dano/custo SEPARADO de
+`_process_spell_cast_completions` (cast único) — qualquer mecanismo
+NOVO adicionado a skills de cast único (talento, concessão de XP,
+proc, etc.) precisa ser checado explicitamente contra ESSE caminho
+também antes de considerar "pronto pra todo mago", não só os 2 cast
+únicos de fogo. Ver CLAUDE.md.
