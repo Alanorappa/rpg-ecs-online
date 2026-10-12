@@ -739,6 +739,18 @@ padrão a quebrar, não só os bugs individuais.
   bloco de HUD de `render_system.py` nunca roda pra mob de verdade).
   Bug real: topo do nameplate só corrigido no 1º arquivo, continuou no
   meio do sprite até corrigir o 2º. Ver PROBLEMAS_ARQUITETURA.md §267.
+  **Topo do nameplate de mob usa `engine.mob_animation.
+  get_mob_top_opaque_offset(mob_key)`, nunca o topo CRU do frame** —
+  frame quadrado de mob costuma ter padding transparente real acima da
+  cabeça (conferido no Goblin Guerreiro: frame 64×64, conteúdo só
+  começa na linha ~13), então "topo do frame + gap pequeno" ainda
+  deixava o nameplate flutuando longe da cabeça. Mede o pixel opaco
+  mais alto da animação "idle"/"down" 1x e CACHEIA por mob_key — nunca
+  recalcula pela pose atual (evitaria "balançar" entre frames, mesmo
+  motivo do personagem usar um inset FIXO; aqui o valor é DERIVADO da
+  arte real de cada mob em vez de um número universal, porque
+  proporção varia demais — rato a dragão). Ver PROBLEMAS_ARQUITETURA.md
+  §268.
   **Âncora de desenho e Y-sort** (10/09/2026, decisão do usuário): cada
   frame tem um tile de colisão/pé REAL de 32×32 (`CHAR_COLLISION_SIZE`
   == TILE_SIZE) no canto `(CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y)`

@@ -102,6 +102,47 @@ def _mob_frames_for(mob_key: str, state: str, direction: str) -> list:
     return frames
 
 
+_mob_top_opaque_cache: dict[str, int] = {}
+
+
+def get_mob_top_opaque_offset(mob_key: str) -> int:
+    """Linha (a partir do topo do FRAME, 0 = topo) do pixel opaco mais
+    alto da animação "idle"/"down" de `mob_key` — mesma técnica de
+    `ui/tile_sprite_manager.py::get_top_opaque_y` (`pygame.mask.
+    from_surface().get_bounding_rects()`, threshold padrão 127),
+    aplicada ao MÍNIMO entre todos os frames do idle (cobre variação de
+    "respiração" sem recalcular por pose atual).
+
+    Calculado 1x e CACHEADO por mob_key — referência estável pro
+    nameplate (`ui/render_system.py`/`client/remote_entity_handlers.py::
+    _draw_mob_hp_bars`), nunca recomputada pela pose/direção
+    EXIBIDA agora (evitaria "balançar" entre estados — mesmo motivo de
+    `character_animation.NAMEPLATE_CHAR_FRAME_TOP_INSET_PX` ser fixo
+    pro personagem, 26/09/2026). Diferença: ali o valor é um número
+    universal fixo (só 3 classes humanas uniformes); aqui é DERIVADO da
+    arte real de cada mob, porque a proporção varia demais (rato a
+    dragão) pra um único número servir — sem isso, mob com bastante
+    padding transparente no topo do frame (comum — frame quadrado
+    "sobra" espaço que a largura/altura do personagem de verdade não
+    usa) deixa o nameplate flutuando longe da cabeça (10/10/2026, bug
+    real relatado pelo usuário com o Goblin Guerreiro: frame 64×64, mas
+    o goblin só ocupa as linhas 14–45; usar o topo CRU do frame como
+    referência deixava 14px + o gap de verdade entre nameplate e
+    cabeça). 0 se não existir nenhum frame idle ainda."""
+    cached = _mob_top_opaque_cache.get(mob_key)
+    if cached is not None:
+        return cached
+    frames = _mob_frames_for(mob_key, "idle", "down")
+    if not frames:
+        return 0
+    import pygame
+    top = min(
+        (r.top for f in frames for r in pygame.mask.from_surface(f).get_bounding_rects()),
+        default=0)
+    _mob_top_opaque_cache[mob_key] = top
+    return top
+
+
 def get_mob_frame(mob_key: str, state: str, direction: str,
                    anim_time_ms: int, frame_ms: int = MOB_DEFAULT_FRAME_MS):
     """Surface do frame atual de animação de mob, ou None se não existir

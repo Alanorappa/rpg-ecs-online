@@ -100,6 +100,58 @@ class TestRenderSystemAncoraSpriteDeObjeto(unittest.TestCase):
         self.assertAlmostEqual(hud_top_world_y, expected)
 
 
+class TestRenderSystemAncoraMobAnimado(unittest.TestCase):
+    """Entidade LOCAL com sprite de MOB animado (não de objeto) — mesma
+    correção de pixel opaco real (§267/§268), caminho de
+    ui/render_system.py (dead code em produção pra mob de verdade, já
+    que mob remoto não tem CombatStats, mas ainda precisa ficar
+    consistente com o outro caminho — ver TestDrawMobHpBarsAncoraMobAnimado)."""
+
+    def test_hud_top_usa_pixel_opaco_real_do_frame_de_mob(self):
+        from engine.world import World
+        from engine.components import (Position, Renderable, Enemy, Combatant,
+                                       EnemyTier, StatusEffects, CombatStats,
+                                       EntityIdentity, TileMovement)
+        from ui.systems import RenderSystem
+        from ui.world_labels import WORLD_LABELS
+        from ui.hud_bars import NAMEPLATE_SPRITE_TOP_GAP_PX
+        from engine.mob_animation import get_mob_frame, get_mob_top_opaque_offset
+
+        world = World()
+        eid = world.create_entity()
+        x, y = 200, 200
+        _height = 24
+        world.add_component(eid, Position(x=x, y=y, prev_x=x, prev_y=y))
+        world.add_component(eid, Renderable(color=(100, 180, 100), width=_height, height=_height))
+        world.add_component(eid, Enemy())
+        world.add_component(eid, Combatant())
+        world.add_component(eid, EnemyTier(tier="normal"))
+        world.add_component(eid, StatusEffects())
+        world.add_component(eid, EntityIdentity(name="Goblin Guerreiro", race="Goblin Guerreiro",
+                                                entity_class="", level=1))
+        world.add_component(eid, TileMovement(is_moving=False, facing="down"))
+        cs = CombatStats()
+        cs.current_hp = cs.max_hp = 100
+        world.add_component(eid, cs)
+
+        screen = pygame.display.get_surface()
+        rs = RenderSystem(world, screen)
+        WORLD_LABELS._pending.clear()
+        WORLD_LABELS._stack_offset.clear()
+        rs.render(0, 0, nameplate_mode=0)
+
+        entries = WORLD_LABELS._pending
+        self.assertTrue(entries, "deveria ter enfileirado pelo menos a barra de HP")
+        hud_top_world_y = entries[0][1]
+
+        frame = get_mob_frame("goblin_guerreiro", "idle", "down", 0)
+        self.assertIsNotNone(frame)
+        top_opaque = get_mob_top_opaque_offset("goblin_guerreiro")
+        expected = (y + _height / 2 - frame.get_height()
+                   + top_opaque - NAMEPLATE_SPRITE_TOP_GAP_PX)
+        self.assertAlmostEqual(hud_top_world_y, expected)
+
+
 class TestDrawMobHpBarsAncoraSpriteDeObjeto(unittest.TestCase):
     """Mesmo mecanismo, só que pelo caminho de mob/NPC REMOTO
     (client/remote_entity_handlers.py::_draw_mob_hp_bars) — mailbox/
@@ -158,19 +210,22 @@ class TestDrawMobHpBarsAncoraSpriteDeObjeto(unittest.TestCase):
 
 class TestDrawMobHpBarsAncoraMobAnimado(unittest.TestCase):
     """Mob remoto SEM Renderable.sprite_id, mas com sprite animado
-    (engine/mob_animation.py, 10/10/2026) — reproduz o bug real relatado
-    pelo usuário: nameplate caindo no fallback de retângulo
-    (`pos.y - W/2`) mesmo com sprite animado disponível, ficando no meio
-    do personagem. Usa o sprite de verdade do Goblin Guerreiro
-    (assets/sprites/goblin_guerreiro_idle_down.png, 64×64) pra não
-    depender de fixture sintética."""
+    (engine/mob_animation.py, 10/10/2026) — reproduz os 2 bugs reais
+    relatados pelo usuário em sequência: 1) nameplate caindo no
+    fallback de retângulo (`pos.y - W/2`); 2) depois de corrigido o
+    topo do FRAME, nameplate ainda flutuando longe da cabeça porque o
+    frame quadrado tem padding transparente real no topo (§267/§268) —
+    fix final usa `get_mob_top_opaque_offset`. Usa o sprite de verdade
+    do Goblin Guerreiro (assets/sprites/goblin_guerreiro_idle_down.png,
+    64×64, conteúdo real só a partir da linha ~13) pra não depender de
+    fixture sintética."""
 
-    def test_world_y_top_usa_topo_real_do_frame_de_mob(self):
+    def test_world_y_top_usa_pixel_opaco_real_do_frame_de_mob(self):
         from engine.world import World
         from engine.components import (Position, Renderable, RemoteEntityMeta,
                                        EntityIdentity, TileMovement)
         from ui.hud_bars import NAMEPLATE_SPRITE_TOP_GAP_PX
-        from engine.mob_animation import get_mob_frame
+        from engine.mob_animation import get_mob_frame, get_mob_top_opaque_offset
         import ui.world_labels as world_labels_mod
         from client.network_handlers import NetworkHandlers as _NH
         from client.remote_entity_handlers import RemoteEntityHandlers as _REH
@@ -212,14 +267,24 @@ class TestDrawMobHpBarsAncoraMobAnimado(unittest.TestCase):
 
         frame = get_mob_frame("goblin_guerreiro", "idle", "down", 0)
         self.assertIsNotNone(frame, "sprite real do goblin precisa existir pra este teste valer algo")
-        expected = y + _height / 2 - frame.get_height() - NAMEPLATE_SPRITE_TOP_GAP_PX
+        top_opaque = get_mob_top_opaque_offset("goblin_guerreiro")
+        self.assertGreater(top_opaque, 0, "sprite real do goblin tem padding real no topo")
+        expected = (y + _height / 2 - frame.get_height()
+                   + top_opaque - NAMEPLATE_SPRITE_TOP_GAP_PX)
         self.assertAlmostEqual(world_y_top, expected)
 
-        # Reprodução direta do bug relatado: com o sprite real (64px de
-        # altura), o topo NUNCA pode cair abaixo do centro do mob — o
-        # fallback antigo (pos.y - W/2, W=28) dava pos.y-14, bem abaixo
+        # Reprodução direta do 1º bug relatado: com o sprite real (64px
+        # de altura), o topo NUNCA pode cair abaixo do centro do mob —
+        # o fallback antigo (pos.y - W/2, W=28) dava pos.y-14, bem abaixo
         # da metade do sprite (que vai de pos.y-52 até pos.y+12).
         self.assertLess(world_y_top, y - _height)
+
+        # Reprodução direta do 2º bug relatado ("está muito alto"): sem
+        # o ajuste de pixel opaco, o nameplate ficava no topo CRU do
+        # frame (y - 52 - gap); com o ajuste, fica top_opaque pixels
+        # mais perto da cabeça de verdade.
+        _naive_top = y + _height / 2 - frame.get_height() - NAMEPLATE_SPRITE_TOP_GAP_PX
+        self.assertGreater(world_y_top, _naive_top)
 
 
 class TestDrawRemotePlayersAncoraPersonagemAnimado(unittest.TestCase):

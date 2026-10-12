@@ -1634,9 +1634,17 @@ class RemoteEntityHandlers:
                         _mframe_hb = _gmf_hb(_slug_hb, _mstate_hb, _tm_mob_hb.facing,
                                             _manim_t_hb, _mfms_hb)
                 if _mframe_hb is not None:
+                    # Mesmo ajuste de ui/render_system.py (PROBLEMAS_
+                    # ARQUITETURA.md §267/§268) — frame quadrado de mob
+                    # costuma ter padding transparente real no topo, o
+                    # topo cru do frame sozinho deixa o nameplate longe
+                    # da cabeça.
                     from ui.hud_bars import NAMEPLATE_SPRITE_TOP_GAP_PX as _NSTG_hb2
+                    from engine.mob_animation import get_mob_top_opaque_offset as _gmtoo_hb
                     _rheight_hb = _ren_hb.height if _ren_hb else W
-                    _world_y_top = pos.y + _rheight_hb / 2 - _mframe_hb.get_height() - _NSTG_hb2
+                    _top_opaque_mob_hb = _gmtoo_hb(_slug_hb)
+                    _world_y_top = (pos.y + _rheight_hb / 2 - _mframe_hb.get_height()
+                                   + _top_opaque_mob_hb - _NSTG_hb2)
                 else:
                     _world_y_top = pos.y - W / 2
             if hp_max > 0:

@@ -258,7 +258,10 @@ rpg_ecs_online/
 │   │                                  nenhum campo de protocolo novo. Fallback por-arquivo igual
 │   │                                  ao personagem: ausente → None → RenderSystem cai pro
 │   │                                  retângulo. Golpe sem cascata de sid (mob só tem
-│   │                                  auto-attack) — ver CLAUDE.md
+│   │                                  auto-attack). get_mob_top_opaque_offset() mede o
+│   │                                  pixel opaco real do topo do idle (cacheado por
+│   │                                  mob_key) pro nameplate não flutuar no padding
+│   │                                  transparente do frame quadrado — ver CLAUDE.md
 │   ├── portal_anim_state.py        ← NOVO (01/10/2026): estado client-only de animação de
 │   │                                  EVENTO do tile do portal (ativar/desativar), chaveado por
 │   │                                  posição — escrito por client/portal_handlers.py ao receber

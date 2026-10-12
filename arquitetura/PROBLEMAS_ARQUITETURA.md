@@ -26910,3 +26910,40 @@ gêmeos, mas separados, nesse arquivo. Teste novo em
 `tests/test_nameplate_anchor.py::TestDrawMobHpBarsAncoraMobAnimado`
 usa o sprite REAL do Goblin Guerreiro (não só fixture sintética) pra
 fechar esse gap.
+
+## 268. Nameplate de mob corrigido em §267, mas ainda flutuando longe da cabeça — frame quadrado tem padding transparente real (10/10/2026)
+
+**Relatado pelo usuário**: depois do fix de §267 (nameplate não cai
+mais no fallback de retângulo), "está muito alto, consegue colocar o
+nameplate dentro do frame?" — com screenshot mostrando um vão grande
+entre o nome/barra de HP e a cabeça do Goblin Guerreiro.
+
+**Causa raiz**: o fix de §267 ancorava o nameplate no topo CRU do frame
+(`position.y - anchor_dy - GAP`), assumindo (sem medir) que o sprite de
+mob é desenhado "quase sem padding" — suposição errada. Medindo o
+sprite real (`assets/sprites/goblin_guerreiro_idle_down.png`, frame
+64×64) com `pygame.mask.from_surface().get_bounding_rects()`: o
+conteúdo opaco só começa na linha ~13 — ou seja, quase 1/5 do frame é
+padding transparente no topo, de propósito ou não (frame QUADRADO
+"sobra" espaço que a silhueta real do goblin não precisa preencher).
+
+**Fix**: `engine.mob_animation.get_mob_top_opaque_offset(mob_key)` —
+mesma técnica de `TileSpriteManager.get_top_opaque_y` (sprite
+estático), aplicada ao MÍNIMO entre todos os frames do estado "idle"/
+"down", cacheada por mob_key (1x, nunca recalculada pela pose
+exibida agora — evita "balançar" entre frames, mesmo motivo do
+`NAMEPLATE_CHAR_FRAME_TOP_INSET_PX` do personagem ser um valor FIXO em
+vez de escanear pixel real por pose). Diferença pro personagem: ali o
+valor é um número universal (só 3 classes humanas, proporção uniforme
+o bastante pra um número fixo servir pras 3); aqui é DERIVADO da arte
+real de cada mob individualmente, porque a proporção varia demais
+(rato a dragão) pra um único número fixo fazer sentido.
+
+Os DOIS caminhos de desenho (§267) precisaram do mesmo ajuste —
+`ui/render_system.py` (branch de HUD, dead code em produção mas
+mantido consistente) e `client/remote_entity_handlers.py::
+_draw_mob_hp_bars` (o caminho real). Testes em
+`tests/test_nameplate_anchor.py` atualizados pros dois (`
+TestRenderSystemAncoraMobAnimado`/`TestDrawMobHpBarsAncoraMobAnimado`),
+comparando contra o resultado "ingênuo" (sem o ajuste de pixel opaco)
+pra garantir que a regressão sozinha não volta a passar despercebida.
