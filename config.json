@@ -110,11 +110,11 @@
           "bola_de_fogo",
           "nova_congelante",
           "escudo_fogo",
-          "calamidade_flamejante",
+          "calcinar",
           "polimorfia",
           "bloco_de_gelo",
-          "calcinar",
-          "pirofagia",
+          null,
+          null,
           null,
           null
         ],
@@ -133,9 +133,9 @@
       },
       "consumable_bar": {
         "slots": [
-          "Po\u00e7\u00e3o de Vida",
-          "Odre Grande",
-          "Ensopado Revigorante",
+          "hp_potion",
+          "large_waterskin",
+          "hearty_stew",
           null,
           null
         ],
@@ -146,6 +146,16 @@
           118,
           98
         ]
+      },
+      "skill_slot_prefs": {
+        "bola_de_fogo": 0,
+        "nova_congelante": 1,
+        "escudo_fogo": 2,
+        "calamidade_flamejante": 3,
+        "polimorfia": 4,
+        "bloco_de_gelo": 5,
+        "calcinar": 3,
+        "pirofagia": 7
       }
     },
     "Aventureiro": {
@@ -1814,6 +1824,98 @@
       },
       "skill_slot_prefs": {
         "recarregar": 0
+      }
+    },
+    "Saelyn": {
+      "hotbar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {}
+    },
+    "Rukkin": {
+      "hotbar": {
+        "slots": [
+          "bola_de_fogo",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          48
+        ]
+      },
+      "consumable_bar": {
+        "slots": [
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "keybinds": [
+          122,
+          120,
+          99,
+          118,
+          98
+        ]
+      },
+      "skill_slot_prefs": {
+        "bola_de_fogo": 0
       }
     }
   },
