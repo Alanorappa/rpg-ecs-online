@@ -705,6 +705,30 @@ padrão a quebrar, não só os bugs individuais.
   uma skill de loop diferente) substitui um loop ainda ativo. NUNCA
   reverter pra "sempre sobrescreve" achando que simplifica — é exatamente
   essa simplicidade que causava o bug.
+  **Animação BASE de MOB** (idle/run/attack × 4 direções — não
+  confundir com animação de PERSONAGEM jogável acima, que é um sistema
+  IRMÃO separado, nunca estendido pelo mesmo módulo) →
+  `engine/mob_animation.py::get_mob_frame(mob_key, state, direction,
+  anim_time_ms)` (10/10/2026). Chave de animação = `engine.utils.
+  slugify(EntityIdentity.mob_key or race)` — já chega pela rede hoje no
+  payload de spawn (`race`), nenhum campo de protocolo novo. Frame é
+  QUADRADO, derivado da altura do próprio sheet (`largura = altura,
+  contagem = largura_total // altura`, mesma convenção de
+  `ui/world_icon_animator.py`) — NUNCA a largura fixa de personagem
+  (`CHAR_TILE_SIZE`), mob varia demais de tamanho (rato a dragão) pra
+  isso fazer sentido. Convenção de arquivo:
+  `assets/sprites/{slug}_{idle|run|attack}_{direction}.png` — fallback
+  por-arquivo igual ao personagem (ausente → `None` →
+  `ui/render_system.py` cai pro retângulo colorido de sempre, por
+  ESTADO/direção específico, nunca tudo-ou-nada). Golpe (`trigger_mob_
+  attack_anim`, chamado de `client/remote_entity_handlers.py::
+  _apply_combat_result` quando o atacante é mob) é SEM cascata de sid
+  (mob só tem auto-attack hoje, sem skill própria com sprite dedicada)
+  — se um dia mob tiver skill com sprite própria, a cascata de 3 níveis
+  de `resolve_attack_state_name` (personagem) é o modelo a copiar, não
+  reinventar. `slugify()` é ponto único de verdade (`engine/utils.py`)
+  — qualquer 3º ponto que precise de chave de arquivo a partir de nome
+  legível usa essa função, nunca uma normalização própria.
   **Âncora de desenho e Y-sort** (10/09/2026, decisão do usuário): cada
   frame tem um tile de colisão/pé REAL de 32×32 (`CHAR_COLLISION_SIZE`
   == TILE_SIZE) no canto `(CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y)`

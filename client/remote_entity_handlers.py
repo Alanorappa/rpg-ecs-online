@@ -277,6 +277,24 @@ class RemoteEntityHandlers:
                     _missed_anim = outcome in ("miss", "dodge", "parry")
                     _taa(_tm_anim_atk, _atk_class_id, cr.get("sid", ""), pygame.time.get_ticks(),
                          missed=_missed_anim)
+            else:
+                # Atacante é mob remoto (10/10/2026, sistema de animação
+                # de mob, ver engine/mob_animation.py) — mesmo princípio:
+                # servidor confirma o golpe via COMBAT_RESULT, cliente só
+                # reage. Sem cascata de sid (mob só tem auto-attack).
+                _atk_mob_eid_anim = self._remote_mobs.get(server_attacker)
+                if _atk_mob_eid_anim is not None:
+                    from engine.components import EntityIdentity as _EIdAnimAtk, TileMovement as _TMAnimAtkMob
+                    _ident_atk_mob = self.world.get_component(_atk_mob_eid_anim, _EIdAnimAtk)
+                    _tm_atk_mob = self.world.get_component(_atk_mob_eid_anim, _TMAnimAtkMob)
+                    if _ident_atk_mob and _tm_atk_mob is not None:
+                        _mob_key_atk = _ident_atk_mob.mob_key or _ident_atk_mob.race
+                        if _mob_key_atk:
+                            from engine.mob_animation import trigger_mob_attack_anim as _tmaa
+                            from engine.utils import slugify as _slugify_atk
+                            _missed_anim_mob = outcome in ("miss", "dodge", "parry")
+                            _tmaa(_tm_atk_mob, _slugify_atk(_mob_key_atk), pygame.time.get_ticks(),
+                                  missed=_missed_anim_mob)
 
         col_regen = (100, 220, 100)
 

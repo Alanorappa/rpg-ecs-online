@@ -470,3 +470,17 @@ def incr_char_stat_mode(world, eid: int, field: str, mode: str, amount: int = 1)
         return
     d = getattr(cst, field)
     d[mode] = d.setdefault(mode, 0) + amount
+
+
+def slugify(name: str) -> str:
+    """"Goblin Guerreiro" -> "goblin_guerreiro" — minúsculo, sem acento,
+    espaço/pontuação vira "_" (colapsado, sem "_" sobrando nas pontas).
+    Usado por `engine/mob_animation.py` pra derivar a chave de arquivo
+    de sprite a partir de `EntityIdentity.mob_key or race` (10/10/2026)
+    — ponto único de verdade, nenhum outro código reimplementa isso."""
+    import re
+    import unicodedata
+    normalized = unicodedata.normalize("NFKD", name)
+    stripped = "".join(c for c in normalized if not unicodedata.combining(c))
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", stripped.lower()).strip("_")
+    return slug

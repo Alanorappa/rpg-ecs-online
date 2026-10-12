@@ -41,6 +41,8 @@ from engine.tileset import TILE_SIZE
 from engine.entity_disguise import get_active_appearance_override, get_animated_disguise_frame
 from engine.character_animation import (get_character_frame, resolve_display_state,
                                         character_anchor_offset)
+from engine.mob_animation import get_mob_frame, resolve_mob_display_state
+from engine.utils import slugify
 from ui.ui_helpers import fill_surf
 from ui.tile_sprite_manager import TILE_SPRITES
 from ui.day_night_system import is_night
@@ -331,6 +333,19 @@ class RenderSystem(System):
             return cs.class_id if cs else None
         rc = self.world.get_component(entity_id, RemoteControlled)
         return rc.class_id if rc else None
+
+    def _resolve_mob_animation_key(self, entity_id: int) -> "str | None":
+        """Chave de animação de mob (slug de `EntityIdentity.mob_key or
+        race`, já chega pela rede hoje — nenhum campo de protocolo novo,
+        10/10/2026) — None se a entidade não tem `EntityIdentity` (ex:
+        tile-objeto) ou o campo está vazio. Só é chamado quando
+        `_resolve_character_class_id` já devolveu None (mob/NPC, nunca
+        personagem jogável) — ver `engine/mob_animation.py`."""
+        ident = self.world.get_component(entity_id, EntityIdentity)
+        if ident is None:
+            return None
+        key = ident.mob_key or ident.race
+        return slugify(key) if key else None
 
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0,
                world_objects: list = None, nameplate_mode: int = 0) -> None:
@@ -771,6 +786,25 @@ class RenderSystem(System):
                     # crescer sem teto por bem pouco ganho.
                     _char_frame_for_mask = _char_frame
 
+                    # Animação de MOB (10/10/2026, sistema modular e
+                    # escalável, ver engine/mob_animation.py) — só
+                    # tentada quando a entidade não é personagem
+                    # jogável (_char_frame ainda None aqui). Mesmo
+                    # princípio de fallback por-arquivo que o
+                    # personagem já tem: slug sem sprite nenhum ainda
+                    # → None → retângulo de sempre, sem erro.
+                    _mob_frame = None
+                    if _char_frame is None:
+                        _mob_key_rnd = self._resolve_mob_animation_key(entity_id)
+                        if _mob_key_rnd:
+                            _tm_mob_rnd = self.world.get_component(entity_id, TileMovement)
+                            if _tm_mob_rnd is not None:
+                                _mstate_rnd, _manim_t_rnd, _mframe_ms_rnd = resolve_mob_display_state(
+                                    _tm_mob_rnd, _mob_key_rnd, pygame.time.get_ticks())
+                                _mob_frame = get_mob_frame(
+                                    _mob_key_rnd, _mstate_rnd, _tm_mob_rnd.facing,
+                                    _manim_t_rnd, _mframe_ms_rnd)
+
                     if _char_frame is not None:
                         if _bush_hidden_draw:
                             # get_character_frame devolve Surface CACHEADA
@@ -805,6 +839,19 @@ class RenderSystem(System):
                         # nova a cada chamada.
                         _sel_outline_surf = _char_frame_for_mask
                         _sel_outline_offset = (_cblit_x, _cblit_y)
+                    elif _mob_frame is not None:
+                        # Ancorado no MESMO ponto onde o retângulo (abaixo)
+                        # desenharia — base do frame alinhada com a base
+                        # de `rect` (draw_y + renderable.height/2) — troca
+                        # retângulo↔sprite sem deslocar a entidade nem
+                        # mudar Y-sort (que continua lendo
+                        # renderable.height pra mob, intocado).
+                        _mw_rnd, _mh_rnd = _mob_frame.get_size()
+                        _mblit_x = int(draw_x - _mw_rnd / 2)
+                        _mblit_y = int(draw_y + renderable.height / 2 - _mh_rnd)
+                        self.world_surf.blit(_mob_frame, (_mblit_x, _mblit_y))
+                        _sel_outline_surf = _mob_frame
+                        _sel_outline_offset = (_mblit_x, _mblit_y)
                     elif _bush_hidden_draw:
                         # Sem sprite animada disponível (classe sem asset
                         # ainda) — mesmo fallback translúcido de sempre.

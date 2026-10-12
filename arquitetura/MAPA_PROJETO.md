@@ -249,6 +249,16 @@ rpg_ecs_online/
 │   │                                  oposto. Irmão CONCEITUAL de entity_disguise.py (mesmo
 │   │                                  padrão de cache/corte de sheet), mas diferente: aparência
 │   │                                  SEMPRE presente, não override condicional
+│   ├── mob_animation.py            ← NOVO (10/10/2026): animação BASE de MOB (idle/run/attack
+│   │                                  × 4 direções × slug de mob), irmão SEPARADO de
+│   │                                  character_animation.py — frame QUADRADO derivado da
+│   │                                  altura do sheet (mob varia de tamanho, não dá pra usar a
+│   │                                  largura fixa de personagem). Chave = slugify(
+│   │                                  EntityIdentity.mob_key or race) — já chega pela rede hoje,
+│   │                                  nenhum campo de protocolo novo. Fallback por-arquivo igual
+│   │                                  ao personagem: ausente → None → RenderSystem cai pro
+│   │                                  retângulo. Golpe sem cascata de sid (mob só tem
+│   │                                  auto-attack) — ver CLAUDE.md
 │   ├── portal_anim_state.py        ← NOVO (01/10/2026): estado client-only de animação de
 │   │                                  EVENTO do tile do portal (ativar/desativar), chaveado por
 │   │                                  posição — escrito por client/portal_handlers.py ao receber
