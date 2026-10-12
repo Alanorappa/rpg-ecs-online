@@ -1818,48 +1818,42 @@ class RemoteEntityHandlers:
                                                   halign="left", valign="center")
 
     def _draw_remote_corpses(self, cam_x: float, cam_y: float) -> None:
-        """Desenha corpos de mobs mortos recebidos do servidor.
+        """Desenha o marcador genérico de "tem loot aqui" pros
+        cadáveres que ESTE player não tem dado local nenhum (sem
+        entitlement — loot condicional/pessoal, outro player já
+        saqueou, etc.) — animação de `assets/sprites/loot.png`, mesma
+        de `ui/loot_system.py::render_world()` (11/10/2026, ver
+        PROBLEMAS_ARQUITETURA.md §272).
 
-        Visual idêntico ao LootSystem.render_world offline (systems.py:5010-5014):
-          elipse 20×12 centrada no tile, cor por estado de loot.
-        """
+        Cadáver com `loot_data` (este player TEM o `Corpse` ECS local
+        — é quem matou/tem direito ao loot) NUNCA desenha aqui — já foi
+        desenhado com mais detalhe por `ui/loot_system.py::
+        render_world()` (sprite de morte do mob > animação de loot >
+        nada se vazio). Bug real relatado pelo usuário: as 2 funções
+        desenhavam a MESMA posição sem saber uma da outra — `loot_
+        system.py` foi corrigido primeiro, mas essa função continuava
+        desenhando a elipse antiga por cima, então a elipse "não
+        sumia" do ponto de vista de quem testou. Mesma classe de bug
+        já documentada pro nameplate (§267/§268) — dois caminhos de
+        desenho local/remoto que parecem a mesma coisa mas não são."""
         if not self._remote_corpses:
             return
         from engine.tileset import TILE_SIZE as _TS
         surf = self._zoom_surf
         for corpse_id, (tx, ty) in self._remote_corpses.items():
+            if self._available_loot.get(corpse_id) is not None:
+                continue
             # Centro do tile em pixels (world-space → zoom-surface)
             cx = tx * _TS + _TS // 2 - cam_x
             cy = ty * _TS + _TS // 2 - cam_y
-            loot_data = self._available_loot.get(corpse_id)
-            if loot_data is not None:
-                # Lê estado real do Corpse ECS local (fonte da verdade após LOOT_AVAILABLE)
-                from engine.components import Corpse as _Corpse, Renderable as _RenCorpseHv
-                local_eid  = loot_data.get("local_eid")
-                # Harvestable (Fase M1, revisão 2) TAMBÉM tem Renderable —
-                # já é desenhado, Y-sorted, por RenderSystem.render(). Não
-                # deveria nunca acabar em _remote_corpses (só populado pelo
-                # caminho de corpse de mob morto), mas o guard evita
-                # duplicar a marca se isso mudar no futuro.
-                if local_eid and self.world.get_component(local_eid, _RenCorpseHv) is not None:
-                    continue
-                corpse_comp = self.world.get_component(local_eid, _Corpse) if local_eid else None
-                if corpse_comp:
-                    has_coins = corpse_comp.coins > 0
-                    has_items = bool(corpse_comp.loot)
-                else:
-                    has_coins = False
-                    has_items = False
-                if has_coins:
-                    color = (180, 150, 30)   # dourado — moedas presentes
-                elif has_items:
-                    color = (120, 80, 40)    # marrom — só itens
-                else:
-                    color = (60, 40, 20)     # marrom escuro — vazio
-            else:
-                color = (60, 40, 20)         # marrom escuro — outro player, sem info
+            from ui.world_icon_animator import get_frame as _get_loot_anim_frame2
+            _anim_frame = _get_loot_anim_frame2("loot", 32, pygame.time.get_ticks())
+            if _anim_frame is not None:
+                surf.blit(_anim_frame, (int(cx - 16), int(cy - 16)))
+                continue
+            # Fallback se loot.png sumir/falhar ao carregar.
             rect = (int(cx - 10), int(cy - 6), 20, 12)
-            pygame.draw.ellipse(surf, color, rect)
+            pygame.draw.ellipse(surf, (120, 80, 40), rect)
             pygame.draw.ellipse(surf, (80, 55, 25), rect, 1)
 
     def _remove_remote_player_entity(self, server_eid: int) -> None:

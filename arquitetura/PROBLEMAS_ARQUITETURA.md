@@ -27163,3 +27163,42 @@ desenha" foi renomeado/atualizado pra refletir que agora é a animação
 de `loot.png`, não mais a elipse, que desenha nesse caso (a asserção
 em si — "algo foi desenhado" — continua válida, só a documentação do
 teste estava ficando desatualizada).
+
+**Follow-up no mesmo dia — "ainda aparece a elipse do loot"**:
+relatado pelo usuário logo depois do fix de §272 acima parecer
+completo. Causa raiz: `ui/loot_system.py::render_world()` NÃO é o
+único lugar que desenha o marcador de loot — `client/
+remote_entity_handlers.py::_draw_remote_corpses()` é um SEGUNDO
+caminho, chamado TODO frame em `game.py` (linha ~2730, logo depois de
+`self._loot_system.render_world(cam_x, cam_y)` na mesma sequência de
+render) — eu não tinha achado essa função na primeira pesquisa porque
+procurei só por "elipse"/"cilindro" mentalmente associado a
+`loot_system.py`, sem fazer um `grep` amplo por `pygame.draw.ellipse`
+no repo inteiro ANTES de declarar o fix pronto. `_draw_remote_corpses`
+desenhava a MESMA posição com a lógica de 3 cores antiga, pra TODO
+`corpse_id` em `_remote_corpses` — inclusive os que o PRÓPRIO jogador
+já tinha `Corpse` local (`_available_loot[corpse_id]` presente) e que
+`loot_system.py` JÁ tinha desenhado corretamente (sprite de morte,
+animação, ou nada) — resultado: a elipse antiga desenhava POR CIMA do
+que eu tinha acabado de corrigir, invisível no código mas bem visível
+em jogo.
+
+**Fix**: `_draw_remote_corpses` agora `continue` IMEDIATO quando
+`_available_loot.get(corpse_id) is not None` (esse corpse já foi
+desenhado por `loot_system.py`, nunca de novo aqui) — só desenha algo
+pra quem NÃO tem entitlement local (outro player vendo um corpse que
+não é dele, ou ainda não processou o `LOOT_AVAILABLE` correspondente),
+e troca a elipse de 3 cores pela MESMA animação de `loot.png` usada em
+`loot_system.py` (sem distinção de cor, mesma decisão do usuário já
+confirmada).
+
+**Lição / regra geral**: antes de declarar um fix de "aparência
+visual" completo, rodar `grep -rn "pygame\.draw\.<forma>"` (ou
+equivalente pro tipo de desenho em questão) no repo INTEIRO — nunca
+assumir que a função que "parece a dona" do visual é a única fonte.
+Mesma classe de erro já catalogada pro nameplate (§267: `ui/
+render_system.py` vs. `_draw_mob_hp_bars`) — este é o 2º incidente
+reconhecido da mesma família ("local" desenha uma vez, "remoto"/
+"outro player" desenha de novo, sem os dois saberem um do outro).
+Candidato a virar regra permanente em CLAUDE.md se um 3º incidente
+parecido aparecer.

@@ -222,6 +222,62 @@ class TestLootSystemDrawsFrozenFrame(unittest.TestCase):
                          "cadáver vazio não pode desenhar nada")
 
 
+class TestDrawRemoteCorpsesNaoDuplicaMarcaDoDono(unittest.TestCase):
+    """Reprodução direta do bug relatado pelo usuário (§272): a elipse
+    "continuava aparecendo" mesmo depois de ui/loot_system.py::
+    render_world() já ter sido corrigido — causa real era
+    `_draw_remote_corpses` (client/remote_entity_handlers.py), um
+    SEGUNDO caminho de desenho que desenhava a elipse antiga por cima,
+    sem saber do outro. Dono do loot (tem `_available_loot[corpse_id]`)
+    nunca mais desenha aqui; só quem NÃO tem entitlement (outro player)
+    usa esta função, agora com a animação de loot.png em vez da
+    elipse."""
+
+    def _make_fixture(self):
+        from engine.world import World
+        from client.network_handlers import NetworkHandlers as _NH
+        from client.remote_entity_handlers import RemoteEntityHandlers as _REH
+
+        class _Fixture(_NH, _REH):
+            def __init__(self, world, player_entity):
+                self.world = world
+                self.player_entity = player_entity
+                self._remote_corpses = {}
+                self._available_loot = {}
+
+        world = World()
+        player = world.create_entity()
+        fx = _Fixture(world, player)
+        fx._zoom_surf = pygame.Surface((200, 200))
+        return world, fx
+
+    def test_dono_do_loot_nao_desenha_duplicado(self):
+        from engine.components import Position, Corpse
+        world, fx = self._make_fixture()
+        eid = world.create_entity()
+        world.add_component(eid, Position(x=100, y=100))
+        world.add_component(eid, Corpse(loot=[], coins=5))
+        fx._remote_corpses[1] = (3, 3)
+        fx._available_loot[1] = {"local_eid": eid, "tx": 3, "ty": 3}
+
+        before = fx._zoom_surf.copy()
+        fx._draw_remote_corpses(0, 0)
+        self.assertEqual(pygame.image.tobytes(before, "RGB"),
+                         pygame.image.tobytes(fx._zoom_surf, "RGB"),
+                         "dono do loot ja foi desenhado por ui/loot_system.py, nao pode desenhar de novo aqui")
+
+    def test_outro_player_sem_entitlement_desenha_animacao(self):
+        world, fx = self._make_fixture()
+        fx._remote_corpses[2] = (5, 5)
+        # sem entrada em _available_loot -- outro player, sem dado local
+
+        before = fx._zoom_surf.copy()
+        fx._draw_remote_corpses(0, 0)
+        self.assertNotEqual(pygame.image.tobytes(before, "RGB"),
+                            pygame.image.tobytes(fx._zoom_surf, "RGB"),
+                            "marcador generico ainda deveria aparecer pra quem nao tem entitlement")
+
+
 def _make_despawn_fixture():
     from engine.world import World
     from client.network_handlers import NetworkHandlers as _NH

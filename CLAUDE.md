@@ -813,6 +813,16 @@ padrão a quebrar, não só os bugs individuais.
   `render_world`: sprite de morte do mob (se `Corpse.mob_key`
   resolver) > animação genérica de loot > elipse de 2 cores (fallback
   só se `loot.png` falhar ao carregar, nunca alcançado em uso normal).
+  **`client/remote_entity_handlers.py::_draw_remote_corpses` é um 2º
+  caminho de desenho SEPARADO pro mesmo marcador** (desenha pra quem
+  NÃO tem `_available_loot[corpse_id]` — outro player sem entitlement
+  de loot pessoal/condicional) — SEMPRE pular (`continue`) quando
+  `_available_loot.get(corpse_id) is not None`, porque `ui/
+  loot_system.py::render_world()` já desenhou essa posição com mais
+  detalhe; nunca redesenhar a mesma marca aqui. Mesma classe de bug já
+  documentada pro nameplate (§267/§268) — bug real: corrigir só
+  `loot_system.py` não bastou, a elipse antiga continuava aparecendo
+  por cima via este 2º caminho. Ver PROBLEMAS_ARQUITETURA.md §272.
   **Âncora de desenho e Y-sort** (10/09/2026, decisão do usuário): cada
   frame tem um tile de colisão/pé REAL de 32×32 (`CHAR_COLLISION_SIZE`
   == TILE_SIZE) no canto `(CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y)`
