@@ -1608,7 +1608,37 @@ class RemoteEntityHandlers:
                 _top_opaque_hb = _TS_hb.get_top_opaque_y(_ren_hb.sprite_id)
                 _world_y_top = _sprite_top_hb + _top_opaque_hb - _NSTG_hb
             else:
-                _world_y_top = pos.y - W / 2
+                # Animação de MOB (10/10/2026, ver engine/mob_animation.py)
+                # — mob REMOTO não tem CombatStats (removido em
+                # _spawn_remote_mob), então nunca passa pelo bloco de HUD
+                # de ui/render_system.py (gated em combat_stats); esta
+                # função é o único lugar que de fato posiciona o
+                # nameplate pra ele. Mesma matemática usada pra desenhar
+                # o sprite em si (ui/render_system.py, branch `_mob_frame`):
+                # topo do frame = pos.y + altura/2 (base) - altura do
+                # frame, com o mesmo gap pequeno do sprite estático (mob é
+                # desenhado quase sem padding, diferente do personagem).
+                from engine.components import EntityIdentity as _EIdMobHb, TileMovement as _TMMobHb
+                _ident_mob_hb = self.world.get_component(local_eid, _EIdMobHb)
+                _mob_key_hb = (_ident_mob_hb.mob_key or _ident_mob_hb.race) if _ident_mob_hb else ""
+                _mframe_hb = None
+                if _mob_key_hb:
+                    _tm_mob_hb = self.world.get_component(local_eid, _TMMobHb)
+                    if _tm_mob_hb is not None:
+                        from engine.utils import slugify as _slugify_hb
+                        from engine.mob_animation import (get_mob_frame as _gmf_hb,
+                                                          resolve_mob_display_state as _rmds_hb)
+                        _slug_hb = _slugify_hb(_mob_key_hb)
+                        _mstate_hb, _manim_t_hb, _mfms_hb = _rmds_hb(
+                            _tm_mob_hb, _slug_hb, pygame.time.get_ticks())
+                        _mframe_hb = _gmf_hb(_slug_hb, _mstate_hb, _tm_mob_hb.facing,
+                                            _manim_t_hb, _mfms_hb)
+                if _mframe_hb is not None:
+                    from ui.hud_bars import NAMEPLATE_SPRITE_TOP_GAP_PX as _NSTG_hb2
+                    _rheight_hb = _ren_hb.height if _ren_hb else W
+                    _world_y_top = pos.y + _rheight_hb / 2 - _mframe_hb.get_height() - _NSTG_hb2
+                else:
+                    _world_y_top = pos.y - W / 2
             if hp_max > 0:
                 from ui.hud_bars import (build_mob_hud as _bmh_hb, build_simple_hp_bar as _bshb_hb,
                                         HUD_GAP_PX as _HGP_hb, effects_row_offset as _ero_hb)

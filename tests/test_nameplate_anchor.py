@@ -156,6 +156,72 @@ class TestDrawMobHpBarsAncoraSpriteDeObjeto(unittest.TestCase):
         self.assertAlmostEqual(world_y_top, expected)
 
 
+class TestDrawMobHpBarsAncoraMobAnimado(unittest.TestCase):
+    """Mob remoto SEM Renderable.sprite_id, mas com sprite animado
+    (engine/mob_animation.py, 10/10/2026) — reproduz o bug real relatado
+    pelo usuário: nameplate caindo no fallback de retângulo
+    (`pos.y - W/2`) mesmo com sprite animado disponível, ficando no meio
+    do personagem. Usa o sprite de verdade do Goblin Guerreiro
+    (assets/sprites/goblin_guerreiro_idle_down.png, 64×64) pra não
+    depender de fixture sintética."""
+
+    def test_world_y_top_usa_topo_real_do_frame_de_mob(self):
+        from engine.world import World
+        from engine.components import (Position, Renderable, RemoteEntityMeta,
+                                       EntityIdentity, TileMovement)
+        from ui.hud_bars import NAMEPLATE_SPRITE_TOP_GAP_PX
+        from engine.mob_animation import get_mob_frame
+        import ui.world_labels as world_labels_mod
+        from client.network_handlers import NetworkHandlers as _NH
+        from client.remote_entity_handlers import RemoteEntityHandlers as _REH
+
+        class _Fixture(_NH, _REH):
+            def __init__(self, world, player_entity):
+                self.world = world
+                self.player_entity = player_entity
+                self._remote_mobs = {}
+
+        world = World()
+        player = world.create_entity()
+        fx = _Fixture(world, player)
+        fx._zoom_surf = pygame.Surface((200, 200))
+        fx._nameplate_mode = 0
+        fx.font_sm = pygame.font.Font(None, 16)
+
+        eid = world.create_entity()
+        x, y = 300, 300
+        world.add_component(eid, Position(x=x, y=y))
+        _height = 24  # ENEMY_TIER_CONFIGS["normal"]["size"]
+        world.add_component(eid, Renderable(color=(100, 180, 100), width=_height, height=_height))
+        world.add_component(eid, RemoteEntityMeta(server_eid=eid, hp=100, hp_max=100))
+        world.add_component(eid, EntityIdentity(name="Goblin Guerreiro", race="Goblin Guerreiro",
+                                                entity_class="", level=1))
+        world.add_component(eid, TileMovement(is_moving=False, facing="down"))
+        fx._remote_mobs[eid] = eid
+
+        text_calls = []
+        orig_text = world_labels_mod.WORLD_LABELS.add_text
+        world_labels_mod.WORLD_LABELS.add_text = lambda *a, **k: text_calls.append((a, k))
+        try:
+            fx._draw_mob_hp_bars(0, 0)
+        finally:
+            world_labels_mod.WORLD_LABELS.add_text = orig_text
+
+        self.assertEqual(len(text_calls), 1)
+        world_y_top = text_calls[0][0][1]
+
+        frame = get_mob_frame("goblin_guerreiro", "idle", "down", 0)
+        self.assertIsNotNone(frame, "sprite real do goblin precisa existir pra este teste valer algo")
+        expected = y + _height / 2 - frame.get_height() - NAMEPLATE_SPRITE_TOP_GAP_PX
+        self.assertAlmostEqual(world_y_top, expected)
+
+        # Reprodução direta do bug relatado: com o sprite real (64px de
+        # altura), o topo NUNCA pode cair abaixo do centro do mob — o
+        # fallback antigo (pos.y - W/2, W=28) dava pos.y-14, bem abaixo
+        # da metade do sprite (que vai de pos.y-52 até pos.y+12).
+        self.assertLess(world_y_top, y - _height)
+
+
 class TestDrawRemotePlayersAncoraPersonagemAnimado(unittest.TestCase):
     """client/remote_entity_handlers.py::_draw_remote_players — sempre
     personagem animado (RemoteControlled.class_id nunca é vazio). Usa
