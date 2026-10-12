@@ -204,6 +204,18 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         # Kills com animação em andamento (progress >= 0.3): local_eid → {"server_eid": int, "timer": float}
         # Remoção adiada até is_moving=False; mob termina o passo para target_tile.
         self._pending_mob_despawn: dict[int, dict] = {}
+        # Mobs tocando a animação de morte (11/10/2026, sem loot — ver
+        # RemoteEntityHandlers._despawn_mob_or_play_death/
+        # _flush_dying_mobs): local_eid → {"server_eid", "deadline_ms"}.
+        # Removidos de vez quando a animação "death" termina 1 ciclo.
+        self._dying_mobs: dict[int, dict] = {}
+        # Ponte "qual mob morreu nesse tile" (11/10/2026, ver
+        # _despawn_mob_or_play_death/_handle_msg_loot_available) —
+        # (tx,ty) → {"mob_key","facing","ts_ms"}, janela curta
+        # (_DEATH_RACE_BRIDGE_TTL_MS), só pro Corpse (se vier loot)
+        # saber qual sprite de morte congelado desenhar no lugar da
+        # elipse.
+        self._pending_death_race_by_tile: dict[tuple[int, int], dict] = {}
         # Redirect de loot: (srv_tx, srv_ty) → (target_tx, target_ty)
         # Quando mob commitou para next tile (progress >= 0.3), loot segue para lá.
         self._pending_loot_redirect: dict[tuple[int, int], tuple[int, int]] = {}
@@ -2420,6 +2432,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
             self._flush_pending_mob_despawns(dt)
+            self._flush_dying_mobs()
 
             # Projéteis que colidiram com mobs online: envia PROJECTILE_HIT_CS ao servidor
             if self._net and self._player_proj_system.pending_proj_hits:
@@ -3357,6 +3370,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._remote_mobs.clear()
         self._remote_players.clear()
         self._pending_mob_despawn.clear()
+        self._dying_mobs.clear()
+        self._pending_death_race_by_tile.clear()
         self._mob_ghost_pos.clear()
         self._remote_corpses.clear()
         self._available_loot.clear()

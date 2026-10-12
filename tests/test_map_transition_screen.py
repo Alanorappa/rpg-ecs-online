@@ -190,19 +190,23 @@ class TestClearRemoteEntityCaches(unittest.TestCase):
     lista por muito tempo (só `_remote_mobs`/`_remote_players`/
     `_pending_mob_despawn`/`_mob_ghost_pos` eram limpos) — regressão
     futura (cache novo esquecido de novo) é pega por este teste batendo
-    numa lista EXPLÍCITA dos 6 atributos, não um subconjunto."""
+    numa lista EXPLÍCITA dos atributos, não um subconjunto.
+    `_dying_mobs`/`_pending_death_race_by_tile` (11/10/2026, animação
+    de morte de mob) entraram na lista no mesmo commit em que nasceram."""
 
     def test_limpa_todos_os_caches_de_entidade_remota(self):
         import game
 
         class _FakeCacheHolder:
             def __init__(self):
-                self._remote_mobs          = {1: "mob"}
-                self._remote_players       = {2: "player"}
-                self._pending_mob_despawn  = {3: 0.5}
-                self._mob_ghost_pos        = {4: (10, 20)}
-                self._remote_corpses       = {5: (30, 40)}
-                self._available_loot       = {6: {"items": []}}
+                self._remote_mobs               = {1: "mob"}
+                self._remote_players            = {2: "player"}
+                self._pending_mob_despawn       = {3: 0.5}
+                self._mob_ghost_pos             = {4: (10, 20)}
+                self._remote_corpses            = {5: (30, 40)}
+                self._available_loot            = {6: {"items": []}}
+                self._dying_mobs                = {7: {"server_eid": 7, "deadline_ms": 123}}
+                self._pending_death_race_by_tile = {(8, 8): {"mob_key": "goblin_guerreiro"}}
 
         fake = _FakeCacheHolder()
         game.GameEngine._clear_remote_entity_caches(fake)
@@ -215,6 +219,9 @@ class TestClearRemoteEntityCaches(unittest.TestCase):
                          "corpse de mapa/instância anterior não pode sobreviver à troca")
         self.assertEqual(fake._available_loot, {},
                          "loot de mapa/instância anterior não pode sobreviver à troca")
+        self.assertEqual(fake._dying_mobs, {},
+                         "mob tocando animação de morte de mapa/instância anterior não pode sobreviver à troca")
+        self.assertEqual(fake._pending_death_race_by_tile, {})
 
 
 if __name__ == "__main__":

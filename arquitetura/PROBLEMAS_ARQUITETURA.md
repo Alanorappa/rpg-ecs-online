@@ -27022,3 +27022,101 @@ CLAUDE.md), mas a suposição específica sobre ESTE campo não foi
 checada antes de escrever `resolve_mob_anim_state` do zero em vez de
 reusar a função já existente — mesma classe de erro que a regra
 "pesquisar antes de codar" existe pra evitar.
+
+## 271. Animação de morte de mob — feature nova, não um bug (11/10/2026)
+
+**Pedido do usuário**: tocar a animação "death" do mob ao morrer e
+travar no último frame; se não tem loot, anima e some; se tem loot,
+fica congelado no lugar da elipse atual até ser saqueado/expirar —
+"mesma regra do corpo (elipse) hoje, só que sem precisar mais dele". O
+próprio usuário avisou de antemão "acho que o projeto não está
+preparado pra isso" — pedido explícito de pesquisa + desenho antes de
+codar, sem exceção.
+
+**Pesquisa feita (agente dedicado) antes de propor qualquer coisa**:
+confirmou que hoje NÃO existe nenhum "corpo de mob" visual — o mob é
+removido pelo servidor no MESMO tick da morte
+(`ServerDeathHandler.update()`), e o cliente remove o espelho local
+quase imediatamente (só um grace curto de até 2s pra terminar um
+TWEEN de movimento em andamento, `_pending_mob_despawn`/
+`_PENDING_DESPAWN_TIMEOUT` — nada relacionado a animação). O que
+parece "corpo" hoje é uma elipse TOTALMENTE separada
+(`ui/loot_system.py::render_world`), ligada a um registro de loot do
+servidor (`WorldServer._corpses`, timers 45s/30s/0s) que só existe se
+o mob soltou algo — sem relação nenhuma com a entidade do mob (já
+removida).
+
+**Decisão de arquitetura tomada, registrada pra transparência**: dado
+que a animação em si é 100% cosmética, e a arquitetura já separa
+"gameplay" (servidor) de "desenho" (cliente), decidi implementar a
+feature INTEIRA no cliente, sem nenhuma mudança de protocolo/servidor
+— a identidade do mob que morreu (raça/slug) já é conhecida do cliente
+ANTES da morte (`EntityIdentity`), então não há necessidade de o
+servidor informar nada de novo. Isso evitou a alternativa mais
+arriscada (seguraria a entidade REAL do mob viva no servidor até o
+corpse expirar, que tocaria IA/respawn-zone/pathing/aggro — exatamente
+o tipo de mudança que CLAUDE.md pede pra nunca decidir sozinho).
+Perguntei ao usuário (AskUserQuestion) só 2 pontos realmente em aberto:
+(1) mob sem sprite "death" ainda — cai no comportamento de hoje (some
+na hora), confirmado; (2) entregar as duas partes (sem loot / com
+loot) juntas, confirmado.
+
+**Desenho implementado** (ver CLAUDE.md "Morte de MOB com animação
+'death'" pra descrição atemporal):
+1. `engine/mob_animation.py`: `trigger_mob_death_anim` liga
+   `anim_attack_hold_last_frame=True` (campo que já existia em
+   `TileMovement`, usado pelo cast "portal in" do personagem — nunca
+   fora consumido por `resolve_mob_display_state`, que simplesmente
+   não tinha o branch; portado de `character_animation.
+   resolve_display_state`).
+2. **Sem loot**: `_despawn_mob_or_play_death` (novo, `client/
+   remote_entity_handlers.py`) — ponto único que substitui as 2 chamadas
+   diretas de `world.remove_entity(local_eid)` que existiam pra mob
+   (`AOI_UPDATE` despawn em `client/network_handlers.py` e
+   `_flush_pending_mob_despawns`). Decide: kill de verdade + sprite
+   "death" disponível → liga a animação, agenda remoção de verdade
+   pro `_dying_mobs` dict (consumido por `_flush_dying_mobs`, chamado
+   todo frame em `game.py` ao lado de `_flush_pending_mob_despawns`);
+   qualquer outro caso (saída de AOI, sem sprite) → remove na hora,
+   comportamento idêntico a antes.
+3. **Com loot**: `ui/loot_system.py::render_world()` ganhou um branch
+   ANTES da elipse — se `Corpse.mob_key` resolve um frame congelado
+   (`get_mob_death_last_frame`), desenha ele no lugar, ancorado pelo
+   CENTRO do frame (mesma convenção do mob vivo, §269) em vez da
+   elipse. `Corpse.mob_key`/`facing` são campos novos opcionais
+   (default `""`/`"down"`) — forma de "a identidade chegou" é uma ponte
+   client-only por tile, `GameEngine._pending_death_race_by_tile`,
+   gravada em QUALQUER kill real (mesmo sem sprite — é dado barato,
+   só nunca é consumida com sucesso nesse caso) e consumida por
+   `_handle_msg_loot_available` na MESMA coordenada que
+   `_pending_loot_redirect` já usa (padrão já existente, só uma 2ª
+   ponte do mesmo tipo). Janela de vida curta (3s,
+   `_DEATH_RACE_BRIDGE_TTL_MS`) — puramente cosmética, pior caso
+   possível (2 mobs morrendo no MESMO tile dentro de 3s) é mostrar o
+   sprite do mob ERRADO congelado, nunca afeta loot de verdade.
+
+**Testes**: `tests/test_mob_death_animation.py` (14 casos) — estado
+puro de animação (hold-last-frame, nunca expira sozinho) com frames
+SINTÉTICOS (seed direto em `_mob_frame_cache`, sem depender de arte
+real), `Corpse.mob_key` default/passagem por `create_corpse`,
+`ui/loot_system.py` desenhando sprite vs. elipse, e o fluxo completo
+de `_despawn_mob_or_play_death`/`_flush_dying_mobs` (kill com/sem
+sprite, saída de AOI nunca anima). Confirmado também contra os sprites
+REAIS que o usuário já tinha desenhado nesse meio tempo
+(`goblin_guerreiro_death_{down,up,left,right}.png`, 64×64, 8 frames,
+960ms de duração por ciclo) — `get_mob_death_last_frame`/
+`get_mob_death_anim_duration_ms` resolvem certo nas 4 direções.
+
+**Regressão pega e corrigida ANTES de declarar pronto**: 2 fixtures de
+teste (`tests/test_map_transition_screen.py::
+TestClearRemoteEntityCaches`, `tests/test_client_ui.py::
+_NetHandlerFixture`) quebraram porque construíam o objeto fake sem os
+2 atributos novos (`_dying_mobs`/`_pending_death_race_by_tile`) — rodar
+a suíte ampla ANTES de considerar terminado (não só os testes novos)
+pegou isso; `TestClearRemoteEntityCaches` em particular já existe
+precisamente pra pegar "cache novo esquecido" (§217-ish), e funcionou
+como desenhado. As 28 falhas restantes da suíte ampla (test_session.py/
+test_server.py/test_jungle_camps.py/etc.) são PRÉ-EXISTENTES —
+confirmado rodando a mesma suíte via `git stash` no commit anterior
+(falha idêntica sem nenhuma mudança minha) — causa raiz é Postgres não
+estar rodando localmente nesta sessão, fora de escopo desta feature.

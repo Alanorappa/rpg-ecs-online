@@ -989,12 +989,23 @@ class Corpse:
     DECAY_TIME = 120.0         # fallback se não vier cooldown do mob
     LOOTED_DECAY_TIME = 30.0   # segundos restantes após todo o loot ser retirado
 
-    def __init__(self, loot: list = None, coins: int = 0, decay_time: float = None):
+    def __init__(self, loot: list = None, coins: int = 0, decay_time: float = None,
+                mob_key: str = "", facing: str = "down"):
         self.loot: list   = loot if loot is not None else []
         self.coins: int   = coins
         self.timer: float = decay_time if decay_time is not None else self.DECAY_TIME
         self.looted: bool = False
         self.is_open: bool = False
+        # Slug do mob que morreu aqui (11/10/2026, engine.utils.slugify
+        # de EntityIdentity.mob_key/race) + direção que ele olhava — "" =
+        # sem sprite de morte (harvestable, ou mob sem animação de morte
+        # ainda) → ui/loot_system.py cai na elipse de sempre, SEM
+        # regressão. Preenchido por client/network_handlers.py::
+        # _handle_msg_loot_available via a ponte
+        # GameEngine._pending_death_race_by_tile (client-only, nunca
+        # vem do servidor — puramente cosmético).
+        self.mob_key: str = mob_key
+        self.facing: str  = facing
 
 
 @dataclass

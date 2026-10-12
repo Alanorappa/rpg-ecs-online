@@ -1405,11 +1405,7 @@ class NetworkHandlers:
                             _pos_dep.x = _snap_tx * _TS_dep + _TS_dep // 2
                             _pos_dep.y = _snap_ty * _TS_dep + _TS_dep // 2
                 if not _defer:
-                    self._mob_move_queues.pop(eid, None)
-                    try:
-                        self.world.remove_entity(local_eid)
-                    except Exception:
-                        pass
+                    self._despawn_mob_or_play_death(local_eid, eid, is_kill=_is_kill)
 
     def _handle_msg_skill_levels_update(self, payload: dict) -> None:
         """SKILL_LEVELS_UPDATE: snapshot completo de levels/xp do skill level
@@ -2434,6 +2430,20 @@ class NetworkHandlers:
                 _corpse_comp.loot  = loot_items
                 _corpse_comp.coins = coins
             return
+        # Ponte "qual mob morreu nesse tile" (11/10/2026, ver
+        # RemoteEntityHandlers._despawn_mob_or_play_death) — consumida
+        # pela coordenada ORIGINAL (antes do redirect abaixo, que já
+        # usa a mesma convenção), descartada se mais velha que a janela
+        # de vida (pacote de loot raríssimamente atrasa tanto; se
+        # atrasar, cai no fallback de elipse de sempre, nunca erro).
+        _death_mob_key = ""
+        _death_facing  = "down"
+        _death_info = self._pending_death_race_by_tile.pop((tx, ty), None)
+        if _death_info is not None:
+            import pygame as _pg_dmk
+            if _pg_dmk.time.get_ticks() - _death_info["ts_ms"] <= self._DEATH_RACE_BRIDGE_TTL_MS:
+                _death_mob_key = _death_info["mob_key"]
+                _death_facing  = _death_info["facing"]
         # Se mob morreu commitado para o próximo tile, loot segue para lá.
         _redirect = self._pending_loot_redirect.pop((tx, ty), None)
         if _redirect:
@@ -2459,7 +2469,8 @@ class NetworkHandlers:
         px = tx * _TS + _TS // 2
         py = ty * _TS + _TS // 2
         local_corpse_eid = create_corpse(self.world, px, py, loot_items, coins,
-                                         decay_time=120.0)
+                                         decay_time=120.0,
+                                         mob_key=_death_mob_key, facing=_death_facing)
         # Guarda mapeamento corpse_id (servidor) → local ECS eid
         self._available_loot[corpse_id] = {
             "local_eid": local_corpse_eid, "tx": tx, "ty": ty

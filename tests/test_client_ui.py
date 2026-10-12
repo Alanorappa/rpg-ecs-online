@@ -1210,6 +1210,8 @@ class _NetHandlerFixture(_NH, _REH):
         self._remote_mob_projectiles = {}
         self._mob_move_queues = {}
         self._pending_mob_despawn = {}
+        self._dying_mobs = {}
+        self._pending_death_race_by_tile = {}
         self._mob_ghost_pos = {}
         self._pending_loot_redirect = {}
         self._remote_harvestables = {}

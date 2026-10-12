@@ -261,7 +261,13 @@ rpg_ecs_online/
 │   │                                  auto-attack). get_mob_top_opaque_offset() mede o
 │   │                                  pixel opaco real do topo do idle (cacheado por
 │   │                                  mob_key) pro nameplate não flutuar no padding
-│   │                                  transparente do frame quadrado — ver CLAUDE.md
+│   │                                  transparente do frame quadrado. (11/10/2026) Estado
+│   │                                  "death" novo: trigger_mob_death_anim trava no último
+│   │                                  frame (anim_attack_hold_last_frame), get_mob_death_
+│   │                                  anim_duration_ms/get_mob_death_last_frame usados por
+│   │                                  client/remote_entity_handlers.py (despawn adiado) e
+│   │                                  ui/loot_system.py (cadáver no lugar da elipse) — ver
+│   │                                  CLAUDE.md
 │   ├── portal_anim_state.py        ← NOVO (01/10/2026): estado client-only de animação de
 │   │                                  EVENTO do tile do portal (ativar/desativar), chaveado por
 │   │                                  posição — escrito por client/portal_handlers.py ao receber

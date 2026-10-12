@@ -767,6 +767,38 @@ padrão a quebrar, não só os bugs individuais.
   `ENTITY_MOVE` seguinte chega pela rede — gap real, não só "1 frame
   local" como no player). Sem o grace, mob perseguindo "pisca" pra
   idle a cada passo. Ver PROBLEMAS_ARQUITETURA.md §270.
+  **Morte de MOB com animação "death" (11/10/2026)** — toca 1x e
+  TRAVA no último frame (`engine.mob_animation.trigger_mob_death_anim`,
+  `anim_attack_hold_last_frame=True`, consumido por
+  `resolve_mob_display_state`), nunca volta pra idle/run sozinha.
+  Convenção de arquivo igual aos outros estados:
+  `{slug}_death_{direction}.png`. Dois destinos depois da animação,
+  SEM mudar nada do servidor (100% cosmético no cliente):
+  - **Sem loot**: `client/remote_entity_handlers.py::
+    _despawn_mob_or_play_death` é o ÚNICO ponto que decide remover um
+    mob local de vez ou (kill real + sprite "death" disponível) adiar
+    a remoção até a animação terminar 1 ciclo
+    (`get_mob_death_anim_duration_ms`) — usado pelos 2 lugares que
+    antes removiam direto (`AOI_UPDATE` despawn em `client/
+    network_handlers.py`, e `_flush_pending_mob_despawns`). Despawn por
+    SAÍDA de AOI (não-kill) NUNCA anima — remove na hora, igual sempre.
+    Mob sem sprite "death" ainda → comportamento de hoje, zero
+    regressão.
+  - **Com loot**: `ui/loot_system.py::render_world()` desenha o ÚLTIMO
+    frame congelado (`get_mob_death_last_frame`) no lugar da elipse de
+    sempre, pelo MESMO tempo que o `Corpse` já durava (nenhuma mudança
+    nos timers de loot) — `Corpse.mob_key`/`Corpse.facing` (campos
+    novos, default `""`/`"down"` = elipse de sempre) guardam qual mob
+    morreu ali. Identidade chega via uma ponte client-only por tile
+    (`GameEngine._pending_death_race_by_tile`, janela curta — mesmo
+    princípio de `_pending_loot_redirect` já existente), gravada em
+    `_despawn_mob_or_play_death` e consumida por `client/
+    network_handlers.py::_handle_msg_loot_available` — NUNCA um campo
+    novo no servidor/protocolo, a identidade já é conhecida do cliente
+    antes do mob morrer. Qualquer cache novo deste tipo entra em
+    `GameEngine._clear_remote_entity_caches()` no MESMO commit — já
+    feito pra `_dying_mobs`/`_pending_death_race_by_tile`. Ver
+    PROBLEMAS_ARQUITETURA.md §271.
   **Âncora de desenho e Y-sort** (10/09/2026, decisão do usuário): cada
   frame tem um tile de colisão/pé REAL de 32×32 (`CHAR_COLLISION_SIZE`
   == TILE_SIZE) no canto `(CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y)`

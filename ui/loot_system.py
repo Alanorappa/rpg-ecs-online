@@ -579,6 +579,20 @@ class LootSystem(UIScaleMixin, System):
                 continue
             draw_x = pos.x - camera_offset_x
             draw_y = pos.y - camera_offset_y
+            # Sprite de morte congelado (11/10/2026) no lugar da elipse
+            # — mesma âncora pelo CENTRO do frame que o mob vivo usa
+            # (ui/render_system.py, §269), senão o cadáver "pularia" de
+            # posição no instante em que vira corpse. corpse.mob_key=""
+            # (sem sprite de morte conhecido/ainda não desenhado) cai na
+            # elipse de sempre — sem regressão nenhuma.
+            _death_frame = None
+            if corpse.mob_key:
+                from engine.mob_animation import get_mob_death_last_frame
+                _death_frame = get_mob_death_last_frame(corpse.mob_key, corpse.facing)
+            if _death_frame is not None:
+                _dfw, _dfh = _death_frame.get_size()
+                self.world_surf.blit(_death_frame, (int(draw_x - _dfw / 2), int(draw_y - _dfh / 2)))
+                continue
             color = (180, 150, 30) if corpse.coins > 0 else ((120, 80, 40) if corpse.loot else (60, 40, 20))
             pygame.draw.ellipse(self.world_surf, color,
                                 (int(draw_x - 10), int(draw_y - 6), 20, 12))

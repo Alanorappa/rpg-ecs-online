@@ -1263,8 +1263,82 @@ class RemoteEntityHandlers:
     # de 5 tiles a 0.18s/tile ≈ 0.9s) com margem, sem deixar o corpse pendurado pra sempre.
     _PENDING_DESPAWN_TIMEOUT = 2.0
 
+    # Janela de vida da ponte "qual mob morreu nesse tile" (11/10/2026,
+    # ver _despawn_mob_or_play_death/_handle_msg_loot_available) — o
+    # aviso de loot (LOOT_AVAILABLE) normalmente chega no mesmo
+    # AOI_UPDATE da morte, nunca mais que 1-2 pacotes depois; 3s é
+    # folga generosa sem risco real de um 2º mob reusar o MESMO tile
+    # dentro da janela (puramente cosmético — nunca afeta loot de
+    # verdade, só qual sprite congelado aparece).
+    _DEATH_RACE_BRIDGE_TTL_MS = 3000
+
+    def _despawn_mob_or_play_death(self, local_eid: int, server_eid: int, is_kill: bool) -> None:
+        """Ponto único que decide remover um mob local de vez, ou (kill
+        de verdade com sprite "death" disponível, 11/10/2026) tocar a
+        animação de morte 1x antes de remover — usado pelos 2 lugares
+        que removiam a entidade direto (AOI_UPDATE despawn em
+        client/network_handlers.py, e `_flush_pending_mob_despawns`
+        abaixo), pra nenhum dos 2 pular a animação. Despawn por SAÍDA
+        de AOI (`is_kill=False`) nunca anima — remove na hora, igual
+        sempre foi.
+
+        Sempre que for kill de verdade, grava a ponte `mob_key`/
+        `facing` por tile (`_pending_death_race_by_tile`) ANTES de
+        decidir — mesmo sem sprite de morte disponível ainda, é dado
+        barato e só serve de referência pro Corpse (se vier loot)
+        resolver o sprite congelado certo; sem sprite, a ponte
+        simplesmente nunca é consumida com sucesso."""
+        if is_kill:
+            from engine.components import EntityIdentity as _EId_dd, TileMovement as _TM_dd
+            ident = self.world.get_component(local_eid, _EId_dd)
+            tm    = self.world.get_component(local_eid, _TM_dd)
+            mob_key = (ident.mob_key or ident.race) if ident else ""
+            if mob_key and tm is not None:
+                from engine.utils import slugify as _slugify_dd
+                slug = _slugify_dd(mob_key)
+                self._pending_death_race_by_tile[(tm.current_tile_x, tm.current_tile_y)] = {
+                    "mob_key": slug, "facing": tm.facing,
+                    "ts_ms": pygame.time.get_ticks(),
+                }
+                from engine.mob_animation import (trigger_mob_death_anim as _tmda,
+                                                  get_mob_death_anim_duration_ms as _gmdad)
+                duration_ms = _gmdad(slug, tm.facing)
+                if duration_ms > 0:
+                    now_ms = pygame.time.get_ticks()
+                    _tmda(tm, slug, now_ms)
+                    self._dying_mobs[local_eid] = {
+                        "server_eid": server_eid, "deadline_ms": now_ms + duration_ms,
+                    }
+                    return
+        self._mob_move_queues.pop(server_eid, None)
+        try:
+            self.world.remove_entity(local_eid)
+        except Exception:
+            pass
+
+    def _flush_dying_mobs(self) -> None:
+        """Remove mobs cuja animação de morte (sem loot, ver
+        _despawn_mob_or_play_death) já terminou de tocar 1x."""
+        if not self._dying_mobs:
+            return
+        now_ms = pygame.time.get_ticks()
+        done = [eid for eid, info in self._dying_mobs.items() if now_ms >= info["deadline_ms"]]
+        for local_eid in done:
+            info = self._dying_mobs.pop(local_eid)
+            self._mob_move_queues.pop(info["server_eid"], None)
+            try:
+                self.world.remove_entity(local_eid)
+            except Exception:
+                pass
+
     def _flush_pending_mob_despawns(self, dt: float) -> None:
-        """Remove entidades de mob cujo despawn foi adiado até a animação de movimento concluir."""
+        """Remove (ou, com sprite de morte disponível, inicia a
+        animação de morte de — ver _despawn_mob_or_play_death)
+        entidades de mob cujo despawn foi adiado até a animação de
+        MOVIMENTO concluir. Tudo que chega aqui é SEMPRE kill de
+        verdade (os 2 pontos que populam `_pending_mob_despawn`, em
+        client/network_handlers.py, só adiam quando `_is_kill` já é
+        True — AOI-exit nunca entra nesse dict)."""
         if not self._pending_mob_despawn:
             return
         from engine.components import TileMovement as _TM_pd
@@ -1278,11 +1352,7 @@ class RemoteEntityHandlers:
                 done.append(local_eid)
         for local_eid in done:
             info = self._pending_mob_despawn.pop(local_eid)
-            self._mob_move_queues.pop(info["server_eid"], None)
-            try:
-                self.world.remove_entity(local_eid)
-            except Exception:
-                pass
+            self._despawn_mob_or_play_death(local_eid, info["server_eid"], is_kill=True)
 
     def _meta(self, server_eid: int):
         """Retorna RemoteEntityMeta do mob remoto pelo server_eid, ou None."""

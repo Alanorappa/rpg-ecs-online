@@ -974,10 +974,15 @@ def create_minion(world: World, tile_x: int, tile_y: int, minion_key: str,
 
 
 def create_corpse(world: World, x: float, y: float, loot: list, coins: int = 0,
-                  decay_time: float = None) -> int:
+                  decay_time: float = None, mob_key: str = "", facing: str = "down") -> int:
+    """`mob_key`/`facing` (11/10/2026) — slug + direção do mob que
+    morreu aqui, só pra `ui/loot_system.py` resolver o sprite de morte
+    congelado no lugar da elipse (ver engine/mob_animation.py); "" =
+    sem sprite de morte conhecido, cai na elipse de sempre."""
     corpse_entity = world.create_entity()
     world.add_component(corpse_entity, Position(x=x, y=y, prev_x=x, prev_y=y))
-    world.add_component(corpse_entity, Corpse(loot=loot, coins=coins, decay_time=decay_time))
+    world.add_component(corpse_entity, Corpse(loot=loot, coins=coins, decay_time=decay_time,
+                                              mob_key=mob_key, facing=facing))
     return corpse_entity
 
 

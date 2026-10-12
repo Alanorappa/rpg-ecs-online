@@ -192,13 +192,59 @@ def trigger_mob_attack_anim(tile_movement, mob_key: str, now_ms: int,
     tile_movement.anim_attack_hold_last_frame  = False
 
 
+MOB_DEATH_STATE = "death"
+
+
+def trigger_mob_death_anim(tile_movement, mob_key: str, now_ms: int) -> None:
+    """Liga a animação de morte — TRAVA no último frame ao terminar
+    (`anim_attack_hold_last_frame=True`, 11/10/2026) em vez de voltar
+    pra idle/run como o golpe normal. Nunca expira sozinha: quem chama
+    decide o que fazer depois (mob sem loot: remover a entidade quando
+    `get_mob_death_anim_duration_ms` se esgotar; mob com loot: deixar
+    congelada, `ui/loot_system.py` desenha o último frame no lugar da
+    elipse enquanto o Corpse existir). Convenção de arquivo:
+    `{mob_key}_death_{direction}.png`, mesmo fallback incremental de
+    sempre (ausente = sem animação de morte nenhuma — quem chama cai no
+    comportamento de hoje, sem regressão)."""
+    tile_movement.anim_attack_state      = MOB_DEATH_STATE
+    tile_movement.anim_attack_started_ms = now_ms
+    tile_movement.anim_attack_frame_ms   = MOB_DEFAULT_FRAME_MS
+    tile_movement.anim_attack_loop_duration_ms = 0
+    tile_movement.anim_attack_hold_last_frame  = True
+
+
+def get_mob_death_anim_duration_ms(mob_key: str, direction: str) -> int:
+    """Duração real (ms) de 1 ciclo da animação "death" de
+    (mob_key, direction) — 0 se não existir sprite de morte pra essa
+    combinação (nem direto, nem espelhado). Quem dispara a morte usa
+    isto pra saber quanto esperar antes de remover a entidade de
+    verdade (mob sem loot) — 0 = sem animação, remove na hora (mesmo
+    comportamento de sempre)."""
+    frames = _mob_frames_for(mob_key, MOB_DEATH_STATE, direction)
+    return len(frames) * MOB_DEFAULT_FRAME_MS if frames else 0
+
+
+def get_mob_death_last_frame(mob_key: str, direction: str):
+    """Último frame (já congelado) da animação "death" de
+    (mob_key, direction), ou None se não existir — usado por
+    `ui/loot_system.py` pra desenhar o cadáver no lugar da elipse de
+    loot, sem precisar de `TileMovement`/tempo de animação nenhum (é
+    sempre o ÚLTIMO frame, direto, independente de quando a morte
+    aconteceu)."""
+    frames = _mob_frames_for(mob_key, MOB_DEATH_STATE, direction)
+    return frames[-1] if frames else None
+
+
 def resolve_mob_display_state(tile_movement, mob_key: str, now_ms: int,
                               frame_ms: int = MOB_DEFAULT_FRAME_MS) -> "tuple[str, int, float]":
     """(state_name, anim_time_ms, frame_ms) prontos pra `get_mob_frame`
     — mesmo princípio de `character_animation.resolve_display_state`:
-    golpe tem prioridade enquanto durar 1 ciclo do sheet, expira sozinho
-    (ou na hora, se o sprite não existir pra essa direção) e cai pro
-    idle/run."""
+    golpe/morte tem prioridade enquanto durar 1 ciclo do sheet, expira
+    sozinho (ou na hora, se o sprite não existir pra essa direção) e
+    cai pro idle/run — EXCETO se `anim_attack_hold_last_frame` (morte,
+    11/10/2026, mesmo mecanismo de `character_animation.
+    resolve_display_state`/portal "in"): trava no último frame em vez
+    de expirar, nunca reseta sozinho."""
     if tile_movement.anim_attack_state:
         _attack_frame_ms = tile_movement.anim_attack_frame_ms or frame_ms
         frames  = _mob_frames_for(mob_key, tile_movement.anim_attack_state, tile_movement.facing)
@@ -206,5 +252,8 @@ def resolve_mob_display_state(tile_movement, mob_key: str, now_ms: int,
         duration = len(frames) * _attack_frame_ms if frames else 0
         if frames and elapsed < duration:
             return tile_movement.anim_attack_state, elapsed, _attack_frame_ms
+        if frames and tile_movement.anim_attack_hold_last_frame:
+            held_elapsed = (len(frames) - 1) * _attack_frame_ms
+            return tile_movement.anim_attack_state, held_elapsed, _attack_frame_ms
         tile_movement.anim_attack_state = ""
     return resolve_mob_anim_state(tile_movement), now_ms, frame_ms
