@@ -729,6 +729,16 @@ padrão a quebrar, não só os bugs individuais.
   reinventar. `slugify()` é ponto único de verdade (`engine/utils.py`)
   — qualquer 3º ponto que precise de chave de arquivo a partir de nome
   legível usa essa função, nunca uma normalização própria.
+  **Qualquer feature visual nova de mob (nameplate, ícone, efeito)
+  precisa ser conferida nos DOIS caminhos de desenho de mob, nunca só
+  um**: `ui/render_system.py` (sprite/corpo de QUALQUER entidade com
+  Position+Renderable, inclusive mob remoto) E `client/
+  remote_entity_handlers.py::_draw_mob_hp_bars` (HUD/nameplate — todo
+  mob em produção é remoto, já que não existe mob 100% local em
+  multiplayer; `combat_stats` é removido dele de propósito, então o
+  bloco de HUD de `render_system.py` nunca roda pra mob de verdade).
+  Bug real: topo do nameplate só corrigido no 1º arquivo, continuou no
+  meio do sprite até corrigir o 2º. Ver PROBLEMAS_ARQUITETURA.md §267.
   **Âncora de desenho e Y-sort** (10/09/2026, decisão do usuário): cada
   frame tem um tile de colisão/pé REAL de 32×32 (`CHAR_COLLISION_SIZE`
   == TILE_SIZE) no canto `(CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y)`

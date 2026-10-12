@@ -26857,3 +26857,56 @@ lição de §261/§265, água de moinhos diferentes (formula vs. arquivo
 certo vs., agora, campo de configuração espalhado em 2 arquivos
 diferentes que "parecem" redundantes mas um é decorativo e o outro é
 o de verdade).
+
+## 267. Sistema de animação de mob implementado, nameplate ficou no meio do sprite — dois caminhos de desenho separados pra mob LOCAL vs. REMOTO (10/10/2026)
+
+**Contexto**: implementei `engine/mob_animation.py` (animação idle/run/
+attack de mob, espelhando `character_animation.py` mas com frame
+QUADRADO derivado da altura do sheet, ver CLAUDE.md). Encaixei o
+desenho do sprite em `ui/render_system.py` (branch `_mob_frame`,
+funciona — confirmado pelo usuário, Goblin Guerreiro aparece animado) e
+o topo do nameplate no MESMO arquivo, no bloco de HUD gated em
+`combat_stats`.
+
+**Relatado pelo usuário**: nameplate continuava no meio do personagem,
+"da mesma forma que estava antes" — mesmo depois do 1º fix.
+
+**Causa raiz**: todo mob de verdade em produção (multiplayer online,
+sem versão offline) é um mob REMOTO do ponto de vista do cliente — e
+`client/remote_entity_handlers.py::_spawn_remote_mob` REMOVE
+`CombatStats` dele de propósito (`"HP é autoritativo pelo servidor,
+RemoteEntityMeta.hp"`). Isso significa que o bloco de HUD de
+`ui/render_system.py` que eu editei (`_draw_hp_bar = combat_stats and
+...`) NUNCA RODA pra mob de verdade — é código morto nesse cenário. O
+nameplate real de mob/NPC remoto é calculado por uma função TOTALMENTE
+SEPARADA, `client/remote_entity_handlers.py::_draw_mob_hp_bars`, que
+ainda não sabia nada sobre sprite animado e caía no fallback de
+retângulo antigo (`pos.y - W/2`, `W=TILE_SIZE-4=28` fixo) — bem abaixo
+do topo real do frame de 64px do Goblin Guerreiro.
+
+**Por que o 1º fix pareceu certo mas não era**: testei só via import +
+suíte de testes existente (que não cobria `_draw_mob_hp_bars` pra mob
+com sprite animado) — nunca reproduzi o cenário real (mob remoto em
+jogo). Mesma lição de §261/§265/§266: "corrigido" exige reproduzir o
+caminho REAL, não só confirmar que o código novo roda sem erro.
+
+**Fix**: réplica da mesma matemática (topo do frame = base
+`pos.y + renderable.height/2` menos a altura real do frame, mesmo gap
+pequeno do sprite estático) dentro de `_draw_mob_hp_bars` também.
+
+**Regra geral daqui pra frente — qualquer feature visual nova ligada a
+MOB precisa ser conferida nos DOIS caminhos de desenho, nunca só um**:
+- `ui/render_system.py` — entidade LOCAL (combate offline-like/debug) E
+  o sprite/corpo de QUALQUER entidade com Position+Renderable
+  (inclusive mob remoto — o desenho do SPRITE em si passa por aqui).
+- `client/remote_entity_handlers.py::_draw_mob_hp_bars` — HUD/nameplate
+  de mob/NPC remoto de verdade (o caminho que roda em produção, já que
+  não existe mob 100% local em multiplayer).
+Essa duplicação replica o padrão já conhecido de
+`_draw_remote_players` vs. o bloco de player local no mesmo arquivo
+(`ui/render_system.py`, comentário já existente linha ~933-936) — não
+é a primeira vez que "local" e "remoto" têm caminhos de desenho
+gêmeos, mas separados, nesse arquivo. Teste novo em
+`tests/test_nameplate_anchor.py::TestDrawMobHpBarsAncoraMobAnimado`
+usa o sprite REAL do Goblin Guerreiro (não só fixture sintética) pra
+fechar esse gap.
