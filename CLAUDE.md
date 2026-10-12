@@ -799,6 +799,20 @@ padrão a quebrar, não só os bugs individuais.
     `GameEngine._clear_remote_entity_caches()` no MESMO commit — já
     feito pra `_dying_mobs`/`_pending_death_race_by_tile`. Ver
     PROBLEMAS_ARQUITETURA.md §271.
+  **Marcador genérico de "tem loot aqui" (sem sprite de morte
+  conhecido)** (11/10/2026) → `ui/world_icon_animator.py::get_frame(
+  "loot", 32, now_ms)` — reusa o MESMO módulo do marcador animado de
+  quest (categoria de asset "ícone de mundo", nenhum módulo novo
+  precisou nascer), chamado de `ui/loot_system.py::render_world()` no
+  lugar da elipse de 3 cores antiga. MESMA animação pra "tem gold" e
+  "só tem item" (decisão do usuário — sem tingimento, mais simples que
+  replicar a distinção de cor antiga). `Corpse` SEM loot nenhum (`coins
+  <= 0 and not loot` — já saqueado por completo, ainda dentro do timer
+  de decay curto) → **não desenha nada**, nem elipse nem animação
+  (antes desenhava uma elipse escura). Prioridade de desenho de
+  `render_world`: sprite de morte do mob (se `Corpse.mob_key`
+  resolver) > animação genérica de loot > elipse de 2 cores (fallback
+  só se `loot.png` falhar ao carregar, nunca alcançado em uso normal).
   **Âncora de desenho e Y-sort** (10/09/2026, decisão do usuário): cada
   frame tem um tile de colisão/pé REAL de 32×32 (`CHAR_COLLISION_SIZE`
   == TILE_SIZE) no canto `(CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y)`

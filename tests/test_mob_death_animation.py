@@ -171,9 +171,11 @@ class TestLootSystemDrawsFrozenFrame(unittest.TestCase):
         self.assertNotEqual(pygame.image.tobytes(before, "RGB"),
                             pygame.image.tobytes(screen, "RGB"))
 
-    def test_sem_mob_key_continua_desenhando_elipse(self):
-        """mob_key="" (comportamento de hoje) não muda nada — garante
-        que a feature nova é estritamente aditiva."""
+    def test_sem_mob_key_com_loot_desenha_animacao_de_loot_png(self):
+        """mob_key="" (sem sprite de morte conhecido) + loot presente →
+        cai no marcador genérico animado (assets/sprites/loot.png,
+        11/10/2026, pedido do usuário) — ainda desenha algo, só que a
+        animação em vez da elipse antiga."""
         from engine.world import World
         from engine.components import Position, Corpse
         from ui.loot_system import LootSystem
@@ -192,7 +194,32 @@ class TestLootSystemDrawsFrozenFrame(unittest.TestCase):
         ls.render_world(0, 0)
         self.assertNotEqual(pygame.image.tobytes(before, "RGB"),
                             pygame.image.tobytes(screen, "RGB"),
-                            "elipse de sempre ainda deveria desenhar algo")
+                            "marcador de loot ainda deveria desenhar algo")
+
+    def test_corpse_vazio_nao_desenha_nada(self):
+        """Reprodução direta do pedido do usuário: cadáver SEM gold e
+        SEM itens (já saqueado por completo, ainda dentro do timer de
+        decay curto) não desenha mais nada — nem elipse escura nem
+        animação."""
+        from engine.world import World
+        from engine.components import Position, Corpse
+        from ui.loot_system import LootSystem
+
+        world = World()
+        eid = world.create_entity()
+        world.add_component(eid, Position(x=200, y=200))
+        world.add_component(eid, Corpse(loot=[], coins=0))  # vazio de verdade
+
+        screen = pygame.display.get_surface()
+        ls = LootSystem.__new__(LootSystem)
+        ls.world = world
+        ls.world_surf = screen
+
+        before = screen.copy()
+        ls.render_world(0, 0)
+        self.assertEqual(pygame.image.tobytes(before, "RGB"),
+                         pygame.image.tobytes(screen, "RGB"),
+                         "cadáver vazio não pode desenhar nada")
 
 
 def _make_despawn_fixture():

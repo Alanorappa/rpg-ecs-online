@@ -27120,3 +27120,46 @@ test_server.py/test_jungle_camps.py/etc.) são PRÉ-EXISTENTES —
 confirmado rodando a mesma suíte via `git stash` no commit anterior
 (falha idêntica sem nenhuma mudança minha) — causa raiz é Postgres não
 estar rodando localmente nesta sessão, fora de escopo desta feature.
+
+## 272. Elipse de loot trocada pela animação de loot.png, vazio não desenha mais nada (11/10/2026)
+
+**Pedido do usuário**: substituir a elipse de 3 cores (dourado/marrom
+claro/escuro) pela animação em `assets/sprites/loot.png` — e quando o
+estado fosse "escuro" (sem loot nenhum), não desenhar nada.
+
+**Dúvida levantada antes de implementar**: `loot.png` (288×32 = 9
+frames de 32×32) tem um esquema de cor ÚNICO (dourado) — perguntei se
+a distinção visual gold-vs-item-só devia ser preservada via
+tingimento programático, ou se a mesma animação servia pros 2 casos.
+Usuário confirmou: mesma animação pros 2, sem tingimento (mais simples,
+sem precedente no projeto pra esse tipo de filtro de cor).
+
+**Implementação**: `ui/loot_system.py::render_world()` ganhou 2
+mudanças — (1) `Corpse` sem loot nenhum (`coins<=0 and not loot`) sai
+do loop com `continue` ANTES de desenhar qualquer coisa (nem elipse,
+nem animação); (2) quando `Corpse.mob_key` não resolve um sprite de
+morte (branch já existente de §271), em vez de cair direto na elipse,
+tenta `ui/world_icon_animator.py::get_frame("loot", 32, now_ms)`
+primeiro — MESMO módulo já usado pro marcador animado de quest
+(nenhum módulo novo, mesma categoria de asset "ícone de mundo"). A
+elipse de 2 cores (dourado/marrom — o caso "escuro" nem existe mais)
+vira fallback de ÚLTIMO recurso, só alcançado se `loot.png` falhar ao
+carregar (nunca em uso normal, já que o arquivo está commitado).
+
+**Escopo deliberadamente limitado**: a pergunta do usuário mencionava
+só "o cilindro" — NÃO toquei no comportamento do sprite de morte
+congelado do mob (§271), que continua mostrando pelo tempo de vida
+INTEIRO do `Corpse` (incluindo depois de totalmente saqueado), mesmo
+que isso pareça inconsistente com "vazio não mostra nada". Essa
+inconsistência é intencional por ora — mudar o lifecycle do sprite de
+morte não foi pedido, e alterar os dois ao mesmo tempo seria escopo
+maior do que o relatado. Se o usuário quiser o MESMO "some quando
+vazio" pro sprite de morte também, é um pedido novo, separado.
+
+**Testes**: `tests/test_mob_death_animation.py` ganhou
+`test_corpse_vazio_nao_desenha_nada` (reprodução direta — superfície
+não muda em nada) e o teste antigo que validava "elipse ainda
+desenha" foi renomeado/atualizado pra refletir que agora é a animação
+de `loot.png`, não mais a elipse, que desenha nesse caso (a asserção
+em si — "algo foi desenhado" — continua válida, só a documentação do
+teste estava ficando desatualizada).

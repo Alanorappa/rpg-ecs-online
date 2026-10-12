@@ -565,7 +565,10 @@ class LootSystem(UIScaleMixin, System):
 
     # ------------------------------------------------------------------ #
     def render_world(self, camera_offset_x: float = 0, camera_offset_y: float = 0) -> None:
-        """Desenha cadáveres no mundo: vazios primeiro (embaixo), com loot por cima."""
+        """Desenha cadáveres no mundo: vazios primeiro (embaixo — hoje
+        não desenham nada de qualquer forma, 11/10/2026, mas o sort
+        continua útil pra ordenar os que TÊM loot entre si), com loot
+        por cima."""
         all_corpses = list(self.world.get_entities_with(Position, Corpse))
         all_corpses.sort(key=lambda c: 0 if (not c[2].loot and c[2].coins <= 0) else 1)
         for entity_id, pos, corpse in all_corpses:
@@ -593,7 +596,29 @@ class LootSystem(UIScaleMixin, System):
                 _dfw, _dfh = _death_frame.get_size()
                 self.world_surf.blit(_death_frame, (int(draw_x - _dfw / 2), int(draw_y - _dfh / 2)))
                 continue
-            color = (180, 150, 30) if corpse.coins > 0 else ((120, 80, 40) if corpse.loot else (60, 40, 20))
+            # Sem sprite de morte conhecido (mob sem arte ainda, ou
+            # fonte não-mob) — marcador genérico de "tem loot aqui"
+            # (11/10/2026, pedido do usuário): animação de
+            # assets/sprites/loot.png (ui/world_icon_animator.py, mesmo
+            # módulo do marcador animado de quest — categoria de asset
+            # "ícone de mundo", não precisa de módulo novo), MESMA
+            # animação pra gold e pra item-só (sem tingimento — decisão
+            # do usuário, mais simples que replicar o esquema de 2
+            # cores antigo). Cadáver SEM loot nenhum (já saqueado por
+            # completo, ainda dentro do timer de decay curto) não
+            # desenha NADA — nem elipse nem animação.
+            has_loot = corpse.coins > 0 or bool(corpse.loot)
+            if not has_loot:
+                continue
+            from ui.world_icon_animator import get_frame as _get_loot_anim_frame
+            _anim_frame = _get_loot_anim_frame("loot", 32, pygame.time.get_ticks())
+            if _anim_frame is not None:
+                self.world_surf.blit(_anim_frame, (int(draw_x - 16), int(draw_y - 16)))
+                continue
+            # Fallback se loot.png sumir/falhar ao carregar — mesma
+            # elipse de sempre, só 2 cores (vazio nunca chega aqui, já
+            # saiu acima).
+            color = (180, 150, 30) if corpse.coins > 0 else (120, 80, 40)
             pygame.draw.ellipse(self.world_surf, color,
                                 (int(draw_x - 10), int(draw_y - 6), 20, 12))
             pygame.draw.ellipse(self.world_surf, (80, 55, 25),
