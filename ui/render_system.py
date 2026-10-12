@@ -651,6 +651,11 @@ class RenderSystem(System):
             # sprite (10/09/2026 — a âncora não é mais "base do sprite",
             # é o tile de colisão de 32×32 dentro dele).
             _char_anchor_dy_for_hud = None
+            # Mesmo motivo/reset de _char_anchor_dy_for_hud acima, mas
+            # pro frame de MOB (10/10/2026) — distância do topo do frame
+            # até `position.y` (ver cálculo de `_mblit_y` no branch
+            # `_mob_frame` mais abaixo).
+            _mob_anchor_dy_for_hud = None
             # Resetado pelo MESMO motivo do campo acima (evita herdar o
             # frame da entidade anterior do loop) — consumido logo abaixo
             # pra decidir o retângulo de tela REAL do jogador local, usado
@@ -852,6 +857,12 @@ class RenderSystem(System):
                         self.world_surf.blit(_mob_frame, (_mblit_x, _mblit_y))
                         _sel_outline_surf = _mob_frame
                         _sel_outline_offset = (_mblit_x, _mblit_y)
+                        # Distância de position.y (mundo) até o TOPO do
+                        # frame — mesma derivação de _mblit_y acima, sem
+                        # offset de câmera (usada pelo nameplate, que
+                        # trabalha em coordenada de mundo). Ver uso logo
+                        # abaixo, bloco de HUD de barras.
+                        _mob_anchor_dy_for_hud = _mh_rnd - renderable.height / 2
                     elif _bush_hidden_draw:
                         # Sem sprite animada disponível (classe sem asset
                         # ainda) — mesmo fallback translúcido de sempre.
@@ -980,6 +991,22 @@ class RenderSystem(System):
                     # a partir do topo do frame, estável em qualquer pose.
                     _hud_top_world_y = (position.y - _char_anchor_dy_for_hud
                                        + NAMEPLATE_CHAR_FRAME_TOP_INSET_PX)
+                elif _mob_anchor_dy_for_hud is not None:
+                    # Animação de MOB (10/10/2026) — diferente do
+                    # personagem (frame 96×80 com MUITO respiro acima da
+                    # cabeça, por isso o inset fixo de 20px acima), o
+                    # sprite de mob é desenhado quase sem padding (frame
+                    # quadrado, conteúdo chega perto da borda — conferido
+                    # no sprite real do Goblin Guerreiro). Por isso usa a
+                    # MESMA convenção do sprite de objeto estático (gap
+                    # pequeno a partir do topo REAL, NAMEPLATE_SPRITE_
+                    # TOP_GAP_PX) em vez do inset grande do personagem —
+                    # mas sem escanear pixel opaco por pose (evitaria o
+                    # mesmo "balanço" entre frames que o personagem já
+                    # evita de propósito): usa o topo do FRAME direto,
+                    # estável em qualquer pose/direção.
+                    _hud_top_world_y = (position.y - _mob_anchor_dy_for_hud
+                                       - NAMEPLATE_SPRITE_TOP_GAP_PX)
                 else:
                     _hud_top_world_y = position.y - renderable.height / 2
                 _hud_surf = None
