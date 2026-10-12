@@ -156,13 +156,23 @@ def get_mob_frame(mob_key: str, state: str, direction: str,
 
 
 def resolve_mob_anim_state(tile_movement) -> str:
-    """"idle" ou "run" — simplificado em relação a
-    `character_animation.resolve_anim_state` (sem `anim_walk_grace_s`):
-    aquele grace cobre um detalhe de timing específico do
-    `PlayerInputSystem` local; mob (local por IA ou espelho remoto por
-    ENTITY_MOVE) não passa por esse caminho, então `is_moving` puro já
-    basta."""
-    return "run" if tile_movement.is_moving else "idle"
+    """"idle" ou "run" — reusa `character_animation.resolve_anim_state`
+    direto (10/10/2026, corrigido no mesmo dia — bug real relatado pelo
+    usuário: mob perseguindo "pisca" pra idle no meio do run, parece
+    quebrado). Achava antes que `anim_walk_grace_s` era um detalhe
+    exclusivo do `PlayerInputSystem` local — ERRADO:
+    `TileMovementSystem` (`engine/world_systems.py`) é 100% genérico,
+    seta `is_moving=False` + liga `anim_walk_grace_s` ao fim de QUALQUER
+    passo, de QUALQUER entidade com TileMovement — inclusive o espelho
+    de mob remoto, que só recebe o PRÓXIMO passo quando o pacote
+    ENTITY_MOVE seguinte chega pela rede (nunca no mesmo frame que o
+    passo anterior terminou, diferente do player local que reage no
+    frame seguinte). Sem o grace, esse intervalo (rede, não só 1 frame)
+    cai sempre no branch "idle" por pelo menos 1 frame a cada passo —
+    pisca visivelmente numa perseguição contínua. Ver
+    PROBLEMAS_ARQUITETURA.md §270."""
+    from .character_animation import resolve_anim_state
+    return resolve_anim_state(tile_movement)
 
 
 def trigger_mob_attack_anim(tile_movement, mob_key: str, now_ms: int,

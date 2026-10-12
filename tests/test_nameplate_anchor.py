@@ -147,8 +147,9 @@ class TestRenderSystemAncoraMobAnimado(unittest.TestCase):
         frame = get_mob_frame("goblin_guerreiro", "idle", "down", 0)
         self.assertIsNotNone(frame)
         top_opaque = get_mob_top_opaque_offset("goblin_guerreiro")
-        expected = (y + _height / 2 - frame.get_height()
-                   + top_opaque - NAMEPLATE_SPRITE_TOP_GAP_PX)
+        # Frame CENTRADO em position.y (10/10/2026, §269 — tile de
+        # colisão é o quadrante CENTRAL do frame, não mais a base).
+        expected = y - frame.get_height() / 2 + top_opaque - NAMEPLATE_SPRITE_TOP_GAP_PX
         self.assertAlmostEqual(hud_top_world_y, expected)
 
 
@@ -210,15 +211,18 @@ class TestDrawMobHpBarsAncoraSpriteDeObjeto(unittest.TestCase):
 
 class TestDrawMobHpBarsAncoraMobAnimado(unittest.TestCase):
     """Mob remoto SEM Renderable.sprite_id, mas com sprite animado
-    (engine/mob_animation.py, 10/10/2026) — reproduz os 2 bugs reais
+    (engine/mob_animation.py, 10/10/2026) — reproduz os 3 bugs reais
     relatados pelo usuário em sequência: 1) nameplate caindo no
     fallback de retângulo (`pos.y - W/2`); 2) depois de corrigido o
     topo do FRAME, nameplate ainda flutuando longe da cabeça porque o
-    frame quadrado tem padding transparente real no topo (§267/§268) —
-    fix final usa `get_mob_top_opaque_offset`. Usa o sprite de verdade
-    do Goblin Guerreiro (assets/sprites/goblin_guerreiro_idle_down.png,
-    64×64, conteúdo real só a partir da linha ~13) pra não depender de
-    fixture sintética."""
+    frame quadrado tem padding transparente real no topo (§267/§268);
+    3) tile de colisão ancorado pela BASE do frame em vez do CENTRO
+    (§269) — fix final ancora o frame inteiro pelo CENTRO em
+    position.y/x, com `get_mob_top_opaque_offset` por cima. Usa o
+    sprite de verdade do Goblin Guerreiro
+    (assets/sprites/goblin_guerreiro_idle_down.png, 64×64, conteúdo
+    real só a partir da linha ~13) pra não depender de fixture
+    sintética."""
 
     def test_world_y_top_usa_pixel_opaco_real_do_frame_de_mob(self):
         from engine.world import World
@@ -269,22 +273,24 @@ class TestDrawMobHpBarsAncoraMobAnimado(unittest.TestCase):
         self.assertIsNotNone(frame, "sprite real do goblin precisa existir pra este teste valer algo")
         top_opaque = get_mob_top_opaque_offset("goblin_guerreiro")
         self.assertGreater(top_opaque, 0, "sprite real do goblin tem padding real no topo")
-        expected = (y + _height / 2 - frame.get_height()
-                   + top_opaque - NAMEPLATE_SPRITE_TOP_GAP_PX)
+        # Frame CENTRADO em position.y (10/10/2026, §269 — "tile de
+        # colisão" é o quadrante CENTRAL do frame, não a base — pedido
+        # explícito do usuário comparando com a mesma convenção do
+        # personagem, que ancora pelo CENTRO do tile de 32×32).
+        expected = y - frame.get_height() / 2 + top_opaque - NAMEPLATE_SPRITE_TOP_GAP_PX
         self.assertAlmostEqual(world_y_top, expected)
 
         # Reprodução direta do 1º bug relatado: com o sprite real (64px
         # de altura), o topo NUNCA pode cair abaixo do centro do mob —
         # o fallback antigo (pos.y - W/2, W=28) dava pos.y-14, bem abaixo
-        # da metade do sprite (que vai de pos.y-52 até pos.y+12).
+        # da metade do sprite (centrado, vai de pos.y-32 até pos.y+32).
         self.assertLess(world_y_top, y - _height)
 
-        # Reprodução direta do 2º bug relatado ("está muito alto"): sem
-        # o ajuste de pixel opaco, o nameplate ficava no topo CRU do
-        # frame (y - 52 - gap); com o ajuste, fica top_opaque pixels
-        # mais perto da cabeça de verdade.
-        _naive_top = y + _height / 2 - frame.get_height() - NAMEPLATE_SPRITE_TOP_GAP_PX
-        self.assertGreater(world_y_top, _naive_top)
+        # Reprodução direta do 3º bug relatado ("colisão na base, devia
+        # ser no centro"): ancorar pela BASE (convenção antiga) dava um
+        # topo bem mais alto (mais negativo) que ancorar pelo CENTRO.
+        _base_anchored_top = y + _height / 2 - frame.get_height() + top_opaque - NAMEPLATE_SPRITE_TOP_GAP_PX
+        self.assertGreater(world_y_top, _base_anchored_top)
 
 
 class TestDrawRemotePlayersAncoraPersonagemAnimado(unittest.TestCase):

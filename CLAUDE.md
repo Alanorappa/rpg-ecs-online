@@ -751,6 +751,22 @@ padrão a quebrar, não só os bugs individuais.
   arte real de cada mob em vez de um número universal, porque
   proporção varia demais — rato a dragão). Ver PROBLEMAS_ARQUITETURA.md
   §268.
+  **Tile de colisão de mob = CENTRO geométrico do frame, nunca a base**
+  (10/10/2026) — frame quadrado pensado como N×N tiles de 32px (ex:
+  goblin 64×64 = 2×2), `position.x/position.y` mapeiam pro CENTRO do
+  frame inteiro (`_mblit_y = draw_y - mh/2`), não mais ancorado pela
+  base como o retângulo antigo — mesma filosofia do personagem (ancora
+  pelo CENTRO do tile de colisão, nunca pela base/pé), pedido explícito
+  do usuário comparando os dois. Ver PROBLEMAS_ARQUITETURA.md §269.
+  **`resolve_mob_anim_state` reusa `character_animation.
+  resolve_anim_state` direto, nunca reimplementa a checagem de
+  `is_moving` sozinha** — `anim_walk_grace_s` é um campo GENÉRICO,
+  ligado por `TileMovementSystem` (`engine/world_systems.py`) ao fim de
+  QUALQUER passo de QUALQUER entidade com `TileMovement`, inclusive
+  espelho de mob remoto (que só recebe o próximo passo quando o pacote
+  `ENTITY_MOVE` seguinte chega pela rede — gap real, não só "1 frame
+  local" como no player). Sem o grace, mob perseguindo "pisca" pra
+  idle a cada passo. Ver PROBLEMAS_ARQUITETURA.md §270.
   **Âncora de desenho e Y-sort** (10/09/2026, decisão do usuário): cada
   frame tem um tile de colisão/pé REAL de 32×32 (`CHAR_COLLISION_SIZE`
   == TILE_SIZE) no canto `(CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y)`

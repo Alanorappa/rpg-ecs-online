@@ -26947,3 +26947,78 @@ _draw_mob_hp_bars` (o caminho real). Testes em
 TestRenderSystemAncoraMobAnimado`/`TestDrawMobHpBarsAncoraMobAnimado`),
 comparando contra o resultado "ingênuo" (sem o ajuste de pixel opaco)
 pra garantir que a regressão sozinha não volta a passar despercebida.
+
+## 269. Tile de colisão do mob ancorado pela base do frame, deveria ser o centro (10/10/2026)
+
+**Relatado pelo usuário**: "o tile de colisão do goblin está na base do
+frame ou seja na posição 16, 32, porém deveria ser o tile do centro,
+posição 16,16".
+
+**Leitura do relato**: pensando no frame 64×64 do Goblin Guerreiro como
+2×2 tiles de 32px, um tile de 32×32 posicionado em `(16,32)` (canto
+superior esquerdo) ocupa o QUADRANTE INFERIOR do frame (colunas 16-47,
+linhas 32-63) — é aí que `ui/render_system.py` ancorava o sprite antes
+deste fix. O usuário queria o tile em `(16,16)`, que ocupa o QUADRANTE
+CENTRAL (colunas 16-47, linhas 16-47) — o CENTRO geométrico do frame
+inteiro.
+
+**Causa**: `_mblit_y = draw_y + renderable.height/2 - mh` ancorava a
+BASE do frame perto da base do retângulo antigo (convenção herdada do
+fallback de retângulo colorido, nunca repensada pra sprite animado).
+Isso deixava `position.y` mapeado pra perto do quadrante inferior do
+frame, não pro centro.
+
+**Fix**: `_mblit_y = draw_y - mh/2` — ancora o CENTRO do frame inteiro
+em `position.y` (e `_mblit_x = draw_x - mw/2`, já correto, centro
+horizontal). Generaliza pra qualquer tamanho de frame (artista desenha
+o personagem centrado no canvas, sem precisar calcular quantos tiles de
+altura o sprite tem) — mesma filosofia do personagem, que ancora pelo
+CENTRO do tile de colisão de 32×32, nunca pela base/pé (ver
+`character_anchor_offset` em CLAUDE.md).
+
+Os 2 caminhos de nameplate (§267/§268) dependem do mesmo
+`_mob_anchor_dy_for_hud`/cálculo equivalente — atualizados junto
+(`mh/2` em vez de `mh - renderable.height/2`), senão o nameplate
+ficaria consistente com a âncora ERRADA de novo.
+
+## 270. Mob perseguindo "pisca" pra idle no meio do run — `anim_walk_grace_s` ignorado (10/10/2026)
+
+**Relatado pelo usuário**: "quando o mob está me perseguindo, no meio
+das animações de run, parece que dá uma quebrada talvez volta para a
+animação de idle e animação parece bugada".
+
+**Causa raiz**: `engine/mob_animation.py::resolve_mob_anim_state`
+(criado junto com o sistema, mesmo dia) só checava
+`tile_movement.is_moving` — a docstring original (ERRADA) dizia que
+`anim_walk_grace_s` era "um detalhe de timing específico do
+`PlayerInputSystem` local" e que mob não precisava dele. Falso:
+`TileMovementSystem` (`engine/world_systems.py:4474`) é 100% genérico —
+roda em QUALQUER entidade com `Position`+`TileMovement`, seta
+`is_moving=False` e liga `anim_walk_grace_s=0.1` ao fim de TODO passo,
+inclusive do espelho local de um mob remoto. A diferença real entre
+player e mob não é "ter ou não o grace" — os DOIS têm — é QUEM dispara
+o PRÓXIMO passo: pro player local, é `PlayerInputSystem` no frame
+seguinte (gap de ~1 frame, ~16ms, bem dentro dos 100ms de graça); pro
+mob remoto, é o próximo pacote `ENTITY_MOVE` da rede chegando (gap
+real de rede, pode facilmente passar de 1 frame sob qualquer jitter) —
+sem o grace, CADA passo de uma perseguição contínua passava por pelo
+menos 1 frame "idle" entre o fim de um tween e o início do próximo,
+visível como a "quebrada"/"bugada" relatada.
+
+**Fix**: `resolve_mob_anim_state` agora delega 100% pra
+`character_animation.resolve_anim_state` (já cobre `anim_walk_grace_s`
+corretamente, é a MESMA função que o player usa) — eliminada a
+reimplementação paralela que causou o bug. Teste novo em
+`tests/test_mob_animation.py` reproduz o cenário exato (passo termina,
+`is_moving=False` + grace ligado, confirma que o estado continua
+"run") e também cravado contra `character_animation.resolve_anim_state`
+pra NUNCA mais divergir silenciosamente.
+
+**Lição**: a suposição "mob não passa por esse caminho" nunca foi
+verificada contra o código de verdade — só assumida por analogia
+("mob tem IA/rede, não input direto"). `TileMovementSystem` já era
+conhecido como genérico (documentado em vários outros pontos do
+CLAUDE.md), mas a suposição específica sobre ESTE campo não foi
+checada antes de escrever `resolve_mob_anim_state` do zero em vez de
+reusar a função já existente — mesma classe de erro que a regra
+"pesquisar antes de codar" existe pra evitar.

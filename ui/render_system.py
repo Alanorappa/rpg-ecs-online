@@ -846,15 +846,21 @@ class RenderSystem(System):
                         _sel_outline_surf = _char_frame_for_mask
                         _sel_outline_offset = (_cblit_x, _cblit_y)
                     elif _mob_frame is not None:
-                        # Ancorado no MESMO ponto onde o retângulo (abaixo)
-                        # desenharia — base do frame alinhada com a base
-                        # de `rect` (draw_y + renderable.height/2) — troca
-                        # retângulo↔sprite sem deslocar a entidade nem
-                        # mudar Y-sort (que continua lendo
-                        # renderable.height pra mob, intocado).
+                        # Tile de colisão = CENTRO do frame (10/10/2026,
+                        # correção pedida pelo usuário) — frame quadrado
+                        # pensado como 2×2 tiles de 32px (ex: goblin
+                        # 64×64), o tile "de verdade" (onde o personagem
+                        # pisa/colide) é o QUADRANTE CENTRAL, não o
+                        # inferior — ancorar pela base (convenção antiga,
+                        # igual ao retângulo) deixava o ponto de
+                        # referência 16px abaixo do centro real do frame.
+                        # position.x/position.y mapeiam pro CENTRO
+                        # geométrico do frame — generaliza pra qualquer
+                        # tamanho (artista desenha o personagem centrado
+                        # no canvas, sem precisar saber a altura em tiles).
                         _mw_rnd, _mh_rnd = _mob_frame.get_size()
                         _mblit_x = int(draw_x - _mw_rnd / 2)
-                        _mblit_y = int(draw_y + renderable.height / 2 - _mh_rnd)
+                        _mblit_y = int(draw_y - _mh_rnd / 2)
                         self.world_surf.blit(_mob_frame, (_mblit_x, _mblit_y))
                         _sel_outline_surf = _mob_frame
                         _sel_outline_offset = (_mblit_x, _mblit_y)
@@ -863,7 +869,7 @@ class RenderSystem(System):
                         # offset de câmera (usada pelo nameplate, que
                         # trabalha em coordenada de mundo). Ver uso logo
                         # abaixo, bloco de HUD de barras.
-                        _mob_anchor_dy_for_hud = _mh_rnd - renderable.height / 2
+                        _mob_anchor_dy_for_hud = _mh_rnd / 2
                         _mob_key_for_hud = _mob_key_rnd
                     elif _bush_hidden_draw:
                         # Sem sprite animada disponível (classe sem asset
