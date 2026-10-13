@@ -2927,6 +2927,23 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             return {}
         return {"target_eid": cst.target_entity_id}
 
+    def _collect_mob_targets(self) -> dict:
+        """Retorna o alvo de ataque atual de mobs engajados —
+        {str(mob_eid): target_eid} — mesmo padrão de
+        `_collect_mob_effects` (snapshot completo a cada tick, só mobs
+        com alvo ativo, nunca um buffer/dirty-check separado). Consumido
+        pelo cliente em `_sync_mob_targets` pra manter
+        `CombatState.target_entity_id` do espelho do mob em dia depois
+        do spawn (o campo `target_eid` em `_build_mob_spawn_payload` só
+        cobre o momento do spawn em si)."""
+        from engine.components import AIControlled as _AICColl
+        result = {}
+        for mob_eid in self._mob_eids:
+            aic = self.world.get_component(mob_eid, _AICColl)
+            if aic and aic.target_eid != -1:
+                result[str(mob_eid)] = aic.target_eid
+        return result
+
     def get_players_in_aoi(self, center_session: str, radius: int) -> list[dict]:
         """
         Retorna lista de EntitySpawn para todos os jogadores dentro do raio
@@ -3165,6 +3182,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # então qualquer entidade sem zona mostrava raça como nome também.
         if ident and ident.name:
             payload["name"] = ident.name
+        # Alvo de ataque atual (11/10/2026, ver PROBLEMAS_ARQUITETURA.md
+        # §273) — cobre o momento do spawn/entrada no AOI;
+        # `_collect_mob_targets()` (AOI_UPDATE) mantém em dia depois disso.
+        if ai is not None and ai.target_eid != -1:
+            payload["target_eid"] = ai.target_eid
         # is_dummy: sinaliza ao cliente pra anexar TrainingDummy no proxy local —
         # sem isso, skills usadas no boneco nunca contavam pra objetivos de quest
         # com params={"on_dummy": True} (ver quest_system.py), porque o cliente
@@ -7138,6 +7160,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             "moved":          list(self._moved_this_tick),
             "effects":        self._collect_player_effects(),
             "mob_effects":    self._collect_mob_effects(),
+            "mob_targets":    self._collect_mob_targets(),
             "spawned":        list(self._spawned_this_tick),
             "despawned":      _eids,
             "despawned_pos":  _pos_map,   # eid→(tx,ty) — mobs com posição conhecida

@@ -1314,6 +1314,12 @@ class NetworkHandlers:
         # senão o ícone local persiste contando sozinho via StatusEffectSystem do cliente.
         _mob_efx = payload.get("mob_effects", {})
         self._sync_mob_effects(_mob_efx)
+        # Alvo de ataque de mobs remotos (11/10/2026, ver
+        # PROBLEMAS_ARQUITETURA.md §273) — mesmo motivo de rodar SEMPRE
+        # (mesmo com dict vazio): limpa o alvo de um mob que parou de
+        # atacar/perdeu o alvo neste tick, não só quando alguém ganha um
+        # alvo novo.
+        self._sync_mob_targets(payload.get("mob_targets", {}))
         # Combat ANTES de despawned: garante floating text do golpe fatal
         # antes do mob ser removido de _remote_mobs
         for cr in payload.get("combat", []):

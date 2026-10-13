@@ -823,6 +823,29 @@ padrão a quebrar, não só os bugs individuais.
   documentada pro nameplate (§267/§268) — bug real: corrigir só
   `loot_system.py` não bastou, a elipse antiga continuava aparecendo
   por cima via este 2º caminho. Ver PROBLEMAS_ARQUITETURA.md §272.
+  **Mob PARADO vira de frente pro alvo, mesmo mecanismo do player**
+  (11/10/2026) — `TileMovementSystem` (`engine/world_systems.py`) já
+  virava `facing` pro alvo quando uma entidade parada tem
+  `CombatState.target_entity_id` setado (mecanismo genérico, criado pro
+  player), mas mob NUNCA escrevia esse campo (só `AIControlled.
+  target_eid`, usado pela IA, nunca sincronizado nele). Fix: servidor
+  manda `target_eid` no payload de spawn de mob
+  (`WorldServer._build_mob_spawn_payload`) e num snapshot a cada tick
+  (`WorldServer._collect_mob_targets()`, mesmo padrão de
+  `_collect_mob_effects` — nunca um dirty-check/buffer separado,
+  já cai dentro do `deltas` existente, sem precisar de entrada nova em
+  `has_pending`); cliente anexa `CombatState` ao espelho do mob
+  (`_spawn_remote_mob`) e sincroniza (`_sync_mob_targets`, mesmo padrão
+  de limpar-quando-não-reportado que `_sync_mob_effects` já tem).
+  `_resolve_server_eid()` (novo, `client/remote_entity_handlers.py`) é
+  o ponto único pra resolver eid-do-servidor → eid-local (self/
+  _remote_players/_remote_mobs) — usado pelos 2 pontos novos, NUNCA
+  reimplementado por um 3º/4º call site futuro (os 2 já existentes do
+  player, mais antigos, continuam com a cópia inline deles — não
+  mexidos por escopo). `server/session.py::_merge_deltas_into` precisa
+  tratar `mob_targets` como "foto do estado atual" (mesma regra de
+  `effects`/`mob_effects` — substitui, nunca concatena) sempre que um
+  campo novo desse tipo nascer. Ver PROBLEMAS_ARQUITETURA.md §273.
   **Âncora de desenho e Y-sort** (10/09/2026, decisão do usuário): cada
   frame tem um tile de colisão/pé REAL de 32×32 (`CHAR_COLLISION_SIZE`
   == TILE_SIZE) no canto `(CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y)`

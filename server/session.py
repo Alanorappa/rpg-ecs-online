@@ -3094,10 +3094,14 @@ class SessionManager:
           cronologicamente mais recente).
         - `despawned_pos` (dict eid→(tx,ty)) — união; sem conflito
           esperado (um eid só despawna 1 vez).
-        - `effects`/`mob_effects` — são FOTOS do estado ATUAL (lidas ao
-          vivo do ECS a cada `_collect_deltas`, não uma lista de
-          eventos) — a de `new` sempre substitui a de `acc` inteira,
-          nunca concatena (concatenar duplicaria/desatualizaria)."""
+        - `effects`/`mob_effects`/`mob_targets` — são FOTOS do estado
+          ATUAL (lidas ao vivo do ECS a cada `_collect_deltas`, não uma
+          lista de eventos) — a de `new` sempre substitui a de `acc`
+          inteira, nunca concatena (concatenar duplicaria/desatualizaria).
+          `mob_targets` (11/10/2026, ver PROBLEMAS_ARQUITETURA.md §273)
+          entrou nesta MESMA regra — esquecer essa entrada faria o
+          campo simplesmente sumir de um dispatch acumulado (não cai em
+          nenhum dos outros 2 ramos abaixo)."""
         for key in SessionManager._DELTA_EVENT_LIST_KEYS:
             if key in new:
                 acc[key] = acc.get(key, []) + new[key]
@@ -3105,7 +3109,7 @@ class SessionManager:
             merged_pos = dict(acc.get("despawned_pos", {}))
             merged_pos.update(new["despawned_pos"])
             acc["despawned_pos"] = merged_pos
-        for key in ("effects", "mob_effects"):
+        for key in ("effects", "mob_effects", "mob_targets"):
             if key in new:
                 acc[key] = new[key]
 
@@ -4123,6 +4127,18 @@ class SessionManager:
                 _raw_mob_efx[_k] = _effects_by_eid[_known_eid]
         mob_effects = _raw_mob_efx
 
+        # ── Mob targets: alvo de ataque de cada mob no AOI (11/10/2026,
+        # ver PROBLEMAS_ARQUITETURA.md §273) — mesmo recorte por
+        # `known_eids` que mob_effects acima, só que sem o ramo de
+        # "outro player" (mob_targets só existe pra mob de verdade,
+        # `_collect_mob_targets` nunca inclui player).
+        _mob_tgt_by_eid = deltas.get("mob_targets", {})
+        mob_targets = {
+            _k: _mob_tgt_by_eid[_k]
+            for _known_eid in session.known_eids
+            if (_k := str(_known_eid)) in _mob_tgt_by_eid
+        }
+
         # ── Monta resultado ───────────────────────────────────────────
         if confirmed_moves:  result["moved"]     = confirmed_moves
         if final_despawned:  result["despawned"] = list(set(final_despawned))
@@ -4130,6 +4146,7 @@ class SessionManager:
         if combat_events:    result["combat"]    = combat_events
         if my_effects:       result["effects"]   = my_effects
         if mob_effects:      result["mob_effects"] = mob_effects
+        if mob_targets:      result["mob_targets"] = mob_targets
 
         # Sweep: entidades em AOI não conhecidas (não detectadas via movimento).
         # Cobre mobs/torres/minions/harvestable estacionários. SpatialHash

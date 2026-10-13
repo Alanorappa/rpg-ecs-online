@@ -27202,3 +27202,80 @@ reconhecido da mesma família ("local" desenha uma vez, "remoto"/
 "outro player" desenha de novo, sem os dois saberem um do outro).
 Candidato a virar regra permanente em CLAUDE.md se um 3º incidente
 parecido aparecer.
+
+## 273. Mob parado atacando continuava "olhando" pra direção errada quando o alvo mudava de lado (11/10/2026)
+
+**Pedido do usuário**: "quando o mob está parado me atacando e eu mudo
+de posição... ele continua com a animação de idle e ataque para
+baixo" — exatamente o mesmo bug já corrigido pro player remoto em
+07/10/2026 (`tests/test_remote_target_facing.py`), só que nunca
+estendido pra mob.
+
+**Pesquisa feita antes de codar** (agente dedicado): confirmou que
+`TileMovementSystem` (`engine/world_systems.py:4642-4670`) já vira
+`facing` pro alvo quando uma entidade PARADA tem `CombatState.
+target_entity_id != -1` — mecanismo 100% genérico, o comentário no
+código já dizia "mob/NPC ainda não têm sprite direcional, então fica
+inofensivo neles por enquanto" (escrito ANTES do sistema de animação
+de mob existir). A causa raiz real: mob tem `AIControlled.target_eid`
+(usado pela IA pra decidir quem atacar), mas NUNCA escreve
+`CombatState.target_entity_id` — e nada no servidor nunca mandava esse
+dado pro cliente de jeito nenhum (confirmado: nenhum campo
+`target_eid` existia em `_build_mob_spawn_payload`, nenhum canal
+equivalente a `_sync_player_hp_dirty` existe pra mob).
+
+**Decisão de desenho**: em vez de inventar um mecanismo novo de
+dirty-check (cache por mob + comparação a cada tick), reusei o padrão
+JÁ EXISTENTE de `_collect_mob_effects` — snapshot completo a cada tick
+(`{str(mob_eid): target_eid}`, só mobs com alvo ativo), já encaixado
+dentro do MESMO `deltas` dict que `mob_effects` já usa. Isso evitou
+2 riscos: (1) não precisei tocar na lógica de movimento/ENTITY_MOVE
+(`_moved_this_tick`), que o próprio cliente lê com `m["tx"]`/`m["ty"]`
+SEM `.get()` — um entry de "só mudou o alvo, sem mover" quebraria com
+`KeyError`; (2) `mob_effects`/`mob_targets`, por já estarem dentro do
+`deltas` dict checado em `any(deltas.values())`, não precisam de
+nenhuma entrada nova em `has_pending` (`server/session.py:2919-3000`)
+— JÁ cobertos de graça, mesma lição de "Atualização coesa" do CLAUDE.md
+mas sem precisar aplicá-la de novo aqui.
+
+**Detalhe de integração quase perdido**: `server/session.py::
+_merge_deltas_into` trata `"effects"`/`"mob_effects"` como "foto do
+estado atual" numa regra de merge SEPARADA (substitui, nunca
+concatena) — só notei isso lendo o código de verdade antes de
+assumir que bastava adicionar a chave no `deltas` principal. Sem
+incluir `"mob_targets"` nessa MESMA regra, um dispatch acumulado de
+2+ ticks (quando o anterior ainda está em voo) perderia o campo
+silenciosamente — não cairia em NENHUM dos 2 ramos de merge
+existentes (nem lista de evento, nem a tupla de snapshot).
+
+**Fix implementado**:
+- `WorldServer._collect_mob_targets()` (snapshot, `server/
+  world_server.py`) + `target_eid` em `_build_mob_spawn_payload`
+  (cobre o momento do spawn/entrada no AOI).
+- `server/session.py::_build_update_for_session` recorta o snapshot
+  global por `session.known_eids` (mesmo filtro de AOI que
+  `mob_effects` já usa) antes de mandar pro cliente — nunca manda
+  alvo de mob fora da visão de ninguém.
+- `server/session.py::_merge_deltas_into` — `mob_targets` entrou na
+  mesma regra de substituição de `effects`/`mob_effects`.
+- Cliente: `_spawn_remote_mob` (`client/remote_entity_handlers.py`)
+  passa a anexar `CombatState` ao espelho do mob (NUNCA tinha antes),
+  resolvendo `target_eid` via `_resolve_server_eid()` (helper NOVO,
+  único ponto de resolução eid-servidor→eid-local, usado pelos 2
+  pontos novos — os 2 já existentes do player continuam com a cópia
+  inline deles, não mexidos por escopo: risco desnecessário tocar
+  código já correto e testado só pra eliminar duplicação). `
+  _sync_mob_targets` (novo) aplicado em TODO `AOI_UPDATE`, mesmo
+  padrão de `_sync_mob_effects` — limpa o alvo (volta pra -1) de
+  qualquer mob que o servidor PAROU de reportar, nunca deixa um alvo
+  antigo grudado.
+
+**Teste fim-a-fim real** (não só sintético por partes):
+`tests/test_mob_target_facing.py::
+TestFacingRecalcFuncionaParaMobComCombatState` reproduz o cenário
+EXATO relatado — mob parado, alvo embaixo dele (facing="down" bate),
+alvo anda pro lado direito, `TileMovementSystem.update()` roda de
+novo (sem o mob se mexer) e `facing` vira "right" sozinho — prova que
+o mecanismo genérico (zero lógica de giro nova escrita) funciona pra
+mob exatamente como já funciona pro player. Demais 14 testes cobrem
+cada peça isoladamente (collect/payload/merge/resolve/spawn/sync).

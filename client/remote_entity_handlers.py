@@ -832,6 +832,42 @@ class RemoteEntityHandlers:
 
             sync_status_derived_state(self.world, local_eid, sfx)
 
+    def _resolve_server_eid(self, server_eid: int) -> int:
+        """Resolve um eid do SERVIDOR pra eid LOCAL (self/_remote_players/
+        _remote_mobs) — ponto único pra qualquer campo de rede que
+        referencia OUTRA entidade por eid (ex: `target_eid`). -1 se não
+        reconhecido (ainda não spawnou localmente, ou saiu do AOI).
+        NUNCA usar `a.get(x) or b.get(x) or -1` pra isso — eid local `0`
+        é uma entidade real válida, é falsy em Python (armadilha já
+        documentada em CLAUDE.md para o mesmo problema no player)."""
+        if server_eid == -1:
+            return -1
+        if server_eid == self._my_eid:
+            return self.player_entity
+        if server_eid in self._remote_players:
+            return self._remote_players[server_eid]
+        if server_eid in self._remote_mobs:
+            return self._remote_mobs[server_eid]
+        return -1
+
+    def _sync_mob_targets(self, mob_targets: dict) -> None:
+        """Sincroniza `CombatState.target_entity_id` dos mobs remotos
+        (11/10/2026, ver PROBLEMAS_ARQUITETURA.md §273) — mob_targets:
+        {str(server_eid): target_server_eid}. Mesmo padrão de
+        `_sync_mob_effects` logo acima: limpa (volta pra -1) o mob que o
+        servidor NÃO reportou neste tick (perdeu o alvo/saiu de combate),
+        nunca deixa um alvo antigo "grudado" pra sempre."""
+        from engine.components import CombatState as _CStMobSync
+        _reported_server_eids = {int(k) for k in mob_targets}
+        for srv_eid, local_eid in self._remote_mobs.items():
+            cst = self.world.get_component(local_eid, _CStMobSync)
+            if cst is None:
+                continue
+            if srv_eid not in _reported_server_eids:
+                cst.target_entity_id = -1
+                continue
+            cst.target_entity_id = self._resolve_server_eid(mob_targets[str(srv_eid)])
+
     def _sync_combat_target(self) -> None:
         """Envia AUTO_ATTACK ao servidor.
 
@@ -1007,6 +1043,19 @@ class RemoteEntityHandlers:
         )
         self.world.add_component(local_eid, _meta)
         self._remote_mobs[server_eid] = local_eid
+
+        # Alvo de ataque atual (11/10/2026, ver PROBLEMAS_ARQUITETURA.md
+        # §273) — mob NUNCA tinha CombatState no cliente até aqui; é o
+        # componente que o TileMovementSystem genérico (engine/
+        # world_systems.py) já lê pra virar uma entidade PARADA de frente
+        # pro alvo em vez de travar na última direção que andou (mesmo
+        # mecanismo que já funciona pro player). `_sync_mob_targets`
+        # mantém isso em dia depois do spawn.
+        from engine.components import CombatState as _CStMobSpawn
+        _cst_mob = _CStMobSpawn()
+        _cst_mob.target_entity_id = self._resolve_server_eid(data.get("target_eid", -1))
+        self.world.add_component(local_eid, _cst_mob)
+
         from debug.aoi_debug import AOI_DBG
         AOI_DBG.log("SPAWN_OK", server_eid=server_eid, local_eid=local_eid,
                     tx=data.get("tx"), ty=data.get("ty"),
