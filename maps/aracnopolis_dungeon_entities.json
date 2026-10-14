@@ -311,6 +311,7 @@
       "name": "Acraxxidae, o Obstinado",
       "race": "Aranha",
       "class": "Guerreiro",
+      "spritesheet": "acraxxidae_o_obstinado",
       "loot": {
         "arcane_wand": 0.15,
         "hunter_bow": 0.15,
