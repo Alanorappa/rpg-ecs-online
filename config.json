@@ -921,7 +921,7 @@
         "slots": [
           "hearty_stew",
           "hp_potion",
-          null,
+          "small_hp_potion",
           null,
           null
         ],
