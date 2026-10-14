@@ -93,6 +93,11 @@ class TradeHandlers:
         itens stackáveis"). `max_qty` é só o que o jogador TEM agora
         (diferente da loja, aqui não há limite de ouro)."""
         self._trade_qty_modal = {
+            # Só a posição NO MOMENTO da abertura — nunca usada pra
+            # confirmar a oferta (ver _confirm_trade_qty_modal, que
+            # reencontra a posição atual por referência de objeto
+            # `item` em vez de confiar nisso, 11/10/2026). Mantido aqui
+            # só por não ter motivo real pra remover do dict.
             "inv_index": inv_index,
             "item":      item,
             "max_qty":   max(1, item.stack),
@@ -103,6 +108,38 @@ class TradeHandlers:
 
     def _close_trade_qty_modal(self) -> None:
         self._trade_qty_modal = None
+
+    def _confirm_trade_qty_modal(self) -> None:
+        """Oferece o item do modal de quantidade — ponto único usado
+        pelos 2 gatilhos de confirmação (Enter e botão OK, 11/10/2026,
+        bug real relatado pelo usuário). `m["inv_index"]` (posição
+        guardada no momento em que o modal ABRIU) pode ter ficado
+        desatualizado: se QUALQUER outra oferta deste mesmo jogador for
+        confirmada pelo servidor (TRADE_STATE, client/network_handlers.py::
+        _handle_msg_trade_state) enquanto o modal ainda está aberto
+        esperando o jogador escolher a quantidade, `Inventory.items` é
+        mutado por índice (pop do item ofertado, deslocando todo mundo
+        depois dele) — a posição antiga passa a apontar pra OUTRO item.
+        Reencontra a posição ATUAL do MESMO objeto `item` (guardado por
+        referência desde a abertura, nunca trocado) em vez de confiar no
+        índice antigo — se o item já não existe mais na bolsa (foi
+        totalmente consumido/ofertado por outro caminho nesse meio
+        tempo), cancela em vez de ofertar algo errado."""
+        m = self._trade_qty_modal
+        if m is None:
+            return
+        from engine.components import Inventory as _InvQtyConfirm
+        inv = self.world.get_component(self.player_entity, _InvQtyConfirm)
+        fresh_index = None
+        if inv is not None:
+            for i, it in enumerate(inv.items):
+                if it is m["item"]:
+                    fresh_index = i
+                    break
+        self._close_trade_qty_modal()
+        if fresh_index is None:
+            return
+        self._offer_trade_item(fresh_index, m["qty"])
 
     def _handle_trade_qty_modal_events(self, events: list) -> None:
         """Processa TODOS os eventos do frame enquanto o modal de
@@ -119,8 +156,7 @@ class TradeHandlers:
                     self._close_trade_qty_modal()
                     return
                 elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                    self._offer_trade_item(m["inv_index"], m["qty"])
-                    self._close_trade_qty_modal()
+                    self._confirm_trade_qty_modal()
                     return
                 elif event.key == pygame.K_BACKSPACE:
                     m["text"] = m["text"][:-1] or "0"
@@ -157,8 +193,7 @@ class TradeHandlers:
                     self._close_trade_qty_modal()
                     return
                 if btn_ok.collidepoint(mx, my):
-                    self._offer_trade_item(m["inv_index"], m["qty"])
-                    self._close_trade_qty_modal()
+                    self._confirm_trade_qty_modal()
                     return
                 if not pygame.Rect(mx0, my0, mw, mh).collidepoint(mx, my):
                     self._close_trade_qty_modal()

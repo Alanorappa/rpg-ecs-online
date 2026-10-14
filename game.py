@@ -2007,6 +2007,18 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                             inv.items.pop(self._selected_inv_idx)
                             self._selected_inv_idx = -1
                             if getattr(self, "_net", None):
+                                # 11/10/2026, bug real relatado pelo usuário:
+                                # deletar nunca "pegava" de verdade — faltava
+                                # avisar o Inventory AO VIVO do servidor
+                                # (_on_loot_action("item") -> INV_SYNC ->
+                                # WorldServer.sync_player_inventory). Sem isso,
+                                # só o espelho LOCAL perdia o item; o servidor
+                                # (autoritativo) nunca soube, e qualquer
+                                # re-sincronização (relog, entrar/sair de
+                                # instância) trazia o item de volta. Mesmo
+                                # padrão já usado por qualquer outra mudança de
+                                # inventário (ex: _on_recarregar_changed).
+                                self._on_loot_action("item")
                                 # include_fog=False (15/09/2026, #141/#142/#143) —
                                 # descartar item não tem relação com exploração.
                                 # Achado analisando um 4º log de playtest: este

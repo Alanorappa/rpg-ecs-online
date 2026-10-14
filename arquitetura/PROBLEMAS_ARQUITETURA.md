@@ -27349,3 +27349,68 @@ regressão confirmando que fora de instância continua funcionando).
 `tests/test_client_ui.py` ganhou 3 casos pro `_handle_msg_error` novo.
 378 testes de `test_session.py`+`test_client_ui.py` rodados sem
 regressão.
+
+## 275. Deletar item da bolsa não funcionava + trade pegava item errado na quantidade (11/10/2026)
+
+**Dois bugs relatados juntos pelo usuário, causas raiz totalmente
+diferentes.**
+
+### a) Delete não persiste
+
+`game.py`'s handler de `K_DELETE` (dentro do bag aberto) já identificava
+e removia o item certo do `Inventory` LOCAL, mas só mandava
+`_send_save_state(include_fog=False)` — que o servidor **ignora** de
+propósito pra persistência (`server/session.py::_build_save_merge`
+sempre prioriza `live_inventory`, o `Inventory` AO VIVO do servidor, por
+cima de qualquer coisa que o client mande via SAVE_STATE — decisão
+arquitetural documentada, evita uma overlay de instância vazando pro
+save real). Faltava chamar `_on_loot_action("item")` (→ `INV_SYNC` →
+`WorldServer.sync_player_inventory`, o único canal que de fato muta o
+`Inventory` AO VIVO do servidor), mesmo padrão que QUALQUER outra
+mutação de inventário já usa (ex: `_on_recarregar_changed`). Sem isso,
+o item reaparecia em qualquer resync (relog, entrar/sair de instância)
+— o servidor nunca soube que ele tinha sido removido.
+
+**Fix**: 1 linha — `self._on_loot_action("item")` antes do
+`_send_save_state` já existente. Confirmado que `sync_player_inventory`
+já aceita payload com MENOS do item que o servidor tem (a validação de
+posse, §153, só rejeita payload reivindicando MAIS do que existe) —
+nenhuma mudança server-side necessária, o canal já suportava isso.
+
+**Sem teste automatizado** — o handler fica embutido direto no loop de
+eventos gigante de `game.py` (não é um método isolável), diferente do
+padrão usual de mixins testáveis do projeto; simular isso de verdade
+exigiria um `GameEngine` completo com pygame display. Decisão
+consciente (CLAUDE.md: nível de teste decidido por mudança, não
+presumido) — validação ficou pro playtest manual do usuário.
+
+### b) Trade: modal de quantidade oferece o item errado
+
+`client/trade_handlers.py::_open_trade_qty_modal` guarda a POSIÇÃO
+(`inv_index`) do item empilhável no momento em que o modal abre (Shift+
+clique). O problema: se QUALQUER outra oferta do MESMO jogador for
+confirmada pelo servidor (`TRADE_STATE`) enquanto o modal ainda está
+aberto esperando a escolha de quantidade —
+`client/network_handlers.py::_handle_msg_trade_state` remove o item
+ofertado de `Inventory.items` POR ÍNDICE, deslocando todo mundo depois
+dele. A posição guardada no modal passa a apontar pra outro item, mas
+o clique em OK/Enter (`client/trade_handlers.py:121-124`/`159-162`)
+confiava cegamente nela — o item errado ia pro slot de oferta, e o
+servidor (`server/trade_processor.py::add_trade_item`) aceitava sem
+checagem de identidade nenhuma (resolve só por índice).
+
+**Fix**: `_confirm_trade_qty_modal()` (novo, ponto único usado pelos 2
+gatilhos de confirmação) reencontra a posição ATUAL do MESMO objeto
+`item` — já guardado por REFERÊNCIA no dict do modal desde a abertura
+(`m["item"]`, nunca trocado), só não era usado pra nada até agora — via
+`is` (identidade de objeto, não igualdade de valor) contra
+`inv.items` no momento da confirmação. Se o item não existir mais na
+bolsa (consumido/ofertado por outro caminho nesse meio tempo), cancela
+em vez de ofertar algo errado.
+
+**Teste**: `tests/test_trade_qty_modal_stale_index.py` (3 casos) —
+reprodução EXATA do cenário relatado (item A ofertado, modal aberto pro
+item B que desliza de posição quando a oferta de A confirma, confirmar
+tem que pegar B na posição NOVA) + caso normal (nada muda) + caso
+extremo (item sumiu da bolsa, cancela). `tests/test_trade_state_stack_diff.py`
++ `tests/test_client_ui.py` (262 testes) rodados sem regressão.

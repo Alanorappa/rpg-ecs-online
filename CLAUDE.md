@@ -272,6 +272,34 @@ padrão a quebrar, não só os bugs individuais.
   ficava sabendo do item de verdade, equipar não tinha efeito nenhum nos
   stats reais e o item sumia no próximo login (ver
   PROBLEMAS_ARQUITETURA.md §106).
+- **Qualquer mutação local de `Inventory` feita no CLIENTE (deletar
+  item, e qualquer ação futura parecida) precisa chamar
+  `self._on_loot_action("item")` (`client/save_sync_handlers.py` →
+  `INV_SYNC` → `WorldServer.sync_player_inventory`) pra virar real pro
+  servidor** — `_send_save_state()` sozinho NUNCA basta: o servidor
+  ignora de propósito o inventário que vem via SAVE_STATE pra
+  persistência (sempre prioriza o `Inventory` AO VIVO dele mesmo, ver
+  `server/session.py::_build_save_merge`/`live_inventory`) — mesma
+  decisão que impede uma overlay de instância de vazar pro save real.
+  Bug real: tecla Delete no inventário removia o item só do espelho
+  LOCAL; o servidor nunca soube, e qualquer resync (relog, entrar/sair
+  de instância) trazia o item de volta. Ver PROBLEMAS_ARQUITETURA.md
+  §275.
+- **Posição (`inv_index`) de um item guardada num modal/estado
+  client-side que fica ABERTO esperando input do jogador (ex: modal de
+  quantidade do trade) NUNCA pode ser confiada na hora de CONFIRMAR —
+  reencontrar a posição ATUAL do mesmo objeto item (guardar e comparar
+  por referência/identidade, `is`, não por índice) antes de agir.**
+  `Inventory.items` muda por ÍNDICE a qualquer momento que uma
+  mensagem assíncrona do servidor chegue nesse meio tempo (ex:
+  `TRADE_STATE` removendo um item ofertado desloca todo mundo depois
+  dele) — um índice capturado na ABERTURA do modal pode já apontar pra
+  outro item na hora do OK. Bug real: modal de quantidade do trade
+  guardava o índice no `Shift+clique`, mas só confirmava contra ele
+  depois; se qualquer OUTRA oferta do mesmo jogador confirmasse
+  enquanto o modal estava aberto, o item errado ia pro slot de oferta
+  (servidor aceitava sem checagem de identidade nenhuma). Ver
+  PROBLEMAS_ARQUITETURA.md §275.
 - **Andar até um NPC amigável pra interagir** (treinador, ferreiro, quem
   dá quest, mercador — qualquer NPC futuro nessa mesma categoria) →
   `ui/npc_interaction.py::walk_to_npc()`/`suppress_chase()` — NUNCA
