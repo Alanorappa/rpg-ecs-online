@@ -888,6 +888,29 @@ padrão a quebrar, não só os bugs individuais.
   próprio — mesmo princípio de "servidor é a única fonte de verdade"
   de qualquer outro campo de combate. Ver PROBLEMAS_ARQUITETURA.md
   §276.
+  **Kit de animação PRÓPRIO pra um boss específico dentro de uma
+  `SpawnZone`** (ex: boss de dungeon com sprites únicos, diferente do
+  genérico da raça) → campo opcional `"spritesheet"` no JSON do mapa
+  (`_entities.json::spawn_zones[].spawns[]` ou no nível da zona, mesmo
+  fallback por-spawn/por-zona que `name`/`race`/`class` já têm) →
+  `SpawnZone.spritesheet` → `create_enemy(sprite_key=...)` →
+  `EntityIdentity.sprite_key` (13/10/2026). `race` continua definindo
+  STATS/SONS/MOB_TABLE normalmente — só a chave de ANIMAÇÃO muda.
+  Qualquer ponto que precise saber "qual chave de animação usar pra
+  este mob" chama `engine.mob_animation.resolve_mob_sprite_key(ident)`
+  (prioridade `sprite_key > mob_key > race`) — NUNCA reescrever
+  `ident.mob_key or ident.race` inline de novo num call site novo
+  (eram 4 cópias dessa expressão antes desta função existir: sprite em
+  si, gatilho de golpe, ponte de sprite de morte do corpse,
+  posicionamento de nameplate — mesma classe de bug de "2 caminhos de
+  desenho, só 1 corrigido" já documentada em §267/§272). Sincronização
+  de rede: `_build_mob_spawn_payload` manda `"sprite_key"` só quando
+  não-vazio (mesmo padrão condicional de `"name"`); `_spawn_remote_mob`
+  aplica no espelho — sem isso, o espelho remoto nunca saberia do
+  override (mesmo princípio de "servidor é a única fonte de verdade"
+  do bullet de direção aleatória acima). Só `create_enemy()` ganhou o
+  parâmetro — NPC de serviço/guarda não precisam, sem mudança neles.
+  Ver PROBLEMAS_ARQUITETURA.md §277.
   **Âncora de desenho e Y-sort** (10/09/2026, decisão do usuário): cada
   frame tem um tile de colisão/pé REAL de 32×32 (`CHAR_COLLISION_SIZE`
   == TILE_SIZE) no canto `(CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y)`

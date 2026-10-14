@@ -27460,3 +27460,62 @@ suíte de mob/spawn/NPC relacionada (`test_mob_target_facing.py`,
 falhavam antes da mudança continuam falhando pelos mesmos motivos,
 confirmado via `git stash`/baseline). Validação visual fica pro
 playtest do usuário.
+
+## 277. Kit de animação customizado pra boss de dungeon (13/10/2026)
+
+**Pedido do usuário**: boss específico dentro de uma `SpawnZone` (ex:
+"Acraxxidae, o Obstinado") usar um conjunto de sprites PRÓPRIO
+(`acraxxidae_o_obstinado_idle_down.png`, etc.) em vez do sprite
+genérico da raça ("Aranha") — mas continuar com os mesmos stats/sons/
+loot da raça, só a aparência animada muda.
+
+**Pesquisa feita antes de codar**: o sistema de animação de mob
+(`engine/mob_animation.py`, §267-272) já usa convenção de arquivo por
+"chave" (`{chave}_idle_{direção}.png`), e essa chave hoje SEMPRE vem de
+`EntityIdentity.mob_key or race` — nenhum ponto de override existia.
+Mapeei os 4 call sites que leem essa expressão direto (duplicada, sem
+dono único): `ui/render_system.py::_resolve_mob_animation_key`
+(sprite em si), `client/remote_entity_handlers.py` em 3 pontos
+(gatilho de golpe, ponte de sprite de morte do corpse, posicionamento
+de nameplate).
+
+**Desenho**: `EntityIdentity` ganha `sprite_key: str = ""` (override
+opcional, nunca mexe em `mob_key`/`race` — aqueles continuam
+alimentando stats/sons/MOB_TABLE normalmente). `SpawnZone` ganha
+`spritesheet: str = ""`, lido do JSON do mapa (`_entities.json`,
+dentro de `spawn_zones`) com o MESMO fallback por-spawn/por-zona que
+`name`/`race`/`class` já usam — `sp.get("spritesheet", zone.get(
+"spritesheet", ""))`. Cadeia: `map_loader.py` → `WorldServer.
+_create_spawn_zones_for_map` → `SpawnZone.spritesheet` →
+`SpawnZoneSystem._spawn_one` passa `sprite_key=zone.spritesheet` pro
+`create_enemy()` já existente → `_build_combat_entity` grava em
+`EntityIdentity.sprite_key`.
+
+**Consolidação dos 4 call sites**: criei `engine.mob_animation.
+resolve_mob_sprite_key(ident)` (prioridade `sprite_key > mob_key >
+race`) e troquei os 4 pontos pra chamar essa função em vez de repetir
+`ident.mob_key or ident.race` cada um na própria cópia — um override
+novo como este precisaria ser adicionado em 4 lugares separados sem
+essa consolidação, com risco real de esquecer um (mesma classe de bug
+já documentada pro nameplate/corpse de mob, §267/§272 — "2 caminhos de
+desenho, 1 corrigido, o outro não").
+
+**Sincronização de rede**: como `create_enemy()` também roda do LADO
+CLIENTE pra reconstruir o espelho de qualquer mob remoto
+(`_spawn_remote_mob`), `sprite_key=""` (default) nessa chamada local
+nunca bate com o valor real do servidor sozinho — `_build_mob_spawn_
+payload` passou a mandar `"sprite_key"` (só quando não-vazio, mesmo
+padrão condicional de `"name"`), e `_spawn_remote_mob` aplica no
+`EntityIdentity` do espelho logo após criá-lo (mesmo padrão já usado
+pro nome customizado, `_server_name`).
+
+**Escopo**: só `create_enemy()` ganhou o parâmetro novo (não
+`_build_combat_entity` genérica sozinha sem repasse explícito) — NPC
+de serviço/guarda (`create_combat_npc`/`create_merchant`/etc.) não
+precisam disso, continuam sem override, comportamento inalterado.
+
+**Teste**: nenhum automatizado (decisão do usuário) — validado rodando
+a suíte de mob/spawn/NPC relacionada (mesma lista de §276 + nameplate)
+sem regressão nova. Validação visual fica pro usuário, criando o kit
+de sprites do boss (`{spritesheet}_idle_down.png` etc.) e configurando
+`"spritesheet": "acraxxidae_o_obstinado"` no spawn/zona do mapa.

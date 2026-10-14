@@ -6,7 +6,8 @@ from typing import NamedTuple
 class EntityIdentity:
     """Nome, raça, classe, nível e tier de qualquer entidade (jogador ou inimigo)."""
     def __init__(self, name: str, race: str, entity_class: str,
-                 level: int = 1, tier: str = "normal", mob_key: str = ""):
+                 level: int = 1, tier: str = "normal", mob_key: str = "",
+                 sprite_key: str = ""):
         self.name         = name
         self.race         = race
         self.entity_class = entity_class
@@ -24,6 +25,14 @@ class EntityIdentity:
         # "Arqueiro (NPC)" virava melee/mudo no cliente mesmo sendo ranged
         # de verdade no servidor).
         self.mob_key      = mob_key
+        # Override opcional de kit de animação (13/10/2026, pedido do
+        # usuário — boss de dungeon com sprites próprios, ex:
+        # "acraxxidae_o_obstinado", mas stats/sons continuam de `race`
+        # normal, ex: "Aranha"). "" (default) = usa `mob_key or race`,
+        # comportamento de sempre. Fonte de verdade de prioridade:
+        # `engine.mob_animation.resolve_mob_sprite_key()` — NUNCA ler
+        # este campo direto num call site novo, sempre por ali.
+        self.sprite_key   = sprite_key
 
 # Nova Classe: Modifier
 # Representa um bônus ou penalidade a um atributo de combate.
@@ -1688,7 +1697,7 @@ class SpawnZone:
                  respawnable: bool = True,
                  loot: "dict | None" = None,
                  gold_min: int = 0, gold_max: int = 0,
-                 name: str = ""):
+                 name: str = "", spritesheet: str = ""):
         self.center_x = center_x
         self.center_y = center_y
         self.enemy_type = enemy_type        # "melee" ou "ranged"
@@ -1731,6 +1740,14 @@ class SpawnZone:
         # novo. `race` continua definindo stats/sprite/aparência — só o
         # NOME exibido muda.
         self.name = name
+        # Kit de animação customizado (13/10/2026, pedido do usuário — boss
+        # de dungeon com sprites próprios, ex: "acraxxidae_o_obstinado", em
+        # vez do sprite genérico da raça). "" (default) = comportamento de
+        # sempre (usa `race`) — repassado como `sprite_key` pro
+        # `create_enemy()` já existente, vira `EntityIdentity.sprite_key`.
+        # `race` continua definindo stats/sons/aparência estática — só o
+        # kit de ANIMAÇÃO (idle/run/attack/death) muda.
+        self.spritesheet = spritesheet
         self.active_entity_ids: set = set()
         self.respawn_timers: list = []  # um float por morte; cada um corre independentemente
         # Marca se o preenchimento inicial (escalonado) já rodou — necessário

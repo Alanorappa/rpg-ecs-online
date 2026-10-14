@@ -41,6 +41,27 @@ MOB_DEFAULT_FRAME_MS = 120  # mesmo ritmo de ui/world_icon_animator.py
 
 MOB_ATTACK_STATE = "attack"
 
+
+def resolve_mob_sprite_key(ident) -> str:
+    """Chave de animação de mob (ainda SEM slugify — quem chama decide),
+    com prioridade (13/10/2026, boss de dungeon com kit próprio):
+    `EntityIdentity.sprite_key` (override explícito, ex:
+    "acraxxidae_o_obstinado") > `mob_key` (chave exata de MOB_TABLE) >
+    `race` (categoria ampla, último fallback). "" se `ident` for None ou
+    todos os 3 campos vazios.
+
+    Ponto único — ANTES desta função existir, 4 call sites (render do
+    sprite, nameplate, ponte de sprite de morte do corpse, gatilho de
+    golpe) repetiam `ident.mob_key or ident.race` cada um na própria
+    cópia; um override novo como `sprite_key` precisaria ser adicionado
+    em cada um separadamente, com risco real de esquecer um (mesma
+    classe de bug já documentada pro nameplate/corpse de mob,
+    PROBLEMAS_ARQUITETURA.md §267/§272) — NUNCA reescrever essa
+    prioridade inline de novo num 5º call site futuro."""
+    if ident is None:
+        return ""
+    return ident.sprite_key or ident.mob_key or ident.race
+
 # Cache de módulo, chaveado por (mob_key, state, direction) — mesmo
 # padrão de `character_animation._frame_cache`: conjunto pequeno (1
 # entrada por combinação de mob/estado/direção que já apareceu em

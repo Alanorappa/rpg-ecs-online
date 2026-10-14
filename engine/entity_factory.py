@@ -248,7 +248,8 @@ def _resolve_mob_race_variant(race: str, want_ranged: bool) -> str:
 def _build_combat_entity(world: World, tile_x: int, tile_y: int,
                          attack_range: int, is_ranged: bool, tier: str,
                          race: str, entity_class: str, level: int,
-                         faction: str, identity_name: str = "") -> int:
+                         faction: str, identity_name: str = "",
+                         sprite_key: str = "") -> int:
     """Corpo compartilhado entre `create_enemy()` (mob hostil "clássico")
     e `create_combat_npc()` (NPC de combate — guarda, etc: mesma
     infraestrutura de IA/combate, só com facção tipicamente amigável e
@@ -452,6 +453,7 @@ def _build_combat_entity(world: World, tile_x: int, tile_y: int,
         # (mob_actual_race) e nunca acha o mob_def de verdade pra reconstruir
         # sons/entity_class corretos.
         mob_key=race,
+        sprite_key=sprite_key,
     ))
 
     # Habilidades especiais — lista explícita por mob em mob_definitions.py
@@ -482,7 +484,8 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
                  entity_class: str = "",
                  level: int = 1,
                  faction: str = "monstros_hostis",
-                 identity_name: str = "") -> int:
+                 identity_name: str = "",
+                 sprite_key: str = "") -> int:
     """`identity_name` (16/08/2026, pedido do usuário — jungle mostrando
     o `mob_key` cru em vez do nome) — igual `create_combat_npc()` já
     fazia: sobrescreve o nome exibido quando `race` é uma chave de
@@ -490,10 +493,17 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
     ex: "jungle_lobo_alfa") em vez de um nome já legível (MOB_TABLE usa
     a própria chave como nome, ex: "Aranha" — não precisa disso). Vazio
     = comportamento de sempre (`mob_display_name = identity_name or
-    race`, em `_build_combat_entity`)."""
+    race`, em `_build_combat_entity`).
+
+    `sprite_key` (13/10/2026, pedido do usuário — boss de dungeon com
+    kit de animação próprio) — vira `EntityIdentity.sprite_key`, override
+    opcional da chave usada por `engine/mob_animation.py` (idle/run/
+    attack/death). "" = usa `race` normalmente (ver
+    `engine.mob_animation.resolve_mob_sprite_key`). `race` continua
+    definindo stats/sons/MOB_TABLE — só a ANIMAÇÃO muda."""
     eid = _build_combat_entity(world, tile_x, tile_y, attack_range, is_ranged,
                                tier, race, entity_class, level, faction,
-                               identity_name=identity_name)
+                               identity_name=identity_name, sprite_key=sprite_key)
     world.add_component(eid, Enemy())
     # Direção inicial aleatória (13/10/2026, pedido do usuário — toda
     # aranha/mob de zona nascia sempre virada pra baixo). Só aqui, nunca em

@@ -5100,6 +5100,7 @@ class SpawnZoneSystem(System):
             level=level,
             identity_name=zone.name,
             faction=zone.faction,
+            sprite_key=zone.spritesheet,
         )
         self.world.add_component(new_eid, SpawnZoneOwner(zone_eid))
         if self._map_filter:

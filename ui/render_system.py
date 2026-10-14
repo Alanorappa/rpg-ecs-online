@@ -41,7 +41,8 @@ from engine.tileset import TILE_SIZE
 from engine.entity_disguise import get_active_appearance_override, get_animated_disguise_frame
 from engine.character_animation import (get_character_frame, resolve_display_state,
                                         character_anchor_offset)
-from engine.mob_animation import get_mob_frame, resolve_mob_display_state, get_mob_top_opaque_offset
+from engine.mob_animation import (get_mob_frame, resolve_mob_display_state,
+                                   get_mob_top_opaque_offset, resolve_mob_sprite_key)
 from engine.utils import slugify
 from ui.ui_helpers import fill_surf
 from ui.tile_sprite_manager import TILE_SPRITES
@@ -335,16 +336,14 @@ class RenderSystem(System):
         return rc.class_id if rc else None
 
     def _resolve_mob_animation_key(self, entity_id: int) -> "str | None":
-        """Chave de animação de mob (slug de `EntityIdentity.mob_key or
-        race`, já chega pela rede hoje — nenhum campo de protocolo novo,
-        10/10/2026) — None se a entidade não tem `EntityIdentity` (ex:
-        tile-objeto) ou o campo está vazio. Só é chamado quando
-        `_resolve_character_class_id` já devolveu None (mob/NPC, nunca
-        personagem jogável) — ver `engine/mob_animation.py`."""
+        """Chave de animação de mob (slug de `resolve_mob_sprite_key()` —
+        sprite_key custom > mob_key > race, já chega pela rede hoje,
+        10/10/2026 + 13/10/2026) — None se a entidade não tem
+        `EntityIdentity` (ex: tile-objeto) ou o campo está vazio. Só é
+        chamado quando `_resolve_character_class_id` já devolveu None
+        (mob/NPC, nunca personagem jogável) — ver `engine/mob_animation.py`."""
         ident = self.world.get_component(entity_id, EntityIdentity)
-        if ident is None:
-            return None
-        key = ident.mob_key or ident.race
+        key = resolve_mob_sprite_key(ident)
         return slugify(key) if key else None
 
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0,

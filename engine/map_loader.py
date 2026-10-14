@@ -599,6 +599,10 @@ def _merge_entities_json(json_path: str, spawn_points: dict) -> None:
                     # "" (default) = mostra a raça, igual sempre. Mesmo
                     # fallback por-spawn/por-zona de race/class acima.
                     "name":             sp.get("name", zone.get("name", "")),
+                    # Kit de animação customizado (13/10/2026, ver CLAUDE.md)
+                    # — "" (default) = usa o sprite genérico da raça. Mesmo
+                    # fallback por-spawn/por-zona de name/race/class acima.
+                    "spritesheet":      sp.get("spritesheet", zone.get("spritesheet", "")),
                     # Dungeon instanciada (07/10/2026, ver CLAUDE.md) — zona
                     # sem respawn + loot de boss específico deste mapa.
                     "respawnable":      zone.get("respawnable", True),

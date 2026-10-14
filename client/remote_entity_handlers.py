@@ -288,7 +288,8 @@ class RemoteEntityHandlers:
                     _ident_atk_mob = self.world.get_component(_atk_mob_eid_anim, _EIdAnimAtk)
                     _tm_atk_mob = self.world.get_component(_atk_mob_eid_anim, _TMAnimAtkMob)
                     if _ident_atk_mob and _tm_atk_mob is not None:
-                        _mob_key_atk = _ident_atk_mob.mob_key or _ident_atk_mob.race
+                        from engine.mob_animation import resolve_mob_sprite_key as _rmsk_atk
+                        _mob_key_atk = _rmsk_atk(_ident_atk_mob)
                         if _mob_key_atk:
                             from engine.mob_animation import trigger_mob_attack_anim as _tmaa
                             from engine.utils import slugify as _slugify_atk
@@ -975,6 +976,17 @@ class RemoteEntityHandlers:
             if _eid_ident:
                 _eid_ident.name = _server_name
 
+        # Kit de animação customizado (13/10/2026, boss de dungeon — ver
+        # CLAUDE.md/engine.mob_animation.resolve_mob_sprite_key) — sem
+        # aplicar aqui, o espelho remoto usaria o sprite genérico da raça
+        # mesmo o servidor tendo um kit próprio configurado nesta entidade.
+        _server_sprite_key = data.get("sprite_key")
+        if _server_sprite_key:
+            from engine.components import EntityIdentity as _EIdSpriteSpawn
+            _eid_ident_spr = self.world.get_component(local_eid, _EIdSpriteSpawn)
+            if _eid_ident_spr:
+                _eid_ident_spr.sprite_key = _server_sprite_key
+
         # is_dummy: marca o proxy local como boneco de treino — sem isso, skills
         # usadas contra ele nunca contavam pra objetivos de quest com
         # params={"on_dummy": True} (ver quest_system.py / systems.py::_use_skill*),
@@ -1352,7 +1364,8 @@ class RemoteEntityHandlers:
             from engine.components import EntityIdentity as _EId_dd, TileMovement as _TM_dd
             ident = self.world.get_component(local_eid, _EId_dd)
             tm    = self.world.get_component(local_eid, _TM_dd)
-            mob_key = (ident.mob_key or ident.race) if ident else ""
+            from engine.mob_animation import resolve_mob_sprite_key as _rmsk_dd
+            mob_key = _rmsk_dd(ident)
             if mob_key and tm is not None:
                 from engine.utils import slugify as _slugify_dd
                 slug = _slugify_dd(mob_key)
@@ -1750,7 +1763,8 @@ class RemoteEntityHandlers:
                 # desenhado quase sem padding, diferente do personagem).
                 from engine.components import EntityIdentity as _EIdMobHb, TileMovement as _TMMobHb
                 _ident_mob_hb = self.world.get_component(local_eid, _EIdMobHb)
-                _mob_key_hb = (_ident_mob_hb.mob_key or _ident_mob_hb.race) if _ident_mob_hb else ""
+                from engine.mob_animation import resolve_mob_sprite_key as _rmsk_hb
+                _mob_key_hb = _rmsk_hb(_ident_mob_hb)
                 _mframe_hb = None
                 if _mob_key_hb:
                     _tm_mob_hb = self.world.get_component(local_eid, _TMMobHb)

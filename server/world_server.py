@@ -2115,6 +2115,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 gold_min       = z.get("gold_min", 0),
                 gold_max       = z.get("gold_max", 0),
                 name           = z.get("name", ""),
+                spritesheet    = z.get("spritesheet", ""),
             ))
 
     # ── API pública para SessionManager ──────────────────────────────────────
@@ -3220,6 +3221,13 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # então qualquer entidade sem zona mostrava raça como nome também.
         if ident and ident.name:
             payload["name"] = ident.name
+        # Kit de animação customizado (13/10/2026, ver CLAUDE.md) — boss de
+        # dungeon com sprites próprios. "" (default) = cliente reconstrói
+        # via `race` normalmente (ver engine.mob_animation.
+        # resolve_mob_sprite_key) — sem mandar, o espelho remoto nunca
+        # saberia que esta entidade usa um kit diferente do genérico.
+        if ident and ident.sprite_key:
+            payload["sprite_key"] = ident.sprite_key
         # Alvo de ataque atual (11/10/2026, ver PROBLEMAS_ARQUITETURA.md
         # §273) — cobre o momento do spawn/entrada no AOI;
         # `_collect_mob_targets()` (AOI_UPDATE) mantém em dia depois disso.
