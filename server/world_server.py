@@ -2927,6 +2927,39 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             return {}
         return {"target_eid": cst.target_entity_id}
 
+    def player_in_any_instance(self, player_eid: int) -> bool:
+        """True se `player_eid` está numa partida/instância de QUALQUER
+        tipo — Arena (`_player_match_id`), fila REAL de BG
+        (`_player_bg_match_id`), BG de teste/debug (`/testbg`,
+        `debug_battleground._state["members"]`) ou dungeon instanciada
+        (`_player_dungeon_instance`) — ponto único de verdade (11/10/2026)
+        pra qualquer ação que NUNCA deve tirar o player de uma instância
+        no meio dela.
+
+        Bug real relatado pelo usuário: `_handle_unstuck` ("Voltar ao
+        Spawn", `server/session.py`) só verificava `_player_match_id`
+        (só Arena) — um player dentro de uma partida de BG clicando o
+        botão era puxado pro spawn do mundo aberto, fora da instância.
+        NUNCA reimplementar essa checagem verificando só 1 dos 4 tipos de
+        novo — Arena é só 1 dos 4. `_handle_release_spirit` ("Liberar
+        espírito") NÃO precisou dessa função: BG/dungeon têm respawn
+        AUTOMÁTICO (`GhostState.auto_respawn`), o cliente nem mostra o
+        botão nesses casos (`client/death_ui_handlers.py::
+        _render_death_modal_auto_respawn`) — o caminho vulnerável nunca é
+        alcançado ali, confirmado antes de mexer (o primeiro plano
+        incluía mexer lá também; pesquisa melhor achou que já funcionava
+        certo). Ver PROBLEMAS_ARQUITETURA.md §274."""
+        if player_eid in self._player_match_id:
+            return True
+        if player_eid in self._player_bg_match_id:
+            return True
+        if player_eid in self._player_dungeon_instance:
+            return True
+        from server import debug_battleground as _dbg_instcheck
+        if player_eid in _dbg_instcheck._state["members"]:
+            return True
+        return False
+
     def _collect_mob_targets(self) -> dict:
         """Retorna o alvo de ataque atual de mobs engajados —
         {str(mob_eid): target_eid} — mesmo padrão de

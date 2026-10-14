@@ -1237,6 +1237,32 @@ def _make_net_fixture():
     return _NetHandlerFixture(world, player)
 
 
+# ── MsgType.ERROR genérico (11/10/2026, ver PROBLEMAS_ARQUITETURA.md
+# §274) — antes NUNCA tratado no cliente, a mensagem se perdia e a ação
+# recusada no servidor parecia "não fez nada" sem explicação. ──────────
+
+def test_handle_msg_error_unstuck_cooldown_mostra_segundos_restantes():
+    from ui.floating_text import WARN
+    fx = _make_net_fixture()
+    fx._handle_msg_error({"reason": "unstuck_cooldown:42"})
+    assert "42" in WARN._text
+
+
+def test_handle_msg_error_unstuck_in_instance_mostra_mensagem_especifica():
+    from ui.floating_text import WARN
+    fx = _make_net_fixture()
+    fx._handle_msg_error({"reason": "unstuck_in_instance"})
+    assert "instância" in WARN._text
+
+
+def test_handle_msg_error_reason_desconhecida_cai_em_fallback_generico():
+    """Nunca mostra a string crua do servidor pro jogador."""
+    from ui.floating_text import WARN
+    fx = _make_net_fixture()
+    fx._handle_msg_error({"reason": "algum_reason_novo_nao_mapeado"})
+    assert "algum_reason_novo_nao_mapeado" not in WARN._text
+
+
 def test_entity_spawn_propaga_level_do_player_remoto():
     from engine.components import RemoteControlled
     fx = _make_net_fixture()

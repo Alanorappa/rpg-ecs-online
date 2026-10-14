@@ -1967,6 +1967,16 @@ class SessionManager:
         if player_eid == -1:
             return
 
+        # Bloqueio dentro de QUALQUER instância (11/10/2026, bug real
+        # relatado pelo usuário — ver player_in_any_instance,
+        # PROBLEMAS_ARQUITETURA.md §274): sem isso, "Voltar ao Spawn"
+        # puxava o player pro spawn do mundo aberto no MEIO de uma
+        # partida de BG (ou qualquer outra instância), deixando-o fora
+        # dela enquanto o servidor ainda o considerava "dentro".
+        if self.world_server.player_in_any_instance(player_eid):
+            await session.send(MsgType.ERROR, {"reason": "unstuck_in_instance"})
+            return
+
         from server.respawn_system import RespawnMixin as _RS
         rx, ry = _RS.RESPAWN_TILE
 
@@ -1977,16 +1987,17 @@ class SessionManager:
         # mapa principal ANTES do snap — sem isso o tile_x/tile_y virava o
         # spawn de map_1, mas o mapa carregado continuava sendo o antigo
         # (bug real relatado pelo usuário 22/07/2026: personagem ficava
-        # preso na caverna, só com a coordenada errada). Mesmo padrão de
-        # respawn_system.py::_handle_release_spirit — nunca faz isso dentro
-        # de uma partida de Arena (yankaria o player pra fora da instância;
-        # só _arena_leave_now deve mexer no mapa/posição de quem está numa
-        # partida).
-        _in_arena_match_us = player_eid in self.world_server._player_match_id
+        # preso na caverna, só com a coordenada errada). NÃO precisa mais
+        # checar instância aqui (Arena/BG/dungeon) — o guard de
+        # `player_in_any_instance` acima já retornou antes de chegar neste
+        # ponto pra qualquer um dos 4 tipos, então um mapa "não-principal"
+        # alcançável aqui é sempre algo legítimo tipo caverna, nunca uma
+        # instância escapando pela falta do check antigo (que só cobria
+        # Arena, ver PROBLEMAS_ARQUITETURA.md §274).
         from engine.components import MapLocation as _MLus
         _ml_us = self.world_server.world.get_component(player_eid, _MLus)
         current_map_us = _ml_us.map_file if _ml_us else self.world_server._map_file
-        if current_map_us != self.world_server._map_file and not _in_arena_match_us:
+        if current_map_us != self.world_server._map_file:
             self.world_server.transfer_player(sid, player_eid, self.world_server._map_file, rx, ry)
             await session.send(MsgType.ZONE_CHANGE, {
                 "map_file": self.world_server._map_file,

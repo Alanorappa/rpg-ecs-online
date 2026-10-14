@@ -27279,3 +27279,73 @@ novo (sem o mob se mexer) e `facing` vira "right" sozinho — prova que
 o mecanismo genérico (zero lógica de giro nova escrita) funciona pra
 mob exatamente como já funciona pro player. Demais 14 testes cobrem
 cada peça isoladamente (collect/payload/merge/resolve/spawn/sync).
+
+## 274. "Voltar ao Spawn" dentro de uma BG puxava o player pra fora da instância (11/10/2026)
+
+**Pedido do usuário**: "quando o player clica em 'Voltar ao Spawn' no
+menu principal, ele volta para o spawn do player fora da BG, precisamos
+bloquear esse botão dentro das instâncias" (plural — pedido já geral,
+não só BG).
+
+**Causa raiz**: `_handle_unstuck` (`server/session.py`, handler de
+"Voltar ao Spawn") só verificava `player_eid in self.world_server.
+_player_match_id` (Arena) antes de decidir se trocava de mapa pro
+spawn principal — igual ao comentário já existente no código dizia
+("nunca faz isso dentro de uma partida de Arena"), mas o projeto tem
+**4 tipos de instância**, não 1: Arena (`_player_match_id`), fila REAL
+de BG (`_player_bg_match_id`), BG de teste `/testbg`
+(`debug_battleground._state["members"]`) e dungeon
+(`_player_dungeon_instance`) — cada um com seu próprio dict,
+confirmado lendo `server/world_server.py` (linhas ~470/509/523) e
+`server/debug_battleground.py`. Um player numa partida de BG real
+passava o check de Arena (False) sem problema, caía no branch de
+"mapa não-principal, troca pro principal" (já que o mapa da BG é
+diferente de `_map_file`) e era puxado pra fora.
+
+**1ª tentativa de design, corrigida pelo usuário**: a proposta inicial
+incluía também mexer em `_handle_release_spirit` ("Liberar espírito"),
+achando que tinha a MESMA lacuna (ela de fato tem — só verifica Arena
+também). O usuário corrigiu: "quando o player morre dentro da BG ou da
+dungeon ele não aparece fora da dungeon, ele aparece no spawn inicial
+da instância... pesquise melhor antes de acabar criando algo que já
+funciona." Pesquisa confirmou: BG/dungeon têm respawn AUTOMÁTICO
+(`GhostState.auto_respawn`, calculado em `RespawnMixin.
+_handle_player_death` como `_in_dungeon_rs or _in_bg_rs`) — o CLIENTE
+nem desenha o botão "Liberar espírito" nesse caso
+(`client/death_ui_handlers.py::_render_death_modal_auto_respawn`, só
+mostra contagem regressiva). `_handle_release_spirit` continua com a
+lacuna em TEORIA, mas é inalcançável na prática pra BG/dungeon — não
+precisa de fix nenhum ali. **Lição**: "esse código tem o mesmo padrão
+de outro código com bug" não é prova de que os dois têm o MESMO bug —
+precisa confirmar que o caminho é de fato alcançável antes de tocar,
+nunca assumir simetria só pela forma do código.
+
+**Fix**: `WorldServer.player_in_any_instance(player_eid)` (novo, ponto
+único) verifica os 4 dicts juntos. `_handle_unstuck` chama isso logo
+depois de resolver `player_eid`, ANTES de qualquer teleporte — recusa
+total com `MsgType.ERROR({"reason": "unstuck_in_instance"})` se
+True. O bloco de "troca de mapa pro principal" logo abaixo (pro caso
+legítimo de caverna) teve o check de `_in_arena_match_us` removido —
+ficou redundante, já que o guard novo acima garante que esse ponto só
+é alcançado fora de QUALQUER instância.
+
+**Achado de quebra (bug secundário, corrigido junto)**: `MsgType.ERROR`
+é mandado pelo servidor em vários pontos (cooldown de unstuck, erros de
+payload, etc.) mas o CLIENTE nunca teve handler nenhum pra esse tipo de
+mensagem — confirmado via grep no repo inteiro, zero ocorrência de
+tratamento. A mensagem chegava e se perdia; bloquear "Voltar ao Spawn"
+sem isso pareceria "o botão não faz nada", sem explicação nenhuma pro
+jogador. `client/network_handlers.py::_handle_msg_error` novo (registrado
+no dispatch table) mapeia `reason` pra texto amigável via
+`ui/floating_text.py::WARN` (mesmo mecanismo já usado por
+`_handle_msg_equip_rejected` pra "não foi possível equipar") — reason
+desconhecida cai num fallback genérico, nunca mostra a string crua do
+servidor.
+
+**Testes**: `tests/test_session.py` ganhou `TestPlayerInAnyInstance` (5
+casos, unitário) e `TestUnstuckBloqueadoEmInstancia` (5 casos,
+fim-a-fim via `_handle_unstuck` real — um por tipo de instância +
+regressão confirmando que fora de instância continua funcionando).
+`tests/test_client_ui.py` ganhou 3 casos pro `_handle_msg_error` novo.
+378 testes de `test_session.py`+`test_client_ui.py` rodados sem
+regressão.

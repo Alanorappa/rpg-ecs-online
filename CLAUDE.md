@@ -922,6 +922,24 @@ padrão a quebrar, não só os bugs individuais.
   handler mais abaixo na cadeia (`client/chat_handlers.py::
   _send_chat_message`) pode ser o dono de verdade daquele comando num
   contexto diferente.
+- **"Este player está dentro de alguma instância agora?" (Arena, fila
+  REAL de BG, BG de teste `/testbg`, dungeon)** →
+  `WorldServer.player_in_any_instance(player_eid)` (11/10/2026) — ponto
+  único que verifica os 4 tipos juntos (`_player_match_id`/
+  `_player_bg_match_id`/`_player_dungeon_instance`/`debug_battleground.
+  _state["members"]`). Usar SEMPRE que uma ação nunca deve tirar o
+  player de uma instância sem passar pelo fluxo de saída certo dela
+  (ex: "Voltar ao Spawn" do menu de pausa) — NUNCA checar só
+  `_player_match_id` (só Arena) achando que cobre "instância" em geral,
+  classe de bug real: o guard de `_handle_unstuck` só verificava Arena,
+  então usar o botão dentro de uma partida de BG puxava o player pro
+  spawn do mundo aberto, fora da instância, enquanto o servidor ainda o
+  considerava "dentro" dela. Não serve pra decidir "deve reviver
+  automático?" (isso é `GhostState.auto_respawn`, calculado em
+  `RespawnMixin._handle_player_death`, SÓ `_in_dungeon`/`_in_bg` — Arena
+  usa fantasma manual de propósito, nunca auto-respawn) — são 2
+  perguntas relacionadas mas DIFERENTES, não reusar uma pela outra.
+  Ver PROBLEMAS_ARQUITETURA.md §274.
 - **Largura de mapa (`Tilemap.map_width_tiles`) é a MAIOR linha do
   `terrain_matrix`, nunca a linha 0** — `engine/entity_factory.py::
   create_tilemap` (02/09/2026, bug real: usava só `len(terrain_matrix[0])`,

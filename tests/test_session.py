@@ -2414,6 +2414,91 @@ class TestUnstuck(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(session.session_id, self.mgr._unstuck_cooldowns)
 
 
+class TestPlayerInAnyInstance(unittest.TestCase):
+    """WorldServer.player_in_any_instance — ponto único de verdade pros 4
+    tipos de instância (11/10/2026, ver PROBLEMAS_ARQUITETURA.md §274).
+    Testado direto no WorldServer, sem precisar de sessão/login."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+
+    def test_fora_de_qualquer_instancia_e_false(self):
+        self.assertFalse(self.ws.player_in_any_instance(999))
+
+    def test_em_partida_de_arena_e_true(self):
+        self.ws._player_match_id[42] = "arena_fake"
+        self.assertTrue(self.ws.player_in_any_instance(42))
+
+    def test_na_fila_real_de_bg_e_true(self):
+        self.ws._player_bg_match_id[42] = "bg_fake"
+        self.assertTrue(self.ws.player_in_any_instance(42))
+
+    def test_no_bg_de_teste_debug_e_true(self):
+        from server import debug_battleground as _dbg_test
+        _dbg_test._state["members"].add(42)
+        try:
+            self.assertTrue(self.ws.player_in_any_instance(42))
+        finally:
+            _dbg_test._state["members"].discard(42)
+
+    def test_em_dungeon_e_true(self):
+        self.ws._player_dungeon_instance[42] = "dungeon_fake"
+        self.assertTrue(self.ws.player_in_any_instance(42))
+
+
+class TestUnstuckBloqueadoEmInstancia(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
+    """Bug real relatado pelo usuário (11/10/2026): "Voltar ao Spawn"
+    dentro de uma partida de BG puxava o player pro spawn do mundo
+    aberto, fora da instância — o guard antigo só verificava Arena
+    (`_player_match_id`). Ver PROBLEMAS_ARQUITETURA.md §274."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    async def _assert_unstuck_bloqueado(self, session, fw):
+        fw.sent.clear()
+        await self.mgr._handle_unstuck(session, {}, 0)
+        errors = get_msgs_of_type(fw, MsgType.ERROR)
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["reason"], "unstuck_in_instance")
+        self.assertEqual(len(get_msgs_of_type(fw, MsgType.ENTITY_MOVE)), 0,
+                         "não pode teleportar o player enquanto está numa instância")
+        self.assertEqual(len(get_msgs_of_type(fw, MsgType.ZONE_CHANGE)), 0)
+
+    async def test_bloqueado_dentro_de_arena(self):
+        session, fw = await fake_login(self.mgr, "unstuck_arena", "unstuckarena")
+        self.ws_server._player_match_id[session.entity_id] = "arena_fake"
+        await self._assert_unstuck_bloqueado(session, fw)
+
+    async def test_bloqueado_dentro_de_bg_real(self):
+        session, fw = await fake_login(self.mgr, "unstuck_bg", "unstuckbg")
+        self.ws_server._player_bg_match_id[session.entity_id] = "bg_fake"
+        await self._assert_unstuck_bloqueado(session, fw)
+
+    async def test_bloqueado_dentro_de_bg_debug(self):
+        session, fw = await fake_login(self.mgr, "unstuck_dbg", "unstuckdbg")
+        from server import debug_battleground as _dbg_test2
+        _dbg_test2._state["members"].add(session.entity_id)
+        try:
+            await self._assert_unstuck_bloqueado(session, fw)
+        finally:
+            _dbg_test2._state["members"].discard(session.entity_id)
+
+    async def test_bloqueado_dentro_de_dungeon(self):
+        session, fw = await fake_login(self.mgr, "unstuck_dng", "unstuckdng")
+        self.ws_server._player_dungeon_instance[session.entity_id] = "dungeon_fake"
+        await self._assert_unstuck_bloqueado(session, fw)
+
+    async def test_fora_de_instancia_continua_funcionando(self):
+        """Regressão: fora de qualquer instância, o botão continua
+        funcionando normalmente (mesmo comportamento de TestUnstuck)."""
+        session, fw = await fake_login(self.mgr, "unstuck_normal", "unstucknormal")
+        fw.sent.clear()
+        await self.mgr._handle_unstuck(session, {}, 0)
+        self.assertEqual(len(get_msgs_of_type(fw, MsgType.ERROR)), 0)
+        self.assertEqual(len(get_msgs_of_type(fw, MsgType.ENTITY_MOVE)), 1)
+
+
 class TestTokenBucket(unittest.TestCase):
     """`server.session._TokenBucket` isolado (16/09/2026, ver
     arquitetura/PROJECT_WIDE_REVIEW.md) — sem I/O, manipula `last_ts`

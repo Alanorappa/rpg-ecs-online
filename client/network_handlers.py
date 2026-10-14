@@ -3162,6 +3162,26 @@ class NetworkHandlers:
         from ui.floating_text import WARN as _WARN_EqR
         _WARN_EqR.add(f"Não foi possível equipar {item_name}: {_reason_msg}")
 
+    def _handle_msg_error(self, payload: dict) -> None:
+        """Erro genérico do servidor (`MsgType.ERROR`, `{"reason": ...}`)
+        — usado por várias ações sem handler dedicado (ex: cooldown de
+        `/unstuck`, bloqueio dentro de instância). Antes NUNCA tratado no
+        cliente (11/10/2026, achado investigando PROBLEMAS_ARQUITETURA.md
+        §274): a mensagem chegava e se perdia, a ação recusada parecia
+        "não fez nada", sem explicação nenhuma pro jogador. `reason`
+        desconhecida cai num fallback genérico — NUNCA mostra a string
+        crua do servidor na tela."""
+        reason = payload.get("reason", "")
+        if reason.startswith("unstuck_cooldown:"):
+            _secs = reason.split(":", 1)[1]
+            msg = f"Aguarde {_secs}s pra usar 'Voltar ao Spawn' de novo"
+        elif reason == "unstuck_in_instance":
+            msg = "Não é possível voltar ao spawn dentro de uma instância"
+        else:
+            msg = "Ação não permitida no momento"
+        from ui.floating_text import WARN as _WARN_ErrGen
+        _WARN_ErrGen.add(msg)
+
     def _handle_msg_pong(self, payload: dict) -> None:
         if self._net:
             rtt = int(__import__("time").time() * 1000) - payload.get("client_ts", 0)
@@ -3527,6 +3547,7 @@ NetworkHandlers._NET_DISPATCH_NAMES = {
     MsgType.CRAFT_RESULT: "_handle_msg_craft_result",
     MsgType.RECYCLE_RESULT: "_handle_msg_recycle_result",
     MsgType.TRAIN_SKILL_RESULT: "_handle_msg_train_skill_result",
+    MsgType.ERROR: "_handle_msg_error",
     MsgType.PONG: "_handle_msg_pong",
     MsgType.ZONE_CHANGE: "_handle_msg_zone_change",
     MsgType.PORTAL_CAST_START: "_handle_msg_portal_cast_start",
