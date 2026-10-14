@@ -3209,6 +3209,11 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             # mesmo default de Faction/create_enemy (retrocompatível: mob
             # sem componente — não deveria existir, mas nunca quebra).
             "faction":      fac.faction_id if fac else "monstros_hostis",
+            # Direção inicial (13/10/2026) — fonte única é TileMovement.facing
+            # (aleatório pra mob de verdade, "down" fixo pra NPC de serviço/
+            # guarda, ver create_enemy()) — sem mandar, o espelho remoto
+            # sortearia o próprio valor, divergindo entre jogadores.
+            "facing":       tm.facing,
         }
         # Nome próprio (ex: "Boneco de treino") — sem isso o cliente deriva o
         # nome exibido a partir da raça (create_enemy: mob_display_name = race),

@@ -874,6 +874,20 @@ padrão a quebrar, não só os bugs individuais.
   tratar `mob_targets` como "foto do estado atual" (mesma regra de
   `effects`/`mob_effects` — substitui, nunca concatena) sempre que um
   campo novo desse tipo nascer. Ver PROBLEMAS_ARQUITETURA.md §273.
+  **Direção inicial de mob hostil é ALEATÓRIA, não fixa em "down"**
+  (13/10/2026) — sorteada dentro de `create_enemy()` (NUNCA
+  `_build_combat_entity`, que também serve NPC de serviço/guarda —
+  esses continuam sempre "down" de propósito), sincronizada via
+  `"facing"` em `_build_mob_spawn_payload` + aplicada em
+  `_spawn_remote_mob` (sobrescreve o sorteio independente que a
+  chamada LOCAL de `create_enemy()` no cliente também faz — sem isso,
+  cada jogador veria o mesmo mob virado pra um lado diferente).
+  Qualquer campo cosmético novo desse tipo (sorteado na criação,
+  precisa ser IGUAL pra todo jogador) segue o mesmo padrão: sorteia
+  SÓ no servidor, manda o valor pela rede, cliente nunca sorteia o
+  próprio — mesmo princípio de "servidor é a única fonte de verdade"
+  de qualquer outro campo de combate. Ver PROBLEMAS_ARQUITETURA.md
+  §276.
   **Âncora de desenho e Y-sort** (10/09/2026, decisão do usuário): cada
   frame tem um tile de colisão/pé REAL de 32×32 (`CHAR_COLLISION_SIZE`
   == TILE_SIZE) no canto `(CHAR_COLLISION_OFFSET_X, CHAR_COLLISION_OFFSET_Y)`

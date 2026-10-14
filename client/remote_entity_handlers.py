@@ -941,6 +941,17 @@ class RemoteEntityHandlers:
             # no default (monstros_hostis) sem isso.
             faction      = data.get("faction", "monstros_hostis"),
         )
+        # Direção inicial real do servidor (13/10/2026) — sobrescreve o que
+        # a chamada local de create_enemy() acabou de sortear por conta
+        # própria, senão cada jogador veria o mesmo mob virado pra um lado
+        # diferente (servidor é a única fonte de verdade, ver
+        # world_server.py::_build_mob_spawn_payload).
+        _server_facing = data.get("facing")
+        if _server_facing:
+            from engine.components import TileMovement as _TMFacingSpawn
+            _tm_facing = self.world.get_component(local_eid, _TMFacingSpawn)
+            if _tm_facing is not None:
+                _tm_facing.facing = _server_facing
         # Aplica cor do servidor
         server_color = data.get("color")
         ren = self.world.get_component(local_eid, Renderable)

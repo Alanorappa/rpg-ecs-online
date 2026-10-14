@@ -27414,3 +27414,49 @@ item B que desliza de posição quando a oferta de A confirma, confirmar
 tem que pegar B na posição NOVA) + caso normal (nada muda) + caso
 extremo (item sumiu da bolsa, cancela). `tests/test_trade_state_stack_diff.py`
 + `tests/test_client_ui.py` (262 testes) rodados sem regressão.
+
+## 276. Mob de zona/jungle nascia sempre virado pra baixo (13/10/2026)
+
+**Pedido do usuário**: "a posição das aranhas no spawn delas é igual
+pra todas, todas ficam viradas pra baixo, é possível fazer com que
+isso seja aleatório?"
+
+**Causa raiz**: `TileMovement.facing` tem default `"down"` e nada
+nunca sobrescrevia isso na criação de um mob — nem `create_enemy()`
+nem `SpawnZoneSystem._spawn_one()` (que só sorteia `level`, nunca
+direção). Rede nunca carregava esse campo pro cliente (`_build_mob_
+spawn_payload` não tinha `"facing"`), então mesmo randomizando só no
+servidor o cliente nunca saberia.
+
+**Decisão de escopo**: sortear dentro de `create_enemy()` (o wrapper,
+NÃO `_build_combat_entity` genérica) — assim só mob hostil de verdade
+(spawn zone + acampamento de jungle, os 2 únicos chamadores reais de
+`create_enemy()` fora de testes) ganha direção aleatória; NPC de
+serviço/guarda (`create_combat_npc`/`create_merchant`/`create_
+trainer`/etc., que chamam `_build_combat_entity` direto) continua
+sempre "down" de propósito — comportamento deles nunca foi o motivo
+do pedido. Cobre respawn de graça, já que `_spawn_one` chama
+`create_enemy()` de novo a cada vez que a zona reenche.
+
+**Sincronização**: como `create_enemy()` também é chamada do LADO
+CLIENTE pra reconstruir o espelho de qualquer mob remoto
+(`_spawn_remote_mob`), sortear só ali faria cada jogador ver o MESMO
+mob virado pra um lado diferente (servidor sorteia um valor pra
+entidade real, cliente sorteia outro pro espelho, de forma
+independente). Fix: `_build_mob_spawn_payload` (`server/world_
+server.py`) passou a mandar `"facing": tm.facing` (servidor é a
+única fonte de verdade); `_spawn_remote_mob` (`client/remote_
+entity_handlers.py`) sobrescreve a direção que a chamada local de
+`create_enemy()` acabou de sortear, aplicando a direção REAL que
+veio no payload.
+
+**Teste**: nenhum automatizado (decisão do usuário — mudança
+cosmética, nível de teste decidido por mudança) — validado rodando a
+suíte de mob/spawn/NPC relacionada (`test_mob_target_facing.py`,
+`test_mob_animation.py`, `test_mob_death_animation.py`,
+`test_dungeon.py`, `test_jungle_camps.py`, `test_towers.py`,
+`test_minions.py`, `test_npc_service_unlock.py`,
+`test_service_npcs.py`) sem regressão nova (os poucos testes que já
+falhavam antes da mudança continuam falhando pelos mesmos motivos,
+confirmado via `git stash`/baseline). Validação visual fica pro
+playtest do usuário.

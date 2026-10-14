@@ -1,6 +1,7 @@
 # entity_factory.py
 from __future__ import annotations
 import dataclasses
+import random
 from engine.world import World
 from engine.components import Position, Renderable, PlayerControlled, Camera, Collider, \
                        Enemy, AIControlled, InitialPosition, DetectionRadius, Tilemap, \
@@ -494,6 +495,18 @@ def create_enemy(world: World, tile_x: int, tile_y: int,
                                tier, race, entity_class, level, faction,
                                identity_name=identity_name)
     world.add_component(eid, Enemy())
+    # Direção inicial aleatória (13/10/2026, pedido do usuário — toda
+    # aranha/mob de zona nascia sempre virada pra baixo). Só aqui, nunca em
+    # _build_combat_entity: NPC de serviço/guarda (create_combat_npc/
+    # create_merchant/etc.) continuam sempre "down" de propósito. Servidor
+    # sorteia 1x na criação (inclusive respawn, já que SpawnZoneSystem
+    # chama create_enemy() de novo a cada vez) e manda a direção real pro
+    # cliente via `_build_mob_spawn_payload`/`facing` — sem isso, o
+    # espelho remoto sortearia o próprio valor aqui também, e cada
+    # jogador veria o mesmo mob virado pra um lado diferente.
+    tm = world.get_component(eid, TileMovement)
+    if tm is not None:
+        tm.facing = random.choice(("down", "up", "left", "right"))
     return eid
 
 
