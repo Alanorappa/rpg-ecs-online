@@ -612,6 +612,20 @@ padrão a quebrar, não só os bugs individuais.
   (classe + talento + learned) — gate autoritativo chamado pelo
   skill_processor; toda forma nova de adquirir skill entra ALI. Fixtures de
   teste usam `tests.helpers.authorize_skill()`.
+- **Resolver nome de personagem → eid entre TODOS os players online**
+  (correio, convite de grupo por nome, ou categoria futura parecida que
+  precise alcançar alguém independente de estar visível/na AOI) →
+  `WorldServer.find_online_player_eid_by_name(name)` (13/10/2026,
+  case-insensitive, filtra por `CharacterStats` — NUNCA `EntityIdentity`,
+  que é componente de mob/NPC, nunca anexado a player; nome de player
+  mora em `CharacterStats.name`, mesmo campo que `get_party_snapshot` já
+  usa) — NUNCA resolver nome só entre entidades VISÍVEIS localmente
+  (`RemoteControlled`/AOI) quando a ação deveria alcançar qualquer
+  player conectado, independente de distância. Bug real: "/convidar"
+  só funcionava com quem já estava no AOI do requester, porque o
+  CLIENTE resolvia o nome digitado só entre players já espelhados
+  localmente — o servidor (`request_party_invite`) nunca teve restrição
+  de distância nenhuma. Ver PROBLEMAS_ARQUITETURA.md §278.
 - **Troca de aparência temporária de entidade** (disfarce, transformação,
   futura poção de metamorfose, etc.) → `engine/entity_disguise.py::
   get_active_appearance_override()` + tabela `_APPEARANCE_SOURCES` — 1

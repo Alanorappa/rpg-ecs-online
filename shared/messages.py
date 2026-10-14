@@ -152,9 +152,9 @@ class MsgType(str, Enum):
     DUEL_END           = "duel_end"           # S→C  {winner_eid, loser_eid, reason} win|declined|distance|disconnect — pros dois
 
     # Party/Grupo (ver server/party_processor.py) — convite via modal OU comando de chat "/convidar"
-    PARTY_INVITE        = "party_invite"        # C→S  {target_eid} — botão "Convidar p/ Grupo" ou /convidar
+    PARTY_INVITE        = "party_invite"        # C→S  {target_eid, target_name?} — botão "Convidar p/ Grupo" (target_eid real) ou /convidar (target_eid=-1 + target_name quando o alvo não está visível no AOI local, 13/10/2026 — servidor resolve por nome entre TODOS online)
     PARTY_INVITE_RECEIVED = "party_invite_received"  # S→C  {from_eid, from_name} — só ao alvo
-    PARTY_INVITE_FAILED = "party_invite_failed" # S→C  {reason} — só ao requester, convite recusado na origem
+    PARTY_INVITE_FAILED = "party_invite_failed" # S→C  {reason} invalid|declined|not_found — só ao requester, convite recusado na origem
     PARTY_ACCEPT        = "party_accept"        # C→S  {} — resposta ao convite pendente
     PARTY_DECLINE       = "party_decline"       # C→S  {} — idem
     PARTY_STATE         = "party_state"         # S→C  {party_id, leader_eid, members:[{eid,name,class_id,level,hp,hp_max}]} — pra todos os membros a cada mudança; party_id=-1/members=[] individual pra quem saiu/foi expulso
@@ -428,7 +428,9 @@ C2S_REQUIRED: dict = {
     MsgType.DUEL_REQUEST:       {"target_eid": _NUM},
     # Party — schema validado contra o send REAL do cliente
     # (client/trade_handlers.py::_send_party_invite_request /
-    # client/party_handlers.py::_try_handle_party_chat_command):
+    # client/party_handlers.py::_try_handle_party_chat_command).
+    # `target_name` (13/10/2026, fallback de /convidar pra alvo fora do AOI)
+    # é OPCIONAL de propósito — não entra aqui (regra do schema acima).
     MsgType.PARTY_INVITE:       {"target_eid": _NUM},
     MsgType.PARTY_KICK:         {"target_eid": _NUM},
     MsgType.SAVE_STATE:         {},   # payload inteiro é dict validado a fundo no handler

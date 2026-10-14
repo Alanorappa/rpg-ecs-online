@@ -2575,13 +2575,29 @@ class SessionManager:
 
     async def _handle_party_invite(self, session: Session, payload: dict, ts: int) -> None:
         """Botão "Convidar p/ Grupo" do modal de interação OU comando de
-        chat "/convidar" (client/party_handlers.py) — mesmo PARTY_INVITE."""
+        chat "/convidar" (client/party_handlers.py) — mesmo PARTY_INVITE.
+
+        `target_eid=-1` + `target_name` (13/10/2026, ver PROBLEMAS_
+        ARQUITETURA.md) — fallback pro comando de chat quando o alvo não
+        está visível no AOI do requester (cliente só sabe resolver nome→eid
+        entre players VISÍVEIS localmente). Resolve por nome entre TODOS os
+        players online agora (`WorldServer.find_online_player_eid_by_name`,
+        mesmo lookup que o correio já usa) — `request_party_invite()` em si
+        nunca teve restrição de distância (por design, replica o /invite de
+        WoW), só o CLIENTE tinha essa limitação indevida."""
         if not session.authenticated:
             return
         requester_eid = self.world_server._player_eids.get(session.session_id)
         if requester_eid is None:
             return
         target_eid = int(payload.get("target_eid", -1))
+        if target_eid == -1:
+            target_name = str(payload.get("target_name", "")).strip()
+            resolved = self.world_server.find_online_player_eid_by_name(target_name) if target_name else None
+            if resolved is None:
+                await session.send(MsgType.PARTY_INVITE_FAILED, {"reason": "not_found"})
+                return
+            target_eid = resolved
         reason = self.world_server.request_party_invite(requester_eid, target_eid)
         if reason is not None:
             await session.send(MsgType.PARTY_INVITE_FAILED, {"reason": reason})

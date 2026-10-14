@@ -18,19 +18,6 @@ from __future__ import annotations
 
 class MailProcessorMixin:
 
-    def _find_online_player_eid_by_name(self, name: str) -> "int | None":
-        """Busca um player ONLINE agora por nome de personagem (case-
-        insensitive) — usado só pra notificar o indicador de correspondência
-        nova em tempo real; se o destinatário não estiver online, a
-        correspondência já foi persistida de qualquer forma (ele vê no
-        próximo login, via `count_unread_mail` em `_spawn_and_start`)."""
-        from engine.components import EntityIdentity, PlayerControlled
-        name_lower = name.lower()
-        for eid, ident, _ in self.world.get_entities_with(EntityIdentity, PlayerControlled):
-            if ident.name.lower() == name_lower:
-                return eid
-        return None
-
     async def process_mail_open_inbox(self, char_id: int) -> list:
         from server import auth
         return await auth.list_inbox(char_id)
@@ -127,7 +114,7 @@ class MailProcessorMixin:
         if gold > 0:
             self.queue_stats_update({"player_eid": player_eid, "gold": wallet.gold})
 
-        recipient_eid = self._find_online_player_eid_by_name(to_name)
+        recipient_eid = self.find_online_player_eid_by_name(to_name)
         if recipient_eid is not None:
             await self._push_mail_unread(recipient_eid, recipient_char_id)
 

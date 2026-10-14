@@ -154,6 +154,26 @@ class TestPartyLifecycle(unittest.TestCase):
                          "alvo já em outro grupo — convite deveria ser recusado")
 
 
+class TestFindOnlinePlayerEidByName(unittest.TestCase):
+    """`WorldServer.find_online_player_eid_by_name` (13/10/2026, movido de
+    `MailProcessorMixin` — usado por Party pro fallback de "/convidar" com
+    alvo fora do AOI, ver PROBLEMAS_ARQUITETURA.md §278). Filtra por
+    `CharacterStats` (nome real do player), NUNCA `EntityIdentity` (mob/NPC
+    — nunca anexado a player; a versão antiga do correio usava o campo
+    errado e nunca encontrava ninguém de verdade)."""
+
+    def setUp(self):
+        self.ws = make_world_server()
+        self.a = spawn_player(self.ws, "FulanoDeTal", 130, 374)
+
+    def test_acha_player_online_case_insensitive(self):
+        self.assertEqual(self.ws.find_online_player_eid_by_name("fulanodetal"), self.a)
+        self.assertEqual(self.ws.find_online_player_eid_by_name("FULANODETAL"), self.a)
+
+    def test_nome_inexistente_devolve_none(self):
+        self.assertIsNone(self.ws.find_online_player_eid_by_name("NinguemComEsseNome"))
+
+
 class TestPartySharedXp(unittest.TestCase):
     """XP compartilhado (decisão do usuário 17/07/2026): fatia por
     proporção de dano continua entre atacantes sem grupo em comum, mas

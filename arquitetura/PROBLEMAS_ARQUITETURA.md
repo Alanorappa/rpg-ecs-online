@@ -27519,3 +27519,76 @@ a suíte de mob/spawn/NPC relacionada (mesma lista de §276 + nameplate)
 sem regressão nova. Validação visual fica pro usuário, criando o kit
 de sprites do boss (`{spritesheet}_idle_down.png` etc.) e configurando
 `"spritesheet": "acraxxidae_o_obstinado"` no spawn/zona do mapa.
+
+## 278. "/convidar"/"/invite" só funcionava com player visível no AOI (13/10/2026)
+
+**Pedido do usuário**: "não estou conseguindo convidar um player para o
+meu grupo quando ele não está na minha AOI, mesmo usando o comando
+/invite".
+
+**Causa raiz**: `request_party_invite()` (`server/party_processor.py`)
+**nunca teve** restrição de distância — por design, desde 17/07/2026,
+documentado no próprio docstring do módulo ("replica o /invite de WoW,
+funciona no mapa inteiro"). O bug estava 100% no CLIENTE: o comando de
+chat (`client/party_handlers.py::_try_handle_party_chat_command`)
+resolvia nome→eid procurando só entre `RemoteControlled` locais (players
+JÁ visíveis no AOI) — alvo fora de alcance nunca era encontrado, mesmo
+o servidor sendo capaz de aceitar o convite sem problema nenhum. O botão
+"Convidar p/ Grupo" do modal de interação nunca teve esse problema (só
+funciona em cima de alguém já clicado, logo já visível por natureza).
+
+**Precedente encontrado**: `server/mail_processor.py::
+_find_online_player_eid_by_name` já resolvia nome→eid entre TODOS os
+players online (não só visíveis) — usado pra notificar indicador de
+correspondência nova em tempo real. Mesmo mecanismo que Party precisava.
+
+**Bug adicional achado ao mover a função** (nunca antes percebido): ela
+filtrava por `EntityIdentity` — componente de MOB/NPC, **nunca** anexado
+a player (`WorldServer.spawn_player` só dá `PlayerControlled`+
+`CharacterStats`, nome do player mora em `CharacterStats.name`, mesmo
+campo que `get_party_snapshot` já usa). Ou seja, a busca por nome do
+correio NUNCA encontrava um player online de verdade — só não foi
+percebido porque mail persiste no banco independente de notificação em
+tempo real (destinatário offline vê no próximo login de qualquer
+forma, o bug só matava o "sino" instantâneo). Corrigido junto, trocando
+o filtro pra `CharacterStats`.
+
+**Fix**:
+- `WorldServer.find_online_player_eid_by_name(name)` (`server/
+  world_server.py`, movido de `MailProcessorMixin` — passa a ser usado
+  por 2 features, deixa de fazer sentido "pertencer" só ao correio;
+  mesma vizinhança de outros helpers de consulta tipo
+  `get_session_id_for_player`/`player_in_any_instance`). `mail_
+  processor.py` atualizado pro novo nome/local.
+- `PARTY_INVITE` (protocolo) ganhou campo OPCIONAL `target_name` —
+  `target_eid=-1` sinaliza "resolver por nome" (`shared/messages.py`,
+  `target_name` de propósito fora do schema de campos obrigatórios,
+  regra já documentada ali: "opcionais não entram").
+- `server/session.py::_handle_party_invite` — se `target_eid == -1`,
+  resolve via `find_online_player_eid_by_name(target_name)`; não
+  encontrou → `PARTY_INVITE_FAILED{reason: "not_found"}`.
+- `client/party_handlers.py::_try_handle_party_chat_command` — continua
+  tentando resolução LOCAL primeiro (rápido, sem round-trip, zero
+  mudança pro caso comum de convidar quem já está visível); só cai pro
+  fallback de rede (`target_eid: -1, target_name: <nome>`) quando não
+  acha localmente. Motivo novo (`"not_found"`) mapeado pra mensagem
+  amigável.
+
+**Teste**: `tests/test_session.py::TestPartyInviteByName` (3 casos,
+fim-a-fim via `_handle_party_invite` real) — reproduz o cenário EXATO
+(requester em 115,389, alvo em 10,10, nenhuma AOI em comum, convite só
+por nome funciona), caso "nome não existe" e regressão do caminho
+`target_eid` direto (botão do modal). `tests/test_party.py::
+TestFindOnlinePlayerEidByName` (2 casos) — unitário do helper
+(case-insensitive, nome inexistente).
+**Armadilha achada escrevendo o teste**: 2 dos 3 métodos de
+`TestPartyInviteByName` usavam usernames com dígito (`pinv_req2`,
+`pinv_req3`) — `_valid_char_name()` (tests/test_session.py) derruba
+dígito/underscore, então "pinv_req"/"pinv_req2"/"pinv_req3" todos
+derivavam pro MESMO nome de personagem ("pinvreq"); o índice único do
+banco (`characters_name_lower_idx`) recusava a 2ª/3ª criação em
+silêncio, deixando a conta sem personagem nenhum (`AUTH_OK` com
+`characters=[]`) — teste falhava por razão totalmente alheia ao código
+sob teste. Fix: usernames com letras TOTALMENTE distintas por método de
+teste, nunca variações por sufixo numérico quando múltiplos logins
+acontecem no mesmo arquivo/classe de teste.

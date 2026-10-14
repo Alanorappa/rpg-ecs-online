@@ -3448,6 +3448,33 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         """Retorna session_id do player dado seu entity_id — O(1) via reverse map."""
         return self._player_eid_to_sid.get(player_eid)
 
+    def find_online_player_eid_by_name(self, name: str) -> "int | None":
+        """Busca um player ONLINE agora por nome de personagem (case-
+        insensitive), independente de AOI/visibilidade — ponto único
+        (13/10/2026, movido de `MailProcessorMixin` pra cá quando Party
+        passou a precisar do mesmo lookup pro convite por nome via chat
+        quando o alvo não está visível — ver `server/party_processor.py`/
+        `PROBLEMAS_ARQUITETURA.md`). Correio usa isto só pra notificar o
+        indicador de correspondência nova em tempo real; se o destinatário
+        não estiver online, a correspondência já foi persistida de
+        qualquer forma (ele vê no próximo login).
+
+        `CharacterStats` (não `EntityIdentity`) — bug achado ao mover esta
+        função: nome de PLAYER mora em `CharacterStats.name` (ver
+        `get_party_snapshot`, mesmo campo); `EntityIdentity` é component de
+        mob/NPC, nunca anexado a player (`spawn_player` só dá
+        `PlayerControlled`+`CharacterStats`). A versão antiga (só mail)
+        filtrava por `EntityIdentity` — nunca batia com player nenhum,
+        então a notificação em tempo real de mail nunca funcionava de
+        verdade (mail continuava persistido normalmente, por isso o bug
+        nunca foi percebido)."""
+        from engine.components import CharacterStats, PlayerControlled
+        name_lower = name.lower()
+        for eid, char, _ in self.world.get_entities_with(CharacterStats, PlayerControlled):
+            if char.name.lower() == name_lower:
+                return eid
+        return None
+
     # ── Skill API ────────────────────────────────────────────────────────────
 
     def queue_skill(self, session_id: str, sid: str, tid: int,

@@ -54,8 +54,9 @@ class PartyHandlers:
         reason = payload.get("reason", "")
         from ui.floating_text import WARN
         _msgs = {
-            "invalid":  "Convite de grupo indisponível.",
-            "declined": "Convite de grupo recusado.",
+            "invalid":   "Convite de grupo indisponível.",
+            "declined":  "Convite de grupo recusado.",
+            "not_found": "Jogador não encontrado (precisa estar online).",
         }
         WARN.add(_msgs.get(reason, "Convite de grupo indisponível."))
 
@@ -93,11 +94,19 @@ class PartyHandlers:
             if rc.name.lower() == name.lower():
                 target_local = eid
                 break
-        if target_local == -1:
-            WARN.add(f"Jogador '{name}' não encontrado (precisa estar visível).")
+        if target_local != -1:
+            self._send_party_invite_request(target_local)
             return True
 
-        self._send_party_invite_request(target_local)
+        # Alvo não está visível no AOI local (13/10/2026, bug relatado pelo
+        # usuário: "/invite" só funcionava com quem já estava visível) —
+        # servidor resolve o nome entre TODOS os players online agora
+        # (WorldServer.find_online_player_eid_by_name, mesmo mecanismo do
+        # correio), já que request_party_invite() nunca teve restrição de
+        # distância. target_eid=-1 sinaliza "resolver por nome" pro handler.
+        if self._net:
+            from shared.messages import MsgType
+            self._net.send(MsgType.PARTY_INVITE, {"target_eid": -1, "target_name": name})
         return True
 
     def _send_party_leave(self) -> None:

@@ -2499,6 +2499,69 @@ class TestUnstuckBloqueadoEmInstancia(AuthPoolCleanupMixin, unittest.IsolatedAsy
         self.assertEqual(len(get_msgs_of_type(fw, MsgType.ENTITY_MOVE)), 1)
 
 
+class TestPartyInviteByName(AuthPoolCleanupMixin, unittest.IsolatedAsyncioTestCase):
+    """Bug real relatado pelo usuário (13/10/2026): "/convidar" só
+    funcionava com um player já visível no AOI local — o cliente
+    resolvia nome→eid só entre `RemoteControlled` locais. O servidor
+    (`request_party_invite`) nunca teve restrição de distância; o
+    fallback por nome (`target_eid=-1` + `target_name`) deixa o SERVIDOR
+    resolver entre TODOS os players online, via
+    `WorldServer.find_online_player_eid_by_name`. Ver
+    PROBLEMAS_ARQUITETURA.md §278."""
+
+    async def asyncSetUp(self):
+        self.ws_server, self.mgr = make_session_manager()
+
+    async def test_convida_por_nome_mesmo_sem_estar_na_aoi(self):
+        """Reproduz o cenário EXATO: requester longe do alvo (fora de
+        qualquer AOI real — 115,389 vs. 10,10), convite só por nome."""
+        req_session, req_fw = await fake_login(self.mgr, "s1", "pinv_req", 115, 389)
+        _, tgt_fw = await fake_login(self.mgr, "s2", "pinv_tgt", 10, 10)
+        req_fw.sent.clear()
+        tgt_fw.sent.clear()
+
+        await self.mgr._handle_party_invite(req_session, {
+            "target_eid": -1, "target_name": _valid_char_name("pinv_tgt").upper(),
+        }, 0)
+
+        self.assertEqual(len(get_msgs_of_type(req_fw, MsgType.PARTY_INVITE_FAILED)), 0)
+        received = get_msgs_of_type(tgt_fw, MsgType.PARTY_INVITE_RECEIVED)
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0]["from_name"], req_session.display_name)
+
+    async def test_nome_nao_encontrado_avisa_requester(self):
+        # Nome de teste com letras DISTINTAS dos outros métodos desta classe
+        # — _valid_char_name() derruba dígito/underscore, então "pinv_req2"
+        # colidiria com "pinv_req" (ambos viram "pinvreq") e o índice único
+        # de nome do banco (characters_name_lower_idx) recusaria a 2ª
+        # criação, deixando a conta sem personagem nenhum (chars=0).
+        req_session, req_fw = await fake_login(self.mgr, "s1", "pinvsolicitantenaoachou", 115, 389)
+        req_fw.sent.clear()
+
+        await self.mgr._handle_party_invite(req_session, {
+            "target_eid": -1, "target_name": "NomeQueNaoExisteEmLugarNenhum",
+        }, 0)
+
+        failed = get_msgs_of_type(req_fw, MsgType.PARTY_INVITE_FAILED)
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["reason"], "not_found")
+
+    async def test_target_eid_direto_continua_funcionando(self):
+        """Regressão: caminho do botão "Convidar p/ Grupo" (target_eid já
+        resolvido, sem target_name) continua igual."""
+        req_session, req_fw = await fake_login(self.mgr, "s1", "pinvsolicitantedireto", 115, 389)
+        tgt_session, tgt_fw = await fake_login(self.mgr, "s2", "pinvalvodireto", 117, 389)
+        req_fw.sent.clear()
+        tgt_fw.sent.clear()
+
+        await self.mgr._handle_party_invite(req_session, {
+            "target_eid": tgt_session.entity_id,
+        }, 0)
+
+        self.assertEqual(len(get_msgs_of_type(req_fw, MsgType.PARTY_INVITE_FAILED)), 0)
+        self.assertEqual(len(get_msgs_of_type(tgt_fw, MsgType.PARTY_INVITE_RECEIVED)), 1)
+
+
 class TestTokenBucket(unittest.TestCase):
     """`server.session._TokenBucket` isolado (16/09/2026, ver
     arquitetura/PROJECT_WIDE_REVIEW.md) — sem I/O, manipula `last_ts`
