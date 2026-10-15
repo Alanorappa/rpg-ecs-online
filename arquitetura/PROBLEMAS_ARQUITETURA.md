@@ -27976,3 +27976,66 @@ Fatiador de Corpos (417 testes) sem regressão — nenhum teste
 pré-existente testava o mecanismo de loop do cast especificamente
 (§281 foi implementado e documentado, mas sem suíte dedicada, decisão
 do usuário na ocasião), então não houve teste pra atualizar/remover.
+
+## 285. Animação de morte do player (15/10/2026)
+
+**Pedido do usuário**: "o jogo não está fazendo a animação de morte do
+player, a animação de morte precisa ser feito assim que o player
+recebe o hit que o mata, e o último frame da animação deve ficar
+congelado até o personagem libertar espírito ou spawnar novamente."
+
+**Pesquisa feita antes de codar**: confirmei que `ui/render_system.py`
+já tem um conceito de "corpo" (`GhostState.is_dead and not is_ghost`
+pro player local; `RemoteControlled.hp<=0` pro remoto, mesmo sinal já
+usado pra suprimir a barra de HP do nameplate) — mas o branch de
+desenho (`_is_corpse_draw`) sempre caía num retângulo cinza
+dessaturado, nunca tentava a animação de personagem. O sistema de
+morte de MOB (`engine/mob_animation.py::trigger_mob_death_anim`,
+§271) já resolvia exatamente o mesmo problema pra mob — só faltava o
+equivalente pro player.
+
+**Fix**: `engine.character_animation.trigger_death_anim(tile_movement,
+class_id, now_ms)` (novo) — mesma técnica do mob: toca 1 ciclo e trava
+no último frame (`anim_attack_hold_last_frame=True`), convenção de
+arquivo `{class_id}_death_{direction}.png` (sem cascata de sid — morte
+não é específica de skill). `clear_attack_anim_state(tile_movement)`
+(novo, genérico) limpa `anim_attack_state`/`anim_attack_hold_last_
+frame` na mão — necessário porque estados com hold NUNCA expiram
+sozinhos (mesmo padrão já documentado pro portal/cast).
+
+**Gatilhos — reaproveitando mensagens de rede JÁ EXISTENTES, nenhuma
+nova**:
+- Local: `client/network_handlers.py::_handle_msg_player_death`
+  (`PLAYER_DEATH`) — já é o sinal autoritativo "você morreu agora".
+- Remoto: `_handle_msg_entity_death` (`ENTITY_DEATH`) — já existia e já
+  tingia o sprite de cinza; só adicionei o trigger de animação ali.
+
+**Limpeza — 3 pontos, cobrindo os 2 casos que o usuário pediu
+("libertar espírito OU spawnar") + 1 por higiene**:
+- `_handle_msg_player_revive` (`PLAYER_REVIVE`, local, respawn
+  completo) — ponto óbvio.
+- `_handle_msg_ghost_state`, na transição `is_ghost` False→True
+  (local, "Liberar espírito") — tecnicamente o branch de render de
+  fantasma nem olha pra esse estado (é um desenho totalmente
+  diferente, semi-transparente), mas limpar aqui evita estado obsoleto
+  sobrevivendo pro PRÓXIMO ciclo de vida do personagem.
+- Transição de HP 0→positivo no handler de STATS_UPDATE de player
+  remoto (revive remoto — não existe uma mensagem "reviveu" dedicada
+  pro remoto, só o HP voltando a subir).
+
+**Renderização**: `_is_corpse_draw` tenta resolver o frame de morte
+PRIMEIRO (mesma âncora/Y-sort já usados pro personagem vivo,
+`character_anchor_offset`/`get_character_frame`) — só cai no retângulo
+cinza se `resolve_display_state` não devolver literalmente o estado
+`CHAR_DEATH_STATE` (ou seja, sem arte de morte pra essa classe/direção
+ainda, ou o trigger nunca chegou a ligar) — zero regressão pra classe
+sem sprite. Confundir isso com "cair pro idle/run" seria o bug errado
+de se cometer aqui — por isso a checagem é `_state_corpse ==
+CHAR_DEATH_STATE` explícito, não só "frame não é None".
+
+**Teste**: suíte de animação de personagem/nameplate/portal/client_ui
+(407 testes) + seleção/mob (23 testes) sem regressão. Nenhum teste
+pré-existente exercitava os handlers de PLAYER_DEATH/PLAYER_REVIVE/
+ENTITY_DEATH/GHOST_STATE diretamente — decisão do usuário (manual em
+playtest) confirmada compatível com a ausência de cobertura prévia
+nesse ponto específico.

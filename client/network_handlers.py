@@ -2240,7 +2240,18 @@ class NetworkHandlers:
                                      hp_before=rc.hp, hp_novo=payload.get("hp"),
                                      hp_max_novo=payload.get("hp_max"))
                 if "hp" in payload:
+                    _was_dead_hp_rc = rc.hp <= 0
                     rc.hp = payload["hp"]
+                    if _was_dead_hp_rc and rc.hp > 0:
+                        # Revive remoto (15/10/2026) — limpa a animação
+                        # de morte presa (hold_last_frame), mesma
+                        # disciplina do revive local (_handle_msg_
+                        # player_revive).
+                        from engine.components import TileMovement as _TMReviveRc
+                        from engine.character_animation import clear_attack_anim_state as _caas_rc
+                        _tm_revive_rc = self.world.get_component(local_eid, _TMReviveRc)
+                        if _tm_revive_rc is not None:
+                            _caas_rc(_tm_revive_rc)
                 if "hp_max" in payload:
                     rc.hp_max = payload["hp_max"]
                 # Bug real relatado pelo usuário 17/07/2026: nameplate de
@@ -2307,6 +2318,17 @@ class NetworkHandlers:
             combat_state.is_alive         = False  # can_act()==False: bloqueia skills/ataques
         self._net_last_target = -1
         self._death_timer = 0.0
+        # Animação de morte (15/10/2026, pedido do usuário) — liga no
+        # exato momento em que o servidor confirma a morte, trava no
+        # último frame (ver engine.character_animation.trigger_death_anim)
+        # até _handle_msg_player_revive limpar.
+        from engine.components import CharacterStats as _CSDeathAnim, TileMovement as _TMDeathAnim
+        _char_death_anim = self.world.get_component(self.player_entity, _CSDeathAnim)
+        _tm_death_anim = self.world.get_component(self.player_entity, _TMDeathAnim)
+        if _char_death_anim and _tm_death_anim is not None:
+            import pygame as _pg_death_anim
+            from engine.character_animation import trigger_death_anim as _tda
+            _tda(_tm_death_anim, _char_death_anim.class_id, _pg_death_anim.time.get_ticks())
 
     def _handle_msg_player_revive(self, payload: dict) -> None:
         # Servidor reviveu o player local (cemitério ou corpo) — restaura
@@ -2331,6 +2353,11 @@ class NetworkHandlers:
             ptm.current_tile_y = ptm.target_tile_y = ty
             ptm.is_moving = False
             ptm.progress  = 0.0
+            # Limpa a animação de morte (15/10/2026) — "death" trava no
+            # último frame sozinha pra sempre (hold_last_frame), senão o
+            # personagem revivido ficaria preso na pose de morto.
+            from engine.character_animation import clear_attack_anim_state as _caas_rev
+            _caas_rev(ptm)
         if ppo:
             ppo.x = tx * TILE_SIZE + TILE_SIZE // 2
             ppo.y = ty * TILE_SIZE + TILE_SIZE // 2
@@ -2376,9 +2403,22 @@ class NetworkHandlers:
         gst = self.world.get_component(self.player_entity, GhostState)
         if not gst:
             return
+        _was_ghost_gs = gst.is_ghost
         gst.is_ghost        = payload.get("is_ghost", gst.is_ghost)
         gst.near_corpse     = payload.get("near_corpse", gst.near_corpse)
         gst.graveyard_timer = payload.get("graveyard_timer", gst.graveyard_timer)
+        if gst.is_ghost and not _was_ghost_gs:
+            # Espírito liberado (15/10/2026) — limpa a animação de morte
+            # presa (hold_last_frame); o branch de render de fantasma
+            # (ui/render_system.py) nem olha pra ela, mas limpar aqui
+            # evita estado obsoleto sobrevivendo pro próximo ciclo de
+            # vida (mesma disciplina do revive, ver
+            # _handle_msg_player_revive).
+            from engine.components import TileMovement as _TMGhostAnim
+            from engine.character_animation import clear_attack_anim_state as _caas_ghost
+            _tm_ghost_anim = self.world.get_component(self.player_entity, _TMGhostAnim)
+            if _tm_ghost_anim is not None:
+                _caas_ghost(_tm_ghost_anim)
         # Resincroniza o contador LOCAL de exibição (death_ui_handlers.py::
         # _ghost_timer) com o valor autoritativo do servidor — sem isso, ele
         # incrementa sem parar independente do player estar dentro do raio
@@ -2412,13 +2452,22 @@ class NetworkHandlers:
         local_eid = self._remote_players.get(eid)
         if local_eid is None:
             return
-        from engine.components import RemoteControlled, Renderable
+        from engine.components import RemoteControlled, Renderable, TileMovement as _TMEntDeathAnim
         rc = self.world.get_component(local_eid, RemoteControlled)
         if rc:
             rc.hp = 0
         rnd = self.world.get_component(local_eid, Renderable)
         if rnd:
             rnd.color = tuple(int(c * 0.35) + 20 for c in rnd.color[:3])
+        # Animação de morte (15/10/2026, pedido do usuário) — mesmo
+        # gatilho do player local, só que pro espelho remoto, pra
+        # qualquer observador por perto ver também.
+        if rc:
+            _tm_ent_death = self.world.get_component(local_eid, _TMEntDeathAnim)
+            if _tm_ent_death is not None:
+                import pygame as _pg_ent_death
+                from engine.character_animation import trigger_death_anim as _tda_ent
+                _tda_ent(_tm_ent_death, rc.class_id, _pg_ent_death.time.get_ticks())
 
     def _resolve_loot_item(self, item_data: dict):
         """Reconstrói 1 item de loot recebido do servidor — prefere

@@ -337,6 +337,49 @@ def trigger_cast_anim(tile_movement, class_id: str, sid: str, now_ms: int) -> No
     tile_movement.anim_attack_hold_last_frame  = True
 
 
+CHAR_DEATH_STATE = "death"
+
+
+def trigger_death_anim(tile_movement, class_id: str, now_ms: int) -> None:
+    """Liga a animação de MORTE do personagem (15/10/2026, pedido do
+    usuário — "a animação precisa ser feita assim que o player recebe o
+    hit que o mata, e o último frame deve ficar congelado até o
+    personagem libertar espírito ou spawnar novamente") — mesma técnica
+    já usada por `engine.mob_animation.trigger_mob_death_anim`: toca 1
+    ciclo do sheet e TRAVA no último frame (`anim_attack_hold_last_
+    frame=True`), nunca expira sozinha. Convenção de arquivo:
+    `{class_id}_death_{direction}.png` (sem cascata de sid — morte não é
+    específica de skill). Chamado nos mesmos 2 eventos de rede que já
+    confirmam a morte, pro caster local E pra observadores (nunca um
+    canal novo): `PLAYER_DEATH` (local, `client/network_handlers.py::
+    _handle_msg_player_death`) e `ENTITY_DEATH` (remoto, `_handle_msg_
+    entity_death`). Quem chama é responsável por LIMPAR `anim_attack_
+    state`/`anim_attack_hold_last_frame` explicitamente no revive
+    (`_handle_msg_player_revive` local; transição de HP 0→positivo
+    remota) — nunca expira sozinha, mesmo padrão de golpe com hold
+    (portal/cast). Sem arte de morte pra essa classe/direção → não faz
+    nada, `ui/render_system.py` cai no retângulo cinza de sempre."""
+    if not _frames_for(class_id, CHAR_DEATH_STATE, tile_movement.facing):
+        return
+    tile_movement.anim_attack_state            = CHAR_DEATH_STATE
+    tile_movement.anim_attack_sid              = ""
+    tile_movement.anim_attack_started_ms       = now_ms
+    tile_movement.anim_attack_frame_ms         = DEFAULT_FRAME_MS
+    tile_movement.anim_attack_loop_duration_ms = 0
+    tile_movement.anim_attack_hold_last_frame  = True
+
+
+def clear_attack_anim_state(tile_movement) -> None:
+    """Limpa `anim_attack_state`/`anim_attack_hold_last_frame` na mão —
+    pro revive (15/10/2026): estados com `hold_last_frame=True` (morte,
+    cast, portal) NUNCA expiram sozinhos, então sem isso o personagem
+    revivido ficaria preso pra sempre na última pose de ANTES de
+    morrer. Seguro chamar mesmo sem nenhum estado ativo (`anim_attack_
+    state` já vazio vira no-op efetivo)."""
+    tile_movement.anim_attack_state           = ""
+    tile_movement.anim_attack_hold_last_frame = False
+
+
 MISS_ATTACK_SLOWDOWN = 1.5  # 50% mais lento — golpe que erra (miss/dodge/parry); 25% não deu diferença perceptível, usuário pediu +25pp (10/09/2026)
 
 # Skills cujo golpe deve ficar em LOOP durante toda a duração REAL da

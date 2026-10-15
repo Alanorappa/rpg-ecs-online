@@ -800,6 +800,28 @@ padrão a quebrar, não só os bugs individuais.
   (`sid==""`) continua ali; disparar nos 2 lugares duplicaria a
   animação pra skill de projétil (lançamento + impacto). Ver
   PROBLEMAS_ARQUITETURA.md §281/§284.
+  **Animação de MORTE do player** (15/10/2026, pedido do usuário) →
+  `engine.character_animation.trigger_death_anim(tile_movement,
+  class_id, now_ms)` — mesma técnica do mob (toca 1 ciclo, trava no
+  último frame via `anim_attack_hold_last_frame=True`, nunca expira
+  sozinha), convenção `{class_id}_death_{direction}.png`, sem cascata
+  de sid. Gatilho: `PLAYER_DEATH` (local, `client/network_handlers.py::
+  _handle_msg_player_death`) e `ENTITY_DEATH` (remoto, `_handle_msg_
+  entity_death`) — ambos já existiam, nenhuma mensagem nova.
+  **`clear_attack_anim_state(tile_movement)` (genérico) tem que ser
+  chamado em TODO ponto onde o personagem deixa de estar morto** —
+  estado com hold NUNCA expira sozinho: `_handle_msg_player_revive`
+  (local), transição `GhostState.is_ghost` False→True (local,
+  "Liberar espírito" — branch de render de fantasma nem olha pra esse
+  estado, mas limpar evita sobra pro PRÓXIMO ciclo de vida), e
+  transição de HP 0→positivo de player remoto no handler de
+  STATS_UPDATE (não existe mensagem "reviveu" dedicada pro remoto).
+  `ui/render_system.py::_is_corpse_draw` só usa o frame de morte
+  quando `resolve_display_state()` devolve LITERALMENTE
+  `CHAR_DEATH_STATE` — nunca só "frame não é None", ou cairia no
+  idle/run "respirando" pra classe sem sprite de morte ainda, em vez
+  do retângulo cinza de fallback certo. Ver PROBLEMAS_ARQUITETURA.md
+  §285.
   **Animação BASE de MOB** (idle/run/attack × 4 direções — não
   confundir com animação de PERSONAGEM jogável acima, que é um sistema
   IRMÃO separado, nunca estendido pelo mesmo módulo) →

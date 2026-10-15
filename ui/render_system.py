@@ -40,7 +40,7 @@ from engine.tileset import TILE_SIZE
 # com ui/systems.py — seguro no topo.
 from engine.entity_disguise import get_active_appearance_override, get_animated_disguise_frame
 from engine.character_animation import (get_character_frame, resolve_display_state,
-                                        character_anchor_offset)
+                                        character_anchor_offset, CHAR_DEATH_STATE)
 from engine.mob_animation import (get_mob_frame, resolve_mob_display_state,
                                    get_mob_top_opaque_offset, resolve_mob_sprite_key)
 from engine.utils import slugify
@@ -756,9 +756,39 @@ class RenderSystem(System):
                     _sel_outline_surf = _sprite_rnd
                     _sel_outline_offset = (int(_blit_x_rnd), int(_blit_y_rnd))
                 elif _is_corpse_draw:
-                    # Corpo morto: dessatura pra cinza (pose "morto", sem barra de HP)
-                    _gray = sum(renderable.color[:3]) // 3
-                    pygame.draw.rect(self.world_surf, (_gray, _gray, _gray), rect)
+                    # Corpo morto (15/10/2026, pedido do usuário): tenta a
+                    # animação de morte real primeiro (trava no último
+                    # frame, ver engine.character_animation.
+                    # trigger_death_anim, chamada no PLAYER_DEATH/
+                    # ENTITY_DEATH) — só cai pro retângulo cinza antigo
+                    # se não houver arte de morte pra essa classe/direção
+                    # ainda (zero regressão). `_state_corpse == CHAR_
+                    # DEATH_STATE` confere que o estado resolvido é
+                    # MESMO "death" (não idle/run) — `resolve_display_
+                    # state` só devolve "death" quando `trigger_death_
+                    # anim` já ligou de verdade (arte existe); sem isso,
+                    # cairia no idle/run "respirando" pra uma classe sem
+                    # sprite de morte, em vez do retângulo cinza certo.
+                    _char_id_corpse = self._resolve_character_class_id(entity_id)
+                    _death_frame = None
+                    if _char_id_corpse:
+                        _tm_corpse = self.world.get_component(entity_id, TileMovement)
+                        if _tm_corpse is not None:
+                            _state_corpse, _anim_t_corpse, _fms_corpse = resolve_display_state(
+                                _tm_corpse, _char_id_corpse, pygame.time.get_ticks())
+                            if _state_corpse == CHAR_DEATH_STATE:
+                                _death_frame = get_character_frame(
+                                    _char_id_corpse, _state_corpse, _tm_corpse.facing,
+                                    _anim_t_corpse, _fms_corpse)
+                    if _death_frame is not None:
+                        _anchor_dx_c, _anchor_dy_c = character_anchor_offset(
+                            _death_frame.get_height(), _death_frame.get_width())
+                        self.world_surf.blit(_death_frame, (int(draw_x - _anchor_dx_c),
+                                                             int(draw_y - _anchor_dy_c)))
+                    else:
+                        # Corpo morto: dessatura pra cinza (pose "morto", sem barra de HP)
+                        _gray = sum(renderable.color[:3]) // 3
+                        pygame.draw.rect(self.world_surf, (_gray, _gray, _gray), rect)
                 elif _is_ghost_draw:
                     # Espírito: semi-transparente
                     self.world_surf.blit(fill_surf((rect.width, rect.height), (*renderable.color[:3], 127)), rect.topleft)
