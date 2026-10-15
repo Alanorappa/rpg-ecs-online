@@ -27592,3 +27592,63 @@ silêncio, deixando a conta sem personagem nenhum (`AUTH_OK` com
 sob teste. Fix: usernames com letras TOTALMENTE distintas por método de
 teste, nunca variações por sufixo numérico quando múltiplos logins
 acontecem no mesmo arquivo/classe de teste.
+
+## 279. Sombra "assada" no PNG de mob entrava no contorno de seleção (13/10/2026)
+
+**Pedido do usuário**: "é possível fazer com que o contorno de seleção
+ignore a sombra, que é algo que tem transparência?"
+
+**Causa raiz** (confirmada pixel a pixel, não por suposição): a sombra
+"assada" dentro do PNG dos mobs da família Aranha (idle/run/attack) usa
+alpha=128 — e `_get_selection_ring_mask()` (`ui/render_system.py`)
+monta a máscara via `pygame.mask.from_surface(surf)` com o threshold
+PADRÃO do pygame (127), que considera "opaco" todo pixel com alpha
+ACIMA do threshold. Como 128 > 127, a sombra entrava na silhueta por
+pouquíssima margem — o contorno de seleção acompanhava a sombra junto
+com o corpo real.
+
+**Escopo real, medido antes de decidir o fix** (nunca assumir "é só
+esse sprite"): sampleei o histograma de alpha de vários sprites reais
+antes de mexer em qualquer coisa —
+- Aranha/Acraxxidae: sombra alpha=128 (ACIMA do threshold — bug).
+- Goblin Guerreiro: sombra alpha=89 (abaixo do threshold — já
+  funcionava por acaso, nunca foi notado).
+- Personagem jogável (Guerreiro): SEM sombra nenhuma (só 0/255).
+- Tileset de objeto estático ("TX Village Props with Shadow"): sombra
+  alpha=89 (mesmo valor do Goblin — já documentado em `ui/
+  tile_sprite_manager.py::get_top_opaque_y`, que já confirmara isso
+  pixel a pixel pra OUTRO propósito, topo do sprite pro nameplate de
+  objeto).
+Ou seja: já era um bug latente pra QUALQUER mob da família Aranha, só
+ninguém tinha percebido até o boss (Acraxxidae) chamar atenção pro
+contorno.
+
+**Fix**: `RenderSystem._SELECTION_RING_ALPHA_THRESHOLD = 200` (novo) —
+`_get_selection_ring_mask()` monta sua PRÓPRIA máscara-base via
+`pygame.mask.from_surface(surf, 200)`, em vez de reusar
+`self._get_mask(surf)` (que usa o threshold padrão, 127). **Decisão de
+isolamento deliberada**: `_get_mask()`/`_occlusion_mask_cache` é
+compartilhado com a transparência de oclusão (árvore cobrindo o
+player) — a chave do cache é só `id(surf)`, SEM threshold; se eu
+tivesse só mudado o threshold de `_get_mask()` globalmente, o cache
+ficaria "contaminado" pelo primeiro threshold que tocasse aquela
+Surface (oclusão ou seleção, o que rodasse primeiro), afetando o
+OUTRO caso incorretamente. Separar a máscara-base do anel de seleção
+num cálculo próprio (sem cache de `_get_mask`, só o resultado final —
+o ANEL — continua cacheado em `_selection_ring_mask_cache`, inalterado)
+elimina esse risco por completo. 200 separa com folga os 2 valores de
+sombra conhecidos (89 e 128) do corpo opaco (255), sem afetar sprite
+sem sombra nenhuma.
+
+**Teste**: `tests/test_selection_outline.py::TestSelectionRingMask::
+test_sombra_semitransparente_fica_fora_da_mascara_base` — sombra
+sintética em alpha=128 (mesmo valor real da arte), confirma que o
+pixel de sombra NÃO conta como opaco e o pixel do corpo (alpha=255)
+continua contando. Testado na MÁSCARA BASE, não no anel dilatado — a
+geometria do raio de dilatação tornava ambíguo qual pixel de teste
+realmente provava a diferença (1ª tentativa de teste, descartada antes
+de commitar: um pixel fora do raio de dilatação do corpo passaria de
+qualquer jeito, bug presente ou não, porque `Mask.erase` remove da
+sombra incluída do ANEL de qualquer forma — só a máscara base de fato
+distingue os 2 casos). Suíte completa de seleção/nameplate/client_ui
+(268 testes) sem regressão.

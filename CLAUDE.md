@@ -1329,7 +1329,16 @@ padrão a quebrar, não só os bugs individuais.
   `id(surf)` em `self._selection_ring_mask_cache` (mesmo padrão de
   `self._occlusion_mask_cache`). Alvo sem sprite/frame resolvível
   continua caindo no fallback de retângulo (`pygame.draw.rect`),
-  inalterado.
+  inalterado. **Máscara-base do anel usa `RenderSystem.
+  _SELECTION_RING_ALPHA_THRESHOLD = 200` (13/10/2026), via
+  `pygame.mask.from_surface(surf, 200)` — NUNCA `self._get_mask(surf)`
+  aqui** (esse é o cache COMPARTILHADO com a transparência de oclusão,
+  chaveado só por `id(surf)`, sem threshold — misturar os dois
+  contaminaria o cache com o threshold de quem rodasse primeiro). Sombra
+  "assada" em PNG de mob (ex: família Aranha, alpha=128) fica ACIMA do
+  threshold padrão do pygame (127) e entrava incorretamente na
+  silhueta — 200 separa com folga qualquer sombra conhecida (89 ou 128)
+  do corpo opaco (255). Ver PROBLEMAS_ARQUITETURA.md §279.
 - **Objeto de mapa que emite luz própria (lampião/tocha/fogueira, base
   do sistema de dia/noite)** → 12º campo posicional (`light`) na tupla
   do tile em `OBJECT_SHEET_FAMILIES` (modo catálogo,

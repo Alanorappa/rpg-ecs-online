@@ -118,6 +118,31 @@ class TestSelectionRingMask(unittest.TestCase):
         rs = RenderSystem(World(), pygame.display.get_surface())
         self.assertIs(rs._get_selection_ring_mask(surf), rs._get_selection_ring_mask(surf))
 
+    def test_sombra_semitransparente_fica_fora_da_mascara_base(self):
+        """Bug real relatado pelo usuário (13/10/2026): PNG de mob da
+        família Aranha tem sombra "assada" em alpha=128 (confirmado pixel
+        a pixel na arte real, via pygame.mask.from_surface em
+        tests/scratch) — acima do threshold PADRÃO do pygame (127), então
+        contava como "opaco" e entrava na silhueta usada pelo contorno de
+        seleção. `_SELECTION_RING_ALPHA_THRESHOLD` (200) é o mecanismo que
+        resolve isso — testado direto na máscara base (não no anel
+        dilatado, cuja geometria de raio torna a diferença ambígua pra um
+        pixel de teste) pra provar que o pixel de sombra realmente não
+        conta como opaco, enquanto o corpo real continua contando. Ver
+        PROBLEMAS_ARQUITETURA.md §279."""
+        from ui.systems import RenderSystem
+        from engine.world import World
+        surf = pygame.Surface((20, 20), pygame.SRCALPHA)
+        surf.fill((0, 0, 0, 0))
+        pygame.draw.rect(surf, (0, 0, 0, 128), (3, 3, 14, 14))    # sombra
+        pygame.draw.rect(surf, (255, 0, 0, 255), (6, 6, 8, 8))    # corpo opaco
+        rs = RenderSystem(World(), pygame.display.get_surface())
+        base_mask = pygame.mask.from_surface(surf, rs._SELECTION_RING_ALPHA_THRESHOLD)
+        self.assertFalse(base_mask.get_at((3, 3)),
+                         "pixel só de sombra (alpha=128) não deveria contar como opaco")
+        self.assertTrue(base_mask.get_at((6, 6)),
+                        "pixel do corpo real (alpha=255) deveria continuar opaco")
+
 
 class TestSelecaoUsaSilhuetaDeSprite(unittest.TestCase):
     """Alvo com sprite real de objeto (mesmo padrão da caixa de correio,

@@ -285,6 +285,20 @@ class RenderSystem(System):
             self._occlusion_mask_cache[key] = mask
         return mask
 
+    # Threshold de alpha PRÓPRIO desta feature (13/10/2026, bug real
+    # relatado pelo usuário: sombra "assada" no PNG de mob entrando no
+    # contorno de seleção) — NUNCA usar `_get_mask()`/
+    # `_occlusion_mask_cache` aqui: aquele cache é compartilhado com a
+    # transparência de oclusão (árvore cobrindo o player) e não guarda
+    # threshold na chave (só `id(surf)`) — misturar os dois faria o
+    # primeiro a chamar "vencer" o threshold pro outro caso, ambos lendo
+    # a MESMA Surface. Valor confirmado pixel a pixel: sombra da família
+    # Aranha usa alpha=128 (acima do padrão de 127 do pygame, por isso
+    # entrava no contorno), corpo opaco usa alpha=255 — 200 separa os
+    # dois com folga, sem afetar sprite sem sombra nenhuma (personagem
+    # jogável) nem sombra já abaixo de 127 (Goblin Guerreiro, alpha=89).
+    _SELECTION_RING_ALPHA_THRESHOLD = 200
+
     def _get_selection_ring_mask(self, surf: "pygame.Surface",
                                 radius: int = 2) -> "pygame.mask.Mask":
         """Máscara do anel de seleção: a silhueta de `surf` DILATADA por
@@ -301,7 +315,7 @@ class RenderSystem(System):
         ring = self._selection_ring_mask_cache.get(key)
         if ring is not None:
             return ring
-        base_mask = self._get_mask(surf)
+        base_mask = pygame.mask.from_surface(surf, self._SELECTION_RING_ALPHA_THRESHOLD)
         ring = pygame.mask.Mask(base_mask.get_size())
         for dx in range(-radius, radius + 1):
             for dy in range(-radius, radius + 1):
