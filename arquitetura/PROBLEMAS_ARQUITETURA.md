@@ -27938,3 +27938,41 @@ alvo, como era antes do §282. `PlayerProjectileEntry` ganhou
 **Teste**: suíte de client_ui/day_night/portal (338 testes) sem
 regressão. Sem teste automatizado novo dedicado (mesma decisão do
 usuário do §282 — mudança visual, validação em playtest).
+
+## 284. Animação de cast esticada (não em loop) — reaproveitando a técnica do portal
+
+**Pedido do usuário**: "é possível fazer com que a animação do
+casting se estenda ao tempo do cast dinamicamente em vez de ser em
+loop?"
+
+**Pesquisa feita antes de codar**: o projeto JÁ TEM exatamente esse
+mecanismo, implementado pro cast de portal (`client/portal_handlers.py::
+_begin_portal_in_anim`, 02/10/2026) — `frame_ms = duração_ms /
+nº_de_frames`, `anim_attack_loop_duration_ms = 0` — o sheet toca 1
+ciclo só, mas cada frame fica esticado no tempo pra caber exatamente
+na duração real. `trigger_cast_anim()` (§281, implementado mais cedo
+no mesmo dia com LOOP) foi reescrito pra usar essa MESMA técnica em
+vez de reinventar uma nova.
+
+**Simplificação em cascata**: a troca de LOOP pra ESTICADO tornou
+`anim_attack_is_cast` (campo em `TileMovement`, criado em §281 só pra
+garantir que um loop de cast cedesse pro lançamento mesmo dentro da
+própria duração) **morto** — `_attack_loop_still_active()` já devolve
+`False` sozinho quando `anim_attack_loop_duration_ms == 0` (sempre o
+caso agora pro cast), então a guarda de prioridade de
+`trigger_attack_anim()` nunca mais bloqueia a interrupção do cast, sem
+precisar de nenhuma exceção. Campo e a linha de bypass removidos —
+Fatiador de Corpos (golpe em LOOP de verdade) continua 100% protegido
+pela regra antiga, intocada.
+
+**Comportamento no detalhe**: `anim_attack_hold_last_frame=True` pro
+cast (mesmo raciocínio do portal — `cast_time` local é só ESTIMATIVA,
+rede tem folga/latência real) — se o evento de LANÇAMENTO demorar um
+pouco mais que a estimativa local, o personagem fica parado na ÚLTIMA
+frame do windup em vez de "piscar" de volta pro idle por 1+ frame.
+
+**Teste**: suíte de animação de personagem/nameplate/portal/client_ui/
+Fatiador de Corpos (417 testes) sem regressão — nenhum teste
+pré-existente testava o mecanismo de loop do cast especificamente
+(§281 foi implementado e documentado, mas sem suíte dedicada, decisão
+do usuário na ocasião), então não houve teste pra atualizar/remover.

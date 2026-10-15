@@ -767,9 +767,22 @@ padrão a quebrar, não só os bugs individuais.
   `engine.character_animation.trigger_cast_anim(tile_movement,
   class_id, sid, now_ms)` liga o estado `"cast"` (cascata de 2 níveis,
   `resolve_cast_state_name`: `f"{sid}_cast"` específico → `"cast"`
-  genérico → `None`, sem arte = idle/run normal) em LOOP pela duração
-  REAL de `cast_time` (SKILL_CATALOG, fonte única). **NUNCA chamar
-  isso de um clique/input local** — gatilho é SEMPRE
+  genérico → `None`, sem arte = idle/run normal) **ESTICADA** (não em
+  loop, 15/10/2026, pedido do usuário — mesma técnica já usada por
+  `client/portal_handlers.py::_begin_portal_in_anim` pro cast de
+  portal: `frame_ms = duração_ms / nº_frames`, `anim_attack_loop_
+  duration_ms = 0`, sheet toca 1 ciclo só esticado pra caber
+  exatamente na duração REAL de `cast_time`, SKILL_CATALOG, fonte
+  única) — `anim_attack_hold_last_frame=True` segura na última frame
+  se o lançamento demorar mais que a estimativa local (rede sempre tem
+  alguma folga/latência). **NUNCA voltar a usar o mecanismo de LOOP
+  pro cast** — como `anim_attack_loop_duration_ms` fica sempre 0,
+  `_attack_loop_still_active()` nunca o protege contra sobrescrita,
+  então o lançamento sempre interrompe livremente, sem precisar de
+  nenhuma flag/exceção especial (golpe em LOOP de verdade, ex: Fatiador
+  de Corpos, continua 100% protegido pela regra de prioridade antiga,
+  intocada). **NUNCA chamar isso de um clique/input local** — gatilho
+  é SEMPRE
   `SKILL_EFFECT{event:"cast_start"}` (`client/network_handlers.py::
   _handle_msg_skill_effect`), evento que já existia só pra som e já é
   broadcast AOI pro caster local E qualquer observador, sem precisar
@@ -785,14 +798,8 @@ padrão a quebrar, não só os bugs individuais.
   handlers.py::_apply_combat_result` (COMBAT_RESULT) **NUNCA mais
   dispara golpe pra skill com `sid`** — só auto-attack puro
   (`sid==""`) continua ali; disparar nos 2 lugares duplicaria a
-  animação pra skill de projétil (lançamento + impacto). Loop de cast
-  em andamento sempre cede pro lançamento via `TileMovement.
-  anim_attack_is_cast` (campo novo) — mesmo ainda dentro da própria
-  duração estimada, porque a conclusão REAL do cast é o evento de
-  rede, nunca o relógio local (`cast_time` é só ESTIMATIVA) — golpe em
-  loop que NÃO é cast (Fatiador de Corpos) continua 100% protegido
-  pela regra de prioridade antiga, intocada. Ver
-  PROBLEMAS_ARQUITETURA.md §281.
+  animação pra skill de projétil (lançamento + impacto). Ver
+  PROBLEMAS_ARQUITETURA.md §281/§284.
   **Animação BASE de MOB** (idle/run/attack × 4 direções — não
   confundir com animação de PERSONAGEM jogável acima, que é um sistema
   IRMÃO separado, nunca estendido pelo mesmo módulo) →
