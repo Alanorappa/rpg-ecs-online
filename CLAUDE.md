@@ -1328,18 +1328,30 @@ padrão a quebrar, não só os bugs individuais.
   de verdade (`ProjectileSystem` em `engine/world_systems.py`, código
   headless que o SERVIDOR roda, aplica `deal_damage()` real com viagem/
   tempo) — só `PlayerProjectile` (100% client-only, confirmado por grep
-  no repo inteiro) foi movido pra fora do ECS. `spawn()` já desloca
-  `(x, y)` 1 tile à frente de `attacker_id` sozinho (15/10/2026, via
-  `TileMovement.facing`/`engine.utils.facing_to_tile_delta()`) — NUNCA
-  recalcular esse offset num call site novo, nem passar a posição já
-  deslocada (duplicaria o deslocamento). Bola de Fogo em voo emite luz
+  no repo inteiro) foi movido pra fora do ECS. **`spawn()` NUNCA desloca
+  `(x, y)`** (tentado e REVERTIDO no mesmo dia, 15/10/2026, ver
+  PROBLEMAS_ARQUITETURA.md §283 — `TileMovement.facing` só tem 4
+  valores cardeais, mas o alvo pode estar em qualquer ângulo; deslocar
+  a origem tirava o projétil da linha reta real até o alvo, pior
+  quanto mais diagonal o alvo) — sensação de "nasce de dentro do
+  personagem" é resolvida só por FADE de opacidade (`_spawn_fade_
+  fraction`/`PROJECTILE_FADE_IN_PX`), NUNCA mudando a posição de
+  nascimento de novo. Bola de Fogo em voo emite luz
   dinâmica amarelo-alaranjada (`PlayerProjectileSystem.
   get_fireball_light_sources(cam_x, cam_y)`, mesmo pipeline/formato de
   `"player_light"` já usado pela luz de item aceso — gradiente CACHEADO
   por raio/intensidade, custo real é só 1 blit por bola em voo) —
   qualquer skill de projétil futura que também devesse emitir luz seria
   mais uma linha de filtro nesse MESMO método, nunca um sistema de luz
-  paralelo. Ver PROBLEMAS_ARQUITETURA.md §282.
+  paralelo. Ver PROBLEMAS_ARQUITETURA.md §282. **`PlayerProjectileSystem.
+  render()` da Bola de Fogo sempre chama `pygame.transform.rotate(frame,
+  angle_deg)`, mesmo com `angle_deg=0.0` — NUNCA `rotated = frame` direto**
+  (15/10/2026, §283): `frame` vem de `self._fireball_frames`, CACHEADO e
+  COMPARTILHADO entre toda bola de fogo em voo — qualquer `.set_alpha()`/
+  mutação chamada em cima do objeto retornado precisa ser uma Surface
+  NOVA (`rotate()` sempre devolve cópia nova, até com ângulo 0), senão
+  afeta o cache global e vaza pra qualquer OUTRA bola de fogo que reusar
+  o mesmo frame depois.
 - **Talento que não deve ter efeito dentro da BG/instância** →
   `content/talent_data.py::INSTANCE_DISABLED_TALENTS` (frozenset de
   `talent_id`) — lido nos dois lados: `server/instance_progression.py::

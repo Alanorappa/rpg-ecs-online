@@ -651,7 +651,7 @@ class PlayerProjectileEntry:
     mantinha por fora — cada flecha já é seu próprio objeto agora, não
     precisa mais de um dict externo pra guardar o estado dela."""
     __slots__ = (
-        "x", "y", "prev_x", "prev_y",
+        "x", "y", "prev_x", "prev_y", "spawn_x", "spawn_y",
         "spell_id", "attacker_id", "target_id", "speed",
         "dmg_weapon_pct", "dmg_sp_coeff", "color", "damage_type",
         "arrow_dmg_min", "arrow_dmg_max",
@@ -677,6 +677,12 @@ class PlayerProjectileEntry:
         self.y = y
         self.prev_x = x
         self.prev_y = y
+        # Posição de NASCIMENTO (15/10/2026) — nunca muda depois, usada só
+        # pra medir distância viajada desde o spawn (fade de opacidade nos
+        # primeiros pixels de voo, ver PlayerProjectileSystem.
+        # _spawn_fade_fraction/PROJECTILE_FADE_IN_PX).
+        self.spawn_x = x
+        self.spawn_y = y
         self.spell_id          = spell_id
         self.attacker_id       = attacker_id
         self.target_id         = target_id
@@ -732,6 +738,24 @@ class PlayerProjectileSystem(System):
     FIREBALL_LIGHT_RADIUS_TILES  = 3
     FIREBALL_LIGHT_COLOR = (255, 200, 100)
 
+    # Fade de opacidade no NASCIMENTO (15/10/2026, pedido do usuário —
+    # substitui a tentativa de deslocar a posição de spawn, revertida no
+    # mesmo dia por quebrar a trajetória em alvo diagonal, ver
+    # `spawn()`): projétil nasce transparente e ganha opacidade plena ao
+    # viajar `PROJECTILE_FADE_IN_PX` — suaviza a sensação de "sair de
+    # dentro do personagem" sem mexer na trajetória (sempre a linha reta
+    # de verdade até o alvo, nunca uma posição deslocada).
+    PROJECTILE_FADE_IN_PX = TILE_SIZE
+
+    def _spawn_fade_fraction(self, proj: PlayerProjectileEntry) -> float:
+        """0.0 (acabou de nascer) → 1.0 (já viajou `PROJECTILE_FADE_IN_PX`
+        desde `spawn_x/spawn_y`) — fração linear, nunca negativa/acima de
+        1.0."""
+        if self.PROJECTILE_FADE_IN_PX <= 0:
+            return 1.0
+        dist = math.hypot(proj.x - proj.spawn_x, proj.y - proj.spawn_y)
+        return min(1.0, dist / self.PROJECTILE_FADE_IN_PX)
+
     def __init__(self, world: World, screen: pygame.Surface, player_entity: int = -1):
         self.world  = world
         self.world_surf = screen
@@ -775,22 +799,19 @@ class PlayerProjectileSystem(System):
         depois (ex: `entry.target_server_id = ...`, `entry.deferred_result =
         ...`), em vez de buscar de volta por eid como o código ECS fazia.
 
-        `(x, y)` é deslocado 1 tile INTEIRO na direção (`TileMovement.
-        facing`) de `attacker_id` antes de nascer (15/10/2026, bug real
-        relatado pelo usuário: projétil nascia em cima do próprio
-        personagem, ficava estranho) — todo chamador já passa a posição
-        CRUA do atacante (`pos.x, pos.y`), então o ajuste entra aqui, no
-        ÚNICO ponto de entrada, sem precisar tocar nenhum dos vários call
-        sites (flecha, bola de fogo, tiro múltiplo, etc.). `attacker_id`
-        sem `TileMovement` resolvível (ex: projétil cosmético de mob/torre
-        remoto, que usa `attacker_id=-1` de propósito) não desloca nada —
-        mesmo comportamento de sempre nesse caso."""
-        atk_tm = self.world.get_component(attacker_id, TileMovement)
-        if atk_tm is not None:
-            from engine.utils import facing_to_tile_delta
-            _dtx, _dty = facing_to_tile_delta(atk_tm.facing)
-            x += _dtx * TILE_SIZE
-            y += _dty * TILE_SIZE
+        **Deslocamento de spawn pra "tile à frente" (15/10/2026),
+        REVERTIDO no mesmo dia** — o personagem só vira pros 4 lados
+        cardeais, mas o alvo pode estar em qualquer ângulo (ex:
+        diagonal); deslocar a origem pro cardeal mais próximo fazia o
+        projétil nascer FORA da linha reta até o alvo, obrigando a
+        trajetória a "corrigir o rumo" visualmente pelo caminho — pior
+        que o problema original, mais perceptível ainda em alvo
+        diagonal (bug real relatado pelo usuário: "a magia... sai na
+        frente do personagem e desce pra direção do alvo"). Fix real
+        pro sintoma original (projétil "saindo de dentro" do
+        personagem) é cosmético via FADE de opacidade nos primeiros
+        `PROJECTILE_FADE_IN_PX` de viagem (ver `render()`/
+        `_spawn_fade_fraction`), não deslocamento de posição."""
         entry = PlayerProjectileEntry(x, y, attacker_id, target_id, **kwargs)
         self._entries.append(entry)
         return entry
@@ -1509,15 +1530,23 @@ class PlayerProjectileSystem(System):
             pos = proj
             sx = pos.x - cam_x
             sy = pos.y - cam_y
+            # Fade de opacidade no nascimento (15/10/2026, ver
+            # PROJECTILE_FADE_IN_PX/_spawn_fade_fraction) — 0.0 recém-
+            # nascido, 1.0 já viajou a distância inteira de fade.
+            fade = self._spawn_fade_fraction(proj)
 
             if proj.damage_type == "physical":
                 # ── Flecha: rastro desbotado + linha fina ──────────────────
                 trail = proj.trail
                 n = len(trail)
 
-                # Rastro: pontos de tamanho e brilho decrescentes
+                # Rastro: pontos de tamanho e brilho decrescentes (idade
+                # do rastro × fade de nascimento — mesma técnica de
+                # escurecer a cor já usada aqui, só combinada com o novo
+                # fator; sem surface própria, draw direto no world_surf
+                # opaco não suporta alpha de verdade).
                 for i, (tx, ty) in enumerate(trail):
-                    frac  = (i + 1) / (n + 1)          # 0..1 (mais velho = menor)
+                    frac  = (i + 1) / (n + 1) * fade   # 0..1 (mais velho = menor)
                     r = max(0, int(proj.color[0] * frac * 0.45))
                     g = max(0, int(proj.color[1] * frac * 0.45))
                     b = max(0, int(proj.color[2] * frac * 0.45))
@@ -1526,6 +1555,7 @@ class PlayerProjectileSystem(System):
                                        (int(tx - cam_x), int(ty - cam_y)), rad)
 
                 # Corpo da flecha: linha fina na direção do movimento
+                _fade_color = tuple(int(c * fade) for c in proj.color)
                 if trail:
                     px, py = trail[-1]
                     ddx = sx - (px - cam_x)
@@ -1534,10 +1564,10 @@ class PlayerProjectileSystem(System):
                     nx, ny = ddx / dlen, ddy / dlen
                     tail_x = sx - nx * self.ARROW_LINE_LEN
                     tail_y = sy - ny * self.ARROW_LINE_LEN
-                    pygame.draw.line(self.world_surf, proj.color,
+                    pygame.draw.line(self.world_surf, _fade_color,
                                      (int(tail_x), int(tail_y)), (int(sx), int(sy)), 2)
                 else:
-                    pygame.draw.circle(self.world_surf, proj.color, (int(sx), int(sy)), 2)
+                    pygame.draw.circle(self.world_surf, _fade_color, (int(sx), int(sy)), 2)
             elif proj.spell_id == "bola_de_fogo":
                 # ── Bola de Fogo: spritesheet animado e rotacionado ─────────
                 if self._fireball_frames is None:
@@ -1551,19 +1581,25 @@ class PlayerProjectileSystem(System):
                     # Direção: vetor prev→current (Position guarda prev_x/prev_y)
                     ddx = pos.x - pos.prev_x
                     ddy = pos.y - pos.prev_y
-                    if abs(ddx) > 0.001 or abs(ddy) > 0.001:
-                        angle_deg = -math.degrees(math.atan2(ddy, ddx))
-                        rotated = pygame.transform.rotate(frame, angle_deg)
-                    else:
-                        rotated = frame
+                    # SEMPRE rotate() (mesmo 0°) — devolve sempre uma
+                    # Surface NOVA (15/10/2026); `rotated = frame` direto
+                    # apontaria pro frame CACHEADO/compartilhado entre
+                    # todas as bolas de fogo, e o `.set_alpha()` logo
+                    # abaixo mutaria esse cache global por engano.
+                    angle_deg = (-math.degrees(math.atan2(ddy, ddx))
+                                if abs(ddx) > 0.001 or abs(ddy) > 0.001 else 0.0)
+                    rotated = pygame.transform.rotate(frame, angle_deg)
+                    rotated.set_alpha(round(255 * fade))
 
                     fw, fh = rotated.get_size()
                     self.world_surf.blit(rotated, (int(sx) - fw // 2, int(sy) - fh // 2))
                 else:
-                    pygame.draw.circle(self.world_surf, proj.color, (int(sx), int(sy)), 6)
+                    _fade_color = tuple(int(c * fade) for c in proj.color)
+                    pygame.draw.circle(self.world_surf, _fade_color, (int(sx), int(sy)), 6)
             else:
                 # ── Outros projéteis mágicos: círculo ───────────────────────
-                pygame.draw.circle(self.world_surf, proj.color, (int(sx), int(sy)), 6)
+                _fade_color = tuple(int(c * fade) for c in proj.color)
+                pygame.draw.circle(self.world_surf, _fade_color, (int(sx), int(sy)), 6)
 
 
 # ---------------------------------------------------------------------------

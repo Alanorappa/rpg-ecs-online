@@ -27889,3 +27889,52 @@ projétil (só comportamento de hit/dano), então nenhum precisou de
 ajuste. Sem teste automatizado NOVO dedicado (mudança
 puramente visual/posicional) — validação fica pro usuário em
 playtest.
+
+## 283. §282 revertido no mesmo dia: deslocamento de spawn piorava alvo diagonal
+
+**Pedido do usuário**: "ficou esquisito quando o ataque sai em
+diagonal, pois o personagem vira apenas para quatro lados, e a magia
+quando eu lanço em um inimigo que está na diagonal sai na frente do
+personagem e desce para a direção do alvo... ficou pior do que antes".
+
+**Causa raiz do novo problema**: `TileMovement.facing` só tem 4
+valores cardeais, mas o alvo pode estar em QUALQUER ângulo —
+deslocar a origem do projétil pro cardeal mais próximo (§282) tirava
+o projétil da linha reta real até o alvo. A trajetória sempre aponta
+pro alvo de verdade (`target_last_x/y`), então um spawn FORA dessa
+reta faz o projétil visualmente "corrigir o rumo" logo nos primeiros
+pixels — mais perceptível (e pior) quanto mais diagonal o alvo, que é
+exatamente o caso que o deslocamento deveria ter ajudado.
+
+**Decisão, com o usuário escolhendo entre 2 alternativas**: opacidade
+crescente nos primeiros pixels de voo (em vez de Y-sort/ordem de
+desenho, que só mudaria quem desenha por cima de quem — não resolve a
+trajetória torta em nada, já que não muda posição nenhuma).
+
+**Fix**: `spawn()` voltou a usar `(x, y)` exatamente como passado
+(sem nenhum deslocamento) — trajetória sempre a linha reta real até o
+alvo, como era antes do §282. `PlayerProjectileEntry` ganhou
+`spawn_x`/`spawn_y` (posição de nascimento, nunca muda depois).
+`PlayerProjectileSystem._spawn_fade_fraction(proj)` (novo) devolve
+0.0→1.0 conforme a distância viajada desde o spawn cresce até
+`PROJECTILE_FADE_IN_PX` (= 1 tile). Aplicado em `render()`:
+- **Bola de Fogo** (único caminho que já desenha via Surface/blit) —
+  alpha de VERDADE (`rotated.set_alpha(255*fade)`). Achado corrigindo
+  isso: o branch `else: rotated = frame` (sem rotação, projétil
+  parado) apontava pro frame CACHEADO/compartilhado entre TODAS as
+  bolas de fogo (`self._fireball_frames`) — chamar `.set_alpha()`
+  nesse objeto mutaria o cache global por engano, afetando qualquer
+  OUTRA bola de fogo que reusasse o mesmo frame depois. Fix: sempre
+  chamar `pygame.transform.rotate(frame, angle_deg)` (mesmo com
+  `angle_deg=0.0`) — `rotate()` sempre devolve uma Surface NOVA, nunca
+  o objeto compartilhado.
+- **Flecha e círculo mágico genérico** (desenhados direto via
+  `pygame.draw.*` no `world_surf` opaco, sem alpha de verdade
+  possível sem uma Surface própria) — reaproveita a MESMA técnica que
+  o rastro da flecha já usa pra "envelhecer" (escurecer a cor por
+  fração), combinando o fator de idade existente com o novo fator de
+  fade-de-nascimento.
+
+**Teste**: suíte de client_ui/day_night/portal (338 testes) sem
+regressão. Sem teste automatizado novo dedicado (mesma decisão do
+usuário do §282 — mudança visual, validação em playtest).
