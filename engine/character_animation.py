@@ -32,12 +32,23 @@ Convenção de arquivo em assets/sprites/, por `class_id`:
   Auto-attack (sid vazio) vai direto pro nível 3 — nunca passa pelo
   genérico de skill, que não faz sentido pra ele.
   direction ∈ "down"/"up"/"left"/"right"
-  Cada sheet é cortado em frames de CHAR_TILE_SIZE (96px, 09/09/2026 —
-  frames NÃO são quadrados, 96 largura × altura variável conforme o
-  arquivo; largura fixa por decisão do usuário, não derivável da altura
-  do sheet) de largura, altura = altura do sheet (pode ser maior que 1
-  tile — personagem ancorado no PÉ, mesma convenção de
-  `entity_disguise.py`). Diferente de `entity_disguise.py`: aqui IDLE
+  Cada sheet é cortada em frames QUADRADOS (15/10/2026, revisão da
+  regra de 09/09/2026 — decisão do usuário: "vamos deixar com que o
+  sistema identifique a quantidade de frames fazendo a divisão pela
+  altura" — mesma convenção que `engine/mob_animation.py` já usa pra
+  mob): largura = altura = altura REAL do sheet, contagem de frames =
+  largura_total // altura — nenhum valor fixo, nenhuma metadata extra
+  por arquivo. `CHAR_TILE_SIZE` (96) vira só o FALLBACK/default dos
+  parâmetros de `character_anchor_offset()` pra chamador sem Surface em
+  mãos (ex: nameplate de player remoto), nunca mais usado pra cortar
+  sheet nenhuma. **Exceção, state in `_FIXED_WIDTH_STATES`**
+  (`portal_in`/`portal_out`): sheet INTENCIONALMENTE não-quadrada
+  (96×640 — pilar de luz vertical estreito, ver `character_
+  anchor_offset`) continua na regra ANTIGA (largura fixa
+  `CHAR_TILE_SIZE`) — decisão explícita do usuário (15/10/2026) de não
+  redesenhar essa arte pra se encaixar na regra nova. Altura pode ser
+  maior que 1 tile — personagem ancorado no PÉ, mesma convenção de
+  `entity_disguise.py`. Diferente de `entity_disguise.py`: aqui IDLE
   também é uma sheet animada (várias frames), nunca um frame único
   parado — personagem "respira" mesmo quieto.
 
@@ -54,19 +65,29 @@ puramente visuais).
 """
 from __future__ import annotations
 
-CHAR_TILE_SIZE = 96
+CHAR_TILE_SIZE = 96  # só fallback/default de character_anchor_offset() — nunca mais usado pra cortar sheet
 DEFAULT_FRAME_MS = 78  # 65 * 1.2 — animação 20% mais lenta (09/09/2026, pedido do usuário)
 
-# Tile de colisão/pé real (32×32, == TILE_SIZE) dentro do frame de
-# 96×H (10/09/2026, decisão do usuário — convenção fixa de arte,
-# mesma pra idle/run/attack/qualquer skill futura). Offset é a posição
-# do CANTO SUPERIOR ESQUERDO desse tile dentro do frame — horizontal
-# cai centrado por construção (32 + 32/2 == CHAR_TILE_SIZE/2 == 48),
-# vertical NÃO (mais espaço acima do tile — corpo/cabeça — que abaixo).
-# Usado tanto pra ancorar o blit (`character_anchor_offset`) quanto
-# pro Y-sort (`ui/systems.py::RenderSystem`) — NUNCA usar
-# CHAR_TILE_SIZE (largura do FRAME) nem a altura do sheet pra nenhum
-# dos dois, é sempre este tile de 32×32 que importa.
+# Estados cuja sheet é INTENCIONALMENTE não-quadrada (15/10/2026, decisão
+# do usuário) — continuam cortados em largura FIXA `CHAR_TILE_SIZE`, nunca
+# a regra quadrada (largura=altura) que todo o resto usa. portal_in/
+# portal_out: pilar de luz vertical estreito (96×640), re-desenhar pra
+# quadrado destruiria o efeito visual. Nunca checar `state.startswith(
+# "portal")` ou parecido — lista explícita, igual `_LOOPING_ATTACK_SKILLS`.
+_FIXED_WIDTH_STATES = {"portal_in", "portal_out"}
+
+# Tile de colisão/pé real (32×32, == TILE_SIZE) dentro do frame —
+# (10/09/2026, decisão do usuário — convenção fixa de arte, mesma pra
+# idle/run/attack/qualquer skill futura). Offset é a posição do CANTO
+# SUPERIOR ESQUERDO desse tile dentro do frame — horizontal cai
+# CENTRADO por construção (`character_anchor_offset` deriva isso direto
+# de `frame_width/2`, 15/10/2026 — antes hardcoded assumindo frame
+# sempre 96 de largura; agora a largura varia por sheet, já que os
+# frames são quadrados), vertical NÃO (mais espaço acima do tile —
+# corpo/cabeça — que abaixo). Usado tanto pra ancorar o blit
+# (`character_anchor_offset`) quanto pro Y-sort (`ui/systems.py::
+# RenderSystem`) — NUNCA usar a largura/altura CRUA do frame pra
+# nenhum dos dois, é sempre este tile de 32×32 que importa.
 CHAR_COLLISION_OFFSET_X = 32
 CHAR_COLLISION_OFFSET_Y = 32
 CHAR_COLLISION_SIZE     = 32
@@ -86,30 +107,38 @@ CHAR_BASELINE_FRAME_H = 80
 CHAR_FRAME_BOTTOM_MARGIN_PX = CHAR_BASELINE_FRAME_H - CHAR_COLLISION_OFFSET_Y - CHAR_COLLISION_SIZE
 
 
-def character_anchor_offset(frame_height: int = CHAR_BASELINE_FRAME_H) -> "tuple[float, float]":
+def character_anchor_offset(frame_height: int = CHAR_BASELINE_FRAME_H,
+                            frame_width: int = CHAR_TILE_SIZE) -> "tuple[float, float]":
     """(dx, dy) a subtrair de (draw_x, draw_y) — ponto de referência do
     ECS (centro do tile lógico da entidade, em espaço de tela) — pra
     achar o canto superior esquerdo de onde blitar o frame do
     personagem. Alinha o CENTRO do tile de colisão (32×32, ver
     `CHAR_COLLISION_OFFSET_X/Y`) com (draw_x, draw_y), não o centro/
-    canto do frame inteiro (96×H).
+    canto do frame inteiro.
 
     Ancorado pela BASE do frame, não mais um offset fixo a partir do
     topo (02/10/2026, pedido do usuário — bug real: sprite de portal
     foi redesenhada mais alta, 80px->640px, pensada pra crescer PRA
     CIMA mantendo os pés no mesmo lugar; com o offset fixo antigo —
     sempre medido do topo — a sheet mais alta "crescia pra baixo",
-    enterrando os pés). `dy` agora é derivado da altura REAL do frame:
+    enterrando os pés). `dy` é derivado da altura REAL do frame:
     `frame_height - CHAR_FRAME_BOTTOM_MARGIN_PX - CHAR_COLLISION_SIZE/2`
-    -- numa sheet BASELINE (80px) isso dá exatamente 48, idêntico ao
-    valor fixo de sempre (zero mudança pra quem já chama sem argumento,
-    ex: nameplate de player remoto em `client/remote_entity_handlers.py`,
-    que usa o default DE PROPÓSITO — fixo, não deve "balançar" seguindo
-    a sheet de cada animação). Chamador que JÁ tem o Surface do frame
-    em mãos (RenderSystem, luz de personagem do portal) deve passar
-    `frame.get_height()`."""
+    -- numa sheet BASELINE (80px) isso dá exatamente 48.
+
+    `dx` (15/10/2026, frames viraram QUADRADOS — largura varia por
+    sheet, não é mais sempre 96) — derivado DIRETO de `frame_width/2`
+    (o tile de colisão é centralizado horizontalmente por construção,
+    `CHAR_COLLISION_OFFSET_X` não entra mais nessa conta — antes dava
+    na mesma só porque o frame era sempre 96 de largura: 32+16==96/2).
+    Default de ambos os parâmetros preserva o valor de sempre (48, 48)
+    pra quem chama sem Surface em mãos (ex: nameplate de player remoto
+    em `client/remote_entity_handlers.py`, que usa o default DE
+    PROPÓSITO — fixo, não deve "balançar" seguindo a sheet de cada
+    animação). Chamador que JÁ tem o Surface do frame em mãos
+    (RenderSystem, luz de personagem do portal) deve passar
+    `frame.get_height()`/`frame.get_width()`."""
     dy = frame_height - CHAR_FRAME_BOTTOM_MARGIN_PX - CHAR_COLLISION_SIZE / 2
-    return (CHAR_COLLISION_OFFSET_X + CHAR_COLLISION_SIZE / 2, dy)
+    return (frame_width / 2, dy)
 
 # Cache de módulo, chaveado por (class_id, state, direction) — conjunto
 # BEM pequeno e fixo (3 classes × 2 estados × 4 direções = 24 no
@@ -119,8 +148,11 @@ _frame_cache: dict[tuple, list] = {}
 
 
 def _load_sheet_frames(class_id: str, state: str, direction: str) -> list:
-    """Carrega e corta `{class_id}_{state}_{direction}.png` em frames de
-    CHAR_TILE_SIZE de largura. Lista vazia se o arquivo não existir.
+    """Carrega e corta `{class_id}_{state}_{direction}.png` em frames
+    QUADRADOS (largura = altura REAL do sheet, 15/10/2026) — EXCETO
+    `state in _FIXED_WIDTH_STATES` (portal_in/portal_out), que continua
+    cortado em largura FIXA `CHAR_TILE_SIZE` (sheet intencionalmente
+    não-quadrada). Lista vazia se o arquivo não existir.
 
     Fallback pra arquivo SEM direção (01/10/2026, pedido do usuário —
     `{class_id}_{state}.png`, ex: `guerreiro_portal_in.png`): alguns
@@ -146,9 +178,14 @@ def _load_sheet_frames(class_id: str, state: str, direction: str) -> list:
     if sheet is None:
         return []
     frame_h = sheet.get_height()
-    frames  = [
-        sheet.subsurface(pygame.Rect(i * CHAR_TILE_SIZE, 0, CHAR_TILE_SIZE, frame_h)).copy()
-        for i in range(sheet.get_width() // CHAR_TILE_SIZE)
+    if frame_h <= 0:
+        return []
+    frame_w = CHAR_TILE_SIZE if state in _FIXED_WIDTH_STATES else frame_h
+    if frame_w <= 0:
+        return []
+    frames = [
+        sheet.subsurface(pygame.Rect(i * frame_w, 0, frame_w, frame_h)).copy()
+        for i in range(sheet.get_width() // frame_w)
     ]
     return frames
 

@@ -845,7 +845,7 @@ class RenderSystem(System):
                         # portal_out, 640px, ancora pela BASE e cresce
                         # pra cima; sheet baseline (80px) dá o mesmo
                         # resultado de sempre).
-                        _anchor_dx, _anchor_dy = character_anchor_offset(_char_frame.get_height())
+                        _anchor_dx, _anchor_dy = character_anchor_offset(_char_frame.get_height(), _char_frame.get_width())
                         _cblit_x = int(draw_x - _anchor_dx)
                         _cblit_y = int(draw_y - _anchor_dy)
                         self.world_surf.blit(_char_frame, (_cblit_x, _cblit_y))

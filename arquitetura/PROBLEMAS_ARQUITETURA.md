@@ -27652,3 +27652,78 @@ qualquer jeito, bug presente ou não, porque `Mask.erase` remove da
 sombra incluída do ANEL de qualquer forma — só a máscara base de fato
 distingue os 2 casos). Suíte completa de seleção/nameplate/client_ui
 (268 testes) sem regressão.
+
+## 280. Frame de animação de personagem passa a ser QUADRADO (15/10/2026)
+
+**Pedido do usuário**: "como teria que ser o tamanho do frame para que
+a animação do mage funcionasse corretamente? só coloquei as animações
+com o frame 64x64... a animação ficou bem estranha" — seguido de "é
+possível fazer com que o sistema identifique automaticamente baseado
+no tamanho total da arte e a quantidade de imagens?".
+
+**Causa raiz do sintoma original**: `engine/character_animation.py`
+cortava toda sheet em largura FIXA `CHAR_TILE_SIZE=96`
+(`sheet.get_width() // CHAR_TILE_SIZE` frames, `Rect(i*96, 0, 96,
+frame_h)`), decisão explícita de 09/09/2026 ("largura fixa, NÃO
+derivável da altura do sheet"). Arte do Mago exportada em frames
+64×64 — o corte continuava fatiando a cada 96px, misturando pedaço de
+um frame real com o próximo e errando a contagem total.
+
+**1ª proposta (descartada pelo usuário no meio da implementação)**:
+declarar a contagem de frames no nome do arquivo (ex:
+`mago_idle_down_8f.png`), preservando a largura fixa como fallback.
+O usuário interrompeu e pediu algo mais simples: "vamos fazer com que
+o sistema identifique a quantidade de frames fazendo a divisão pela
+ALTURA" — ou seja, adotar a MESMA convenção que `engine/mob_animation.py`
+já usa pra mob (frame QUADRADO, largura=altura=altura real do sheet,
+contagem=largura_total//altura) — zero metadata nova, reaproveita um
+padrão já provado no próprio projeto em vez de inventar um novo.
+
+**Efeito colateral achado ANTES de codar** (mapeamento obrigatório —
+CLAUDE.md): `guerreiro_portal_in.png`/`portal_out.png` são 768×640 —
+hoje 8 frames de 96×640 (pilar de luz vertical ESTREITO e ALTO, de
+propósito, redesenhado em 02/10/2026 especificamente pra essa
+proporção). Aplicar "largura=altura" cegamente faria essa sheet virar
+1 frame só de 640×640, destruindo a animação de portal. Levado ao
+usuário ANTES de implementar — decisão: `portal_in`/`portal_out`
+ficam em lista de exceção (`_FIXED_WIDTH_STATES`), continuam com
+largura fixa `CHAR_TILE_SIZE`; todo o resto (idle/run/attack/skill/
+qualquer sid de skill) vira quadrado.
+
+**Fix**:
+- `_load_sheet_frames()` (`engine/character_animation.py`): `frame_w =
+  CHAR_TILE_SIZE if state in _FIXED_WIDTH_STATES else frame_h` (mesmo
+  guard de `frame_h<=0` que `mob_animation.py` já usa). `CHAR_TILE_SIZE`
+  deixa de cortar sheet nenhuma — vira só o default de
+  `character_anchor_offset()`.
+- `character_anchor_offset()` ganhou parâmetro `frame_width` — `dx`
+  passou de hardcoded `CHAR_COLLISION_OFFSET_X + CHAR_COLLISION_SIZE/2`
+  (=48, só por coincidência de frame sempre ter 96 de largura) pra
+  `frame_width / 2` direto (tile de colisão é centralizado por
+  construção, independente da largura real do frame). Default de
+  AMBOS os parâmetros preserva (48, 48) pra quem chama sem Surface em
+  mãos (nameplate de player remoto, que quer esse valor FIXO de
+  propósito, nunca "balançando" por animação). Os 2 call sites que já
+  tinham o Surface em mãos (`client/portal_handlers.py`, `ui/
+  render_system.py`) passaram a mandar `frame.get_width()` também, não
+  só `get_height()`.
+
+**Estado de transição conhecido, aceito pelo usuário**: `guerreiro_
+idle_down.png` (768×80, ainda NÃO quadrado) corta hoje em 80×80 (9
+frames, 768/80 não é divisão exata — último frame incompleto) até o
+usuário re-exportar a arte do Guerreiro em frames quadrados de
+verdade ("eu vou corrigir" — dito explicitamente). Não é regressão do
+fix, é o próximo passo de conteúdo que o usuário já sinalizou que vai
+fazer.
+
+**Teste**: `tests/test_character_animation.py` — 2 testes que
+comparavam largura do blit contra o literal `96` (`test_combinacao_
+existente_retorna_frame`, `test_blit_alinha_centro_do_tile_de_colisao_
+com_position`) e 1 que usava `96` só como heurística pra achar o blit
+do personagem no spy de render (`test_ysort_de_personagem_...`)
+precisaram ser reescritos pra não depender de um número fixo que a
+arte real pode mudar — descobrem a largura REAL do frame carregado
+(`get_character_frame(...).get_width()`) antes de montar a asserção/
+filtro, em vez de hardcoded `96`. Suíte de animação de personagem +
+nameplate + portal (155 testes) + client_ui/selection_outline (260
+testes) sem regressão.

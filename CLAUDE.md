@@ -644,10 +644,24 @@ padrão a quebrar, não só os bugs individuais.
   `engine/character_animation.py::get_character_frame(class_id, state,
   direction, anim_time_ms)` — convenção de arquivo
   `assets/sprites/{class_id}_{idle|run|attack|<skill_id>}_{down|up|left|right}.png`
-  (sheet cortado em frames de `CHAR_TILE_SIZE` px de largura — 96,
-  09/09/2026, frame NÃO é quadrado, largura fixa por decisão do
-  usuário, nunca derivada da altura do sheet; `class_id` sempre em
-  português — mesmo valor de `CharacterStats.class_id`/
+  (sheet cortado em frames QUADRADOS — largura=altura=altura real do
+  sheet, 15/10/2026, revisão da regra de 09/09/2026, mesma convenção
+  que `engine/mob_animation.py` já usa pra mob — `CHAR_TILE_SIZE`=96
+  deixou de cortar sheet nenhuma, vira só o default de
+  `character_anchor_offset()` pra chamador sem Surface em mãos.
+  **Exceção, `state in _FIXED_WIDTH_STATES`** (`portal_in`/
+  `portal_out`, sheet intencionalmente NÃO-quadrada — pilar de luz
+  vertical estreito, 96×640) → continua largura FIXA `CHAR_TILE_SIZE`,
+  nunca a regra quadrada — lista explícita pequena, NUNCA checar
+  `state.startswith("portal")` ou prefixo parecido num call site novo,
+  sempre consultar/estender essa mesma lista. `character_anchor_
+  offset(frame_height, frame_width)` deriva `dx` de `frame_width/2`
+  direto (tile de colisão centralizado por construção, independente da
+  largura real) — qualquer call site que já tenha o Surface do frame
+  em mãos passa `frame.get_width()` também, nunca só `get_height()`.
+  Ver PROBLEMAS_ARQUITETURA.md §280.
+  `class_id` sempre em português — mesmo valor de
+  `CharacterStats.class_id`/
   `RemoteControlled.class_id`, nunca uma tradução nova). Implementação
   incremental por decisão do usuário (09/09/2026): arquivo ausente →
   `None` → `RenderSystem` cai pro retângulo colorido de sempre, nunca

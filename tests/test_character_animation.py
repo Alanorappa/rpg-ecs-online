@@ -103,11 +103,15 @@ class TestGetCharacterFrame(unittest.TestCase):
         _ca._frame_cache.clear()
 
     def test_combinacao_existente_retorna_frame(self):
-        from engine.character_animation import get_character_frame, CHAR_TILE_SIZE
+        """Frame é QUADRADO (15/10/2026, largura=altura derivada do
+        sheet) — não compara mais contra CHAR_TILE_SIZE, que deixou de
+        ditar a largura de corte (vira só o default de
+        character_anchor_offset())."""
+        from engine.character_animation import get_character_frame
         frame = get_character_frame("guerreiro", "idle", "down", 0)
         self.assertIsNotNone(frame)
         w, h = frame.get_size()
-        self.assertEqual(w, CHAR_TILE_SIZE)
+        self.assertEqual(w, h, "frame tem que ser quadrado")
 
     def test_frame_avanca_com_o_tempo(self):
         from engine.character_animation import get_character_frame, DEFAULT_FRAME_MS
@@ -606,9 +610,17 @@ class TestCharacterSpriteBlitAnchor(unittest.TestCase):
         return eid
 
     def test_blit_alinha_centro_do_tile_de_colisao_com_position(self):
+        """Largura/altura do frame real (15/10/2026, frame QUADRADO,
+        derivado do sheet — não mais sempre 96) descobertas ANTES de
+        renderizar, pra identificar o blit do personagem no spy sem
+        depender de um número fixo que a arte pode mudar."""
         from engine.world import World
         from ui.systems import RenderSystem
-        from engine.character_animation import character_anchor_offset
+        from engine.character_animation import character_anchor_offset, get_character_frame
+
+        real_frame = get_character_frame("guerreiro", "idle", "down", 0)
+        self.assertIsNotNone(real_frame, "precisa do asset real guerreiro_idle_down.png pra este teste")
+        expected_w = real_frame.get_width()
 
         world = World()
         self._make_player(world, x=200, y=150)
@@ -616,13 +628,13 @@ class TestCharacterSpriteBlitAnchor(unittest.TestCase):
         rs = RenderSystem(world, screen)
         rs.render(0, 0)
 
-        # Acha o blit do sprite do personagem (96 de largura) entre
-        # todos os blits que aconteceram no frame.
+        # Acha o blit do sprite do personagem entre todos os blits que
+        # aconteceram no frame, pela largura REAL do frame carregado.
         char_blits = [(src, dest) for src, dest in screen.blit_calls
-                      if getattr(src, "get_width", lambda: None)() == 96]
-        self.assertTrue(char_blits, "sprite do guerreiro (96 de largura) deveria ter sido blitado")
+                      if getattr(src, "get_width", lambda: None)() == expected_w]
+        self.assertTrue(char_blits, "sprite do guerreiro deveria ter sido blitado")
         _, (bx, by) = char_blits[0]
-        anchor_dx, anchor_dy = character_anchor_offset()
+        anchor_dx, anchor_dy = character_anchor_offset(real_frame.get_height(), real_frame.get_width())
         self.assertEqual(bx, int(200 - anchor_dx))
         self.assertEqual(by, int(150 - anchor_dy))
 
@@ -661,6 +673,11 @@ class TestCharacterYSortUsesCollisionTile(unittest.TestCase):
         from engine.world import World
         from engine.components import Position, Renderable
         from ui.systems import RenderSystem
+        from engine.character_animation import get_character_frame
+
+        real_frame = get_character_frame("guerreiro", "idle", "down", 0)
+        self.assertIsNotNone(real_frame, "precisa do asset real guerreiro_idle_down.png pra este teste")
+        expected_w = real_frame.get_width()
 
         world = World()
         char_eid = self._make_char(world, 100, 100)
@@ -690,7 +707,7 @@ class TestCharacterYSortUsesCollisionTile(unittest.TestCase):
         for src, _dest in screen.blit_calls:
             if src == "mob_rect_marker":
                 draw_order.append("mob")
-            elif getattr(src, "get_width", lambda: None)() == 96:
+            elif getattr(src, "get_width", lambda: None)() == expected_w:
                 draw_order.append("char")
 
         # Painter's algorithm: `drawables` ordena ASCENDENTE por foot_y e
