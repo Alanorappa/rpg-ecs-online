@@ -761,6 +761,38 @@ padrão a quebrar, não só os bugs individuais.
   uma skill de loop diferente) substitui um loop ainda ativo. NUNCA
   reverter pra "sempre sobrescreve" achando que simplifica — é exatamente
   essa simplicidade que causava o bug.
+  **Animação de CAST (windup) separada da de LANÇAMENTO** (15/10/2026,
+  pedido do usuário — "uma animação pro cast, outra pro lançamento",
+  pra QUALQUER classe com skill de cast_time, não só mago) —
+  `engine.character_animation.trigger_cast_anim(tile_movement,
+  class_id, sid, now_ms)` liga o estado `"cast"` (cascata de 2 níveis,
+  `resolve_cast_state_name`: `f"{sid}_cast"` específico → `"cast"`
+  genérico → `None`, sem arte = idle/run normal) em LOOP pela duração
+  REAL de `cast_time` (SKILL_CATALOG, fonte única). **NUNCA chamar
+  isso de um clique/input local** — gatilho é SEMPRE
+  `SKILL_EFFECT{event:"cast_start"}` (`client/network_handlers.py::
+  _handle_msg_skill_effect`), evento que já existia só pra som e já é
+  broadcast AOI pro caster local E qualquer observador, sem precisar
+  de mensagem de rede nova. **Lançamento reusa a cascata de golpe JÁ
+  EXISTENTE** (`attack`/`skill`/`{sid}`, `resolve_attack_state_name`)
+  — nenhum nome novo, só o GATILHO mudou: `trigger_attack_anim()`
+  passou a disparar (e, pra skill com `sid`, EXCLUSIVAMENTE) nos
+  eventos `SKILL_EFFECT{event:"launch"|"impact"|"miss"}` — `"launch"`
+  é o momento do projétil sair (skill com projétil, impacto físico
+  real vem DEPOIS via COMBAT_RESULT separado); `"impact"`/`"miss"` é
+  pra skill SEM projétil (cast completo = resolução imediata) E pra
+  skill instantânea sem cast_time nenhum. `client/remote_entity_
+  handlers.py::_apply_combat_result` (COMBAT_RESULT) **NUNCA mais
+  dispara golpe pra skill com `sid`** — só auto-attack puro
+  (`sid==""`) continua ali; disparar nos 2 lugares duplicaria a
+  animação pra skill de projétil (lançamento + impacto). Loop de cast
+  em andamento sempre cede pro lançamento via `TileMovement.
+  anim_attack_is_cast` (campo novo) — mesmo ainda dentro da própria
+  duração estimada, porque a conclusão REAL do cast é o evento de
+  rede, nunca o relógio local (`cast_time` é só ESTIMATIVA) — golpe em
+  loop que NÃO é cast (Fatiador de Corpos) continua 100% protegido
+  pela regra de prioridade antiga, intocada. Ver
+  PROBLEMAS_ARQUITETURA.md §281.
   **Animação BASE de MOB** (idle/run/attack × 4 direções — não
   confundir com animação de PERSONAGEM jogável acima, que é um sistema
   IRMÃO separado, nunca estendido pelo mesmo módulo) →

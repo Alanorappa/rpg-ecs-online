@@ -1487,6 +1487,17 @@ class TileMovement:
     # guard — mesmo sid + loop ainda ativo = ignora (deixa o loop em
     # andamento continuar, sem reiniciar nada).
     anim_attack_sid: str = ""
+    # Marca que o loop ATUAL (`anim_attack_state`/`anim_attack_loop_
+    # duration_ms`) veio de `trigger_cast_anim` (windup de uma skill com
+    # cast_time, 15/10/2026) — SEMPRE interrompível por um trigger de
+    # LANÇAMENTO (`trigger_attack_anim`), mesmo que a duração do cast
+    # ainda não tenha expirado localmente (a conclusão REAL do cast é o
+    # evento de rede "launch"/"impact"/"miss", o `cast_time` local é só
+    # ESTIMATIVA — rede sempre tem alguma folga/latência). Golpe em loop
+    # que NÃO é cast (ex: Fatiador de Corpos) continua protegido pela
+    # regra antiga de `trigger_attack_anim` — este campo nunca afeta
+    # esses casos.
+    anim_attack_is_cast: bool = False
 
 
 @dataclass

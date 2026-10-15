@@ -252,31 +252,41 @@ class RemoteEntityHandlers:
         # Animação de golpe do ATACANTE (09/09/2026, pedido do usuário) —
         # independente de quem/o que foi o ALVO (mob ou player): liga
         # sempre que um player de verdade (local ou remoto) resolve um
-        # auto-attack ou skill de verdade, nunca em DoT/HoT — inclusive
+        # AUTO-ATTACK puro (sid==""), nunca em DoT/HoT — inclusive
         # miss/dodge/parry (10/09/2026: golpe que erra também anima, só
         # `MISS_ATTACK_SLOWDOWN` mais lento, mesma arte — "personagem
         # congelado" quando errava era o sintoma relatado pelo usuário).
-        # Skill sem sprite própria cai no genérico "attack" (ver
-        # resolve_attack_state_name). Puramente cosmético — nunca decide
-        # gameplay, só o que a tela mostra.
+        # Puramente cosmético — nunca decide gameplay, só o que a tela
+        # mostra. **Skill com sid (15/10/2026)**: NÃO dispara mais aqui
+        # — o golpe de verdade (cascata sid/skill/attack) e o windup de
+        # cast já disparam via `SKILL_EFFECT{event:"cast_start"|"launch"
+        # |"impact"|"miss"}` (`client/network_handlers.py::
+        # _handle_msg_skill_effect`), no momento certo (lançamento, não
+        # impacto físico do projétil) — disparar de novo aqui duplicaria
+        # a animação pra qualquer skill com projétil (uma vez no
+        # lançamento, outra no COMBAT_RESULT do impacto real).
         if not _is_dot_hot:
             _atk_eid_anim = (self.player_entity if server_attacker == self._my_eid
                              else self._remote_players.get(server_attacker))
             if _atk_eid_anim is not None:
-                from engine.components import CharacterStats as _CSAnimAtk, TileMovement as _TMAnimAtk
-                _atk_class_id = None
-                if _atk_eid_anim == self.player_entity:
-                    _cs_anim_atk = self.world.get_component(_atk_eid_anim, _CSAnimAtk)
-                    _atk_class_id = _cs_anim_atk.class_id if _cs_anim_atk else None
-                else:
-                    _rc_anim_atk = self.world.get_component(_atk_eid_anim, RemoteControlled)
-                    _atk_class_id = _rc_anim_atk.class_id if _rc_anim_atk else None
-                _tm_anim_atk = self.world.get_component(_atk_eid_anim, _TMAnimAtk)
-                if _atk_class_id and _tm_anim_atk is not None:
-                    from engine.character_animation import trigger_attack_anim as _taa
-                    _missed_anim = outcome in ("miss", "dodge", "parry")
-                    _taa(_tm_anim_atk, _atk_class_id, cr.get("sid", ""), pygame.time.get_ticks(),
-                         missed=_missed_anim)
+                # sid não-vazio = skill — golpe/windup já disparam via
+                # SKILL_EFFECT (ver comentário acima); só auto-attack
+                # puro (sid=="") continua disparando por aqui.
+                if not cr.get("sid", ""):
+                    from engine.components import CharacterStats as _CSAnimAtk, TileMovement as _TMAnimAtk
+                    _atk_class_id = None
+                    if _atk_eid_anim == self.player_entity:
+                        _cs_anim_atk = self.world.get_component(_atk_eid_anim, _CSAnimAtk)
+                        _atk_class_id = _cs_anim_atk.class_id if _cs_anim_atk else None
+                    else:
+                        _rc_anim_atk = self.world.get_component(_atk_eid_anim, RemoteControlled)
+                        _atk_class_id = _rc_anim_atk.class_id if _rc_anim_atk else None
+                    _tm_anim_atk = self.world.get_component(_atk_eid_anim, _TMAnimAtk)
+                    if _atk_class_id and _tm_anim_atk is not None:
+                        from engine.character_animation import trigger_attack_anim as _taa
+                        _missed_anim = outcome in ("miss", "dodge", "parry")
+                        _taa(_tm_anim_atk, _atk_class_id, "", pygame.time.get_ticks(),
+                             missed=_missed_anim)
             else:
                 # Atacante é mob remoto (10/10/2026, sistema de animação
                 # de mob, ver engine/mob_animation.py) — mesmo princípio:

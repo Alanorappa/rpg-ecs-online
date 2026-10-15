@@ -273,6 +273,54 @@ def resolve_attack_state_name(class_id: str, sid: str, direction: str) -> str:
     return "attack"
 
 
+def resolve_cast_state_name(class_id: str, sid: str, direction: str) -> "str | None":
+    """Cascata de 2 níveis pro WINDUP de cast (15/10/2026, pedido do
+    usuário — "uma animação pro cast, outra pro lançamento"): sid
+    específico (`f"{sid}_cast"`, ex: "bola_de_fogo_cast") → "cast"
+    genérico (qualquer skill com cast_time, sem arte própria) → None
+    (sem arte de cast pra essa combinação ainda — personagem fica em
+    idle/run durante o cast inteiro, zero regressão). Convenção de
+    arquivo: `{class_id}_{sid}_cast_{direction}.png` /
+    `{class_id}_cast_{direction}.png`."""
+    if sid and _frames_for(class_id, f"{sid}_cast", direction):
+        return f"{sid}_cast"
+    if _frames_for(class_id, "cast", direction):
+        return "cast"
+    return None
+
+
+def trigger_cast_anim(tile_movement, class_id: str, sid: str, now_ms: int) -> None:
+    """Liga a animação de CAST (windup) — chamada no evento de rede
+    `SKILL_EFFECT{event:"cast_start"}` (15/10/2026, já existia só pra
+    tocar som — ver `client/network_handlers.py::_handle_msg_skill_
+    effect`), tanto pro conjurador local quanto pra qualquer observador
+    (mesmo evento, já broadcast AOI). Fica em LOOP pela duração REAL de
+    `cast_time` da skill (`content/skill_config.py::SKILL_CATALOG`,
+    fonte única, nunca duplicada aqui) até o evento de LANÇAMENTO
+    (`trigger_attack_anim`, chamado em "launch"/"impact"/"miss")
+    interromper — `anim_attack_is_cast=True` garante que essa
+    interrupção acontece mesmo que a duração local ainda não tenha
+    expirado (`cast_time` local é só ESTIMATIVA, rede tem folga/
+    latência real). Sem arte de cast OU sem `cast_time` de verdade
+    (skill instantânea) → não faz nada, personagem continua em
+    idle/run normalmente."""
+    state_name = resolve_cast_state_name(class_id, sid, tile_movement.facing)
+    if state_name is None:
+        return
+    from content.skill_config import SKILL_CATALOG
+    cast_s = SKILL_CATALOG.get(sid, {}).get("cast_time", 0.0) if sid else 0.0
+    loop_ms = int(cast_s * 1000) if cast_s else 0
+    if loop_ms <= 0:
+        return
+    tile_movement.anim_attack_state            = state_name
+    tile_movement.anim_attack_sid              = sid
+    tile_movement.anim_attack_started_ms       = now_ms
+    tile_movement.anim_attack_frame_ms         = DEFAULT_FRAME_MS
+    tile_movement.anim_attack_loop_duration_ms = loop_ms
+    tile_movement.anim_attack_hold_last_frame  = False
+    tile_movement.anim_attack_is_cast          = True
+
+
 MISS_ATTACK_SLOWDOWN = 1.5  # 50% mais lento — golpe que erra (miss/dodge/parry); 25% não deu diferença perceptível, usuário pediu +25pp (10/09/2026)
 
 # Skills cujo golpe deve ficar em LOOP durante toda a duração REAL da
@@ -336,7 +384,13 @@ def trigger_attack_anim(tile_movement, class_id: str, sid: str, now_ms: int,
     duração, o que não acontece com nenhuma skill de loop hoje
     (Fatiador: 45s de cooldown, 5s de duração)."""
     _new_loop_ms = _looping_attack_duration_ms(sid) or 0
-    if _attack_loop_still_active(tile_movement, now_ms):
+    # `anim_attack_is_cast` (15/10/2026): um loop de CAST em andamento
+    # (`trigger_cast_anim`) SEMPRE cede pro lançamento, mesmo ainda
+    # dentro da própria duração — é exatamente o evento que deveria
+    # encerrá-lo (ver docstring de `trigger_cast_anim`). Golpe em loop
+    # que NÃO é cast (ex: Fatiador de Corpos) continua com a regra
+    # antiga, intocada.
+    if _attack_loop_still_active(tile_movement, now_ms) and not tile_movement.anim_attack_is_cast:
         if _new_loop_ms == 0:
             return
         if sid and sid == tile_movement.anim_attack_sid:
@@ -355,6 +409,10 @@ def trigger_attack_anim(tile_movement, class_id: str, sid: str, now_ms: int,
     # (campo do COMPONENTE, não limpo automaticamente) e ficaria preso
     # na última frame em vez de voltar pro idle sozinho.
     tile_movement.anim_attack_hold_last_frame = False
+    # Idem — este trigger é sempre um LANÇAMENTO/golpe de verdade, nunca
+    # um cast; limpa a flag pra não "vazar" num golpe normal disparado
+    # logo depois (mesmo raciocínio do reset de hold_last_frame acima).
+    tile_movement.anim_attack_is_cast = False
 
 
 def resolve_display_state(tile_movement, class_id: str, now_ms: int,

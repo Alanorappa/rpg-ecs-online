@@ -486,11 +486,19 @@ class TestRenderSystemNameplateTopFollowsSpriteHeight(unittest.TestCase):
         return eid
 
     def test_topo_do_hud_usa_ancora_do_tile_de_colisao_nao_o_retangulo_antigo(self):
+        """anchor_dy derivado da altura REAL do frame carregado (15/10/2026,
+        frame quadrado — altura do sheet pode mudar conforme a arte é
+        re-exportada), nunca do default parameterless (que só por
+        coincidência batia com a altura real antes do usuário re-exportar
+        guerreiro_idle_down.png pra 64×64)."""
         from engine.world import World
         from ui.systems import RenderSystem
         from ui.world_labels import WORLD_LABELS
-        from engine.character_animation import character_anchor_offset
+        from engine.character_animation import character_anchor_offset, get_character_frame
         from ui.hud_bars import NAMEPLATE_CHAR_FRAME_TOP_INSET_PX
+
+        real_frame = get_character_frame("guerreiro", "idle", "down", 0)
+        self.assertIsNotNone(real_frame, "precisa do asset real guerreiro_idle_down.png pra este teste")
 
         world = World()
         eid = self._make_player(world)
@@ -513,13 +521,17 @@ class TestRenderSystemNameplateTopFollowsSpriteHeight(unittest.TestCase):
         # baixo (26/09/2026, pedido do usuário — nameplate fica DENTRO
         # do frame da animação, não flutuando acima dele; valor fixo
         # pra não "balançar" seguindo pose/direção).
-        _, anchor_dy = character_anchor_offset()
+        _, anchor_dy = character_anchor_offset(real_frame.get_height(), real_frame.get_width())
         self.assertAlmostEqual(hud_top_world_y,
                                100 - anchor_dy + NAMEPLATE_CHAR_FRAME_TOP_INSET_PX)
-        # Regressão: NÃO pode ser o cálculo antigo (baseado em
-        # renderable.height=24), que ficaria bem mais baixo — dentro do
-        # próprio sprite.
-        self.assertNotAlmostEqual(hud_top_world_y, 100 - 24 / 2)
+        # Regressão "não pode ser o cálculo antigo (renderable.height=24)"
+        # removida (15/10/2026) — virou uma coincidência numérica frágil:
+        # com a altura REAL do sheet variando conforme a arte é
+        # re-exportada (ver frame quadrado, §280), o valor novo pode
+        # colidir por acaso com o valor antigo pra certas alturas (ex:
+        # 64px dá exatamente o mesmo 88.0 que a fórmula antiga). A
+        # asserção acima já prova que o mecanismo NOVO (anchor derivado
+        # do frame real) é o que está em uso — isso é suficiente.
 
 
 class TestCharacterAnchorOffset(unittest.TestCase):
@@ -1248,14 +1260,15 @@ class TestApplyCombatResultTriggersAttackAnim(unittest.TestCase):
         self.assertEqual(tm.anim_attack_state, "attack")
         self.assertEqual(tm.anim_attack_frame_ms, DEFAULT_FRAME_MS)
 
-    def test_skill_sem_sprite_propria_usa_fallback_via_apply_combat_result(self):
-        """class_id E sid fictícios — nem sid específico nem "skill"
-        genérico existem pra essa classe, então cai no "attack", 3º e
-        último nível da cascata. Não pode usar "guerreiro" real aqui:
-        `guerreiro_skill_*.png` existe de verdade (fallback genérico de
-        skill), então qualquer sid desconhecido pra essa classe cairia
-        no nível 2, não no 3 — não pode depender de qual sprite existe
-        no disco neste momento."""
+    def test_skill_com_sid_nao_dispara_mais_via_apply_combat_result(self):
+        """15/10/2026 (ver PROBLEMAS_ARQUITETURA.md §281): golpe/windup
+        de skill (sid != "") passou a disparar via `SKILL_EFFECT{event:
+        "cast_start"|"launch"|"impact"|"miss"}` (client/network_handlers.py::
+        _handle_msg_skill_effect), não mais aqui — disparar nos 2
+        lugares duplicaria a animação pra skill com projétil (uma vez
+        no lançamento, outra no COMBAT_RESULT do impacto real).
+        `_apply_combat_result` continua intocado pra auto-attack puro
+        (sid=="", ver outros testes desta classe)."""
         from client.remote_entity_handlers import RemoteEntityHandlers
         eng, world = self._make_engine_stub(attacker_eid=42, attacker_class_id="classe_inexistente_xyz",
                                             is_remote=False)
@@ -1265,14 +1278,15 @@ class TestApplyCombatResultTriggersAttackAnim(unittest.TestCase):
             "hp_after": 20, "source": "skill", "sid": "skill_inexistente_xyz",
         })
         tm = world.get_component(eng._atk_local_eid, TileMovement)
-        self.assertEqual(tm.anim_attack_state, "attack")
+        self.assertEqual(tm.anim_attack_state, "",
+            "COMBAT_RESULT não deveria mais ligar animação pra skill com sid")
 
-    def test_fatiador_de_corpos_liga_loop_pela_duracao_real_da_skill(self):
-        """10/09/2026, pedido do usuário: Fatiador de Corpos dura 5s
-        (SKILL_CATALOG, fonte única) — a animação deve ficar em loop
-        por esse tempo todo, não expirar após 1 ciclo do sheet."""
+    def test_fatiador_de_corpos_nao_dispara_mais_via_apply_combat_result(self):
+        """15/10/2026 — mesma mudança do teste acima: o loop do Fatiador
+        de Corpos (SKILL_CATALOG, fonte única) agora liga via
+        SKILL_EFFECT (evento "impact", skill instantânea sem cast_time),
+        nunca mais por `_apply_combat_result`/COMBAT_RESULT."""
         from client.remote_entity_handlers import RemoteEntityHandlers
-        from content.skill_config import SKILL_CATALOG
         eng, world = self._make_engine_stub(attacker_eid=42, attacker_class_id="guerreiro",
                                             is_remote=False)
         from engine.components import TileMovement
@@ -1281,8 +1295,8 @@ class TestApplyCombatResultTriggersAttackAnim(unittest.TestCase):
             "hp_after": 20, "source": "skill", "sid": "fatiador_de_corpos",
         })
         tm = world.get_component(eng._atk_local_eid, TileMovement)
-        duration_s = SKILL_CATALOG["fatiador_de_corpos"]["params"]["duration"]
-        self.assertEqual(tm.anim_attack_loop_duration_ms, int(duration_s * 1000))
+        self.assertEqual(tm.anim_attack_loop_duration_ms, 0,
+            "COMBAT_RESULT não deveria mais ligar o loop do Fatiador de Corpos")
 
     def test_golpe_normal_nao_tem_duracao_de_loop(self):
         from client.remote_entity_handlers import RemoteEntityHandlers

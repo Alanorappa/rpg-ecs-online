@@ -27727,3 +27727,100 @@ arte real pode mudar — descobrem a largura REAL do frame carregado
 filtro, em vez de hardcoded `96`. Suíte de animação de personagem +
 nameplate + portal (155 testes) + client_ui/selection_outline (260
 testes) sem regressão.
+
+## 281. Animação de cast separada da de lançamento, pra qualquer skill (15/10/2026)
+
+**Pedido do usuário**: "precisamos consertar a animação de ataque do
+mago, o correto seria ter duas animações, uma para o cast, e outra
+para o lançamento da magia, que é no momento que o projétil [sai]...
+já pode extender isso para todos os casts do jogo, como arqueiro".
+
+**Pesquisa feita antes de codar**: mapeei o fluxo de skill ponta a
+ponta antes de decidir qualquer coisa. Achados principais:
+- `trigger_attack_anim()` (golpe/lançamento) só disparava em UM lugar
+  — `client/remote_entity_handlers.py::_apply_combat_result`, no
+  COMBAT_RESULT (confirmação de IMPACTO/resultado). Não existia
+  animação de CAST (windup) nenhuma — o personagem ficava em idle/run
+  o cast_time inteiro, só a barra de cast (UI) indicava progresso.
+- O servidor **já emite** 2 eventos `SKILL_EFFECT` nos momentos exatos
+  necessários, já broadcast AOI pra caster local E observadores
+  (`server/skill_processor.py`/`spell_completion_processor.py`):
+  `"cast_start"` (cast aceito, início do windup) e `"launch"`/
+  `"impact"`/`"miss"` (conclusão — `"launch"` só pra skill de
+  PROJÉTIL, cujo impacto físico vem depois via COMBAT_RESULT separado;
+  `"impact"`/`"miss"` pra skill SEM projétil, cast completo = resolução
+  imediata; TAMBÉM usado por skill INSTANTÂNEA sem cast_time nenhum).
+  Hoje só tocavam som — zero mudança de protocolo necessária pra essa
+  feature inteira.
+
+**Desenho**: 2 fases, nomenclatura em inglês (consistente com idle/
+run/attack/skill já existentes):
+- **"cast"** (NOVO) — `engine.character_animation.
+  resolve_cast_state_name()`: cascata de 2 níveis, `f"{sid}_cast"`
+  (windup específico) → `"cast"` genérico → `None` (sem arte, fica em
+  idle/run, zero regressão). `trigger_cast_anim()` liga em LOOP pela
+  duração REAL de `cast_time` (SKILL_CATALOG, fonte única) — chamado
+  por `_handle_msg_skill_effect` no evento `"cast_start"`.
+- **"lançamento"** reusa a cascata JÁ EXISTENTE (`attack`/`skill`/
+  `{sid}`, `resolve_attack_state_name`) — NENHUM nome novo, só o
+  GATILHO mudou: `trigger_attack_anim()` passou a ser chamado também
+  (e, pra skill com sid, EXCLUSIVAMENTE) nos eventos `"launch"`/
+  `"impact"`/`"miss"` de SKILL_EFFECT, nunca mais em COMBAT_RESULT.
+
+**Por que remover o gatilho de COMBAT_RESULT pra skill (não só
+adicionar o novo)**: sem isso, uma skill de PROJÉTIL acionaria o golpe
+2x — uma vez no lançamento (`"launch"`, correto) e de novo no impacto
+físico real (`COMBAT_RESULT`, tarde demais e duplicado). `_apply_
+combat_result` (`client/remote_entity_handlers.py`) agora só dispara
+pra auto-attack PURO (`sid==""`) — skill com sid nunca mais passa por
+ali, 100% movido pro handler de SKILL_EFFECT.
+
+**`anim_attack_is_cast` (campo novo em `TileMovement`)**: um loop de
+CAST em andamento SEMPRE cede pro lançamento, mesmo ainda dentro da
+própria duração estimada — porque a conclusão REAL do cast é o
+evento de rede, não o relógio local (`cast_time` é só ESTIMATIVA, rede
+tem folga/latência real, mesmo raciocínio já usado por `anim_attack_
+hold_last_frame` no portal). Sem este campo, a regra de prioridade JÁ
+EXISTENTE de loop (`_attack_loop_still_active`, criada pro Fatiador de
+Corpos) bloquearia a interrupção do cast por engano — golpe em loop
+que NÃO é cast (Fatiador) continua 100% protegido pela regra antiga,
+intocada.
+
+**Escopo**: automático pra QUALQUER classe/skill com `cast_time>0` —
+nenhuma lista de exceção, nenhum catálogo novo. Sem arte de `"cast"`
+pra uma skill/classe = comportamento de hoje (idle/run durante o cast
+inteiro), zero regressão até o usuário criar os sprites.
+
+**Armadilha achada ajustando os testes** (2 testes pré-existentes
+quebraram, puramente por causa da mudança de comportamento intencional
+— `_apply_combat_result` não dispara mais golpe pra skill com sid):
+reescritos pra confirmar o NOVO contrato (COMBAT_RESULT não liga mais
+animação/loop pra skill com sid) em vez do antigo. **Tentativa de
+reutilizar um helper entre mixins, revertida**: tentei consolidar a
+resolução de `class_id` (local via `CharacterStats`/remoto via
+`RemoteControlled`, hoje duplicada 2x) num helper novo
+(`_resolve_player_class_id`) chamado de `client/remote_entity_
+handlers.py` — quebrou um teste que usa um fixture `MagicMock` com
+SÓ `RemoteEntityHandlers` misturado (não o `GameEngine` completo),
+porque o helper vive em `client/network_handlers.py` (mixin
+DIFERENTE). Revertido pra cópia inline original ali — mesmo
+princípio já documentado em §273 ("não mexer em call site já correto/
+testado só pra eliminar duplicação, risco de quebrar isolamento de
+mixin"); o helper novo continua existindo e sendo usado só dentro do
+PRÓPRIO arquivo onde nasceu (`_handle_msg_skill_effect`).
+**Também achado durante os ajustes**: `guerreiro_idle_down.png` foi
+re-exportado pelo usuário (768×80 → 512×64, agora quadrado de
+verdade) EM PARALELO a esta sessão — 2 testes que mediam a arte real
+tinham expectativas hardcoded presas à altura antiga (80px); corrigidos
+pra derivar a expectativa da altura REAL carregada, e uma 2ª asserção
+de regressão (que comparava contra a fórmula antiga) virou coincidência
+numérica frágil com a nova altura (64px) e foi removida — a asserção
+principal já prova o mecanismo certo sozinha.
+
+**Teste**: manual em playtest (decisão explícita do usuário) — a
+cobertura automatizada ficou limitada a corrigir os 2 testes
+pré-existentes que o novo comportamento quebrou (confirma o contrato
+NOVO de `_apply_combat_result`), sem suíte nova dedicada ao cast/
+lançamento em si. Validação visual fica pro usuário, criando os
+sprites `{class_id}_cast_{direction}.png`/`{class_id}_{sid}_cast_
+{direction}.png`.

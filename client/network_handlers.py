@@ -836,6 +836,34 @@ class NetworkHandlers:
         if event == "launch" and not is_local and sid in self._BYSTANDER_PROJECTILE_SKILLS:
             self._spawn_bystander_projectile(sid, payload)
 
+        # Animação de CAST (windup) e LANÇAMENTO de skill (15/10/2026,
+        # pedido do usuário: "uma animação pro cast, outra pro
+        # lançamento") — reaproveita os eventos de apresentação que já
+        # existiam só pra som, já broadcast AOI pra caster local E
+        # observadores. "cast_start" liga o windup em loop pela duração
+        # de cast_time (`trigger_cast_anim`); "launch"/"impact"/"miss"
+        # (terminal de QUALQUER skill com sid, projétil ou não — ver
+        # server/skill_processor.py/spell_completion_processor.py) liga
+        # o golpe de verdade (`trigger_attack_anim`, cascata já
+        # existente de sid/skill/attack) — por isso `_apply_combat_result`
+        # (COMBAT_RESULT) deixou de disparar golpe pra skills com sid,
+        # só continua pra auto-attack puro (sid=""), senão duplicaria a
+        # animação (uma vez aqui, outra no impacto real do projétil).
+        from engine.components import TileMovement as _TMSfxAnim
+        _caster_local_anim = self._resolve_local_eid(caster_eid)
+        if _caster_local_anim != -1:
+            _tm_sfx_anim = self.world.get_component(_caster_local_anim, _TMSfxAnim)
+            _class_id_sfx_anim = self._resolve_player_class_id(_caster_local_anim)
+            if _tm_sfx_anim is not None and _class_id_sfx_anim:
+                import pygame as _pg_sfx_anim
+                from engine.character_animation import trigger_cast_anim as _tca, trigger_attack_anim as _taa_sfx
+                _now_sfx_anim = _pg_sfx_anim.time.get_ticks()
+                if event == "cast_start":
+                    _tca(_tm_sfx_anim, _class_id_sfx_anim, sid, _now_sfx_anim)
+                elif event in ("launch", "impact", "miss"):
+                    _taa_sfx(_tm_sfx_anim, _class_id_sfx_anim, sid, _now_sfx_anim,
+                            missed=(event == "miss"))
+
         fx = _SC_sfx.get(sid, {}).get("effects", {}).get(event, {})
         snd  = fx.get("sound")   # som único → play_skill
         snds = fx.get("sounds")  # variações aleatórias → play_random
@@ -874,6 +902,20 @@ class NetworkHandlers:
         if server_eid in self._remote_players:
             return self._remote_players[server_eid]
         return self._remote_mobs.get(server_eid, -1)
+
+    def _resolve_player_class_id(self, local_eid: int) -> "str | None":
+        """class_id de um player (local OU remoto) já resolvido pra eid
+        local — local via `CharacterStats`, remoto via
+        `RemoteControlled`. None se não for um eid de player conhecido.
+        Ponto único (15/10/2026) — usado por qualquer trigger de
+        animação de personagem que precise do class_id a partir de um
+        eid já resolvido (golpe/cast)."""
+        from engine.components import CharacterStats as _CS_rpc, RemoteControlled as _RC_rpc
+        if local_eid == self.player_entity:
+            cs = self.world.get_component(local_eid, _CS_rpc)
+            return cs.class_id if cs else None
+        rc = self.world.get_component(local_eid, _RC_rpc)
+        return rc.class_id if rc else None
 
     def _spawn_bystander_projectile(self, sid: str, payload: dict) -> None:
         """Cria a flecha/bola cosmética que um espectador vê quando OUTRO player
