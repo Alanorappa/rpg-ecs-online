@@ -27824,3 +27824,68 @@ NOVO de `_apply_combat_result`), sem suíte nova dedicada ao cast/
 lançamento em si. Validação visual fica pro usuário, criando os
 sprites `{class_id}_cast_{direction}.png`/`{class_id}_{sid}_cast_
 {direction}.png`.
+
+## 282. Projétil nasce 1 tile à frente do atacante + Bola de Fogo emite luz (15/10/2026)
+
+**Pedidos do usuário**: "1. Fazer o projétil iniciar no tile que está a
+frente do personagem... atualmente está saindo do tile onde o
+personagem está, fica estranho; 2. É possível fazer com que o projétil
+de bola de fogo emita luz? e uma luz amarelada?"
+
+**Pesquisa feita antes de codar**: `PlayerProjectileSystem.spawn()`
+(`ui/spell_system.py`) já é o ÚNICO ponto de entrada pra criar
+QUALQUER projétil visual do jogador (flecha, Bola de Fogo, Tiro
+Múltiplo, Flecha Reiterada, Tiro Repulsivo, projétil cosmético de
+mob/torre pro espectador) — todos os call sites já passavam `pos.x,
+pos.y` (posição crua do atacante). Corrigir dentro de `spawn()` em vez
+de em cada call site resolve os 2 pedidos de uma vez, sem duplicar
+lógica.
+
+**1. Deslocamento de spawn**: `spawn()` passou a olhar `TileMovement.
+facing` de `attacker_id` e deslocar `(x, y)` 1 tile INTEIRO nessa
+direção antes de criar a entrada — `engine.utils.facing_to_tile_delta()`
+(novo, inverso de `facing_from_delta` já existente). `attacker_id` sem
+`TileMovement` resolvível (ex: projétil cosmético de mob/torre remoto,
+que passa `attacker_id=-1` de propósito) não desloca nada — mesmo
+comportamento de sempre, fail-safe via `World.get_component` (try/
+except, nunca explode com eid inválido).
+
+**2. Luz da Bola de Fogo**: reaproveita 100% o pipeline de luz
+dinâmica já usado pelo lampião aceso sob demanda (`ui/day_night_
+system.py::DayNightSystem.render()`, entrada `"player_light": True` +
+`"light_source"` + `"glow_color"` opcional) — `PlayerProjectileSystem.
+get_fireball_light_sources(cam_x, cam_y)` (novo) devolve 1 entrada por
+Bola de Fogo em voo, lendo a posição AO VIVO (`entry.x/entry.y`, já
+atualizada todo tick pelo próprio update do projétil) — zero
+componente ECS novo (projétil de jogador é client-only, fora do ECS
+de propósito desde 15/09/2026, §144). Calibração (pedido do usuário):
+70% intensidade / 3 tiles de raio — mais forte e compacto que o
+lampião (50%/7 tiles), já que é um brilho vívido temporário, não uma
+ferramenta de iluminação de área. Cor `(255, 200, 100)` — mesmo
+amarelo-alaranjado quente que já é o DEFAULT do sistema pra esse tipo
+de luz.
+
+**Custo de performance (pergunta explícita do usuário, respondida
+ANTES de implementar)**: o gradiente de luz é CACHEADO por `(raio,
+intensidade)` desde a implementação original do lampião — o custo
+real por Bola de Fogo em voo é só **1 blit** de uma Surface já pronta
+(`BLEND_RGBA_ADD` pro furo na escuridão + `BLEND_RGBA_ADD` com
+`set_alpha` pro brilho quente por cima), nenhum cálculo de pixel novo
+por frame. Com um punhado de bolas de fogo simultâneas em tela (caso
+realista — vários magos próximos), o custo adicional é alguns blits
+baratos em cima de um sistema já medido em ~0.4-0.46ms por frame (ver
+PROBLEMAS_ARQUITETURA.md, otimização de clusters estáticos). Não
+identificado como risco.
+
+**Integração**: `game.py` (montagem de `_lit_world_objs`, mesmo padrão
+já usado pelas luzes de item/portal) chama `self._player_proj_system.
+get_fireball_light_sources(cam_x, cam_y)` e concatena o resultado —
+vazio na esmagadora maioria dos frames (sem Bola de Fogo em voo agora).
+
+**Teste**: suíte de client_ui/day_night/portal (338 testes) +
+animação de personagem/nameplate (84 testes) rodada sem regressão —
+nenhum teste pré-existente assumia a posição EXATA de spawn de
+projétil (só comportamento de hit/dano), então nenhum precisou de
+ajuste. Sem teste automatizado NOVO dedicado (mudança
+puramente visual/posicional) — validação fica pro usuário em
+playtest.

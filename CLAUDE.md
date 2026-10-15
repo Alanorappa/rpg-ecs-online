@@ -1328,7 +1328,18 @@ padrão a quebrar, não só os bugs individuais.
   de verdade (`ProjectileSystem` em `engine/world_systems.py`, código
   headless que o SERVIDOR roda, aplica `deal_damage()` real com viagem/
   tempo) — só `PlayerProjectile` (100% client-only, confirmado por grep
-  no repo inteiro) foi movido pra fora do ECS.
+  no repo inteiro) foi movido pra fora do ECS. `spawn()` já desloca
+  `(x, y)` 1 tile à frente de `attacker_id` sozinho (15/10/2026, via
+  `TileMovement.facing`/`engine.utils.facing_to_tile_delta()`) — NUNCA
+  recalcular esse offset num call site novo, nem passar a posição já
+  deslocada (duplicaria o deslocamento). Bola de Fogo em voo emite luz
+  dinâmica amarelo-alaranjada (`PlayerProjectileSystem.
+  get_fireball_light_sources(cam_x, cam_y)`, mesmo pipeline/formato de
+  `"player_light"` já usado pela luz de item aceso — gradiente CACHEADO
+  por raio/intensidade, custo real é só 1 blit por bola em voo) —
+  qualquer skill de projétil futura que também devesse emitir luz seria
+  mais uma linha de filtro nesse MESMO método, nunca um sistema de luz
+  paralelo. Ver PROBLEMAS_ARQUITETURA.md §282.
 - **Talento que não deve ter efeito dentro da BG/instância** →
   `content/talent_data.py::INSTANCE_DISABLED_TALENTS` (frozenset de
   `talent_id`) — lido nos dois lados: `server/instance_progression.py::

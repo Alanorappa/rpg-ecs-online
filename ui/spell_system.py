@@ -722,6 +722,16 @@ class PlayerProjectileSystem(System):
     FIREBALL_FRAMES = 10          # número de frames no sheet
     FIREBALL_SCALE  = 2           # multiplicador de tamanho do sprite
 
+    # Luz dinâmica da Bola de Fogo (15/10/2026, pedido do usuário) —
+    # bem mais forte/compacta que o lampião (50%/7 tiles, ver
+    # content/item_table.py), já que é um brilho vívido e temporário,
+    # não uma ferramenta de iluminação de área. Cor igual ao default já
+    # usado pela luz de item (`ui/day_night_system.py`), amarelo-
+    # alaranjado quente.
+    FIREBALL_LIGHT_INTENSITY_PCT = 70
+    FIREBALL_LIGHT_RADIUS_TILES  = 3
+    FIREBALL_LIGHT_COLOR = (255, 200, 100)
+
     def __init__(self, world: World, screen: pygame.Surface, player_entity: int = -1):
         self.world  = world
         self.world_surf = screen
@@ -763,10 +773,58 @@ class PlayerProjectileSystem(System):
         campo de `PlayerProjectileEntry` (spell_id, speed, color, etc.).
         Retorna a entrada criada — guarde a referência se precisar mutá-la
         depois (ex: `entry.target_server_id = ...`, `entry.deferred_result =
-        ...`), em vez de buscar de volta por eid como o código ECS fazia."""
+        ...`), em vez de buscar de volta por eid como o código ECS fazia.
+
+        `(x, y)` é deslocado 1 tile INTEIRO na direção (`TileMovement.
+        facing`) de `attacker_id` antes de nascer (15/10/2026, bug real
+        relatado pelo usuário: projétil nascia em cima do próprio
+        personagem, ficava estranho) — todo chamador já passa a posição
+        CRUA do atacante (`pos.x, pos.y`), então o ajuste entra aqui, no
+        ÚNICO ponto de entrada, sem precisar tocar nenhum dos vários call
+        sites (flecha, bola de fogo, tiro múltiplo, etc.). `attacker_id`
+        sem `TileMovement` resolvível (ex: projétil cosmético de mob/torre
+        remoto, que usa `attacker_id=-1` de propósito) não desloca nada —
+        mesmo comportamento de sempre nesse caso."""
+        atk_tm = self.world.get_component(attacker_id, TileMovement)
+        if atk_tm is not None:
+            from engine.utils import facing_to_tile_delta
+            _dtx, _dty = facing_to_tile_delta(atk_tm.facing)
+            x += _dtx * TILE_SIZE
+            y += _dty * TILE_SIZE
         entry = PlayerProjectileEntry(x, y, attacker_id, target_id, **kwargs)
         self._entries.append(entry)
         return entry
+
+    def get_fireball_light_sources(self, camera_offset_x: float,
+                                   camera_offset_y: float) -> list:
+        """Entradas de luz DINÂMICA (15/10/2026, pedido do usuário) — 1
+        por Bola de Fogo em voo, posição AO VIVO (`entry.x/y`, já
+        atualizada todo tick pelo update da própria flecha/bola). Mesmo
+        formato/pipeline já usado pela luz de item aceso
+        (`"player_light": True`, consumido por `ui/day_night_system.py::
+        DayNightSystem.render()` — gradiente CACHEADO por (raio,
+        intensidade), custo real por chamada é só 1 blit de superfície
+        já pronta, nada de cálculo de pixel novo) — resultado vai numa
+        lista SEPARADA de `world_objects` igual às outras (nunca a
+        passada pro RenderSystem, que não sabe desenhar uma entrada sem
+        sprite/width/height). Pula bola ainda não lançada de verdade
+        (`launch_delay > 0` — nenhuma skill de Bola de Fogo usa isso
+        hoje, mas é o mesmo campo que `flecha_reiterada`/`tiro_multiplo`
+        usam, então o guard já nasce certo se um dia houver bola de fogo
+        com delay)."""
+        result = []
+        for entry in self._entries:
+            if entry.spell_id != "bola_de_fogo" or entry.launch_delay > 0:
+                continue
+            result.append({
+                "screen_x": entry.x - camera_offset_x,
+                "screen_y": entry.y - camera_offset_y,
+                "light_source": (0, 0, 0, 0, self.FIREBALL_LIGHT_INTENSITY_PCT,
+                                 self.FIREBALL_LIGHT_RADIUS_TILES),
+                "player_light": True,
+                "glow_color": self.FIREBALL_LIGHT_COLOR,
+            })
+        return result
 
     def find_pending_fireball(self, attacker_id: int, target_id: int
                               ) -> "PlayerProjectileEntry | None":

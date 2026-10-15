@@ -135,6 +135,22 @@ def facing_from_delta(dx: int, dy: int) -> str:
     return "right" if dx > 0 else "left"
 
 
+_FACING_TILE_DELTA = {
+    "down":  (0, 1),
+    "up":    (0, -1),
+    "left":  (-1, 0),
+    "right": (1, 0),
+}
+
+
+def facing_to_tile_delta(facing: str) -> "tuple[int, int]":
+    """Inverso de `facing_from_delta` — vetor de 1 tile (dx, dy) na
+    direção cardinal `facing` (15/10/2026, pedido do usuário — nascer
+    projétil 1 tile à frente de quem atira, não em cima dele). `facing`
+    desconhecido cai em (0, 0) — nenhum deslocamento, fail-safe."""
+    return _FACING_TILE_DELTA.get(facing, (0, 0))
+
+
 def in_aoi(cx: int, cy: int, ex: int, ey: int, radius: int) -> bool:
     """Retorna True se (ex, ey) está dentro do AOI centrado em (cx, cy).
 

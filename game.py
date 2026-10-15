@@ -2845,6 +2845,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             _portal_char_light = self._get_portal_character_light_source(cam_x, cam_y)
             if _portal_char_light is not None:
                 _lit_world_objs = _lit_world_objs + [_portal_char_light]
+            # Luz amarelo-alaranjada da Bola de Fogo em voo (15/10/2026,
+            # pedido do usuário — mesma técnica/mesma lista separada das
+            # luzes acima; vazio na maioria dos frames, sem Bola de Fogo
+            # nenhuma em voo agora).
+            _fireball_lights = self._player_proj_system.get_fireball_light_sources(cam_x, cam_y)
+            if _fireball_lights:
+                _lit_world_objs = _lit_world_objs + _fireball_lights
             if PROFILE_FRAMES:
                 _ts = _time.perf_counter()
                 self._day_night_system.render(world_objects=_lit_world_objs,
