@@ -1487,6 +1487,19 @@ class TileMovement:
     # guard — mesmo sid + loop ainda ativo = ignora (deixa o loop em
     # andamento continuar, sem reiniciar nada).
     anim_attack_sid: str = ""
+    # Teto (ms) no `elapsed` usado pra escolher o frame — 15/10/2026,
+    # pedido do usuário: anticipação de golpe/cast ("puxar o arco",
+    # "preparar o cast") que PAUSA num frame específico (não
+    # necessariamente o último do sheet) até um evento externo liberar
+    # (ver `engine.character_animation.trigger_anticipation_anim`/
+    # `release_anticipation_anim`). -1 = sem teto (default, comportamento
+    # de sempre pra QUALQUER golpe/cast/morte que não usa este
+    # mecanismo). Enquanto >=0, `resolve_display_state` nunca deixa
+    # `elapsed` passar deste valor — o frame correspondente fica
+    # "congelado" por construção, sem precisar do mecanismo de
+    # `anim_attack_hold_last_frame` (que sempre segura no ÚLTIMO frame
+    # do sheet INTEIRO, não num frame do MEIO).
+    anim_attack_frame_cap_ms: int = -1
 
 
 @dataclass

@@ -822,6 +822,37 @@ padrão a quebrar, não só os bugs individuais.
   idle/run "respirando" pra classe sem sprite de morte ainda, em vez
   do retângulo cinza de fallback certo. Ver PROBLEMAS_ARQUITETURA.md
   §285.
+  **Golpe/cast em 2 FASES (preparação → congela num frame → solta)**
+  (15/10/2026, arqueiro primeiro, mecanismo genérico pra qualquer
+  classe) → `engine.character_animation.trigger_anticipation_anim(
+  tile_movement, class_id, state_name, now_ms, hold_frame_index=5,
+  frame_ms=DEFAULT_FRAME_MS, sid="")` liga a fase 1 (toca até
+  `hold_frame_index` e CONGELA via `TileMovement.anim_attack_frame_
+  cap_ms`, novo campo — trava o `elapsed` em `resolve_display_state()`
+  antes de qualquer outro cálculo); `release_anticipation_anim(
+  tile_movement, now_ms)` libera a fase 2 (rebate `anim_attack_
+  started_ms` pra trás pelo valor do teto — NUNCA reinicia do frame
+  0 — remove o teto, deixa terminar o sheet e cair pro idle/run
+  normal). `hold_frame_index` é PARÂMETRO por chamador, nunca
+  constante fixa pro jogo inteiro (sheets de classes diferentes variam
+  em contagem de frame). `trigger_cast_anim()` (§284) agora DELEGA
+  pra esta primitiva em vez da técnica antiga de "esticar pra caber a
+  duração real" — fase 1 do cast liga no início (`cast_start`), fase 2
+  libera no `"launch"`/`"impact"`/`"miss"` (SKILL_EFFECT já existente,
+  sem mensagem nova). Fase 1 de AUTO-ATTACK do arqueiro liga dentro do
+  mecanismo de pré-tensionamento LOCAL JÁ EXISTENTE
+  (`ui/player_input_system.py::_process_archer_combat`,
+  `_PRE_DRAW_THRESHOLD`/`arrow_pre_draw_ready`, criado originalmente só
+  pro som de "puxar a corda") — **antes de inventar um timing novo pra
+  uma fase de preparação, procurar se já existe um sinal LOCAL
+  parecido** (som de antecipação, cooldown visível, etc.) — reaproveitar
+  é sempre preferível a um delay artificial novo. Os 2 call sites de
+  fase 2 (`client/network_handlers.py::_handle_msg_skill_effect` pra
+  cast; `client/remote_entity_handlers.py::_apply_combat_result` pra
+  auto-attack) chamam `release_anticipation_anim()` PRIMEIRO, caindo
+  pro `trigger_attack_anim()` normal só quando ela devolve `False`
+  (sem antecipação ativa — ex: player remoto, que nunca passou pela
+  fase 1 local de outro jogador). Ver PROBLEMAS_ARQUITETURA.md §286.
   **Animação BASE de MOB** (idle/run/attack × 4 direções — não
   confundir com animação de PERSONAGEM jogável acima, que é um sistema
   IRMÃO separado, nunca estendido pelo mesmo módulo) →

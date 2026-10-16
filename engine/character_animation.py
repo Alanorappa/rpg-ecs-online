@@ -289,52 +289,33 @@ def resolve_cast_state_name(class_id: str, sid: str, direction: str) -> "str | N
     return None
 
 
-def trigger_cast_anim(tile_movement, class_id: str, sid: str, now_ms: int) -> None:
+def trigger_cast_anim(tile_movement, class_id: str, sid: str, now_ms: int,
+                      hold_frame_index: int = 5) -> None:
     """Liga a animação de CAST (windup) — chamada no evento de rede
-    `SKILL_EFFECT{event:"cast_start"}` (15/10/2026, já existia só pra
-    tocar som — ver `client/network_handlers.py::_handle_msg_skill_
-    effect`), tanto pro conjurador local quanto pra qualquer observador
-    (mesmo evento, já broadcast AOI).
+    `SKILL_EFFECT{event:"cast_start"}` (já existia só pra tocar som —
+    ver `client/network_handlers.py::_handle_msg_skill_effect`), tanto
+    pro conjurador local quanto pra qualquer observador (mesmo evento,
+    já broadcast AOI).
 
-    ESTICADA (não em loop, 15/10/2026, pedido do usuário — "a animação
-    do casting se extende ao tempo do cast dinamicamente em vez de ser
-    em loop") pra caber exatamente na duração REAL de `cast_time` da
-    skill (`content/skill_config.py::SKILL_CATALOG`, fonte única, nunca
-    duplicada aqui) — MESMA técnica já usada por `client/
-    portal_handlers.py::_begin_portal_in_anim` pro cast de portal
-    (`frame_ms = duração_ms / nº_de_frames`, `anim_attack_loop_
-    duration_ms = 0`): o sheet toca 1 ciclo só, mas cada frame fica
-    esticado no tempo. `anim_attack_hold_last_frame=True` segura na
-    última frame se o evento de LANÇAMENTO (`trigger_attack_anim`,
-    chamado em "launch"/"impact"/"miss") ainda não tiver chegado
-    quando a duração ESTIMADA (local) termina — `cast_time` local é só
-    ESTIMATIVA, rede sempre tem alguma folga/latência real, mesmo
-    raciocínio do portal. Como esta animação NUNCA usa o mecanismo de
-    LOOP (`anim_attack_loop_duration_ms` sempre 0 aqui),
-    `_attack_loop_still_active()` nunca a protege contra sobrescrita —
-    `trigger_attack_anim()` sempre pode interromper livremente a
-    qualquer momento, sem precisar de nenhuma flag/exceção especial
-    (diferente de golpe em LOOP de verdade, ex: Fatiador de Corpos, que
-    continua protegido pela regra antiga). Sem arte de cast OU sem
-    `cast_time` de verdade (skill instantânea) → não faz nada,
+    Em 2 FASES (15/10/2026, revisão — pedido do usuário: "pode iniciar
+    a animação no início do cast, congelar no 5º frame da animação até
+    sair o projétil então finaliza a animação"; substitui a técnica de
+    ESTICAR o sheet inteiro, usada antes no mesmo dia): toca normal até
+    `hold_frame_index` e CONGELA ali (`trigger_anticipation_anim`), até
+    o evento de LANÇAMENTO (`SKILL_EFFECT{event:"launch"|"impact"|
+    "miss"}`) chamar `release_anticipation_anim()` — ver `client/
+    network_handlers.py::_handle_msg_skill_effect`. Sem arte de cast OU
+    sem `cast_time` de verdade (skill instantânea) → não faz nada,
     personagem continua em idle/run normalmente."""
     state_name = resolve_cast_state_name(class_id, sid, tile_movement.facing)
     if state_name is None:
         return
     from content.skill_config import SKILL_CATALOG
     cast_s = SKILL_CATALOG.get(sid, {}).get("cast_time", 0.0) if sid else 0.0
-    cast_ms = cast_s * 1000.0 if cast_s else 0.0
-    if cast_ms <= 0:
+    if cast_s <= 0:
         return
-    n_frames = len(_frames_for(class_id, state_name, tile_movement.facing))
-    if n_frames <= 0:
-        return
-    tile_movement.anim_attack_state            = state_name
-    tile_movement.anim_attack_sid              = sid
-    tile_movement.anim_attack_started_ms       = now_ms
-    tile_movement.anim_attack_frame_ms         = max(1, round(cast_ms / n_frames))
-    tile_movement.anim_attack_loop_duration_ms = 0
-    tile_movement.anim_attack_hold_last_frame  = True
+    trigger_anticipation_anim(tile_movement, class_id, state_name, now_ms,
+                              hold_frame_index=hold_frame_index, sid=sid)
 
 
 CHAR_DEATH_STATE = "death"
@@ -468,6 +449,68 @@ def trigger_attack_anim(tile_movement, class_id: str, sid: str, now_ms: int,
     # (campo do COMPONENTE, não limpo automaticamente) e ficaria preso
     # na última frame em vez de voltar pro idle sozinho.
     tile_movement.anim_attack_hold_last_frame = False
+    # Idem — reseta qualquer teto de anticipação deixado por um golpe/cast
+    # anterior (ver `trigger_anticipation_anim`), senão um golpe NOVO
+    # disparado logo depois herdaria o teto por engano e nunca tocaria
+    # além do frame congelado antigo.
+    tile_movement.anim_attack_frame_cap_ms = -1
+
+
+def trigger_anticipation_anim(tile_movement, class_id: str, state_name: str,
+                              now_ms: int, hold_frame_index: int = 5,
+                              frame_ms: int = DEFAULT_FRAME_MS, sid: str = "") -> bool:
+    """Liga a FASE 1 (preparação) de um golpe/cast em 2 tempos
+    (15/10/2026, pedido do usuário — sincronizar auto-attack/cast do
+    arqueiro: "a animação deve acontecer antes de sair o projétil...
+    congelar no Nº frame... até sair o projétil então finaliza"): toca
+    `state_name` normalmente até `hold_frame_index` (inclusive) e
+    CONGELA ali — `anim_attack_frame_cap_ms = hold_frame_index *
+    frame_ms` trava o `elapsed` nesse teto (ver `resolve_display_
+    state`), nunca avança sozinho daí em diante. `hold_frame_index` é
+    parâmetro (não uma constante fixa pro jogo inteiro) — cada chamador
+    decide o valor certo pra PRÓPRIA animação, sheets com contagem de
+    frames diferente podem usar valores diferentes.
+
+    Devolve True se ligou de verdade (havia arte pra `state_name`),
+    False se não (sem arte = no-op, chamador decide o fallback — ex:
+    não tocar nock/draw nenhum, auto-attack cai direto pro golpe normal
+    no COMBAT_RESULT como sempre). Quem chama é responsável por chamar
+    `release_anticipation_anim()` quando o evento real (projétil sai)
+    chegar — nunca expira sozinho (mesmo padrão de `hold_last_frame`)."""
+    if not _frames_for(class_id, state_name, tile_movement.facing):
+        return False
+    tile_movement.anim_attack_state            = state_name
+    tile_movement.anim_attack_sid              = sid
+    tile_movement.anim_attack_started_ms       = now_ms
+    tile_movement.anim_attack_frame_ms         = frame_ms
+    tile_movement.anim_attack_loop_duration_ms = 0
+    tile_movement.anim_attack_hold_last_frame  = True
+    tile_movement.anim_attack_frame_cap_ms     = max(0, hold_frame_index) * frame_ms
+    return True
+
+
+def release_anticipation_anim(tile_movement, now_ms: int) -> bool:
+    """Libera a FASE 2 (conclusão) de um golpe/cast travado por
+    `trigger_anticipation_anim` — continua EXATAMENTE de onde a
+    animação pausou (nunca reinicia do frame 0): rebate `anim_attack_
+    started_ms` pra trás pelo valor do teto antigo, removendo o teto
+    (`anim_attack_frame_cap_ms = -1`) — o cálculo normal de `elapsed`
+    em `resolve_display_state` passa a avançar sozinho a partir do
+    frame congelado até o fim do sheet, depois volta pro idle/run
+    (hold_last_frame=False — "então finaliza a animação", não trava no
+    frame final).
+
+    Devolve True se havia de fato uma anticipação ativa pra liberar;
+    False se não (`anim_attack_frame_cap_ms < 0` — ex: player remoto,
+    que nunca teve fase 1, ou primeiro golpe antes da fase 1 chegar a
+    disparar) — chamador deve cair pro `trigger_attack_anim()` normal
+    nesse caso, nunca assumir que sempre há algo pra liberar."""
+    if tile_movement.anim_attack_frame_cap_ms < 0:
+        return False
+    tile_movement.anim_attack_started_ms      = now_ms - tile_movement.anim_attack_frame_cap_ms
+    tile_movement.anim_attack_frame_cap_ms    = -1
+    tile_movement.anim_attack_hold_last_frame = False
+    return True
 
 
 def resolve_display_state(tile_movement, class_id: str, now_ms: int,
@@ -504,11 +547,20 @@ def resolve_display_state(tile_movement, class_id: str, now_ms: int,
     Quem usa isso é responsável por LIMPAR `anim_attack_state`/
     `anim_attack_hold_last_frame` explicitamente quando o evento real
     chegar (ex: `_trigger_portal_out_if_pending`/`_cancel_portal_cast_local`)
-    — nunca expira sozinho."""
+    — nunca expira sozinho.
+
+    `anim_attack_frame_cap_ms` (15/10/2026, ver `trigger_anticipation_
+    anim`/`release_anticipation_anim`) — quando >=0, trava `elapsed`
+    nesse teto ANTES de qualquer outro cálculo: pausa a animação num
+    frame ESPECÍFICO do meio do sheet (não necessariamente o último),
+    por construção, sem precisar de `hold_last_frame` nem de recalcular
+    duração nenhuma."""
     if tile_movement.anim_attack_state:
         _attack_frame_ms = tile_movement.anim_attack_frame_ms or frame_ms
         frames  = _frames_for(class_id, tile_movement.anim_attack_state, tile_movement.facing)
         elapsed = now_ms - tile_movement.anim_attack_started_ms
+        if tile_movement.anim_attack_frame_cap_ms >= 0:
+            elapsed = min(elapsed, tile_movement.anim_attack_frame_cap_ms)
         _duration = tile_movement.anim_attack_loop_duration_ms or (len(frames) * _attack_frame_ms if frames else 0)
         if frames and elapsed < _duration:
             return tile_movement.anim_attack_state, elapsed, _attack_frame_ms

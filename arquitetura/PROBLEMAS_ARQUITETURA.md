@@ -28039,3 +28039,87 @@ pré-existente exercitava os handlers de PLAYER_DEATH/PLAYER_REVIVE/
 ENTITY_DEATH/GHOST_STATE diretamente — decisão do usuário (manual em
 playtest) confirmada compatível com a ausência de cobertura prévia
 nesse ponto específico.
+
+## 286. Golpe/cast em 2 fases (preparação → congela → solta) — arqueiro primeiro, mecanismo genérico (15/10/2026)
+
+**Pedido do usuário**: "precisamos de alguma forma de sincronizar
+melhor a animação de auto attack e cast do arqueiro, a animação
+precisa acontecer da seguinte forma: a animação deve acontecer antes
+de sair o projétil, junto com a emissão do som, e congelar no 5º frame
+da animação, por alguns milésimos antes de sair o projétil então
+finaliza a animação, e nas animações de cast, pode iniciar a animação
+no início do cast, congelar no 5º frame até sair o projétil então
+finaliza a animação."
+
+**Pesquisa feita antes de codar — correção de rumo no meio do processo**:
+a 1ª suposição (perguntar ao usuário "quando começa a fase 1?"
+assumindo que não havia nenhum sinal local de antecipação pro
+auto-attack) estava ERRADA — o usuário corrigiu diretamente: "na
+verdade existe assim, emite um som de tensionar a corda do arco (puxar
+a flecha) antes de soltar, investigue mais." Achei o mecanismo real em
+`ui/player_input_system.py::_process_archer_combat` — pré-tensionamento
+local já existente (`_PRE_DRAW_THRESHOLD = 1.0`s,
+`combat_stats.arrow_pre_draw_ready`, toca `arrow_nock_1`/`arrow_nock_2`
+~1s antes do próximo disparo, 30% de chance) — é EXATAMENTE o sinal de
+timing que faltava pra fase 1, sem precisar inventar nenhum delay
+artificial novo. Evita a classe de erro já documentada no projeto:
+reciclar uma suposição anterior em vez de pesquisar a decisão
+ESPECÍFICA em jogo (mesma lição de §12/§13, diferente mecanismo).
+
+**Desenho — primitiva genérica, reaproveitável por qualquer classe**:
+`engine/character_animation.py::trigger_anticipation_anim(tile_movement,
+class_id, state_name, now_ms, hold_frame_index=5, frame_ms=DEFAULT_
+FRAME_MS, sid="")` — toca o sheet normalmente até `hold_frame_index`
+(inclusive) e CONGELA ali via `TileMovement.anim_attack_frame_cap_ms`
+(campo novo, `int`, trava o `elapsed` calculado em
+`resolve_display_state()` nesse teto, antes de qualquer outro cálculo
+de duração/loop). `release_anticipation_anim(tile_movement, now_ms)` —
+rebate `anim_attack_started_ms` pra trás pelo valor do teto (nunca
+reinicia do frame 0), remove o teto, desliga `hold_last_frame` — a
+animação passa a avançar sozinha de onde congelou até o fim do sheet,
+depois cai pra idle/run pelo mecanismo normal já existente.
+`hold_frame_index` é PARÂMETRO por chamador (pedido explícito do
+usuário, "configurável por animação") — nunca uma constante fixa pro
+jogo inteiro, já que sheets de classes diferentes podem ter contagens
+de frame diferentes.
+
+**`trigger_cast_anim()` (§284) reescrito pela 3ª vez na mesma sessão**
+para delegar a esta primitiva em vez da técnica de "esticar pra caber
+a duração real" — cast agora É um caso de antecipação (fase 1 = desde
+o início do cast até o frame 5; fase 2 = liberada no evento
+`SKILL_EFFECT` de `"launch"`/`"impact"`/`"miss"`, já existente desde
+§281, sem mensagem de rede nova). Cada reescrita anterior deixou código
+morto que foi removido no mesmo commit (`anim_attack_is_cast`, criado
+em §281 e já removido em §284, não reaparece aqui).
+
+**Gatilhos finais, 2 call sites**:
+- Fase 1 (puxar o arco) — `ui/player_input_system.py::
+  _process_archer_combat`, no MESMO bloco do som de pré-tensionamento
+  (fora do `if random.random() < 0.30:` do som — a animação liga a
+  CADA ciclo de pré-tensionamento, independente do som ter tocado ou
+  não, já que o som é só 30% de chance mas a "preparação visual" deve
+  ser sempre visível).
+- Fase 2 (soltar) — 2 pontos, cobrindo local E remoto, ambos com
+  fallback pro `trigger_attack_anim()` normal quando não havia
+  antecipação ativa (ex: player remoto, que nunca passa pela fase 1
+  local de outro jogador; ou primeiro golpe antes do pré-tensionamento
+  disparar):
+  - `client/network_handlers.py::_handle_msg_skill_effect` — cast de
+    QUALQUER classe (`"launch"`/`"impact"`/`"miss"`).
+  - `client/remote_entity_handlers.py::_apply_combat_result` — auto-
+    attack (`sid==""`), via COMBAT_RESULT (confirmação real do servidor
+    de que o golpe aconteceu).
+
+**Teste**: suíte de animação de personagem/mob/nameplate/portal (189
+testes relevantes) sem regressão rodando isolada por arquivo; rodando
+os 7 arquivos juntos, 2 testes de `test_mob_death_animation.py`
+(`TestLootSystemDrawsFrozenFrame`) falham por POLUIÇÃO DE ORDEM DE
+TESTE (superfície pygame compartilhada entre arquivos — confirmado
+rodando `test_mob_death_animation.py` isolado: 17/17 passam; e rodando
+a suíte INTEIRA sem nenhuma mudança deste commit, via `git stash`: os
+mesmos 2 testes também não aparecem isolados como quebra — a causa é
+pré-existente e não relacionada a este fix, não investigada a fundo
+por estar fora do escopo desta tarefa). Decisão do usuário sobre nível
+de teste automatizado para esta feature específica não foi pedida
+antes de implementar (diferente do padrão desta mesma sessão) —
+validação combinada com manual em playtest, a confirmar.
