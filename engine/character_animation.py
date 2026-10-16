@@ -289,41 +289,52 @@ def resolve_cast_state_name(class_id: str, sid: str, direction: str) -> "str | N
     return None
 
 
-def trigger_cast_anim(tile_movement, class_id: str, sid: str, now_ms: int,
-                      hold_frame_index: int = 5) -> None:
+def trigger_cast_anim(tile_movement, class_id: str, sid: str, now_ms: int) -> None:
     """Liga a animação de CAST (windup) — chamada no evento de rede
-    `SKILL_EFFECT{event:"cast_start"}` (já existia só pra tocar som —
-    ver `client/network_handlers.py::_handle_msg_skill_effect`), tanto
-    pro conjurador local quanto pra qualquer observador (mesmo evento,
-    já broadcast AOI).
+    `SKILL_EFFECT{event:"cast_start"}` (15/10/2026, já existia só pra
+    tocar som — ver `client/network_handlers.py::_handle_msg_skill_
+    effect`), tanto pro conjurador local quanto pra qualquer observador
+    (mesmo evento, já broadcast AOI).
 
-    Em 2 FASES (15/10/2026, revisão — pedido do usuário: "pode iniciar
-    a animação no início do cast, congelar no 5º frame da animação até
-    sair o projétil então finaliza a animação"; substitui a técnica de
-    ESTICAR o sheet inteiro, usada antes no mesmo dia): toca normal até
-    `hold_frame_index` e CONGELA ali (`trigger_anticipation_anim`), até
-    o evento de LANÇAMENTO (`SKILL_EFFECT{event:"launch"|"impact"|
-    "miss"}`) chamar `release_anticipation_anim()` — ver `client/
-    network_handlers.py::_handle_msg_skill_effect`. Sem arte de cast OU
-    sem `cast_time` de verdade (skill instantânea) → não faz nada,
-    personagem continua em idle/run normalmente.
-
-    Sem SPRITE de cast dedicado (nem `{sid}_cast` nem "cast" genérico —
-    caso de hoje pra toda classe além do mago) → cai pro MESMO sheet já
-    usado pelo golpe/lançamento (`resolve_attack_state_name`, cascata
-    sid→"skill"→"attack") em vez de ficar sem nenhuma animação de
-    preparação — mesma técnica do auto-attack (congela no Nº frame,
-    solta no disparo), só o SHEET muda. 15/10/2026, pedido do usuário:
-    o cast do arqueiro "não funciona" era exatamente este caso."""
-    from content.skill_config import SKILL_CATALOG
-    cast_s = SKILL_CATALOG.get(sid, {}).get("cast_time", 0.0) if sid else 0.0
-    if cast_s <= 0:
-        return
+    ESTICADA (não em loop, 15/10/2026, pedido do usuário — "a animação
+    do casting se extende ao tempo do cast dinamicamente em vez de ser
+    em loop") pra caber exatamente na duração REAL de `cast_time` da
+    skill (`content/skill_config.py::SKILL_CATALOG`, fonte única, nunca
+    duplicada aqui) — MESMA técnica já usada por `client/
+    portal_handlers.py::_begin_portal_in_anim` pro cast de portal
+    (`frame_ms = duração_ms / nº_de_frames`, `anim_attack_loop_
+    duration_ms = 0`): o sheet toca 1 ciclo só, mas cada frame fica
+    esticado no tempo. `anim_attack_hold_last_frame=True` segura na
+    última frame se o evento de LANÇAMENTO (`trigger_attack_anim`,
+    chamado em "launch"/"impact"/"miss") ainda não tiver chegado
+    quando a duração ESTIMADA (local) termina — `cast_time` local é só
+    ESTIMATIVA, rede sempre tem alguma folga/latência real, mesmo
+    raciocínio do portal. Como esta animação NUNCA usa o mecanismo de
+    LOOP (`anim_attack_loop_duration_ms` sempre 0 aqui),
+    `_attack_loop_still_active()` nunca a protege contra sobrescrita —
+    `trigger_attack_anim()` sempre pode interromper livremente a
+    qualquer momento, sem precisar de nenhuma flag/exceção especial
+    (diferente de golpe em LOOP de verdade, ex: Fatiador de Corpos, que
+    continua protegido pela regra antiga). Sem arte de cast OU sem
+    `cast_time` de verdade (skill instantânea) → não faz nada,
+    personagem continua em idle/run normalmente."""
     state_name = resolve_cast_state_name(class_id, sid, tile_movement.facing)
     if state_name is None:
-        state_name = resolve_attack_state_name(class_id, sid, tile_movement.facing)
-    trigger_anticipation_anim(tile_movement, class_id, state_name, now_ms,
-                              hold_frame_index=hold_frame_index, sid=sid)
+        return
+    from content.skill_config import SKILL_CATALOG
+    cast_s = SKILL_CATALOG.get(sid, {}).get("cast_time", 0.0) if sid else 0.0
+    cast_ms = cast_s * 1000.0 if cast_s else 0.0
+    if cast_ms <= 0:
+        return
+    n_frames = len(_frames_for(class_id, state_name, tile_movement.facing))
+    if n_frames <= 0:
+        return
+    tile_movement.anim_attack_state            = state_name
+    tile_movement.anim_attack_sid              = sid
+    tile_movement.anim_attack_started_ms       = now_ms
+    tile_movement.anim_attack_frame_ms         = max(1, round(cast_ms / n_frames))
+    tile_movement.anim_attack_loop_duration_ms = 0
+    tile_movement.anim_attack_hold_last_frame  = True
 
 
 CHAR_DEATH_STATE = "death"
@@ -356,18 +367,6 @@ def trigger_death_anim(tile_movement, class_id: str, now_ms: int) -> None:
     tile_movement.anim_attack_frame_ms         = DEFAULT_FRAME_MS
     tile_movement.anim_attack_loop_duration_ms = 0
     tile_movement.anim_attack_hold_last_frame  = True
-    # Morte sobrescreve TUDO, mesmo um congelamento de anticipação
-    # (`anim_attack_frame_cap_ms`) ou uma cauda acelerada com pendência
-    # (`anim_attack_pending`) que estava em andamento no instante exato
-    # do hit que matou — sem isto, um `cap_ms` antigo >=0 "vazava" pra
-    # morte (travava a animação de morte no frame errado, não no
-    # último) e um `pending` antigo poderia disparar depois do revive.
-    # Achado ao implementar a aceleração de cauda (15/10/2026) — bug
-    # latente desde a 1ª versão da animação de morte, nunca reportado
-    # (janela de colisão rara: hit fatal bem no meio de uma anticipação
-    # congelada).
-    tile_movement.anim_attack_frame_cap_ms     = -1
-    tile_movement.anim_attack_pending          = None
 
 
 def clear_attack_anim_state(tile_movement) -> None:
@@ -376,13 +375,9 @@ def clear_attack_anim_state(tile_movement) -> None:
     cast, portal) NUNCA expiram sozinhos, então sem isso o personagem
     revivido ficaria preso pra sempre na última pose de ANTES de
     morrer. Seguro chamar mesmo sem nenhum estado ativo (`anim_attack_
-    state` já vazio vira no-op efetivo). Também limpa `anim_attack_
-    frame_cap_ms`/`anim_attack_pending` pela mesma razão (mecanismo de
-    aceleração de cauda, 15/10/2026) — nenhum dos dois expira sozinho."""
+    state` já vazio vira no-op efetivo)."""
     tile_movement.anim_attack_state           = ""
     tile_movement.anim_attack_hold_last_frame = False
-    tile_movement.anim_attack_frame_cap_ms    = -1
-    tile_movement.anim_attack_pending         = None
 
 
 MISS_ATTACK_SLOWDOWN = 1.5  # 50% mais lento — golpe que erra (miss/dodge/parry); 25% não deu diferença perceptível, usuário pediu +25pp (10/09/2026)
@@ -395,67 +390,6 @@ MISS_ATTACK_SLOWDOWN = 1.5  # 50% mais lento — golpe que erra (miss/dodge/parr
 # verdade, nunca duplicada aqui) — se um dia o design mudar a duração
 # da skill, a animação acompanha sozinha.
 _LOOPING_ATTACK_SKILLS = {"fatiador_de_corpos"}
-
-
-_TAIL_ACCELERATE_FRAME_MS = 25  # ms/frame da cauda acelerada (15/10/2026) — rápido mas visível, nunca instantâneo
-
-
-def _tail_still_playing(tile_movement, class_id: str, now_ms: int) -> "int | None":
-    """Índice do frame ATUAL se há uma CAUDA de golpe/cast tocando de
-    verdade agora (soltada, não congelada por `trigger_anticipation_
-    anim`, não em loop, não presa em `hold_last_frame`) e que ainda não
-    chegou ao último frame — `None` se não há nada a acelerar (nenhum
-    golpe ativo, ou já no último frame, ou é um dos 3 casos que têm
-    prioridade/mecanismo próprio e nunca devem ser tocados por isto)."""
-    if (not tile_movement.anim_attack_state
-            or tile_movement.anim_attack_frame_cap_ms >= 0
-            or tile_movement.anim_attack_loop_duration_ms > 0
-            or tile_movement.anim_attack_hold_last_frame):
-        return None
-    frames = _frames_for(class_id, tile_movement.anim_attack_state, tile_movement.facing)
-    if not frames:
-        return None
-    frame_ms_old = tile_movement.anim_attack_frame_ms or DEFAULT_FRAME_MS
-    idx = (now_ms - tile_movement.anim_attack_started_ms) // frame_ms_old
-    if idx >= len(frames) - 1:
-        return None
-    return int(idx)
-
-
-def _accelerate_tail_and_queue(tile_movement, class_id: str, now_ms: int, pending: tuple) -> bool:
-    """Se há uma cauda tocando (`_tail_still_playing`), acelera ela pra
-    terminar rápido (rebaseia `anim_attack_started_ms` pra manter o
-    frame ATUAL intacto, daí em diante avança a `_TAIL_ACCELERATE_
-    FRAME_MS`) e guarda `pending` pra `resolve_display_state()` aplicar
-    quando a cauda acelerada acabar — devolve `True` nesse caso
-    (chamador NÃO deve sobrescrever nada agora, o pending já cobre
-    isso). `False` = nada tocando, chamador aplica o trigger
-    imediatamente como sempre (caminho normal, esmagadora maioria dos
-    casos)."""
-    idx = _tail_still_playing(tile_movement, class_id, now_ms)
-    if idx is None:
-        return False
-    new_elapsed_now = idx * _TAIL_ACCELERATE_FRAME_MS
-    tile_movement.anim_attack_started_ms = now_ms - new_elapsed_now
-    tile_movement.anim_attack_frame_ms   = _TAIL_ACCELERATE_FRAME_MS
-    tile_movement.anim_attack_pending    = pending
-    return True
-
-
-def _apply_pending_attack_trigger(tile_movement, now_ms: int) -> None:
-    """Consome `TileMovement.anim_attack_pending` (ver
-    `_accelerate_tail_and_queue`) — chamado só por `resolve_display_
-    state()`, no exato frame em que a cauda acelerada chega ao fim."""
-    pending = tile_movement.anim_attack_pending
-    tile_movement.anim_attack_pending = None
-    if pending is None:
-        return
-    kind, class_id, state_name, sid, hold_frame_index, frame_ms, missed = pending
-    if kind == "anticipation":
-        trigger_anticipation_anim(tile_movement, class_id, state_name, now_ms,
-                                  hold_frame_index=hold_frame_index, frame_ms=frame_ms, sid=sid)
-    else:
-        trigger_attack_anim(tile_movement, class_id, sid, now_ms, missed=missed)
 
 
 def _looping_attack_duration_ms(sid: str) -> "int | None":
@@ -520,15 +454,6 @@ def trigger_attack_anim(tile_movement, class_id: str, sid: str, now_ms: int,
             return
         if sid and sid == tile_movement.anim_attack_sid:
             return
-    # Acelera a CAUDA de uma animação anterior ainda tocando (soltura
-    # de skill OU de auto-attack) em vez de sobrescrever na hora —
-    # pedido do usuário (15/10/2026): "quando sair um auto attack logo
-    # depois de uma skill ser lançada... pode acelerar a animação para
-    # casar com o disparo do projétil". `_new_loop_ms` não entra na
-    # tupla — golpe em loop NUNCA chega aqui (guard acima já retornou).
-    if _accelerate_tail_and_queue(tile_movement, class_id, now_ms,
-                                  ("attack", class_id, "", sid, 0, 0, missed)):
-        return
     tile_movement.anim_attack_state      = resolve_attack_state_name(class_id, sid, tile_movement.facing)
     tile_movement.anim_attack_sid        = sid
     tile_movement.anim_attack_started_ms = now_ms
@@ -543,86 +468,6 @@ def trigger_attack_anim(tile_movement, class_id: str, sid: str, now_ms: int,
     # (campo do COMPONENTE, não limpo automaticamente) e ficaria preso
     # na última frame em vez de voltar pro idle sozinho.
     tile_movement.anim_attack_hold_last_frame = False
-    # Idem — reseta qualquer teto de anticipação deixado por um golpe/cast
-    # anterior (ver `trigger_anticipation_anim`), senão um golpe NOVO
-    # disparado logo depois herdaria o teto por engano e nunca tocaria
-    # além do frame congelado antigo.
-    tile_movement.anim_attack_frame_cap_ms = -1
-    # Idem — descarta qualquer pendência de aceleração de uma colisão
-    # ANTERIOR que nunca chegou a disparar (2ª colisão antes da 1ª
-    # cauda acelerada terminar) — este golpe, aplicado agora na hora,
-    # já É o estado atual; nada "pendente" de antes deve sobreviver.
-    tile_movement.anim_attack_pending = None
-
-
-def trigger_anticipation_anim(tile_movement, class_id: str, state_name: str,
-                              now_ms: int, hold_frame_index: int = 5,
-                              frame_ms: int = DEFAULT_FRAME_MS, sid: str = "") -> bool:
-    """Liga a FASE 1 (preparação) de um golpe/cast em 2 tempos
-    (15/10/2026, pedido do usuário — sincronizar auto-attack/cast do
-    arqueiro: "a animação deve acontecer antes de sair o projétil...
-    congelar no Nº frame... até sair o projétil então finaliza"): toca
-    `state_name` normalmente até `hold_frame_index` (inclusive) e
-    CONGELA ali — `anim_attack_frame_cap_ms = hold_frame_index *
-    frame_ms` trava o `elapsed` nesse teto (ver `resolve_display_
-    state`), nunca avança sozinho daí em diante. `hold_frame_index` é
-    parâmetro (não uma constante fixa pro jogo inteiro) — cada chamador
-    decide o valor certo pra PRÓPRIA animação, sheets com contagem de
-    frames diferente podem usar valores diferentes.
-
-    Devolve True se ligou de verdade (havia arte pra `state_name`),
-    False se não (sem arte = no-op, chamador decide o fallback — ex:
-    não tocar nock/draw nenhum, auto-attack cai direto pro golpe normal
-    no COMBAT_RESULT como sempre). Quem chama é responsável por chamar
-    `release_anticipation_anim()` quando o evento real (projétil sai)
-    chegar — nunca expira sozinho (mesmo padrão de `hold_last_frame`).
-
-    Mesma aceleração de cauda de `trigger_attack_anim` (15/10/2026,
-    pedido do usuário) — se uma animação anterior ainda está tocando a
-    cauda (ex: soltura de uma skill, ou soltura do golpe anterior) no
-    momento em que esta fase 1 NOVA precisa começar (ex: pré-
-    tensionamento do próximo auto-attack), acelera essa cauda pra
-    terminar rápido em vez de congelar por cima dela no meio do
-    movimento."""
-    if not _frames_for(class_id, state_name, tile_movement.facing):
-        return False
-    if _accelerate_tail_and_queue(tile_movement, class_id, now_ms,
-                                  ("anticipation", class_id, state_name, sid,
-                                   hold_frame_index, frame_ms, False)):
-        return True
-    tile_movement.anim_attack_state            = state_name
-    tile_movement.anim_attack_sid              = sid
-    tile_movement.anim_attack_started_ms       = now_ms
-    tile_movement.anim_attack_frame_ms         = frame_ms
-    tile_movement.anim_attack_loop_duration_ms = 0
-    tile_movement.anim_attack_hold_last_frame  = True
-    tile_movement.anim_attack_frame_cap_ms     = max(0, hold_frame_index) * frame_ms
-    tile_movement.anim_attack_pending          = None
-    return True
-
-
-def release_anticipation_anim(tile_movement, now_ms: int) -> bool:
-    """Libera a FASE 2 (conclusão) de um golpe/cast travado por
-    `trigger_anticipation_anim` — continua EXATAMENTE de onde a
-    animação pausou (nunca reinicia do frame 0): rebate `anim_attack_
-    started_ms` pra trás pelo valor do teto antigo, removendo o teto
-    (`anim_attack_frame_cap_ms = -1`) — o cálculo normal de `elapsed`
-    em `resolve_display_state` passa a avançar sozinho a partir do
-    frame congelado até o fim do sheet, depois volta pro idle/run
-    (hold_last_frame=False — "então finaliza a animação", não trava no
-    frame final).
-
-    Devolve True se havia de fato uma anticipação ativa pra liberar;
-    False se não (`anim_attack_frame_cap_ms < 0` — ex: player remoto,
-    que nunca teve fase 1, ou primeiro golpe antes da fase 1 chegar a
-    disparar) — chamador deve cair pro `trigger_attack_anim()` normal
-    nesse caso, nunca assumir que sempre há algo pra liberar."""
-    if tile_movement.anim_attack_frame_cap_ms < 0:
-        return False
-    tile_movement.anim_attack_started_ms      = now_ms - tile_movement.anim_attack_frame_cap_ms
-    tile_movement.anim_attack_frame_cap_ms    = -1
-    tile_movement.anim_attack_hold_last_frame = False
-    return True
 
 
 def resolve_display_state(tile_movement, class_id: str, now_ms: int,
@@ -659,34 +504,16 @@ def resolve_display_state(tile_movement, class_id: str, now_ms: int,
     Quem usa isso é responsável por LIMPAR `anim_attack_state`/
     `anim_attack_hold_last_frame` explicitamente quando o evento real
     chegar (ex: `_trigger_portal_out_if_pending`/`_cancel_portal_cast_local`)
-    — nunca expira sozinho.
-
-    `anim_attack_frame_cap_ms` (15/10/2026, ver `trigger_anticipation_
-    anim`/`release_anticipation_anim`) — quando >=0, trava `elapsed`
-    nesse teto ANTES de qualquer outro cálculo: pausa a animação num
-    frame ESPECÍFICO do meio do sheet (não necessariamente o último),
-    por construção, sem precisar de `hold_last_frame` nem de recalcular
-    duração nenhuma."""
+    — nunca expira sozinho."""
     if tile_movement.anim_attack_state:
         _attack_frame_ms = tile_movement.anim_attack_frame_ms or frame_ms
         frames  = _frames_for(class_id, tile_movement.anim_attack_state, tile_movement.facing)
         elapsed = now_ms - tile_movement.anim_attack_started_ms
-        if tile_movement.anim_attack_frame_cap_ms >= 0:
-            elapsed = min(elapsed, tile_movement.anim_attack_frame_cap_ms)
         _duration = tile_movement.anim_attack_loop_duration_ms or (len(frames) * _attack_frame_ms if frames else 0)
         if frames and elapsed < _duration:
             return tile_movement.anim_attack_state, elapsed, _attack_frame_ms
         if frames and tile_movement.anim_attack_hold_last_frame:
             held_elapsed = (len(frames) - 1) * _attack_frame_ms
             return tile_movement.anim_attack_state, held_elapsed, _attack_frame_ms
-        # Cauda (acelerada ou não) chegou ao fim natural — se havia um
-        # gatilho ADIADO (`_accelerate_tail_and_queue`, 15/10/2026),
-        # aplica ele agora em vez de cair pro idle/run por 1 frame só
-        # pra ser sobrescrito no próximo. Recursão de profundidade 1
-        # (o pending já foi limpo por `_apply_pending_attack_trigger`
-        # antes de aplicar o novo estado, nunca repete infinitamente).
-        if tile_movement.anim_attack_pending is not None:
-            _apply_pending_attack_trigger(tile_movement, now_ms)
-            return resolve_display_state(tile_movement, class_id, now_ms, frame_ms)
         tile_movement.anim_attack_state = ""
     return resolve_anim_state(tile_movement), now_ms, frame_ms

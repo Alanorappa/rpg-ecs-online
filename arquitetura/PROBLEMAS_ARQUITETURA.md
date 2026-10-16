@@ -28205,3 +28205,64 @@ ordem pré-existente) não reapareceram nesta rodada combinada — não
 investigado a fundo, segue fora do escopo. Validação do comportamento
 visual real (cast do arqueiro aparecendo, cauda acelerada sem pulo)
 ainda depende de playtest manual do usuário.
+
+## 288. §286/§287 revertidos no mesmo dia: congelamento bloqueava a transição pra andar
+
+**Sintoma relatado pelo usuário, em playtest real** (a validação que
+§286/§287 deixaram pendente): "não ficou bom, o congelamento do frame
+está atrapalhando as outras animações, por exemplo quando o personagem
+está congelado no 5º frame e ele começa andar, continua congelado
+nesse frame." Causa raiz: `resolve_display_state()` sempre dá
+prioridade a golpe/cast sobre idle/run enquanto o estado está ativo —
+regra que já existia ANTES de §286 (golpe normal de 1 ciclo já segue
+essa prioridade, decisão de 09/09/2026) e é aceitável quando o estado
+tem duração curta e previsível. O problema específico de §286 é que a
+ANTICIPAÇÃO (congelar no frame 5 esperando o evento de rede de
+lançamento) não tem prazo nenhum por construção — fica presa até
+`release_anticipation_anim()` chegar, o que podia ser quase 1s depois
+(pré-tensionamento do arqueiro) — tempo de sobra pro jogador já ter
+soltado WASD e começado a andar de novo, com o personagem visualmente
+preso na pose de "puxando o arco" o tempo todo.
+
+**Decisão do usuário**: em vez de ensinar `resolve_display_state()` a
+ceder pra andar no meio de uma anticipação congelada (o que exigiria
+decidir o que fazer quando o jogador parar de andar de novo — retomar
+o congelamento? perder a sincronia com o som de pré-tensionamento?),
+o usuário optou por uma solução mais simples na ORIGEM do problema:
+redesenhar as próprias folhas de sprite pra que o frame de soltar a
+flecha fique no INÍCIO do ciclo, não no fim — eliminando a necessidade
+de qualquer congelamento/anticipação. "vou mexer nos frames para fazer
+com que o lançamento da flecha seja no início da animação e não no
+final, então vc pode reverter o que fez e deixar a animação normal."
+
+**Fix**: `git revert --no-commit` dos 2 commits de §286/§287
+(`fbdfdc4`, `c6fc409`) nos arquivos de CÓDIGO (`engine/
+character_animation.py`, `engine/components.py`, `client/
+network_handlers.py`, `client/remote_entity_handlers.py`, `ui/
+player_input_system.py`, `tests/test_character_animation.py`) —
+`git checkout HEAD -- CLAUDE.md arquitetura/PROBLEMAS_ARQUITETURA.md`
+logo depois pra manter o HISTÓRICO destas 2 seções intacto (nunca
+apagar o registro do que foi tentado, mesma régua de §85/§283) e
+escrever esta entrada nova à mão em vez de deixar o revert mudar a
+documentação sozinho. Suíte de animação/mob/nameplate/portal/seleção
+(199 testes) voltou a passar 100% no estado revertido, confirmando que
+o código voltou exatamente ao baseline de antes de §286
+(`trigger_cast_anim` de volta à técnica ESTICADA de §284;
+`trigger_attack_anim`/COMBAT_RESULT sem fase de anticipação nenhuma).
+
+**Removido de verdade (não existe mais no código)**:
+`trigger_anticipation_anim`/`release_anticipation_anim`,
+`TileMovement.anim_attack_frame_cap_ms`/`anim_attack_pending`,
+`_accelerate_tail_and_queue`/`_tail_still_playing`/`_apply_pending_
+attack_trigger`, o fallback de `trigger_cast_anim` pra `resolve_
+attack_state_name` quando não há sprite de cast dedicado, e o gatilho
+de fase 1 em `ui/player_input_system.py::_process_archer_combat`.
+**Se uma técnica de "congelar num frame do meio esperando um evento de
+rede" voltar a ser necessária no futuro** (pra qualquer classe/skill),
+ler esta seção E §286/§287 inteiras antes de reimplementar — o desenho
+técnico em si funcionava (testes confirmavam o mecanismo), o problema
+real era a INTERAÇÃO com movimento livre durante a espera, não um bug
+de implementação. Qualquer tentativa futura precisa responder essa
+pergunta ANTES de codar: "o que a animação deve mostrar se o jogador
+andar enquanto está esperando o evento de liberação?" — nunca assumir
+que "fica parado esperando" é aceitável sem confirmar com o usuário.

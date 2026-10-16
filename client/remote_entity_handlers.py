@@ -283,20 +283,10 @@ class RemoteEntityHandlers:
                         _atk_class_id = _rc_anim_atk.class_id if _rc_anim_atk else None
                     _tm_anim_atk = self.world.get_component(_atk_eid_anim, _TMAnimAtk)
                     if _atk_class_id and _tm_anim_atk is not None:
-                        from engine.character_animation import (trigger_attack_anim as _taa,
-                            release_anticipation_anim as _raa_atk)
+                        from engine.character_animation import trigger_attack_anim as _taa
                         _missed_anim = outcome in ("miss", "dodge", "parry")
-                        _now_atk_anim = pygame.time.get_ticks()
-                        # Libera a fase 2 (soltar) de onde a animação de
-                        # preparação (puxar o arco, ver ui/
-                        # player_input_system.py::_process_archer_combat)
-                        # parou, em vez de reiniciar do frame 0 — só cai
-                        # pro golpe "do zero" se não havia preparação
-                        # ativa (ex: player remoto, que nunca tem fase 1;
-                        # ou classe sem arco; 15/10/2026).
-                        if not _raa_atk(_tm_anim_atk, _now_atk_anim):
-                            _taa(_tm_anim_atk, _atk_class_id, "", _now_atk_anim,
-                                 missed=_missed_anim)
+                        _taa(_tm_anim_atk, _atk_class_id, "", pygame.time.get_ticks(),
+                             missed=_missed_anim)
             else:
                 # Atacante é mob remoto (10/10/2026, sistema de animação
                 # de mob, ver engine/mob_animation.py) — mesmo princípio:

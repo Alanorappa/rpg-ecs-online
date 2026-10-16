@@ -1487,32 +1487,6 @@ class TileMovement:
     # guard — mesmo sid + loop ainda ativo = ignora (deixa o loop em
     # andamento continuar, sem reiniciar nada).
     anim_attack_sid: str = ""
-    # Teto (ms) no `elapsed` usado pra escolher o frame — 15/10/2026,
-    # pedido do usuário: anticipação de golpe/cast ("puxar o arco",
-    # "preparar o cast") que PAUSA num frame específico (não
-    # necessariamente o último do sheet) até um evento externo liberar
-    # (ver `engine.character_animation.trigger_anticipation_anim`/
-    # `release_anticipation_anim`). -1 = sem teto (default, comportamento
-    # de sempre pra QUALQUER golpe/cast/morte que não usa este
-    # mecanismo). Enquanto >=0, `resolve_display_state` nunca deixa
-    # `elapsed` passar deste valor — o frame correspondente fica
-    # "congelado" por construção, sem precisar do mecanismo de
-    # `anim_attack_hold_last_frame` (que sempre segura no ÚLTIMO frame
-    # do sheet INTEIRO, não num frame do MEIO).
-    anim_attack_frame_cap_ms: int = -1
-    # Gatilho ADIADO (15/10/2026, pedido do usuário: "acelerar a
-    # animação para casar com o disparo do projétil") — tupla
-    # `(kind, class_id, state_name, sid, hold_frame_index, frame_ms,
-    # missed)` ou `None`. Quando um golpe/cast novo precisa começar
-    # enquanto a CAUDA de uma animação anterior (não congelada, não em
-    # loop) ainda está tocando, em vez de sobrescrever na hora
-    # (congelando/pulando no meio do movimento), `engine.
-    # character_animation._accelerate_tail_and_queue` acelera a cauda
-    # atual pra terminar rápido e guarda aqui o que aplicar de
-    # verdade — `resolve_display_state()` consome e limpa isto sozinho
-    # assim que a cauda acelerada chega ao fim natural. Nunca lido/
-    # escrito fora de `engine/character_animation.py`.
-    anim_attack_pending: "tuple | None" = None
 
 
 @dataclass

@@ -1229,30 +1229,17 @@ class TestApplyCombatResultTriggersAttackAnim(unittest.TestCase):
         """10/09/2026, pedido do usuário: golpe que erra (miss/dodge/
         parry) não deve deixar o personagem "congelado" — reusa a
         MESMA animação de golpe, só mais lenta (MISS_ATTACK_SLOWDOWN),
-        nenhuma arte nova.
-
-        Patch de `pygame.time.get_ticks` (15/10/2026): os 3 outcomes do
-        loop precisam de um salto de tempo REAL entre eles — sem isso,
-        as 3 chamadas caem praticamente no mesmo ms (execução síncrona
-        do teste) e a aceleração de cauda nova (`_accelerate_tail_and_
-        queue`, pedido do usuário "acelerar a animação quando um golpe
-        novo chega enquanto a cauda anterior ainda toca") adia a
-        aplicação do 2º/3º outcome em vez de aplicar na hora — correto
-        pra gameplay real (resultados nunca chegam no mesmo instante),
-        mas incompatível com a suposição antiga do teste de "tempo
-        congelado" entre chamadas."""
-        from unittest.mock import patch
+        nenhuma arte nova."""
         from client.remote_entity_handlers import RemoteEntityHandlers
         from engine.character_animation import DEFAULT_FRAME_MS, MISS_ATTACK_SLOWDOWN
         eng, world = self._make_engine_stub(attacker_eid=42, attacker_class_id="guerreiro",
                                             is_remote=False)
         from engine.components import TileMovement
-        for i, _outcome in enumerate(("miss", "dodge", "parry")):
-            with patch("pygame.time.get_ticks", return_value=10_000 + i * 5_000):
-                RemoteEntityHandlers._apply_combat_result(eng, {
-                    "attacker": 42, "target": 555, "damage": 0, "outcome": _outcome,
-                    "hp_after": 50, "source": "auto",
-                })
+        for _outcome in ("miss", "dodge", "parry"):
+            RemoteEntityHandlers._apply_combat_result(eng, {
+                "attacker": 42, "target": 555, "damage": 0, "outcome": _outcome,
+                "hp_after": 50, "source": "auto",
+            })
             tm = world.get_component(eng._atk_local_eid, TileMovement)
             self.assertEqual(tm.anim_attack_state, "attack",
                 f"outcome={_outcome} deveria ligar a animação genérica de golpe")

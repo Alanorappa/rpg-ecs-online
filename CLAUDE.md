@@ -822,64 +822,24 @@ padrão a quebrar, não só os bugs individuais.
   idle/run "respirando" pra classe sem sprite de morte ainda, em vez
   do retângulo cinza de fallback certo. Ver PROBLEMAS_ARQUITETURA.md
   §285.
-  **Golpe/cast em 2 FASES (preparação → congela num frame → solta)**
-  (15/10/2026, arqueiro primeiro, mecanismo genérico pra qualquer
-  classe) → `engine.character_animation.trigger_anticipation_anim(
-  tile_movement, class_id, state_name, now_ms, hold_frame_index=5,
-  frame_ms=DEFAULT_FRAME_MS, sid="")` liga a fase 1 (toca até
-  `hold_frame_index` e CONGELA via `TileMovement.anim_attack_frame_
-  cap_ms`, novo campo — trava o `elapsed` em `resolve_display_state()`
-  antes de qualquer outro cálculo); `release_anticipation_anim(
-  tile_movement, now_ms)` libera a fase 2 (rebate `anim_attack_
-  started_ms` pra trás pelo valor do teto — NUNCA reinicia do frame
-  0 — remove o teto, deixa terminar o sheet e cair pro idle/run
-  normal). `hold_frame_index` é PARÂMETRO por chamador, nunca
-  constante fixa pro jogo inteiro (sheets de classes diferentes variam
-  em contagem de frame). `trigger_cast_anim()` (§284) agora DELEGA
-  pra esta primitiva em vez da técnica antiga de "esticar pra caber a
-  duração real" — fase 1 do cast liga no início (`cast_start`), fase 2
-  libera no `"launch"`/`"impact"`/`"miss"` (SKILL_EFFECT já existente,
-  sem mensagem nova). Fase 1 de AUTO-ATTACK do arqueiro liga dentro do
-  mecanismo de pré-tensionamento LOCAL JÁ EXISTENTE
-  (`ui/player_input_system.py::_process_archer_combat`,
-  `_PRE_DRAW_THRESHOLD`/`arrow_pre_draw_ready`, criado originalmente só
-  pro som de "puxar a corda") — **antes de inventar um timing novo pra
-  uma fase de preparação, procurar se já existe um sinal LOCAL
-  parecido** (som de antecipação, cooldown visível, etc.) — reaproveitar
-  é sempre preferível a um delay artificial novo. Os 2 call sites de
-  fase 2 (`client/network_handlers.py::_handle_msg_skill_effect` pra
-  cast; `client/remote_entity_handlers.py::_apply_combat_result` pra
-  auto-attack) chamam `release_anticipation_anim()` PRIMEIRO, caindo
-  pro `trigger_attack_anim()` normal só quando ela devolve `False`
-  (sem antecipação ativa — ex: player remoto, que nunca passou pela
-  fase 1 local de outro jogador). Ver PROBLEMAS_ARQUITETURA.md §286.
-  **`trigger_cast_anim()` sem sprite de cast dedicado (nem `{sid}_cast`
-  nem "cast" genérico — caso de toda classe além do mago hoje) NUNCA
-  fica sem nenhuma animação** (15/10/2026) — cai pro MESMO `resolve_
-  attack_state_name()` (cascata sid→"skill"→"attack") já usado pelo
-  lançamento, reaproveitando o sheet de ataque pra fase 1 também.
-  Ver PROBLEMAS_ARQUITETURA.md §287.
-  **Cauda de golpe/cast ainda tocando (soltada, não congelada, não em
-  loop) quando um gatilho NOVO precisa começar** (15/10/2026, pedido do
-  usuário: "quando sair um auto attack logo depois de uma skill ser
-  lançada, pode acelerar a animação para casar com o disparo do
-  projétil" — escolhido entre 3 opções via pergunta direta) → `engine.
-  character_animation._accelerate_tail_and_queue()` — em vez de
-  sobrescrever na hora (congela/pula no meio do movimento), REBASEIA o
-  timeline da cauda (mantém o frame ATUAL, acelera daí pra frente a
-  `_TAIL_ACCELERATE_FRAME_MS`=25ms/frame) e guarda o gatilho novo em
-  `TileMovement.anim_attack_pending` (tupla, campo novo) — `resolve_
-  display_state()` aplica esse pending sozinho no exato frame em que a
-  cauda acelerada termina. NUNCA toca golpe em LOOP de verdade
-  (`_attack_loop_still_active`, guard separado, prioridade própria
-  intocada) nem anticipação JÁ congelada (`anim_attack_frame_cap_ms>=0`
-  — por construção nunca coexiste com `anim_attack_pending` não-nulo).
-  **Qualquer estado novo que sobrescreve `anim_attack_state` na mão**
-  (morte, revive, futuro) **precisa limpar `anim_attack_frame_cap_ms`
-  E `anim_attack_pending` também** — bug real achado implementando:
-  `trigger_death_anim()` não resetava o teto de anticipação, então um
-  hit fatal no meio de uma anticipação congelada travava a morte no
-  frame ERRADO. Ver PROBLEMAS_ARQUITETURA.md §287.
+  **Golpe/cast em 2 FASES (preparação → congela num frame do meio →
+  solta): tentado e REVERTIDO no mesmo dia** (15/10/2026, ver
+  PROBLEMAS_ARQUITETURA.md §286/§287/§288) — congelar a animação num
+  frame fixo esperando um evento de rede (`trigger_anticipation_anim`/
+  `release_anticipation_anim`, removidos) tem prioridade sobre
+  idle/run por construção (`resolve_display_state`), então o
+  personagem ficava visualmente "preso" na pose de preparação mesmo
+  depois do jogador já ter voltado a andar — bug real relatado em
+  playtest. Usuário optou por resolver na ORIGEM (redesenhar as folhas
+  de sprite pra que o frame de soltar o golpe/flecha fique no INÍCIO
+  do ciclo, não no fim) em vez de ensinar a máquina de estados a ceder
+  pra movimento no meio da espera. Se uma técnica de "congelar num
+  frame esperando um evento externo" voltar a ser necessária, ler
+  §286/§287/§288 inteiras antes de reimplementar — o mecanismo em si
+  funcionava (testes passavam), o problema era a interação com
+  movimento livre durante a espera; qualquer tentativa nova precisa
+  responder "o que mostrar se o jogador andar enquanto espera?" antes
+  de codar, nunca assumir "fica parado" sem confirmar com o usuário.
   **Animação BASE de MOB** (idle/run/attack × 4 direções — não
   confundir com animação de PERSONAGEM jogável acima, que é um sistema
   IRMÃO separado, nunca estendido pelo mesmo módulo) →

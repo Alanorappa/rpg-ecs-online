@@ -857,19 +857,6 @@ class PlayerInputSystem(System):
                     SOUNDS.play_random(["arrow_nock_1", "arrow_nock_2"], channel_group=(6, 7))
                     from debug.archer_debug import ADBG_CLIENT as _ADBG_c_nock
                     _ADBG_c_nock.log("SOUND", entity_id, target_id, which="nock")
-                # Fase 1 (puxar o arco) da animação de golpe (15/10/2026,
-                # pedido do usuário: "a animação deve acontecer antes de
-                # sair o projétil, junto com a emissão do som... congelar
-                # no 5º frame... antes de sair o projétil então finaliza")
-                # — mesmo instante do som de pré-tensionamento acima
-                # (local/cosmético, mesma régua: "feel de UI", igual o
-                # resto deste bloco). Fase 2 (soltar) libera de onde isto
-                # parou, no COMBAT_RESULT real — ver client/
-                # remote_entity_handlers.py::_apply_combat_result.
-                from engine.character_animation import (trigger_anticipation_anim as _taa_draw,
-                    resolve_attack_state_name as _rasn_draw)
-                _state_draw = _rasn_draw("arqueiro", "", tile_movement.facing)
-                _taa_draw(tile_movement, "arqueiro", _state_draw, pygame.time.get_ticks())
 
             if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
                 if quiver.arrow_count <= 0:
