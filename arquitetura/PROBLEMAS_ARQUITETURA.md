@@ -28123,3 +28123,85 @@ por estar fora do escopo desta tarefa). Decisão do usuário sobre nível
 de teste automatizado para esta feature específica não foi pedida
 antes de implementar (diferente do padrão desta mesma sessão) —
 validação combinada com manual em playtest, a confirmar.
+
+## 287. Cast sem sprite dedicado nunca animava + cauda de golpe acelerada em colisão (15/10/2026)
+
+**Pedido do usuário**, 2 partes no mesmo turno: (1) "a animação do auto
+attack está certinho mas o cast não, é para a animação acontecer no
+início do cast e travar no 5º frame e continuar a animação após o
+ataque sair"; (2) "eu também percebi que gera uma confusão na animação
+quando sai um auto attack logo depois de uma skill ser lançada, então
+quando isso acontecer, você pode acelerar a animação para casar com o
+disparo do projétil."
+
+**Causa raiz (1) — confirmada por investigação, não suposição**:
+`ls assets/sprites | grep arqueiro` mostrou que o arqueiro não tem
+NENHUM sprite de cast (`arqueiro_cast_*.png`) nem sprite próprio por
+skill (`arqueiro_tiro_repulsivo_*.png` e similares, nenhum existe).
+`trigger_cast_anim()` (§286) só olhava `resolve_cast_state_name`
+(cascata `{sid}_cast` → `"cast"` → `None`) — sem achar nenhum dos
+dois, virava no-op completo, personagem ficava em idle/run o cast
+inteiro. Fix: quando `resolve_cast_state_name` devolve `None`, cai pro
+MESMO `resolve_attack_state_name` (cascata sid→"skill"→"attack") já
+usado pelo lançamento — reusa o sheet de ataque pra fase 1 também, sem
+nenhuma arte nova. Mago (que TEM sprite de cast dedicado) não muda —
+o fallback só entra quando a cascata de cast genuinamente não acha
+nada.
+
+**Causa raiz (2)**: como o arqueiro usa o MESMO sheet `"attack"` pra
+TUDO (windup de skill, soltura de skill, pré-tensionamento de
+auto-attack, soltura de auto-attack — nenhuma skill tem sprite
+própria), o pré-tensionamento LOCAL do próximo auto-attack (`ui/
+player_input_system.py`, timer independente, ~1s antes do próximo
+tiro) podia disparar e congelar o sheet de volta no frame 5 ENQUANTO a
+cauda de uma skill recém-lançada ainda estava tocando (ela não trava,
+só termina o ciclo e cai pro idle) — virava um "pulo pra trás" visível
+no meio do movimento.
+
+**Desenho aprovado pelo usuário** (`AskUserQuestion`, 3 opções —
+acelerar/cortar-pro-último-frame/esperar — escolheu "acelera a cauda
+antiga até o fim"): `engine.character_animation._accelerate_tail_and_
+queue(tile_movement, class_id, now_ms, pending)` — quando um gatilho
+novo (`trigger_attack_anim`/`trigger_anticipation_anim`) precisa
+começar enquanto `_tail_still_playing()` detecta uma cauda ainda
+tocando (não congelada por anticipação, não em loop, não held, ainda
+não no último frame), REBASEIA o timeline da cauda pra manter o frame
+ATUAL intacto mas avançar daí pra frente a `_TAIL_ACCELERATE_FRAME_MS`
+(25ms/frame, rápido mas visível, nunca instantâneo) — e guarda o
+gatilho novo em `TileMovement.anim_attack_pending` (tupla, campo novo)
+em vez de aplicar na hora. `resolve_display_state()` consome e limpa
+esse pending sozinho no EXATO frame em que a cauda acelerada chega ao
+fim natural (recursão de profundidade 1, sempre termina — pending é
+limpo ANTES de reaplicar). Protege os 2 pontos que já tinham prioridade
+própria e nunca devem ser tocados por isto: golpe em LOOP de verdade
+(`_attack_loop_still_active`, guard separado, continua intocado) e
+anticipação JÁ congelada (`anim_attack_frame_cap_ms>=0` — por
+construção, nunca pode coexistir com um `anim_attack_pending` não-nulo,
+ver docstring de `_tail_still_playing`).
+
+**Bug lateral achado implementando, corrigido no mesmo commit**:
+`trigger_death_anim()` nunca resetava `anim_attack_frame_cap_ms` — se
+o hit fatal acontecesse bem no meio de uma anticipação congelada
+(janela rara, nunca reportada), a morte herdava o teto antigo e a
+animação de morte travava no frame ERRADO (o da anticipação), não no
+último frame de verdade. `clear_attack_anim_state()` (revive) ganhou o
+mesmo reset, mais a limpeza de `anim_attack_pending` — nenhum dos 2
+campos novos expira sozinho, mesma disciplina já documentada pra
+`anim_attack_hold_last_frame`.
+
+**Teste**: suíte de animação/mob/nameplate/portal/seleção (199 testes,
+7 arquivos juntos) passa 100% depois do fix. 1 teste pré-existente
+(`test_character_animation.py::TestApplyCombatResultTriggersAttackAnim::
+test_miss_liga_animacao_generica_mais_lenta`) quebrou como efeito
+colateral ESPERADO da mudança — ele disparava 3 resultados de combate
+em sequência síncrona sem avançar o tempo real entre eles (suposição
+antiga: "toda chamada sobrescreve na hora", agora só verdade quando a
+cauda anterior já tinha tempo de terminar) — corrigido fazendo o teste
+avançar `pygame.time.get_ticks()` de verdade (patch) entre os 3
+outcomes, igual aconteceria em gameplay real (resultados nunca chegam
+no mesmo milissegundo). Os 2 testes de `test_mob_death_animation.py`
+que falhavam só em combinação com outros arquivos (§286, poluição de
+ordem pré-existente) não reapareceram nesta rodada combinada — não
+investigado a fundo, segue fora do escopo. Validação do comportamento
+visual real (cast do arqueiro aparecendo, cauda acelerada sem pulo)
+ainda depende de playtest manual do usuário.

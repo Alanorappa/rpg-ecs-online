@@ -1500,6 +1500,19 @@ class TileMovement:
     # `anim_attack_hold_last_frame` (que sempre segura no ÚLTIMO frame
     # do sheet INTEIRO, não num frame do MEIO).
     anim_attack_frame_cap_ms: int = -1
+    # Gatilho ADIADO (15/10/2026, pedido do usuário: "acelerar a
+    # animação para casar com o disparo do projétil") — tupla
+    # `(kind, class_id, state_name, sid, hold_frame_index, frame_ms,
+    # missed)` ou `None`. Quando um golpe/cast novo precisa começar
+    # enquanto a CAUDA de uma animação anterior (não congelada, não em
+    # loop) ainda está tocando, em vez de sobrescrever na hora
+    # (congelando/pulando no meio do movimento), `engine.
+    # character_animation._accelerate_tail_and_queue` acelera a cauda
+    # atual pra terminar rápido e guarda aqui o que aplicar de
+    # verdade — `resolve_display_state()` consome e limpa isto sozinho
+    # assim que a cauda acelerada chega ao fim natural. Nunca lido/
+    # escrito fora de `engine/character_animation.py`.
+    anim_attack_pending: "tuple | None" = None
 
 
 @dataclass

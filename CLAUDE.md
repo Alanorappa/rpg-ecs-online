@@ -853,6 +853,33 @@ padrão a quebrar, não só os bugs individuais.
   pro `trigger_attack_anim()` normal só quando ela devolve `False`
   (sem antecipação ativa — ex: player remoto, que nunca passou pela
   fase 1 local de outro jogador). Ver PROBLEMAS_ARQUITETURA.md §286.
+  **`trigger_cast_anim()` sem sprite de cast dedicado (nem `{sid}_cast`
+  nem "cast" genérico — caso de toda classe além do mago hoje) NUNCA
+  fica sem nenhuma animação** (15/10/2026) — cai pro MESMO `resolve_
+  attack_state_name()` (cascata sid→"skill"→"attack") já usado pelo
+  lançamento, reaproveitando o sheet de ataque pra fase 1 também.
+  Ver PROBLEMAS_ARQUITETURA.md §287.
+  **Cauda de golpe/cast ainda tocando (soltada, não congelada, não em
+  loop) quando um gatilho NOVO precisa começar** (15/10/2026, pedido do
+  usuário: "quando sair um auto attack logo depois de uma skill ser
+  lançada, pode acelerar a animação para casar com o disparo do
+  projétil" — escolhido entre 3 opções via pergunta direta) → `engine.
+  character_animation._accelerate_tail_and_queue()` — em vez de
+  sobrescrever na hora (congela/pula no meio do movimento), REBASEIA o
+  timeline da cauda (mantém o frame ATUAL, acelera daí pra frente a
+  `_TAIL_ACCELERATE_FRAME_MS`=25ms/frame) e guarda o gatilho novo em
+  `TileMovement.anim_attack_pending` (tupla, campo novo) — `resolve_
+  display_state()` aplica esse pending sozinho no exato frame em que a
+  cauda acelerada termina. NUNCA toca golpe em LOOP de verdade
+  (`_attack_loop_still_active`, guard separado, prioridade própria
+  intocada) nem anticipação JÁ congelada (`anim_attack_frame_cap_ms>=0`
+  — por construção nunca coexiste com `anim_attack_pending` não-nulo).
+  **Qualquer estado novo que sobrescreve `anim_attack_state` na mão**
+  (morte, revive, futuro) **precisa limpar `anim_attack_frame_cap_ms`
+  E `anim_attack_pending` também** — bug real achado implementando:
+  `trigger_death_anim()` não resetava o teto de anticipação, então um
+  hit fatal no meio de uma anticipação congelada travava a morte no
+  frame ERRADO. Ver PROBLEMAS_ARQUITETURA.md §287.
   **Animação BASE de MOB** (idle/run/attack × 4 direções — não
   confundir com animação de PERSONAGEM jogável acima, que é um sistema
   IRMÃO separado, nunca estendido pelo mesmo módulo) →
