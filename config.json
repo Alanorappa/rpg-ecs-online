@@ -283,7 +283,7 @@
       "consumable_bar": {
         "slots": [
           "small_hp_potion",
-          null,
+          "hearty_stew",
           null,
           null,
           null
