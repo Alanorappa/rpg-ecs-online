@@ -28331,3 +28331,62 @@ completo: `ConnectionRefusedError` tentando abrir o Postgres (Docker
 local estava desligado nesta sessão, ver "Como rodar" no topo deste
 arquivo) — ambiental, não causado por esta mudança. Os 116 testes
 restantes desses 2 arquivos passaram.
+
+## 290. Flecha do auto-attack nascia e já voava antes do frame de soltura tocar (17/10/2026)
+
+**Pedido do usuário**: "a animação está acontecendo depois de o
+projétil ser lançado ainda" (depois do fix de §289, que só resolvia o
+atraso ANTES do 1º tiro de um engajamento, não a sincronia golpe-a-
+golpe).
+
+**Investigação, não suposição** — confirmei 3 hipóteses ANTES de
+propor qualquer fix:
+1. Código de disparo: `client/remote_entity_handlers.py::
+   _apply_combat_result` dispara a animação (`trigger_attack_anim`,
+   linha ~286) e cria a flecha (`_spawn_archer_auto_arrow`, linha
+   ~409) na MESMA chamada síncrona — sem atraso de código nenhum entre
+   os dois. Descartado como causa.
+2. Cache de sprite: `engine/character_animation.py::_frame_cache` é
+   um dict de MÓDULO, nunca invalidado — se o cliente não reiniciar
+   depois de editar o PNG, a edição nunca aparece. Perguntei ao
+   usuário: ele confirmou que reiniciou o processo. Descartado.
+3. Conteúdo do sprite — a causa real: contei os 8 frames de
+   `arqueiro_attack_down.png` e o frame de SOLTURA (flash branco) está
+   no ÍNDICE 2 (3ª posição), não no 0. Confirmado pelo usuário (os 4
+   sprites — down/left/right/up — têm a soltura no MESMO índice 2).
+   Como a flecha nasce (e começa a voar IMEDIATAMENTE) no exato
+   instante em que a animação começa a tocar do frame 0, ela já
+   percorreu ~156ms de voo (2 frames × `DEFAULT_FRAME_MS`=78ms) antes
+   do personagem sequer chegar na pose de soltar — exatamente o
+   sintoma relatado.
+
+**Fix, reaproveitando mecanismo JÁ EXISTENTE, NUNCA o congelamento
+revertido em §286/§288**: `launch_delay` (campo de
+`PlayerProjectileEntry`, `ui/spell_system.py`, usado antes só pela 2ª
+flecha de Flecha Reiterada) — `PlayerProjectileSystem.update()` já
+trava o projétil parado enquanto `launch_delay > 0` (`continue`, sem
+mover), e `render()` já desenha ele com `fade = _spawn_fade_fraction`
+dependente da DISTÂNCIA percorrida — parado, `fade=0`, efetivamente
+invisível, sem precisar de nenhuma lógica nova de visibilidade.
+`client/remote_entity_handlers.py::_spawn_archer_auto_arrow` agora
+passa `launch_delay=_ARROW_RELEASE_FRAME_INDEX * DEFAULT_FRAME_MS /
+1000.0` (índice 2 × 78ms ≈ 0.156s) pro `spawn()`. **Por que isto NÃO é
+o mesmo erro de §286/§288**: a animação do personagem continua tocando
+NORMAL desde o frame 0, sem travar em lugar nenhum, sem esperar
+evento de rede nenhum (nunca bloqueia andar) — só a FLECHA fica
+invisível por um tempo FIXO e curto, conhecido de antemão (não depende
+de latência/confirmação de servidor). Som de disparo
+(`arrow_release_*`) continua tocando no instante de sempre, sem
+atraso — fora de escopo (usuário só relatou a flecha, não o som).
+
+**Teste**: `tests/test_client_ui.py`, `tests/test_character_
+animation.py`, `tests/test_flt_dedup.py`, `tests/test_pvp_auto_
+attack.py` (341 testes) sem regressão — nenhum teste existente checa
+a posição do projétil nos primeiros frames após o spawn, então nenhum
+dependia do comportamento antigo (`launch_delay=0.0` implícito).
+`_ARROW_RELEASE_FRAME_INDEX = 2` é uma constante ÚNICA pros 4
+direções — se um dia os sprites tiverem a soltura em índices
+DIFERENTES por direção, essa constante precisa virar um dict por
+direção (não feito agora, usuário confirmou que os 4 estão no mesmo
+índice). Validação visual de verdade (a flecha "aparecer" exatamente
+no flash) ainda depende de playtest manual do usuário.

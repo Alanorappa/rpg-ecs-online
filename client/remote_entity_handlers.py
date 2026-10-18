@@ -20,6 +20,22 @@ class RemoteEntityHandlers:
     # impacto deve usar arrow_impact_* em vez dos sons genéricos de melee.
     _ARROW_SKILL_IDS = {"picada_escorpiao", "flecha_reiterada", "tiro_repulsivo"}
 
+    # Índice do frame de SOLTURA (flash) no sheet `arqueiro_attack_*.png`
+    # (17/10/2026, pedido do usuário, confirmado nos 4 sprites: down/left/
+    # right/up) — a flecha do auto-attack nasce no EXATO instante em que o
+    # COMBAT_RESULT confirma o golpe (`_apply_combat_result`), mas a
+    # animação de golpe começa do frame 0 nesse mesmo instante; sem atraso,
+    # a flecha já estava voando antes do personagem chegar no frame de
+    # soltura de verdade. `_ARROW_RELEASE_DELAY_S` atrasa só o NASCIMENTO
+    # VISUAL da flecha (via `launch_delay`, mecanismo já existente —
+    # usado antes só na 2ª flecha de Flecha Reiterada) pra casar com esse
+    # frame — NUNCA reintroduz o congelamento de animação revertido em
+    # §286/§288 (a animação toca normal, sem travar, sem bloquear
+    # movimento; só a flecha fica invisível — `fade` depende da distância
+    # percorrida, 0 parada — até o delay acabar). Ver PROBLEMAS_
+    # ARQUITETURA.md §290.
+    _ARROW_RELEASE_FRAME_INDEX = 2
+
     def _play_attacker_mob_sound(self, server_attacker: int, _lx: float, _ly: float) -> bool:
         """Toca o som de ataque do MOB atacante (attack_melee/ranged/magic via
         NpcSounds), posicional com falloff pela distância.
@@ -181,6 +197,7 @@ class RemoteEntityHandlers:
         _ppos = self.world.get_component(attacker_eid, Position)
         if _ppos is None:
             return None
+        from engine.character_animation import DEFAULT_FRAME_MS as _DFMS_arrow
         _arrow_entry = self._player_proj_system.spawn(
             _ppos.x, _ppos.y, attacker_eid, target_local_eid,
             spell_id="arrow",
@@ -189,6 +206,7 @@ class RemoteEntityHandlers:
             dmg_sp_coeff=0.0,
             color=color,
             damage_type="physical",
+            launch_delay=self._ARROW_RELEASE_FRAME_INDEX * _DFMS_arrow / 1000.0,
             target_last_x=target_pos.x,
             target_last_y=target_pos.y,
         )

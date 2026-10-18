@@ -1416,6 +1416,23 @@ padrão a quebrar, não só os bugs individuais.
   NOVA (`rotate()` sempre devolve cópia nova, até com ângulo 0), senão
   afeta o cache global e vaza pra qualquer OUTRA bola de fogo que reusar
   o mesmo frame depois.
+  **Sincronizar o NASCIMENTO VISUAL de um projétil com um frame
+  específico da animação de golpe/cast do personagem** (17/10/2026,
+  flecha do auto-attack do arqueiro saindo antes do frame de soltura
+  tocar) → `launch_delay` (campo já existente de `PlayerProjectileEntry`,
+  antes só usado pela 2ª flecha de Flecha Reiterada) — `update()` já
+  trava o projétil parado enquanto `launch_delay>0`, `render()` já
+  desenha com `fade` dependente da DISTÂNCIA percorrida (parado,
+  fade=0, efetivamente invisível) — NUNCA precisa de lógica de
+  visibilidade nova. Delay = `índice_do_frame_de_soltura ×
+  DEFAULT_FRAME_MS / 1000.0` (arqueiro: índice 2, `_ARROW_RELEASE_
+  FRAME_INDEX` em `client/remote_entity_handlers.py`) — valor FIXO,
+  conhecido de antemão, nunca depende de latência/evento de rede.
+  **Isto NÃO é o congelamento de animação revertido em §286/§288** —
+  a animação do personagem continua tocando normal desde o frame 0,
+  sem travar em lugar nenhum, nunca bloqueia movimento; só o PROJÉTIL
+  fica invisível por um tempo curto e fixo. Ver PROBLEMAS_ARQUITETURA.md
+  §290.
 - **Talento que não deve ter efeito dentro da BG/instância** →
   `content/talent_data.py::INSTANCE_DISABLED_TALENTS` (frozenset de
   `talent_id`) — lido nos dois lados: `server/instance_progression.py::
