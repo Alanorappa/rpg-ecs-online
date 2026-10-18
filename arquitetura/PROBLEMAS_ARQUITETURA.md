@@ -28266,3 +28266,68 @@ de implementação. Qualquer tentativa futura precisa responder essa
 pergunta ANTES de codar: "o que a animação deve mostrar se o jogador
 andar enquanto está esperando o evento de liberação?" — nunca assumir
 que "fica parado esperando" é aceitável sem confirmar com o usuário.
+
+## 289. 1º tiro de um engajamento novo disparava instantâneo — zero tempo pra animação (17/10/2026)
+
+**Pedido do usuário**: "o ataque automático do arqueiro inicia logo que
+o arqueiro cumpre as condições para o ataque, porém teria que contar o
+intervalo entre o ataque antes do primeiro ataque, isso corrigiria a
+animação desincronizada do ataque do arqueiro, precisamos fazer pelo
+menos 3 frames iniciar antes de sair o ataque do arqueiro."
+
+**Causa raiz, achada por investigação (não suposição)**:
+`server/combat_processor.py::_resolve_auto_attack` — `_attack_timers`
+é um dict por SESSÃO (`self._attack_timers[session_id]`), NUNCA por
+combate — `timer = self._attack_timers.get(session_id, 0.0) - dt`
+inicializa em **0.0** sempre que não existe entrada ainda. Isso
+acontece em 2 momentos reais, não só no login: (1) a sessão nunca
+atacou antes; (2) **o alvo anterior morreu** — `cs.target_entity_id =
+-1; self._attack_timers.pop(session_id, None)` (linha ~379) apaga a
+entrada a cada kill. Resultado: praticamente todo "engajar um alvo
+novo" (caça comum de qualquer MMO — matar um mob, engajar o próximo)
+disparava o tiro no tick seguinte, sem folga nenhuma — e como a
+animação de disparo só liga no COMBAT_RESULT CONFIRMADO (desde a
+reversão de §288, sem nenhum mecanismo de antecipação), ela nunca
+tinha tempo de mostrar nenhum frame antes do golpe de verdade já ter
+acontecido.
+
+**Decisão de alcance, perguntada ao usuário (`AskUserQuestion`)**: só
+RANGED (arqueiro) ganha o atraso — melee (guerreiro) continua
+disparando instantâneo no 1º golpe, decisão explícita (a dessincronia
+relatada foi só da animação do arqueiro, `_resolve_auto_attack` é
+COMPARTILHADA entre todas as classes e PvP/PvE, então o alcance
+precisava ser confirmado, não assumido). Duração: 0.25s (~3 frames no
+ritmo atual de `DEFAULT_FRAME_MS`=78ms, 3×78≈234ms, arredondado) —
+constante NOVA e PRÓPRIA do servidor (`CombatProcessorMixin.
+_FIRST_RANGED_ATTACK_DELAY_S`), nunca importando `engine/
+character_animation.py` pra pegar o valor de lá (módulo tem pygame,
+violaria "server nunca importa Pygame").
+
+**Fix**: troca o default do `.get()` — `_cold_start_default =
+_FIRST_RANGED_ATTACK_DELAY_S if _is_ranged else 0.0`, só usado quando
+NÃO há entrada no dict ainda. A cadência NORMAL entre tiros (quando já
+existe uma entrada real) nunca é afetada — só o "nascimento" de uma
+entrada nova ganha o atraso, exatamente o momento que o usuário
+descreveu. Nenhuma mudança em melee, PvP continua pela mesma função
+(mesmo fix se aplica a ranged vs. player, automaticamente).
+
+**Teste**: `tests/test_pvp_auto_attack.py`,
+`tests/test_faction.py`, `tests/test_towers.py`,
+`tests/test_pack_aggro.py`, `tests/test_bg_kill_credit.py`,
+`tests/test_flt_dedup.py`, `tests/test_on_kill_charge_skills.py` (115
+testes) sem regressão — todos os testes existentes que exercitam
+`_attack_timers` pré-populam a entrada manualmente antes de chamar
+`_resolve_auto_attack` (`self.ws._attack_timers[sid] = 0.0`), então
+nenhum deles dependia do comportamento de COLD START que foi mudado;
+nenhum teste existente cobria esse caminho especificamente (cold start
+de verdade, sem pré-popular o dict) — oportunidade pra um teste novo
+dedicado, não escrito nesta sessão por decisão de foco (fix pontual,
+pequeno, de 1 linha de lógica real). `tests/test_server.py`/`tests/
+test_session.py` (326 testes) rodados depois, em segundo plano: 94
+falhas, todas em `TestAllyVisionSharing`/`TestPartyPositionsNoAoiUpdate`
+(visão compartilhada de time/posição de grupo no AOI — nada a ver com
+`_resolve_auto_attack`) — confirmado isolando 1 teste com traceback
+completo: `ConnectionRefusedError` tentando abrir o Postgres (Docker
+local estava desligado nesta sessão, ver "Como rodar" no topo deste
+arquivo) — ambiental, não causado por esta mudança. Os 116 testes
+restantes desses 2 arquivos passaram.

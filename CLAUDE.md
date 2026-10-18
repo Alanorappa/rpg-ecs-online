@@ -1233,6 +1233,23 @@ padrão a quebrar, não só os bugs individuais.
   `TowerSystem`/`MinionSystem`/`EnemyAISystem` (torre/minion/mob) — ver
   PROBLEMAS_ARQUITETURA.md §135 pra lista completa e a lição de mapear
   TODOS os call sites antes de trocar qualquer um.
+- **Cooldown de auto-attack (`CombatProcessorMixin._attack_timers`,
+  `server/combat_processor.py::_resolve_auto_attack`) é por SESSÃO, não
+  por combate** — a entrada é apagada quando o alvo morre (engajar o
+  próximo alvo é um "cold start" de novo, não só o login). Ranged
+  (arqueiro) ganha um atraso mínimo nesse cold start
+  (`CombatProcessorMixin._FIRST_RANGED_ATTACK_DELAY_S = 0.25`,
+  17/10/2026, pedido do usuário) — sem isso, o 1º tiro de QUALQUER
+  engajamento novo disparava no tick seguinte, sem folga nenhuma pra
+  animação de disparo (gatilhada só no COMBAT_RESULT confirmado)
+  mostrar nenhum frame antes do golpe de verdade. Melee continua
+  instantâneo no 1º golpe (decisão explícita — a dessincronia relatada
+  era só da animação do arqueiro). Essa constante é PRÓPRIA do
+  servidor — NUNCA importar `DEFAULT_FRAME_MS`/qualquer coisa de
+  `engine/character_animation.py` pra calibrar isso (módulo tem
+  pygame, violaria "server nunca importa Pygame"); se o ritmo real da
+  animação mudar no cliente, recalibrar este número A MÃO, sem
+  acoplar os dois lados. Ver PROBLEMAS_ARQUITETURA.md §289.
 - **`TalentTree.allocated` recebido via rede (`talent_allocated` no
   payload de STATS_UPDATE, emitido só por `server/
   instance_progression.py::enter_/exit_normalized_progression`)

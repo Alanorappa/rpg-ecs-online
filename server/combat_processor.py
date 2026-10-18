@@ -20,6 +20,25 @@ from engine.faction_system import can_engage as _can_engage_paa
 
 
 class CombatProcessorMixin:
+    # Atraso mínimo antes do 1º tiro de um engajamento NOVO de auto-attack
+    # RANGED (17/10/2026, pedido do usuário) — só entra quando `_attack_
+    # timers` não tem entrada pra esta sessão ainda (login, ou logo após
+    # matar o alvo anterior, que apaga a entrada — ver linha 379/472
+    # abaixo), nunca na cadência NORMAL entre tiros (essa já usa o valor
+    # real guardado no dict, nunca este default). Sem isso, o cooldown
+    # "nascia" em 0.0 e o 1º tiro de qualquer engajamento disparava no
+    # tick seguinte — a animação de disparo (gatilhada só no COMBAT_RESULT
+    # confirmado) nunca tinha tempo de mostrar nenhum frame antes do golpe
+    # de verdade acontecer. Valor em segundos, não em frames — o servidor
+    # NUNCA importa `engine/character_animation.py` (tem pygame, violaria
+    # "server nunca importa Pygame"), então este número é mantido
+    # INDEPENDENTE do cliente, só escolhido pra aproximar ~3 frames no
+    # ritmo atual da animação de ataque (`DEFAULT_FRAME_MS`=78ms × 3 ≈
+    # 234ms, arredondado). Só ranged — melee continua disparando
+    # instantâneo no 1º golpe, decisão explícita do usuário (a
+    # dessincronia relatada foi só da animação do arqueiro). Ver
+    # PROBLEMAS_ARQUITETURA.md §289.
+    _FIRST_RANGED_ATTACK_DELAY_S = 0.25
 
     def _ranged_weapon_range(self, attacker_eid: int, class_is_ranged: bool) -> "tuple[bool, int]":
         """(is_ranged, alcance_tiles) a partir do ARCO REAL equipado, nunca
@@ -175,8 +194,15 @@ class CombatProcessorMixin:
                     _ec_los(attacker_cst)
                     return None
 
-        # Cooldown de ataque (inicializa em 0 para atacar imediatamente no primeiro range)
-        timer = self._attack_timers.get(session_id, 0.0) - dt
+        # Cooldown de ataque — cadência NORMAL sempre vem do valor real já
+        # guardado no dict; só quando NÃO há entrada ainda (engajamento
+        # NOVO: login, ou logo após matar o alvo anterior) o default abaixo
+        # entra em jogo. Ranged ganha um atraso mínimo nesse 1º tiro
+        # (`_FIRST_RANGED_ATTACK_DELAY_S`, 17/10/2026, ver docstring da
+        # constante) — melee continua em 0.0 (atira imediatamente),
+        # comportamento de sempre.
+        _cold_start_default = self._FIRST_RANGED_ATTACK_DELAY_S if _is_ranged else 0.0
+        timer = self._attack_timers.get(session_id, _cold_start_default) - dt
         if timer > 0:
             self._attack_timers[session_id] = timer
             if _is_ranged:
