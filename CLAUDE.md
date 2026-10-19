@@ -1044,16 +1044,29 @@ padrão a quebrar, não só os bugs individuais.
   desenhado só ocupa os 32x32 centrais (mesma convenção de
   `CHAR_COLLISION_SIZE`) — usa o FRAME INTEIRO, nunca recorta/dá zoom
   tentando "preencher" uma caixa pequena (19/10/2026, decisão explícita
-  do usuário). **Qualquer posição de texto/elemento vizinho a um
-  preview de tamanho variável (sprite OU fallback de cor) precisa ser
-  calculada a partir do tamanho REAL do preview** (`icon_bottom =
-  icon_top + preview_sz`, texto/label seguinte usa esse valor + gap),
-  **nunca um deslocamento hardcoded** que por coincidência batia com o
-  tamanho antigo do ícone — bug latente evitado: o texto ao lado do
-  ícone na tela de seleção usava `r.x + 64*sc` fixo, que só "funcionava"
-  porque 64 era o valor exato do NOVO tamanho de preview por
-  coincidência; teria quebrado silenciosamente se o preview mudasse de
-  tamanho de novo no futuro. Ver PROBLEMAS_ARQUITETURA.md §291.
+  do usuário) — `_CLASS_PREVIEW_BASE_SIZE` (128 desde §292, era 64)
+  é o único lugar que define esse tamanho, nunca duplicar o número.
+  **Nunca um deslocamento hardcoded pra texto/elemento vizinho ao
+  preview** — bug latente evitado: o texto ao lado do ícone na tela de
+  seleção usava `r.x + 64*sc` fixo, que só "funcionava" porque 64 era o
+  valor exato do tamanho de preview da ÉPOCA por coincidência. 2
+  padrões diferentes, por design, não por descuido (cada tela escolhe
+  o que faz sentido pro próprio layout):
+  - **Criação** (`_run_creation`, cards lado a lado, espaço vertical de
+    sobra): texto/label flui logo ABAIXO do preview, calculado a
+    partir do tamanho REAL dele (`icon_bottom = icon_top + preview_sz`,
+    cada elemento seguinte usa o fundo do anterior + gap) — cresce o
+    `CARD_H` do card se o preview crescer, nunca sobrepõe.
+  - **Seleção** (`_draw_selection`, lista vertical, painel de altura
+    FIXA que não cabe o preview em tamanho grande sem cortar) — texto
+    usa `_LIST_ICON_NOMINAL` (64px FIXO, nunca o tamanho real do
+    preview) pra nunca se mover quando o preview muda de tamanho; o
+    sprite em si é coletado durante o loop (`_pending_previews`) e
+    desenhado num 2º PASSE, depois de TODAS as linhas/botões — sem
+    isso, a linha seguinte (desenhada depois, ordem natural do loop)
+    cobriria a parte de baixo do sprite "espiando" por cima da linha
+    anterior.
+  Ver PROBLEMAS_ARQUITETURA.md §291/§292.
 - **Entry point server-side novo que executa handler compartilhado em nome
   de um player** (skill/spell/projectile/channeling) →
   `WorldServer.register_map_services_for(player_eid)` ANTES do handler —

@@ -28455,3 +28455,57 @@ fora do loop bloqueante, confirma que o conteúdo cabe dentro do card
 novo (sem a tela real abrir, só matemática de posição). Validação
 visual de verdade (como fica na tela, de perto) ainda depende de
 playtest manual do usuário.
+
+## 292. Preview de classe em 200% (128x128) — painel de criação cresce, lista de seleção "espia" fora da linha (19/10/2026)
+
+**Pedido do usuário**: "o tamanho da sprite não está legal, quero que
+tenha o tamanho aumentado em 200%, para testar, que no caso o boneco
+que tem 32x32, vai ter 64x64." (o frame REAL do sprite é 64x64, com o
+personagem ocupando o tile central de 32x32 — "boneco 32→64" = frame
+64→128).
+
+**Investigação ANTES de mudar o número**: `_CLASS_PREVIEW_BASE_SIZE`
+é usado pelas 2 telas; mudar só a constante funcionava de graça na
+tela de CRIAÇÃO (3 cards lado a lado, o layout já calculava posições
+dinamicamente a partir do tamanho real do ícone desde §291), mas
+quebrava a tela de SELEÇÃO: um ícone de 128px numa linha de lista de
+84px de altura (`_BASE_SLOT_H`), dentro de um painel de altura FIXA
+(520px) pensado pra caber exatamente 3 linhas + rodapé de botões —
+crescer a linha pra caber o ícone sem cortar nada exigiria um painel
+de ~780px, maior que uma janela 720p inteira (nasceria cortado no
+topo). Calculado e apresentado ao usuário ANTES de codar, com 3
+opções — escolhida: o sprite "espia" por cima da linha (anel de
+fundo da linha continua do tamanho de sempre, só a ARTE desenha por
+cima, sem cortar).
+
+**Fix — 2 telas, tratamento DIFERENTE por design, não por limitação**:
+- **Criação** (`_run_creation`): só recalcula `CARD_H` (185→212,
+  conferido por script: conteúdo real termina em y=192 na base 720p,
+  212 deixa ~20px de folga) e `PH` (460→500, mesma folga de ~18px até
+  os botões Voltar/Confirmar que o design original já tinha, só
+  realocada pro painel maior). Nenhuma mudança de MECANISMO — mesmo
+  cálculo sequencial (`icon_bottom` → label → descrição) de §291,
+  só com números maiores.
+- **Seleção** (`_draw_selection`): preview vira um **2º passe de
+  desenho**, DEPOIS de todas as linhas/botões (`_pending_previews`,
+  lista coletada durante o loop principal, desenhada por ÚLTIMO) —
+  sem isso, a linha SEGUINTE (desenhada depois, na ordem natural do
+  loop) cobriria a parte de baixo do sprite que "espiou" da linha
+  ANTERIOR. Posição X/Y do texto (nome/classe/data) passou a usar
+  `_LIST_ICON_NOMINAL` (64px, fixo) em vez do tamanho REAL do sprite —
+  o texto nunca se move só porque o preview mudou de tamanho; só a
+  arte cresce/encolhe livremente por cima. Testado que o overflow
+  (22px acima da linha 0, base 720p: `(128-84)/2`) não alcança o
+  título da tela (`title` termina ~py+50, linha 0 começa em
+  `py+slot_h=py+84`, folga de 12px mesmo com o overflow).
+
+**Teste**: `tests/test_client_ui.py` (252 testes) sem regressão — não
+toca render de char_creation_screen diretamente (ver §291). 2 smoke
+scripts refeitos nesta sessão confirmam: (1) `_get_class_preview_frame`
+devolve 128x128 pras 3 classes + `_draw_selection` roda sem exceção
+com o 2º passe novo; (2) layout da criação (`CARD_H`/`PH` novos) cabe
+sem sobrepor botões, folga de 38px conferida por script. Validação
+visual de verdade (como o "espiar por cima" fica na prática, se o
+usuário gosta do tamanho 200% ou quer calibrar diferente) ainda
+depende de playtest manual — pedido do usuário foi explicitamente
+"para testar", não necessariamente o valor final.

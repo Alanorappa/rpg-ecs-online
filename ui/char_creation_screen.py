@@ -460,17 +460,20 @@ def _run_creation(screen, clock, sc: float, net=None) -> "dict | None":
 
     sw, sh = screen.get_size()
     PW = int(700 * sc)
-    PH = int(460 * sc)
+    # 460 -> 500 (19/10/2026, §292): acompanha o CARD_H maior logo abaixo —
+    # mesma folga de ~18px entre botões e fundo do painel que o design
+    # original já tinha (só recalculada pro painel maior).
+    PH = int(500 * sc)
     px = sw // 2 - PW // 2
     py = sh // 2 - PH // 2
 
     CARD_W = int(180 * sc)
-    # 160 -> 185 (19/10/2026): preview de classe passou de ícone 36x36 pra
-    # sprite idle-down real de 64x64 (ver _get_class_preview_frame) — card
-    # mais alto pra caber nome/descrição abaixo do sprite maior sem
-    # sobrepor. `cards_y`/botões abaixo têm folga de sobra (ver cálculo no
-    # PROBLEMAS_ARQUITETURA.md §291), não precisam mudar.
-    CARD_H = int(185 * sc)
+    # 160 -> 185 (preview 64x64) -> 212 (19/10/2026, §292 — preview 128x128):
+    # card mais alto pra caber nome/descrição abaixo do sprite maior sem
+    # sobrepor (conferido por script: conteúdo termina em y=192 na base
+    # 720p, CARD_H=212 deixa ~20px de folga). `cards_y` não muda; `PH`
+    # acima cresceu junto pra manter folga até os botões Voltar/Confirmar.
+    CARD_H = int(212 * sc)
     cards_y = py + int(190 * sc)
     total_w = len(_CLASSES) * CARD_W + (len(_CLASSES) - 1) * int(16 * sc)
     cards_x = px + PW // 2 - total_w // 2
@@ -661,7 +664,11 @@ def _run_creation(screen, clock, sc: float, net=None) -> "dict | None":
 # resolução. `None` = sem sprite ainda pra essa classe/direção — cai pro
 # retângulo de cor de sempre (mesmo padrão de fallback usado no resto do
 # jogo). Ver PROBLEMAS_ARQUITETURA.md §291.
-_CLASS_PREVIEW_BASE_SIZE = 64
+# 64 → 128 (19/10/2026, pedido do usuário — "aumentado em 200%, o boneco
+# que tem 32x32 vai ter 64x64" — o CONTEÚDO real de 32x32 dentro do frame
+# dobra pra 64x64, o frame inteiro de 64 dobra pra 128). Ver
+# PROBLEMAS_ARQUITETURA.md §292.
+_CLASS_PREVIEW_BASE_SIZE = 128
 
 
 def _get_class_preview_frame(class_id: str, sc: float) -> "pygame.Surface | None":
@@ -689,6 +696,18 @@ def _draw_selection(screen, saves, occupied, can_create,
     title = font_lg.render("Selecionar Personagem", False, _TITLE_COL)
     screen.blit(title, (px + char_w // 2 - title.get_width() // 2, py + int(16 * sc)))
 
+    # Previews ficam pendurados pra um 2º passe (19/10/2026, §292) — sprite
+    # de 128px é maior que a linha (slot_h=84), então "espia" por cima da
+    # linha (acima/abaixo do fundo cinza) em vez de cortar/espremer dentro
+    # dela. Desenhado por ÚLTIMO (depois de TODAS as linhas+botões) pra
+    # nunca ficar coberto pela linha SEGUINTE, que senão cortaria a parte
+    # de baixo do sprite da linha anterior. `_LIST_ICON_NOMINAL` é só o
+    # espaço reservado pro texto ao lado — NUNCA o tamanho real do sprite,
+    # que pode ser bem maior sem empurrar o texto (mesmo texto fica no
+    # mesmo lugar não importa o tamanho do preview).
+    _LIST_ICON_NOMINAL = int(64 * sc)
+    _pending_previews: list = []
+
     for i, s in enumerate(saves):
         r   = _slot_rect(px, py, i, char_w, slot_h, slot_pad)
         hov = r.collidepoint(mx, my)
@@ -700,13 +719,13 @@ def _draw_selection(screen, saves, occupied, can_create,
         frame = _get_class_preview_frame(s["class_id"], sc)
         if frame is not None:
             icon_sz = frame.get_width()
-            screen.blit(frame, (icon_x, r.y + slot_h // 2 - icon_sz // 2))
+            _pending_previews.append((frame, icon_x, r.y + slot_h // 2 - icon_sz // 2))
         else:
             icon_sz = int(36 * sc)
             col  = _CLASS_COLORS.get(s["class_id"], (150, 150, 150))
             icon = pygame.Rect(icon_x, r.y + slot_h // 2 - icon_sz // 2, icon_sz, icon_sz)
             pygame.draw.rect(screen, col, icon, border_radius=4)
-        text_x = icon_x + icon_sz + int(14 * sc)
+        text_x = icon_x + _LIST_ICON_NOMINAL + int(14 * sc)
 
         name_s = font_md.render(s["name"], False, _TITLE_COL)
         screen.blit(name_s, (text_x, r.y + int(12 * sc)))
@@ -753,6 +772,10 @@ def _draw_selection(screen, saves, occupied, can_create,
     pygame.draw.rect(screen, _BORDER, quit_r, 2, border_radius=5)
     q_s = font_md.render("Sair", False, _BTN_TXT)
     screen.blit(q_s, q_s.get_rect(center=quit_r.center))
+
+    # 2º passe (ver comentário na coleta, acima) — por cima de TUDO.
+    for frame, fx, fy in _pending_previews:
+        screen.blit(frame, (fx, fy))
 
 
 def _draw_confirm_overlay(screen, slot, saves, px, py, mx, my, font_md, font_sm, sc):
