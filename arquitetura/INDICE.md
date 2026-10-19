@@ -1,0 +1,305 @@
+# Índice de mudanças — RPG ECS Online
+
+> 1 linha por mudança registrada no projeto (arquitetura, feature ou
+> bug) — data, tipo, tags e o ponteiro exato (arquivo + §). Pesquise
+> aqui primeiro (`grep -i "<termo>" arquitetura/INDICE.md`) antes de
+> abrir qualquer um dos 3 arquivos de conteúdo inteiros. Gerado na
+> migração de 19/10/2026 (ver `PROBLEMAS_ARQUITETURA.md` nota no topo);
+> tags foram adivinhadas por palavra-chave do título — revise/adicione
+> conforme for usando.
+
+---
+
+- (arch) DIAGRAMA DE FLUXO: Sincronização Cliente-Servidor (MULTIPLAYER) — tags: rede, servidor — PROBLEMAS_ARQUITETURA.md §1
+- (arch) DIAGRAMA DE DEPENDÊNCIAS: Acoplamento de Sistemas — tags: - — PROBLEMAS_ARQUITETURA.md §2
+- (arch) DIAGRAMA DE ESCALABILIDADE: Impacto de Performance — tags: performance — PROBLEMAS_ARQUITETURA.md §3
+- (arch) DIAGRAMA DE FLUXO: Por que Correções não Funcionam — tags: - — PROBLEMAS_ARQUITETURA.md §4
+- (arch) DIAGRAMA DE ARQUITETURA: Estrutura Atual vs Ideal — tags: - — PROBLEMAS_ARQUITETURA.md §5
+- (arch) TABELA DE SEVERIDADE: Problemas por Impacto — tags: - — PROBLEMAS_ARQUITETURA.md §6
+- (arch) MATRIZ DE RELACIONAMENTOS: Como os Problemas se Conectam — tags: - — PROBLEMAS_ARQUITETURA.md §7
+- (arch) RECOMENDAÇÕES POR PRIORIDADE — tags: - — PROBLEMAS_ARQUITETURA.md §8
+- (arch) ~~PROBLEMA~~ RESOLVIDO: Globais Mutáveis em game.py (SCREEN_WIDTH/SCREEN_HEIGHT) — Bloqueio para Modularização — tags: - — PROBLEMAS_ARQUITETURA.md §9
+- (arch) SEGURANÇA — Auditoria de Validação Server-Side (25 de junho de 2026) — tags: mob, seguranca — PROBLEMAS_ARQUITETURA.md §10
+- (arch) AUDITORIA ARQUITETURAL AMPLA — 15 de julho de 2026 — tags: mob, seguranca — PROBLEMAS_ARQUITETURA.md §11
+- [06/08/2026] (arch) AUDITORIA ARQUITETURAL AMPLA — 06/08/2026 (revalidação da §11 + achados novos) — tags: mob, seguranca — PROBLEMAS_ARQUITETURA.md §12
+- [07/08/2026] (arch) ROTEIRO DE SANEAMENTO ARQUITETURAL — em execução desde 07/08/2026 — tags: - — PROBLEMAS_ARQUITETURA.md §13
+- [10/08/2026] (arch) Débito de performance — estruturas de dados leves em caminho quente (10/08/2026) — tags: performance — PROBLEMAS_ARQUITETURA.md §14
+- [10/08/2026] (arch) Outcome por alvo em skill AOE — implementado (10/08/2026) — tags: combate — PROBLEMAS_ARQUITETURA.md §15
+- [10/08/2026] (arch) Limpeza `_is_online` em `_use_skill_visual_only` — "Parte 1" fechada (10/08/2026) — tags: combate — PROBLEMAS_ARQUITETURA.md §16
+- [10/08/2026] (arch) B6 resolvido (parcial, deliberado) — `InstancedMatchMixin` (10/08/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §17
+- [10/08/2026] (arch) Throttle do tick de PvP (30Hz → 1Hz) + fila MOBA vira 3 tamanhos fixos (10/08/2026) — tags: performance, bg, mob — PROBLEMAS_ARQUITETURA.md §18
+- [10/08/2026] (bug) ESC não fechava os modais de PvP (10/08/2026) — tags: - — HISTORICO_BUGS.md §1
+- [11/08/2026] (arch) Migração C2 — `item_id` estável (identidade de item) (10-11/08/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §20
+- [11/08/2026] (arch) Migração A4 — equipar/desequipar por intenção, não estado completo (10-11/08/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §21
+- [11/08/2026] (bug) Crash real de playtest — slot `None` do Inventory sem guard em 2 consumidores novos (11/08/2026) — tags: - — HISTORICO_BUGS.md §2
+- [11/08/2026] (arch) Discussão de performance — 2 guardrails novos (11/08/2026) — tags: performance — PROBLEMAS_ARQUITETURA.md §23
+- [11/08/2026] (bug) Forjar/reciclar/aprender receita — 4 bugs reais, um deles duplicação de ouro ativa (11/08/2026) — tags: economia — HISTORICO_BUGS.md §3
+- [11/08/2026] (arch) Migração A4 — saque (loot) vira autoritativo no servidor (11/08/2026) — tags: servidor, loot — PROBLEMAS_ARQUITETURA.md §25
+- [11/08/2026] (feature) Fatiar quantidade no trade + ícone por item_id (11/08/2026) — tags: ui — HISTORICO_FEATURES.md §1
+- [11/08/2026] (arch) Suíte de testes ~3x mais rápida — cache de parse de mapa (11/08/2026) — tags: performance — PROBLEMAS_ARQUITETURA.md §27
+- [12/08/2026] (arch) Fase 4.5 — melhoria do log de performance (11-12/08/2026) — tags: performance, mob — PROBLEMAS_ARQUITETURA.md §28
+- [12/08/2026] (arch) Fase 4.6 — escala de servidor: pré-filtro de IA vira índice espacial (12/08/2026) — tags: servidor, mob — PROBLEMAS_ARQUITETURA.md §29
+- [12/08/2026] (arch) Fase 4.7 — log de performance vira hierarquia real (12/08/2026) — tags: performance, mob — PROBLEMAS_ARQUITETURA.md §30
+- [12/08/2026] (arch) Teste de carga com 100 players/8 mapas simultâneos — scan redundante de combatentes em EnemyAISystem (12/08/2026) — tags: combate — PROBLEMAS_ARQUITETURA.md §31
+- [12/08/2026] (arch) Teste de carga com combate real (100 players) + "fecha o buraco" da árvore de perf (12/08/2026) — tags: combate — PROBLEMAS_ARQUITETURA.md §32
+- [12/08/2026] (arch) Teste de carga de 3 minutos (BG com colisão real de levas) + instrumentação restante do EnemyAISystem (12/08/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §33
+- [12/08/2026] (arch) Top 10 de consumo acumulado — fase de identificação (12/08/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §34
+- [12/08/2026] (arch) Correção dos itens #1, #2 e #3 do ranking — mesma causa raiz, técnicas diferentes (12/08/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §35
+- [12/08/2026] (arch) Reranking pós-correção + unificação de `index_build` (12/08/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §36
+- [12/08/2026] (arch) Bug de correção real achado investigando #2 (`global_systems`) — `TileMovementSystem` pegava "o primeiro Tilemap" do mundo (12/08/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §37
+- [12/08/2026] (arch) `global_systems` sub-instrumentado + `prefiltro` reinvestigado — sem bug novo — ranking congelado como referência (12/08/2026) — tags: mob — PROBLEMAS_ARQUITETURA.md §38
+- [12/08/2026] (bug) Bug real do talento Reciclagem — flecha reciclada sem `item_id` (12/08/2026) — tags: - — HISTORICO_BUGS.md §4
+- [12/08/2026] (bug) Bug real na BG — corpo do player morto recuperava HP sozinho (level-up de instância curava quem já está morto) (12/08/2026) — tags: bg, mob — HISTORICO_BUGS.md §5
+- [12/08/2026] (bug) Torre recebendo knockback do Tiro Repulsivo (12/08/2026) — tags: - — HISTORICO_BUGS.md §6
+- [12/08/2026] (feature) Colisão real de 2 tiles pra torre + barra de HP no topo + origem configurável de projétil (12/08/2026) — tags: - — HISTORICO_FEATURES.md §2
+- [12/08/2026] (arch) Venda na loja nunca removia o item do Inventory AO VIVO do servidor — item voltava no relog E desalinhava EQUIP_ITEM (12/08/2026) — tags: servidor, mob — PROBLEMAS_ARQUITETURA.md §43
+- [12/08/2026] (arch) Bug antigo, nunca resolvido — HP de mob/torre "regenerava" sozinho durante o combate (12/08/2026) — tags: combate, mob — PROBLEMAS_ARQUITETURA.md §44
+- [13/08/2026] (bug) Barra de XP dentro da BG mostrava a XP de fora da instância — mesmo gap de sync já fechado antes pra level/atributos/talento (13/08/2026) — tags: rede, bg, mob — HISTORICO_BUGS.md §7
+- [13/08/2026] (bug) Minimapa em tela cheia da BG — clique parou de mover o personagem + minion do mesmo tamanho que torre (13/08/2026) — tags: ui, bg, mob, personagem — HISTORICO_BUGS.md §8
+- [13/08/2026] (feature) Stealth de bush estilo MOBA na BG (13/08/2026, feature nova) — tags: bg, bush, mob — HISTORICO_FEATURES.md §3
+- [13/08/2026] (feature) Monstros de jungle estilo MOBA — normal + boss (13/08/2026, retomado de sessões anteriores) — tags: bg, mob — HISTORICO_FEATURES.md §4
+- [13/08/2026] (bug) Bush/árvore/pedra não bloqueavam linha de visão (LOS) como parede (13/08/2026) — tags: rede, bush — HISTORICO_BUGS.md §9
+- [13/08/2026] (bug) Fog assimétrico ao ficar no mesmo tile de bush (13/08/2026, achado validando §49) — tags: bush — HISTORICO_BUGS.md §10
+- [13/08/2026] (bug) Bushes "separadas" no mapa se fundem num blob só de qualquer forma (13/08/2026, esclarecimento — sem bug de código) — tags: bush — HISTORICO_BUGS.md §11
+- [13/08/2026] (bug) Pegada de visão da bush vira "só a base" — corrige a fusão de bushes separadas (13/08/2026) — tags: bush — HISTORICO_BUGS.md §12
+- [13/08/2026] (arch) Fog "presa" (desatualizada) na tela principal perto de bush pequena — cache de desenho, não de cálculo (13/08/2026) — tags: performance, ui, bush — PROBLEMAS_ARQUITETURA.md §53
+- [13/08/2026] (feature) Linha de visão de terreno entre times — nunca existia no servidor (13/08/2026) — tags: servidor, mob — HISTORICO_FEATURES.md §5
+- [13/08/2026] (feature) Bush: visão compartilhada dentro da mesma bush + "atacar revela" (LoL-style) (13/08/2026) — tags: bush — HISTORICO_FEATURES.md §6
+- [13/08/2026] (bug) Sair da bush não revalidava a própria visão — só o alvo "avisando" destravava (13/08/2026) — tags: bush, mob — HISTORICO_BUGS.md §13
+- [13/08/2026] (feature) Visão de terreno vira universal (todo o jogo, toda entidade) + bush usa isenção da PRÓPRIA posição do viewer (13/08/2026) — tags: bush, mob — HISTORICO_FEATURES.md §7
+- [13/08/2026] (feature) Torre/minion do próprio time sempre visível + varredura de AOI ganha o `_can_see` que faltava (13/08/2026) — tags: rede — HISTORICO_FEATURES.md §8
+- [16/08/2026] (feature) Visão de time vira UNIÃO de fontes independentes, estilo LoL (16/08/2026) — tags: - — HISTORICO_FEATURES.md §9
+- [16/08/2026] (feature) Bot 100% servidor pra preencher a fila 2v2 da BG (16/08/2026, feature nova) — tags: servidor, bg — HISTORICO_FEATURES.md §10
+- [16/08/2026] (arch) Auto-attack PvE/PvP unificado — munição, LOS, fórmula de dano e Raiva/Punho no Queixo (16/08/2026) — tags: combate — PROBLEMAS_ARQUITETURA.md §61
+- [16/08/2026] (feature) Gold/XP de minion + kill credit/assist de player, estilo LoL (16/08/2026) — tags: economia — HISTORICO_FEATURES.md §11
+- [16/08/2026] (bug) Investigação pós-§62: janela de kill (sem bug), bot travando em torre, ImportError no shutdown (16/08/2026) — tags: - — HISTORICO_BUGS.md §14
+- [16/08/2026] (bug) Player remoto nunca tinha Faction real (minimap + TAB/ESPAÇO selecionando aliado) + rota de bot desincronizando (16/08/2026) — tags: rede, ui — HISTORICO_BUGS.md §15
+- [16/08/2026] (feature) Camps de jungle da BG populados a partir do concept art + level dinâmico (16/08/2026, feature nova) — tags: bg — HISTORICO_FEATURES.md §12
+- [16/08/2026] (feature) Jungle sem drop físico + puxão de grupo estilo WoW/LoL (16/08/2026, feature nova, planejada com o usuário via EnterPlanMode) — tags: loot, mob — HISTORICO_FEATURES.md §13
+- [16/08/2026] (bug) Mob de jungle mostrava o mob_key cru como nome (16/08/2026) — tags: mob — HISTORICO_BUGS.md §16
+- [17/08/2026] (bug) Bot travava o tick com TypeError ao empurrar lane com curva (17/08/2026) — tags: performance — HISTORICO_BUGS.md §17
+- [17/08/2026] (feature) Bot AI v2 — lane sorteada, compra inicial, empurrar lane igual minion, dive gate (17/08/2026, feature nova, planejada com o usuário via EnterPlanMode) — tags: mob — HISTORICO_FEATURES.md §14
+- [25/08/2026] (feature) Loja de instância vende o catálogo inteiro, filtrado por classe, preço por raridade (25/08/2026, feature nova, planejada com o usuário via EnterPlanMode) — tags: mob, personagem — HISTORICO_FEATURES.md §15
+- [25/08/2026] (bug) Bot travando perto de torre + retentando skill em cooldown pra sempre (25/08/2026, 2 bugs reais de playtest, investigados por reprodução ao vivo) — tags: combate — HISTORICO_BUGS.md §18
+- [25/08/2026] (bug) Bot travando perto da PRÓPRIA torre — pé de colisão de 2 tiles invisível pro pathfinding (25/08/2026) — tags: mob — HISTORICO_BUGS.md §19
+- [25/08/2026] (bug) Preferência de slot de skill unificada dentro/fora da BG (25/08/2026) — tags: combate, bg, mob — HISTORICO_BUGS.md §20
+- [25/08/2026] (bug) 3 correções não relacionadas — Punho no Queixo roubando slot, TAB sem neutro, SPACE reselecionando (25/08/2026) — tags: - — HISTORICO_BUGS.md §21
+- [26/08/2026] (bug) Bots de BG: guerreiro para longe demais, mago sem dano/"sem cooldown" (26/08/2026) — tags: combate, personagem — HISTORICO_BUGS.md §22
+- [26/08/2026] (bug) Crash ao treinar skill — `TrainerSystem` sem `_preferred_slot_for_skill` (26/08/2026) — tags: combate — HISTORICO_BUGS.md §23
+- [26/08/2026] (bug) Zumbi de fila BG + botão nativo de maximizar sobrescreve "Janela" (26/08/2026) — tags: ui, bg — HISTORICO_BUGS.md §24
+- [26/08/2026] (bug) Catálogo de tiles: 1 cor por arquivo inteiro (grama/terra/pedra indistinguíveis no minimapa) (26/08/2026) — tags: ui — HISTORICO_BUGS.md §25
+- [26/08/2026] (feature) Editor de mapa (F10): pincel aleatório por grupo (26/08/2026) — tags: - — HISTORICO_FEATURES.md §16
+- [26/08/2026] (feature) Migração de conteúdo: árvore/arbusto default + "TX Plant" antiga → "TX Village Plant" (26/08/2026) — tags: - — HISTORICO_FEATURES.md §17
+- [26/08/2026] (feature) Pincel inteligente de terreno (grama/terra/piso, transição automática) — God Mode (26/08/2026) — tags: - — HISTORICO_FEATURES.md §18
+- [27/08/2026] (bug) Árvore usava a copa inteira (sprite completo) pra bloquear visão — corrigido pra usar só a base (27/08/2026) — tags: animacao — HISTORICO_BUGS.md §26
+- [28/08/2026] (bug) Dano de DoT de habilidade de mob escalava linear demais (urso level 24 batendo 96/tick) (28/08/2026) — tags: combate, performance, mob — HISTORICO_BUGS.md §27
+- [30/08/2026] (bug) Playtest BG: skill "Alvo inválido"/"Fora de alcance" depois de Interceptar OU seleção normal de alvo (RESOLVIDO 30/08/2026) + bot com HUD de morto às vezes (debug adicionado) (28/08/2026) — tags: combate, ui — HISTORICO_BUGS.md §28
+- [30/08/2026] (arch) Colisão fina (16px) pro passo manual do jogador, sem tocar pathfinding/mapa/rede (30/08/2026) — tags: rede — PROBLEMAS_ARQUITETURA.md §85
+- [30/08/2026] (bug) Auto-regen "fantasma" na BG — HP5 tickando com o personagem aparentemente cheio (30/08/2026) — tags: performance, bg, personagem — HISTORICO_BUGS.md §29
+- [31/08/2026] (arch) Interceptar: alvo tomava hit de auto-attack ANTES da animação do dash acontecer (31/08/2026) — tags: combate, animacao — PROBLEMAS_ARQUITETURA.md §87
+- [31/08/2026] (feature) Buff bar unificada (estilo WoW) — feature nova (31/08/2026) — tags: - — HISTORICO_FEATURES.md §19
+- [01/09/2026] (arch) Barra de HP do HUD "crescia" além do normal com proc que aumenta max_hp (01/09/2026) — tags: ui — PROBLEMAS_ARQUITETURA.md §89
+- [01/09/2026] (feature) Tooltip nos ícones da buff bar (01/09/2026) — tags: ui — HISTORICO_FEATURES.md §20
+- [01/09/2026] (arch) Feedback visual de bush stealth — opacidade 50% no próprio sprite (01/09/2026) — tags: animacao, bush — PROBLEMAS_ARQUITETURA.md §91
+- [01/09/2026] (feature) Comando `/forfeit`/`/ff` na BG (01/09/2026) — tags: bg — HISTORICO_FEATURES.md §21
+- [01/09/2026] (bug) Skill real sumia da hotbar ao SAIR da BG — não é bug do `/ff`, pré-existente (01/09/2026) — tags: combate, bg, mob — HISTORICO_BUGS.md §30
+- [02/09/2026] (feature) "TX Village Props with Shadow" — grupos por categoria no minimapa (02/09/2026) — tags: ui, mob — HISTORICO_FEATURES.md §22
+- [02/09/2026] (bug) Chão de `map_1` "vazio" — família de sprite de grama antiga deletada pelo usuário durante a limpeza do §94 (02/09/2026) — tags: animacao, mob — HISTORICO_BUGS.md §31
+- [02/09/2026] (feature) Recatálogo de "TX Tileset Terrain" — usuário reorganizou o PNG (02/09/2026) — tags: - — HISTORICO_FEATURES.md §23
+- [02/09/2026] (arch) `map_width_tiles` usava só a linha 0 — bug real achado investigando spam de "[MAPA] Aviso" (02/09/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §97
+- [02/09/2026] (feature) Catalogação de "TX Village Building with Shadow" — construções fatiadas em várias peças (02/09/2026) — tags: - — HISTORICO_FEATURES.md §24
+- [02/09/2026] (bug) Correção do §98 — 1 grupo por construção, não 1 grupo pra todas; id curto, nome só no label (02/09/2026, mesmo dia) — tags: - — HISTORICO_BUGS.md §32
+- [02/09/2026] (bug) Colisão errada em 19 das 104 peças de "TX Village Building with Shadow" — bounding box de blob fundido, não da peça (02/09/2026, mesmo dia) — tags: - — HISTORICO_BUGS.md §33
+- [02/09/2026] (bug) 7 falhas "pré-existentes" na suíte eram regressão real da remoção de "TX Props"/"TX Plant" — 5 testes com id morto + regra de bloqueio de visão de pedra grande perdida (02/09/2026) — tags: - — HISTORICO_BUGS.md §34
+- [02/09/2026] (arch) Objeto do object_matrix (construção/árvore) só aparecia quando a câmera alcançava a BASE dele (02/09/2026) — tags: mob — PROBLEMAS_ARQUITETURA.md §102
+- [03/09/2026] (feature) Recatalogação de "TX Village Building with Shadow" v2 — usuário editou os 4 PNGs de apoio, ids viraram sequenciais "vb001".."vb097" (03/09/2026) — tags: - — HISTORICO_FEATURES.md §25
+- [03/09/2026] (arch) Aba Objetos do God Mode não mostrava NENHUMA construção depois do §103 (03/09/2026, mesmo dia) — tags: - — PROBLEMAS_ARQUITETURA.md §104
+- [03/09/2026] (feature) Rastreio de objetivo de quest no mapa/minimapa — desenho e 1ª implementação (03/09/2026) — tags: ui, quest — HISTORICO_FEATURES.md §26
+- [04/09/2026] (arch) Recompensa de item de quest nunca tocava o Inventory de verdade do servidor (04/09/2026) — tags: servidor, quest — PROBLEMAS_ARQUITETURA.md §106
+- [04/09/2026] (bug) Rastreio de quest só considerava o 1º spawn_zone de um mob com vários pelo mapa (04/09/2026, mesmo dia) — tags: quest, mob — HISTORICO_BUGS.md §35
+- [04/09/2026] (bug) Interação com NPC não priorizava quest completável quando o objetivo pendente era "falar com ESTE NPC" (04/09/2026) — tags: quest — HISTORICO_BUGS.md §36
+- [04/09/2026] (bug) `dummy_id` removido — boneco de treino tratado igual mob no rastreio de quest (04/09/2026) — tags: quest, mob — HISTORICO_BUGS.md §37
+- [04/09/2026] (feature) Opacidade do preenchimento reduzida pra 25% (04/09/2026, mesmo dia) — tags: - — HISTORICO_FEATURES.md §27
+- [04/09/2026] (bug) Velocidade de ataque não atualizava depois de relogar (04/09/2026) — tags: combate — HISTORICO_BUGS.md §38
+- [04/09/2026] (arch) Personagem oscilava entre alvo travado e NPC clicado (04/09/2026) — tags: personagem — PROBLEMAS_ARQUITETURA.md §112
+- [05/09/2026] (arch) Teste de carga com bots reais acha 2 causas de travamento — prefiltro de IA e gc.collect() manual (05/09/2026) — tags: mob — PROBLEMAS_ARQUITETURA.md §113
+- [05/09/2026] (arch) 4 correções de performance validadas por 2 rodadas de auditoria multi-agente (05/09/2026) — tags: performance, mob, seguranca — PROBLEMAS_ARQUITETURA.md §114
+- [06/09/2026] (feature) Bot de teste de carga ganha pathfinding real, loot, skill à distância e travessia de bush (05-06/09/2026) — tags: combate, loot, bush, mob — HISTORICO_FEATURES.md §28
+- [06/09/2026] (arch) Rampa de conexão mais lenta expõe `skill_requests` a ~50% do tick — auditoria de 3 agentes acha e corrige a causa raiz (06/09/2026) — tags: combate, performance, quest, mob, seguranca — PROBLEMAS_ARQUITETURA.md §116
+- [06/09/2026] (arch) Rajada de 242 `CAST_SKILL` no mesmo tick — thundering herd na ferramenta de teste + lacuna real de rate-limit no servidor (06/09/2026, mesmo dia) — tags: combate, performance, servidor — PROBLEMAS_ARQUITETURA.md §117
+- [06/09/2026] (arch) Trava com ZERO jogadores — 2 rodadas de agentes, 1 correção errada quase implementada, causa raiz real achada na 2ª rodada (06/09/2026, mesmo dia) — tags: - — PROBLEMAS_ARQUITETURA.md §118
+- [06/09/2026] (arch) §113 fechado de vez — vazamento de conexão no PRÓPRIO bot de teste era a causa real da amplificação, não (só) o SQLite (06/09/2026, mesmo dia) — tags: - — PROBLEMAS_ARQUITETURA.md §119
+- [07/09/2026] (arch) §119 regrediu sob carga SUSTENTADA (não burst) — fila FIFO única acoplando leve+pesado, corrigido com 2 filas por peso (06-07/09/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §120
+- [07/09/2026] (arch) Top-5 gargalos de tick, 250 players — 5 correções propostas por 3 agentes, discutidas com o usuário e implementadas (06-07/09/2026) — tags: performance — PROBLEMAS_ARQUITETURA.md §121
+- [07/09/2026] (arch) Orçamento de TEMPO pra `skill_requests` — devolve excesso pro próximo tick em vez de travar o tick inteiro (07/09/2026) — tags: combate, performance, quest — PROBLEMAS_ARQUITETURA.md §122
+- [07/09/2026] (arch) Migração SQLite → PostgreSQL (asyncpg) — decisão de infraestrutura do usuário: servidor dedicado em nuvem, Linux, múltiplos núcleos (07/09/2026) — tags: rede, servidor — PROBLEMAS_ARQUITETURA.md §123
+- [08/09/2026] (arch) Provisionamento real do servidor Hetzner + migração de dados reais + backup + deploy (08/09/2026) — tags: servidor — PROBLEMAS_ARQUITETURA.md §124
+- [08/09/2026] (feature) IA de combate por classe — bot de teste de carga E bot de BG (08/09/2026) — tags: combate, bg, mob, personagem — HISTORICO_FEATURES.md §29
+- [09/09/2026] (bug) Interceptar: dash completa e DEPOIS é desfeito, mais comum perto de parede/torre (09/09/2026) — tags: combate, rede — HISTORICO_BUGS.md §39
+- [09/09/2026] (bug) Interceptar: dash pra um lugar e depois "volta" pro tile clicado, num loop (09/09/2026) — tags: combate — HISTORICO_BUGS.md §40
+- [09/09/2026] (bug) Interceptar não deve ser bloqueado por entidade (player/mob/minion/NPC), só por obstáculo sólido de verdade (09/09/2026) — tags: combate, mob — HISTORICO_BUGS.md §41
+- [09/09/2026] (bug) Skill temporária da BG rouba o slot de uma skill real que ainda vai desbloquear (09/09/2026) — tags: combate, bg, mob — HISTORICO_BUGS.md §42
+- [10/09/2026] (arch) Mobs aleatórios paravam de perseguir/voltar pro spawn — `is_blocked` nunca resetado em RETURNING (10/09/2026) — tags: mob — PROBLEMAS_ARQUITETURA.md §130
+- [10/09/2026] (arch) Mapa da Battleground "esticou" — token de sheet desconhecido inflava a largura do mapa, sem quebrar a área jogável (10/09/2026) — tags: bg — PROBLEMAS_ARQUITETURA.md §131
+- [13/09/2026] (arch) Vitória Iminente nunca ganhava carga matando JOGADOR — só matando mob (13/09/2026) — tags: mob — PROBLEMAS_ARQUITETURA.md §132
+- [14/09/2026] (arch) Bola de Fogo "com alcance curto" — não era a skill, era a perseguição parando cedo demais (14/09/2026) — tags: combate — PROBLEMAS_ARQUITETURA.md §133
+- [14/09/2026] (arch) Check de alcance de skill no cliente usava distância real (Euclidiana em pixel) em vez de Chebyshev — diagonal e reto davam resultado diferente (14/09/2026) — tags: combate, mob — PROBLEMAS_ARQUITETURA.md §134
+- [14/09/2026] (arch) Alcance de ATAQUE virou distância real (Euclidiana) em vez de Chebyshev — diagonal não "estica" mais (14/09/2026) — tags: combate, mob — PROBLEMAS_ARQUITETURA.md §135
+- [14/09/2026] (arch) Nova Congelante com cast dentro da BG mesmo com Precisão Elemental maxada — `talent_allocated` só trocava o dict, nunca reaplicava os efeitos (14/09/2026) — tags: bg — PROBLEMAS_ARQUITETURA.md §136
+- [14/09/2026] (arch) Som de impacto da Nova Congelante tocava 2x — previsão local + eco do próprio SKILL_EFFECT de rede (14/09/2026) — tags: combate, rede — PROBLEMAS_ARQUITETURA.md §137
+- (arch) Dispatch de mensagem de rede virando dict quebrou 17 handlers na 1ª tentativa — método existe só no MRO de `GameEngine`, não em `NetworkHandlers` — tags: rede — PROBLEMAS_ARQUITETURA.md §138
+- (arch) `BlacksmithSystem`/`TrainerSystem` chamavam métodos privados de outro System direto — e um deles chamava um método que nunca existiu — tags: - — PROBLEMAS_ARQUITETURA.md §139
+- (arch) Profiler client-side (F11/`logs/client_prof.log`) nunca mediu `RenderSystem.render()` — o ponto mais caro do frame ficava fora do relatório — tags: animacao, performance — PROBLEMAS_ARQUITETURA.md §140
+- (arch) Travamento periódico de ~105ms em `network_recv` — investigação em andamento, instrumentação adicionada pra confirmar a causa — tags: - — PROBLEMAS_ARQUITETURA.md §141
+- (arch) Causa raiz do travamento de `network_recv` (§141): `encode_fog()` disparado a cada save de evento — cliente E servidor, servidor bloqueando TODOS os players — tags: servidor — PROBLEMAS_ARQUITETURA.md §142
+- (arch) Spike periódico de ~104-110ms sem correlação com rede/loot — hipótese do gc.collect() REFUTADA; DELETE-key era um bug real mas NÃO CONFIRMADO como causa do spike relatado — investigação reaberta com instrumentação nova — tags: rede, loot — PROBLEMAS_ARQUITETURA.md §143
+- (arch) Item 9 (object pooling de PlayerProjectile) — escopo real 3x maior que estimado, 2 achados de código morto, `Projectile` (mob/torre) preservado no ECS por ser server-autoritativo — tags: mob — PROBLEMAS_ARQUITETURA.md §144
+- (arch) God Mode (F10) — cluster de spikes grandes (até 158ms) enquanto aberto, causa NÃO investigada (ferramenta de GM/debug, baixa prioridade) — tags: - — PROBLEMAS_ARQUITETURA.md §145
+- (arch) Engasgo específico de BG — FogSystem recalculava shadowcasting de TODOS os aliados (player/torre/minion) a cada movimento de QUALQUER um deles — tags: bg — PROBLEMAS_ARQUITETURA.md §146
+- (arch) Verificação pós-§146: log novo confirma o fix e fecha 2 achados secundários pendentes — 1 novo ponto cego achado, não corrigido (baixa prioridade) — tags: - — PROBLEMAS_ARQUITETURA.md §147
+- (bug) Nova Congelante mudo pro próprio conjurador com "Precisão Elemental" maxada — cast instantâneo nunca criava o SpellCast local que disparava o som (§137) — tags: - — HISTORICO_BUGS.md §43
+- (bug) ESC não fechava o modal de estatísticas (tecla C) — `_show_char_stats` nunca tinha entrada em `_modal_registry()` — tags: ui — HISTORICO_BUGS.md §44
+- (arch) Auditoria de projeto inteiro, 3 agentes independentes — 4 exploits de economia de severidade Alta achados no servidor — tags: servidor, mob, economia, seguranca — PROBLEMAS_ARQUITETURA.md §150
+- (arch) Ouro infinito via `SELL_REQUEST` (item 1 da auditoria §150) — corrigido após revisão cruzada entre os 3 agentes, que achou um 2º exploit mais grave no mesmo método — tags: quest, mob, economia, seguranca — PROBLEMAS_ARQUITETURA.md §151
+- (arch) Cura/mana infinitos via `CONSUMABLE_USE` (item 2 da auditoria §150) — revisão cruzada achou que o fix original ainda deixava o exploit vivo por outro caminho — tags: mob, economia, seguranca — PROBLEMAS_ARQUITETURA.md §152
+- (arch) Duplicação/forja de item via `INV_SYNC` (item 3 da auditoria §150) — pesquisa achou que o canal não tem mais nenhum uso legítimo vivo, revisão cruzada confirmou e achou 2 testes que documentavam o exploit como comportamento esperado — tags: rede, mob, economia, seguranca — PROBLEMAS_ARQUITETURA.md §153
+- (arch) Aljava nova "nasce vazia" ao trocar de aljava logo após esvaziar a antiga — race condition entre confirmação atrasada de flecha/Recarregar e troca de equipamento — tags: - — PROBLEMAS_ARQUITETURA.md §154
+- (arch) Perda de ouro sem entrega em `BUY_REQUEST` (item 4, último da auditoria §150) — checagem de espaço usava cache do cliente em vez do Inventory ao vivo; revisão cruzada pediu extrair função compartilhada — tags: performance, quest, mob, economia, seguranca — PROBLEMAS_ARQUITETURA.md §155
+- (arch) Bug da aljava (§154) reaberto pelo usuário em produção — fix cobriu só metade do código vulnerável (STATS_UPDATE), faltava a via paralela via COMBAT_RESULT — tags: rede, mob — PROBLEMAS_ARQUITETURA.md §156
+- (arch) Bug da aljava reaberto DE NOVO após o §156 — em vez de tentar um 4º fix às cegas, conecta a ferramenta de diagnóstico já existente no projeto aos pontos reais — tags: - — PROBLEMAS_ARQUITETURA.md §157
+- (arch) Logs do §157 vieram — descartada a hipótese do usuário (equip com slot já ocupado), instrumentação estendida pra BUY_REQUEST/EQUIP_ITEM — tags: quest — PROBLEMAS_ARQUITETURA.md §158
+- (arch) CAUSA RAIZ REAL do bug da aljava (§154/§156/§157/§158): talento Reciclagem inseria item na bag do servidor sem avisar o cliente — corrigido ignorando o talento dentro da BG — tags: servidor, mob — PROBLEMAS_ARQUITETURA.md §159
+- (arch) Revisão cruzada do fix §159 (3 agentes) + trava explícita do talento no overlay de instância + limpeza de código morto achado na investigação — tags: mob — PROBLEMAS_ARQUITETURA.md §160
+- (arch) Retomando `PROJECT_WIDE_REVIEW.md` — item #2: task de autosave sem referência (GC podia matar a task no meio) — tags: mob — PROBLEMAS_ARQUITETURA.md §161
+- (arch) `PROJECT_WIDE_REVIEW.md` item #3 — `PlayerInputSystem._manual_attack` removido (código morto órfão); `_space_engage` NÃO mexido (decisão já tomada antes) — tags: - — PROBLEMAS_ARQUITETURA.md §162
+- (arch) `PROJECT_WIDE_REVIEW.md` — `SessionManager._unstuck_cooldowns` dict mutável no corpo da classe (anti-padrão já proibido pelo CLAUDE.md) — tags: personagem — PROBLEMAS_ARQUITETURA.md §163
+- (arch) `PROJECT_WIDE_REVIEW.md` — rate-limit em mensagens C→S (nenhuma mensagem tinha limite antes) — tags: - — PROBLEMAS_ARQUITETURA.md §164
+- (arch) `PROJECT_WIDE_REVIEW.md` — `except Exception: pass` morto em 22 call sites de `remove_component`/`remove_entity` — tags: - — PROBLEMAS_ARQUITETURA.md §165
+- (arch) `PROJECT_WIDE_REVIEW.md` — `except Exception: pass` real (não morto) em `_restore_save_state`, mascarava falha de talento no login sem log nenhum — tags: - — PROBLEMAS_ARQUITETURA.md §166
+- (arch) `PROJECT_WIDE_REVIEW.md` — `QuestSystem._fire_reach_tile`/`_sync_collect_progress` código morto (caminho offline sem chamador) — tags: rede, quest — PROBLEMAS_ARQUITETURA.md §167
+- (arch) `PROJECT_WIDE_REVIEW.md` — ~9 funções confirmadas mortas por grep no repo inteiro, removidas — tags: - — PROBLEMAS_ARQUITETURA.md §168
+- (arch) `PROJECT_WIDE_REVIEW.md` — `content/item_table.py::_make_quiver`/`_make_ammo` removidos (perguntado ao usuário antes, per achado da auditoria) — tags: seguranca — PROBLEMAS_ARQUITETURA.md §169
+- (arch) `PROJECT_WIDE_REVIEW.md` — `MobRespawnSystem` (violação "System nunca chama System") era código morto sem nenhum chamador — removido por completo — tags: mob — PROBLEMAS_ARQUITETURA.md §170
+- (arch) `PROJECT_WIDE_REVIEW.md` — `DeathHandlerSystem` chamava `QuestSystem` via referência global — mecanismo inteiro era caminho OFFLINE morto, removido — tags: quest, mob — PROBLEMAS_ARQUITETURA.md §171
+- (arch) `PROJECT_WIDE_REVIEW.md` — `_last_mob_attacker` via `hasattr()` ad-hoc — movido pra `WorldServer.__init__` — tags: mob — PROBLEMAS_ARQUITETURA.md §172
+- (arch) `PROJECT_WIDE_REVIEW.md` — `_cheby()` duplicado (convergência de 2 agentes) — vira wrapper fino, mesmo padrão já aceito em `ui/systems.py`/`ui/quest_system.py` — tags: quest, mob — PROBLEMAS_ARQUITETURA.md §173
+- (arch) Recorrência do bug de cooldown de skill "sumindo" dentro da BG (§34.74.23) — causa raiz DIFERENTE desta vez: `apply_talent_effects()` recriava skill de talento do zero em toda chamada — tags: combate, bg, mob — PROBLEMAS_ARQUITETURA.md §174
+- (arch) Backlog dos 14 itens antigos, item #1 — painéis de NPC fechados por proximidade duplicado em `game.py` — tags: - — PROBLEMAS_ARQUITETURA.md §175
+- (arch) Backlog dos 14 itens antigos, itens #11/#13/#14 — imports locais redundantes em `ui/systems.py` — tags: - — PROBLEMAS_ARQUITETURA.md §176
+- (arch) Backlog dos 14 itens antigos, item #6 — fila de movimento de mob/player remoto com `list.pop(0)` em vez de `deque` — tags: mob — PROBLEMAS_ARQUITETURA.md §177
+- (arch) Backlog dos 14 itens antigos, item #7 — reticle/mira do Tiro Múltiplo recriava Surface rotacionada todo frame — tags: animacao — PROBLEMAS_ARQUITETURA.md §178
+- (arch) Backlog dos 14 itens antigos, item #3 — `BuffBar.render()` reconstruía Surface + fonte todo frame — tags: animacao — PROBLEMAS_ARQUITETURA.md §179
+- (arch) Backlog dos 14 itens antigos, item #9 — `FloatingTextManager`/`DashTrailManager`/`ProcTextManager` reconstruíam a lista inteira todo frame — tags: combate, animacao — PROBLEMAS_ARQUITETURA.md §180
+- (arch) Backlog dos 14 itens antigos, item #10 (Fase 1) — atlas de ícones (skills + itens) — tags: combate, ui — PROBLEMAS_ARQUITETURA.md §181
+- (arch) Backlog dos 14 itens antigos, item #10 (Fase 2) — ícone de verdade nos nós de talento — tags: ui — PROBLEMAS_ARQUITETURA.md §182
+- (arch) Backlog dos 14 itens antigos, item #8 — `IconManager._cache` sem teto/eviction — tags: performance — PROBLEMAS_ARQUITETURA.md §183
+- (arch) Backlog dos 14 itens antigos, item #5 — `World.get_first()` (variante singleton de `get_entities_with()`) — tags: - — PROBLEMAS_ARQUITETURA.md §184
+- (arch) Backlog dos 14 itens antigos, item #2 — divisão de `ui/systems.py` (4913 linhas/10 Systems) em 7 arquivos por domínio — tags: - — PROBLEMAS_ARQUITETURA.md §185
+- [19/09/2026] (bug) 4 bugs reportados juntos (19/09/2026) — corpo com colisão, animação de morte, transparência de bush, bot vs. própria torre — tags: animacao, bush, mob — HISTORICO_BUGS.md §45
+- [19/09/2026] (bug) Investigação — "Interceptar" ficava sempre rejeitado numa partida de BG (19/09/2026, NÃO é bug de código) — tags: combate, bg — HISTORICO_BUGS.md §46
+- [20/09/2026] (arch) Feature — objeto "alto" (árvore/construção) fica transparente com o jogador atrás dele (20/09/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §188
+- [20/09/2026] (feature) Feature — instância de BG (fila real) destruída assim que não sobra jogador REAL (20/09/2026) — tags: bg, mob — HISTORICO_FEATURES.md §30
+- [20/09/2026] (feature) Feature — câmera trava na borda do mapa + câmera livre estilo MOBA na BG (20/09/2026) — tags: bg, mob — HISTORICO_FEATURES.md §31
+- [20/09/2026] (bug) Clamp de câmera não aparecia na tela de jogo + clique no NPC da loja parou de funcionar — 2 duplicatas esquecidas de `get_camera_offset()` (20/09/2026) — tags: ui, mob — HISTORICO_BUGS.md §47
+- [21/09/2026] (bug) Câmera livre (tecla Y, BG) só reagia ao cursor na borda depois de reselecionar "tela cheia" — `hud_surf` nunca inicializado no boot (21/09/2026) — tags: ui, mob — HISTORICO_BUGS.md §48
+- [21/09/2026] (feature) Feature (infraestrutura, Fase 1) — dado de catálogo pra objeto emitir luz própria (lampião/tocha), base do sistema de dia/noite (21/09/2026) — tags: mob, dia_noite — HISTORICO_FEATURES.md §32
+- [21/09/2026] (feature) Feature — sistema de dia/noite (overlay de cor + luz de objeto), consumidor real do dado de §193 (21/09/2026) — tags: dia_noite — HISTORICO_FEATURES.md §33
+- [21/09/2026] (feature) Bug real — transição dia/noite passava por acinzentado + feature — aba de debug (F12) pra hora/fase (21/09/2026) — tags: dia_noite — HISTORICO_FEATURES.md §34
+- [21/09/2026] (feature) Feature — cores-âncora do dia/noite editáveis ao vivo no F12, persistidas em config.json (21/09/2026) — tags: dia_noite — HISTORICO_FEATURES.md §35
+- [21/09/2026] (bug) Bug real — aba nova do F12 estourou a largura do painel, 1ª e última aba cortadas (21/09/2026) — tags: economia — HISTORICO_BUGS.md §49
+- [22/09/2026] (feature) Feature — slider com trilha em gradiente no F12, substitui os 4 botões fixos de pular hora (22/09/2026) — tags: - — HISTORICO_FEATURES.md §36
+- [22/09/2026] (arch) Bug real — suíte completa chegava a ~11,2GB de memória, derrubando o Postgres/qualquer coisa rodando na máquina (22/09/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §199
+- [22/09/2026] (feature) Feature — cores ajustadas no F12 viram o padrão de verdade do jogo (22/09/2026) — tags: - — HISTORICO_FEATURES.md §37
+- [22/09/2026] (feature) Feature — luz de lampião binária (só na fase Noite) + camada de sprite "aceso" a partir de folha companheira (22/09/2026) — tags: animacao, mob, dia_noite — HISTORICO_FEATURES.md §38
+- [22/09/2026] (bug) Bug real — F11 crashava o jogo com `UnboundLocalError: _ts` (22/09/2026, pré-existente, não relacionado às mudanças desta sessão) — tags: - — HISTORICO_BUGS.md §50
+- [22/09/2026] (feature) Reescrita — técnica de escurecimento trocada de transparência pra MULTIPLICAÇÃO de cor + brilho quente aditivo (22/09/2026) — tags: mob — HISTORICO_FEATURES.md §39
+- [23/09/2026] (feature) Feature — corte de luz de lampião ancorado em minuto exato do ciclo (23/09/2026) — tags: dia_noite — HISTORICO_FEATURES.md §40
+- [23/09/2026] (feature) Feature — relógio visual do ciclo dia/noite no HUD do jogador (23/09/2026) — tags: ui, dia_noite — HISTORICO_FEATURES.md §41
+- [23/09/2026] (feature) Feature — mapa fechado (caverna/dungeon) fica de fora do ciclo dia/noite (23/09/2026) — tags: dungeon, dia_noite — HISTORICO_FEATURES.md §42
+- [23/09/2026] (bug) Bug real — AttributeError ao abrir o cliente, `_day_night_system` ainda não existia (23/09/2026, dentro de 1h da §206) — tags: mob — HISTORICO_BUGS.md §51
+- [23/09/2026] (bug) Bug real — mapa fechado (`day_night_affected: false`) ficava sempre no brilho MÁXIMO, não escuro (23/09/2026, dentro de 1h da §206/§207) — tags: - — HISTORICO_BUGS.md §52
+- [27/09/2026] (arch) Revisão de performance do cliente (3 agentes) + 4 correções reais — DayNightSystem, RenderSystem, minimap da BG, rótulos de profiler (27/09/2026) — tags: performance, ui — PROBLEMAS_ARQUITETURA.md §209
+- [27/09/2026] (arch) Fecha o plano de ação de performance do §209 — itens de prioridade baixa (27/09/2026) — tags: performance — PROBLEMAS_ARQUITETURA.md §210
+- [27/09/2026] (arch) Playtest pós-§209/§210 revela achado novo — cache-miss do gradiente de luz de item ainda custa ~12-18ms na 1ª vez (27/09/2026) — tags: performance, dia_noite — PROBLEMAS_ARQUITETURA.md §211
+- [27/09/2026] (bug) Mob perseguindo atravessa o mapa inteiro depois que o player teleporta pra outro ponto do MESMO mapa (27/09/2026) — tags: mob — HISTORICO_BUGS.md §53
+- [28/09/2026] (bug) Correção do §212 não resolveu de verdade — mob "congelado" na tela era um bug de sincronização AOI, não de IA (28/09/2026) — tags: rede, ui, mob — HISTORICO_BUGS.md §54
+- [28/09/2026] (bug) Minimapa pequeno reconvertia `explored` do zero a cada tile andado — cache existente só cobria o mapa grande (28/09/2026) — tags: performance, ui, mob — HISTORICO_BUGS.md §55
+- [28/09/2026] (feature) Tela de loading pré-carrega TODO asset do jogo (boot + troca de mapa/instância) + silencia som até carregar de verdade (28/09/2026) — tags: ui, mob — HISTORICO_FEATURES.md §43
+- [29/09/2026] (bug) Skill mudando de slot sozinha na BG mesmo com preferência salva — RESOLVIDO (28-29/09/2026) — tags: combate, bg, mob — HISTORICO_BUGS.md §56
+- [29/09/2026] (arch) Interceptar contra bot de BG — logging de diagnóstico adicionado, investigação EM ABERTO (29/09/2026) — tags: combate, bg — PROBLEMAS_ARQUITETURA.md §217
+- [29/09/2026] (bug) "Deslogar" reconectando durante restart do servidor mostrava tela de seleção de personagem VAZIA — sem perda de dado, causa raiz confirmada e corrigida (29/09/2026) — tags: servidor, ui, mob, personagem — HISTORICO_BUGS.md §57
+- [29/09/2026] (bug) Mundo fica todo preto (HUD normal) ao sair da BG — RESOLVIDO: `Camera.free_mode` nunca desligava sozinho (29/09/2026) — tags: ui, bg — HISTORICO_BUGS.md §58
+- [29/09/2026] (bug) Bot martelando a mesma skill contra alvo fora de alcance — mitigado com backoff local (29/09/2026) — tags: combate, ui — HISTORICO_BUGS.md §59
+- [01/10/2026] (bug) Sistema de Portais (§18, Animação do tile): 2 bugs reais no 1º playtest — relógio errado quebrou ataque, animação nunca batia com o objeto (01/10/2026) — tags: combate, animacao, mob — HISTORICO_BUGS.md §60
+- [02/10/2026] (bug) Fatiador de Corpos: cada tick de dano reiniciava o loop de animação (02/10/2026) — tags: combate, animacao, performance — HISTORICO_BUGS.md §61
+- [02/10/2026] (bug) Corpo de mob "sobrevivia" entre instâncias de BG — cache client-side sem mapa (02/10/2026) — tags: performance, bg, mob — HISTORICO_BUGS.md §62
+- [02/10/2026] (bug) Bug real — `loot_request` crashava com `UnboundLocalError: s` quando o corpse esvaziava sem ninguém na AOI (02/10/2026) — tags: rede, quest, loot — HISTORICO_BUGS.md §63
+- [03/10/2026] (bug) Bug real — matar mob só contava pra quest de quem bateu primeiro, nunca pro resto do grupo (03/10/2026) — tags: quest, mob — HISTORICO_BUGS.md §64
+- [03/10/2026] (bug) Bug real — Brado Provocativo nunca aumentava dano (talento prometia, código nunca aplicava) (03/10/2026) — tags: combate — HISTORICO_BUGS.md §65
+- [03/10/2026] (bug) Bug real — ícone do debuff de Brado Provocativo só aparecia 3s (classificação errada de is_buff) (03/10/2026) — tags: ui, mob — HISTORICO_BUGS.md §66
+- [03/10/2026] (bug) Bug real — som e animação de usar o portal só existiam pro próprio caster (03/10/2026) — tags: animacao — HISTORICO_BUGS.md §67
+- [04/10/2026] (bug) Bug real — skill ganha por recompensa de quest desaparecia da hotbar no próximo login (03-04/10/2026) — tags: combate, quest, mob — HISTORICO_BUGS.md §68
+- [03/10/2026] (bug) Bug real — reconectar NO MEIO do jogo nunca re-selecionava o personagem, cliente ficava "zumbi" (03/10/2026) — tags: personagem — HISTORICO_BUGS.md §69
+- [04/10/2026] (bug) Bug real — luz do item (lampião) "apagava" pro observador remoto (AOI/mapa) e ficava dessincronizada ao entrar/sair da BG (04/10/2026) — tags: rede, bg, dia_noite — HISTORICO_BUGS.md §70
+- [04/10/2026] (bug) Bug real — Fatiador de Corpos continuava causando dano/som depois do personagem morrer (04/10/2026) — tags: combate, personagem — HISTORICO_BUGS.md §71
+- [05/10/2026] (bug) Bug real — entregar "bem_vindo_guerreiro" com Avido Faseo reabria o diálogo de ACEITAR em vez de ENTREGAR (05/10/2026) — tags: mob, personagem — HISTORICO_BUGS.md §72
+- [05/10/2026] (bug) Bug real — `Trainer.unlock_quest_id` configurado no servidor nunca chegava ao cliente (05/10/2026) — tags: servidor, quest — HISTORICO_BUGS.md §73
+- [05/10/2026] (bug) Bug real — `TrainerSystem._do_learn` mandava o eid LOCAL do NPC, servidor sempre recusava como "treinador inválido" (05/10/2026) — tags: servidor — HISTORICO_BUGS.md §74
+- [06/10/2026] (bug) Bug real — item condicional de quest (drop por jogador) perdido quando o corpse tinha outro item junto (06/10/2026) — tags: quest, loot — HISTORICO_BUGS.md §75
+- [06/10/2026] (bug) Bug real — mob com loot comum raro quase nunca criava corpse, então o sorteio de item de quest condicional (70%) quase nunca rodava (06/10/2026) — tags: quest, loot, mob — HISTORICO_BUGS.md §76
+- [06/10/2026] (bug) Bug real — personagem "trava" e sofre rollback perto de um poste, num loop (06/10/2026) — tags: personagem — HISTORICO_BUGS.md §77
+- [06/10/2026] (bug) `AttributeError: _show_ranking` ao abrir o client — crash reportado pelo usuário (06/10/2026) — tags: - — HISTORICO_BUGS.md §78
+- [06/10/2026] (bug) Roda do mouse com modal de Ranking aberto também zoomava a câmera por trás (06/10/2026) — tags: ui — HISTORICO_BUGS.md §79
+- [06/10/2026] (bug) NPC/mob "travado" numa posição velha, nunca na posição real do servidor (06/10/2026) — tags: servidor, mob — HISTORICO_BUGS.md §80
+- [06/10/2026] (arch) Causa raiz de verdade do §241 — mob/NPC em ATTACKING nunca reavalia leash, fica preso lutando longe de casa pra sempre (06/10/2026) — tags: mob — PROBLEMAS_ARQUITETURA.md §242
+- [06/10/2026] (bug) Log de diagnóstico (do próprio §242) derrubava o servidor inteiro a cada ciclo de RETURNING (06/10/2026) — tags: servidor — HISTORICO_BUGS.md §81
+- [07/10/2026] (bug) Causa raiz de verdade do travamento (§241/§242) — spawn do Custódio caía em cima de parede sólida, pathfinding de volta nunca podia ter sucesso (07/10/2026) — tags: rede, mob — HISTORICO_BUGS.md §82
+- [06/10/2026] (bug) Mercador "Fabian Hardek" sem marcador "?" e sem reação a clique direito, depois do fix de NPCUnlock (06/10/2026) — tags: - — HISTORICO_BUGS.md §83
+- [07/10/2026] (arch) Texto flutuante de dano do reflexo do Boneco de Treino aparecia 2x (07/10/2026) — tags: combate, mob — PROBLEMAS_ARQUITETURA.md §246
+- [07/10/2026] (arch) FLT do reflexo do Boneco de Treino duplicava via SKILL (não auto-attack) — 4ª ocorrência da mesma família, mecanismo DIFERENTE (07/10/2026) — tags: combate, mob — PROBLEMAS_ARQUITETURA.md §247
+- [07/10/2026] (arch) DoT escapa de `apply_damage_core` por completo — débito aceito ao criar o alvo de treino de arqueiro (07/10/2026) — tags: personagem — PROBLEMAS_ARQUITETURA.md §248
+- [07/10/2026] (arch) Player remoto parado "olhando" pra direção errada (07/10/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §249
+- [07/10/2026] (bug) Contorno de seleção de alvo quase invisível — linha em cima da borda, metade escondida (07/10/2026) — tags: - — HISTORICO_BUGS.md §84
+- [07/10/2026] (arch) UI de respawn automático estava acoplada à flag errada — InstanceInventoryUIState em vez de "este conteúdo revive sozinho" (07/10/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §251
+- [08/10/2026] (arch) Zona sem respawn da dungeon continuava respawnando em morte real de combate (08/10/2026) — tags: combate, dungeon — PROBLEMAS_ARQUITETURA.md §252
+- [08/10/2026] (arch) Deploy do Launcher derrubou o servidor em produção — dependência nova não instalada + porta nova sem regra de firewall (08/10/2026) — tags: servidor, mob — PROBLEMAS_ARQUITETURA.md §253
+- [08/10/2026] (bug) Launcher autenticava mas o client pedia login de novo — credencial nunca repassada (08/10/2026) — tags: rede, mob — HISTORICO_BUGS.md §85
+- [09/10/2026] (arch) Auto-atualização do Launcher falhava com PermissionError numa DLL compartilhada com o jogo (09/10/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §255
+- [09/10/2026] (bug) Marcador de quest/correio aparecia ABAIXO do nome do NPC em jogo online real (09/10/2026) — tags: quest, mob — HISTORICO_BUGS.md §86
+- [09/10/2026] (arch) Duas luzes (lampião/item) se tocando só pelas pontas pareciam formar um "anel escuro" entre elas (09/10/2026) — tags: dia_noite — PROBLEMAS_ARQUITETURA.md §257
+- [09/10/2026] (arch) O fix do §257 (expoente<1.0) criou um problema PIOR e mais comum — revertido (09/10/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §258
+- [09/10/2026] (arch) Auto-atualização do Launcher apagava o config.json do jogador (09/10/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §259
+- [09/10/2026] (bug) Fechar o jogo nunca avisava o servidor — login novo batia em "already_online" (09/10/2026) — tags: servidor, mob — HISTORICO_BUGS.md §87
+- [09/10/2026] (bug) Aranha da Aracnópolis batia 3-8 de dano em vez de ~256-260 — fix real estava no working tree, nunca foi deployado (09/10/2026) — tags: combate, servidor, mob — HISTORICO_BUGS.md §88
+- [10/10/2026] (arch) Relogar sempre jogava o personagem de volta pra dentro da dungeon (10/10/2026) — tags: dungeon, personagem — PROBLEMAS_ARQUITETURA.md §262
+- [10/10/2026] (arch) Choque Térmico não funcionava na Calamidade Flamejante (10/10/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §263
+- [10/10/2026] (arch) Dois bugs irmãos achados no mesmo dia que §263 (10/10/2026) — tags: mob — PROBLEMAS_ARQUITETURA.md §264
+- [10/10/2026] (bug) `tools/png_to_dungeon.py` gerava um CSV que o jogo nunca lia — câmera continuava travando na borda mesmo com mapa maior (10/10/2026) — tags: dungeon, mob — HISTORICO_BUGS.md §89
+- [10/10/2026] (bug) Jogador nascia dentro de parede ao entrar na dungeon regenerada — o `"player"` do `_entities.json` da dungeon é só informativo (10/10/2026) — tags: rede, dungeon, mob — HISTORICO_BUGS.md §90
+- [10/10/2026] (arch) Sistema de animação de mob implementado, nameplate ficou no meio do sprite — dois caminhos de desenho separados pra mob LOCAL vs. REMOTO (10/10/2026) — tags: animacao, mob — PROBLEMAS_ARQUITETURA.md §267
+- [10/10/2026] (arch) Nameplate de mob corrigido em §267, mas ainda flutuando longe da cabeça — frame quadrado tem padding transparente real (10/10/2026) — tags: animacao, mob — PROBLEMAS_ARQUITETURA.md §268
+- [10/10/2026] (arch) Tile de colisão do mob ancorado pela base do frame, deveria ser o centro (10/10/2026) — tags: animacao, mob — PROBLEMAS_ARQUITETURA.md §269
+- [10/10/2026] (arch) Mob perseguindo "pisca" pra idle no meio do run — `anim_walk_grace_s` ignorado (10/10/2026) — tags: mob — PROBLEMAS_ARQUITETURA.md §270
+- [11/10/2026] (feature) Animação de morte de mob — feature nova, não um bug (11/10/2026) — tags: animacao, mob — HISTORICO_FEATURES.md §44
+- [11/10/2026] (feature) Elipse de loot trocada pela animação de loot.png, vazio não desenha mais nada (11/10/2026) — tags: animacao, loot — HISTORICO_FEATURES.md §45
+- [11/10/2026] (arch) Mob parado atacando continuava "olhando" pra direção errada quando o alvo mudava de lado (11/10/2026) — tags: mob — PROBLEMAS_ARQUITETURA.md §273
+- [11/10/2026] (arch) "Voltar ao Spawn" dentro de uma BG puxava o player pra fora da instância (11/10/2026) — tags: bg, mob — PROBLEMAS_ARQUITETURA.md §274
+- [11/10/2026] (arch) Deletar item da bolsa não funcionava + trade pegava item errado na quantidade (11/10/2026) — tags: - — PROBLEMAS_ARQUITETURA.md §275
+- [13/10/2026] (feature) Mob de zona/jungle nascia sempre virado pra baixo (13/10/2026) — tags: mob — HISTORICO_FEATURES.md §46
+- [13/10/2026] (feature) Kit de animação customizado pra boss de dungeon (13/10/2026) — tags: animacao, dungeon — HISTORICO_FEATURES.md §47
+- [13/10/2026] (arch) "/convidar"/"/invite" só funcionava com player visível no AOI (13/10/2026) — tags: rede — PROBLEMAS_ARQUITETURA.md §278
+- [13/10/2026] (arch) Sombra "assada" no PNG de mob entrava no contorno de seleção (13/10/2026) — tags: mob — PROBLEMAS_ARQUITETURA.md §279
+- [15/10/2026] (feature) Frame de animação de personagem passa a ser QUADRADO (15/10/2026) — tags: animacao, personagem — HISTORICO_FEATURES.md §48
+- [15/10/2026] (feature) Animação de cast separada da de lançamento, pra qualquer skill (15/10/2026) — tags: combate, animacao — HISTORICO_FEATURES.md §49
+- [15/10/2026] (feature) Projétil nasce 1 tile à frente do atacante + Bola de Fogo emite luz (15/10/2026) — tags: dia_noite — HISTORICO_FEATURES.md §50
+- (feature) §282 revertido no mesmo dia: deslocamento de spawn piorava alvo diagonal — tags: - — HISTORICO_FEATURES.md §51
+- (feature) Animação de cast esticada (não em loop) — reaproveitando a técnica do portal — tags: animacao — HISTORICO_FEATURES.md §52
+- [15/10/2026] (feature) Animação de morte do player (15/10/2026) — tags: animacao — HISTORICO_FEATURES.md §53
+- [15/10/2026] (feature) Golpe/cast em 2 fases (preparação → congela → solta) — arqueiro primeiro, mecanismo genérico (15/10/2026) — tags: combate, personagem — HISTORICO_FEATURES.md §54
+- [15/10/2026] (feature) Cast sem sprite dedicado nunca animava + cauda de golpe acelerada em colisão (15/10/2026) — tags: combate, animacao — HISTORICO_FEATURES.md §55
+- (feature) §286/§287 revertidos no mesmo dia: congelamento bloqueava a transição pra andar — tags: - — HISTORICO_FEATURES.md §56
+- [17/10/2026] (bug) 1º tiro de um engajamento novo disparava instantâneo — zero tempo pra animação (17/10/2026) — tags: animacao — HISTORICO_BUGS.md §91
+- [17/10/2026] (bug) Flecha do auto-attack nascia e já voava antes do frame de soltura tocar (17/10/2026) — tags: combate, animacao, mob — HISTORICO_BUGS.md §92
+- [19/10/2026] (feature) Sprite idle-down real nas telas de seleção/criação de personagem (19/10/2026) — tags: animacao, ui, personagem — HISTORICO_FEATURES.md §57
+- [19/10/2026] (feature) Preview de classe em 200% (128x128) — painel de criação cresce, lista de seleção "espia" fora da linha (19/10/2026) — tags: personagem — HISTORICO_FEATURES.md §58
+- [19/10/2026] (bug) §292 confirmado em playtest real: texto nascia em cima do sprite na lista de seleção (19/10/2026) — tags: animacao, mob — HISTORICO_BUGS.md §93

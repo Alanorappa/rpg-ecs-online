@@ -17,6 +17,14 @@
 5. Ler `arquitetura/COMPONENTES_ECS.md` — componentes disponíveis
 6. Usar esses arquivos como referência ANTES de ler código-fonte
 
+**Procurando algo específico (um bug antigo, uma feature já implementada,
+qualquer mudança passada)?** `arquitetura/INDICE.md` é o ponto de partida
+— 1 linha por mudança já registrada, com tags e o ponteiro exato (arquivo
++ §N). `grep -i "<termo>" arquitetura/INDICE.md` ANTES de abrir
+`PROBLEMAS_ARQUITETURA.md`/`HISTORICO_FEATURES.md`/`HISTORICO_BUGS.md`
+inteiros (19/10/2026 — ver regra de classificação em "Após qualquer
+mudança").
+
 **Regra:** Se a resposta está nos arquivos de arquitetura, não varrer o codebase.
 **Contrapartida desta regra (06/08/2026):** ela só funciona se os arquivos
 estiverem certos. Auditoria de 06/08/2026 achou 4 casos de doc dizendo o
@@ -54,16 +62,50 @@ Atualizar os arquivos de arquitetura relevantes:
 - Novo sistema no servidor → `SISTEMAS_ECS.md` (seção "Sistemas do Servidor")
 - Novo arquivo online → `MAPA_PROJETO.md` (tabela "Onde encontrar o quê — Online")
 - Novo componente ECS → `COMPONENTES_ECS.md`
-- Problema arquitetural → `PROBLEMAS_ARQUITETURA.md`
+- **Classificar TODA mudança em um dos 3 tipos abaixo ANTES de escrever a
+  entrada datada (19/10/2026, decisão explícita do usuário — o arquivo
+  único de histórico tinha passado de 28 mil linhas por misturar os 3
+  tipos indiscriminadamente, ver `arquitetura/PROBLEMAS_ARQUITETURA.md`,
+  nota no topo do arquivo, e `INDICE.md`).** Pergunta pra decidir:
+  1. **"Isso é sintoma de um padrão ESTRUTURAL que vai gerar bug de novo
+     em outro lugar se não for nomeado?"** (2 sistemas paralelos que
+     deviam ser 1, autoridade híbrida, débito de performance, auditoria,
+     limpeza de código morto, investigação multi-rodada) → SIM =
+     **problema arquitetural** → `PROBLEMAS_ARQUITETURA.md`.
+  2. **"Isso é algo NOVO que o usuário pediu (sistema, melhoria, ajuste de
+     UX/visual)?"** → SIM = **feature** → `arquitetura/HISTORICO_FEATURES.md`.
+  3. **"Isso é um defeito CONCRETO e localizado** (índice errado, ordem
+     trocada, offset que não bateu, crash pontual) **sem padrão maior por
+     trás?"** → SIM = **bug** → `arquitetura/HISTORICO_BUGS.md`.
+  Ambíguo (ex: uma feature revertida que também ensina uma lição
+  estrutural) → registra no arquivo da ação PRINCIPAL (normalmente
+  feature/bug) e linka o problema estrutural separadamente em
+  `PROBLEMAS_ARQUITETURA.md` se o padrão for realmente reusável.
+- **SEMPRE, não importa qual dos 3 acima: 1 linha nova em
+  `arquitetura/INDICE.md`** (mesmo commit/sessão) — formato `- [DD/MM/AAAA]
+  (arch|feature|bug) Título — tags: tag1, tag2 — ARQUIVO.md §N`. É o único
+  lugar pensado pra busca rápida (`grep -i "<termo>" arquitetura/INDICE.md`)
+  sem precisar abrir um arquivo de milhares de linhas. Tags são livres
+  (cresce organicamente, reusa as que já existem quando fizer sentido —
+  ver cabeçalho do próprio `INDICE.md` pra lista implícita).
 - **Regra nova a partir daqui: separar regra de histórico.** Ao registrar
   uma regra nova neste arquivo, escrever a regra em forma crua e atemporal
   (sem data, sem narrativa do incidente) e colocar o contexto completo
-  (data, sintoma, tentativas erradas) em `PROBLEMAS_ARQUITETURA.md`,
-  referenciado por ponteiro (`ver §N`). O objetivo é este arquivo continuar
-  enxuto e sempre atual pra releitura a cada sessão — a história detalhada
-  já tem endereço certo. Entradas datadas já existentes neste arquivo
-  continuam válidas como estão; consolidá-las é decisão a ser tomada com o
-  usuário, não automática.
+  (data, sintoma, tentativas erradas) no arquivo de histórico certo —
+  `PROBLEMAS_ARQUITETURA.md`/`HISTORICO_FEATURES.md`/`HISTORICO_BUGS.md`,
+  conforme a classificação acima — referenciado por ponteiro (`ver
+  ARQUIVO.md §N`). O objetivo é este arquivo continuar enxuto e sempre
+  atual pra releitura a cada sessão — a história detalhada já tem
+  endereço certo. Entradas datadas já existentes continuam válidas como
+  estão; consolidá-las mais é decisão a ser tomada com o usuário, não
+  automática. **Migração de 19/10/2026**: `PROBLEMAS_ARQUITETURA.md`
+  tinha 293 entradas misturando os 3 tipos — as que não eram arquitetura
+  de verdade saíram pros 2 arquivos novos, com NÚMERO NOVO sequencial lá;
+  a posição antiga ficou um stub de 1 linha ("(movido) ... — ver
+  ARQUIVO.md §K") — qualquer "ver PROBLEMAS_ARQUITETURA.md §N" antigo
+  (inclusive os citados neste próprio CLAUDE.md) continua resolvendo,
+  só que indiretamente através desse stub. Nunca "limpar" os stubs —
+  são o que mantém todo ponteiro histórico vivo.
 - **Isso vale NO MESMO commit/sessão da mudança, nunca "depois que sobrar
   tempo"** (06/08/2026 — `PROBLEMAS_ARQUITETURA.md` ficou 16 dias sem
   entrada nova enquanto pelo menos 4 bugs da mesma família catalogada em
@@ -150,13 +192,18 @@ pontuais aconteceram, mas ninguém cruzou o bug novo com o item já
 catalogado — cada um foi tratado como incidente isolado. Isso é o
 padrão a quebrar, não só os bugs individuais.
 
-- **Antes de investigar qualquer bug, checar `PROBLEMAS_ARQUITETURA.md`
-  (seções numeradas + §11) pelo sintoma.** Se bater com um item marcado
-  "MITIGADO" (não "RESOLVIDO"), o fix de verdade é terminar aquele item
-  — não outro patch pontual em cima do sintoma novo. Um item "mitigado"
-  que gera um 4º/5º incidente da mesma família é sinal de que a
-  mitigação nunca foi suficiente; dizer isso ao usuário explicitamente
-  em vez de tratar como bug novo.
+- **Antes de investigar qualquer bug, checar `arquitetura/INDICE.md`
+  pelo sintoma** (19/10/2026 — ponto de entrada único desde a separação
+  em 3 arquivos; o índice já diz se o achado mais próximo é arquitetura,
+  feature ou bug, e aponta pro arquivo/§ certo). Se bater com um item de
+  `PROBLEMAS_ARQUITETURA.md` marcado "MITIGADO" (não "RESOLVIDO"), o fix
+  de verdade é terminar aquele item — não outro patch pontual em cima do
+  sintoma novo. Um item "mitigado" que gera um 4º/5º incidente da mesma
+  família é sinal de que a mitigação nunca foi suficiente; dizer isso ao
+  usuário explicitamente em vez de tratar como bug novo. Bater com um
+  item de `HISTORICO_BUGS.md` (defeito já visto e corrigido antes, sem
+  padrão estrutural por trás) é só contexto — confirma que já aconteceu,
+  não implica necessariamente a mesma causa raiz desta vez.
 - **"Corrigido" exige reproduzir o sintoma que foi relatado, não só um
   cenário sintético plausível.** Um teste automatizado que você mesmo
   escreve prova que O SEU cenário passa — não que o bug relatado sumiu.
