@@ -1031,6 +1031,29 @@ padrão a quebrar, não só os bugs individuais.
   direção específica ainda cai no retângulo de fallback (arte não
   existe pra aquele estado/direção ainda) — Y-sort não pode pular
   dependendo de qual arte já foi desenhada.
+- **Preview de personagem/classe FORA do jogo** (telas de seleção/
+  criação de personagem, `ui/char_creation_screen.py`, ou qualquer tela
+  pré-jogo futura que precise mostrar "como é" uma classe) →
+  `_get_class_preview_frame(class_id, sc)` — reusa `engine.
+  character_animation.get_character_frame(class_id, "idle", "down",
+  pygame.time.get_ticks())`, o MESMO mecanismo de animação do jogo,
+  NUNCA um sistema de animação próprio pra telas de menu. Devolve
+  `None` se não existir sprite ainda pra essa classe → cai pro
+  retângulo de cor antigo (`_CLASS_COLORS`), mesmo padrão de fallback
+  usado no resto do projeto. Frame real é 64x64 mas o personagem
+  desenhado só ocupa os 32x32 centrais (mesma convenção de
+  `CHAR_COLLISION_SIZE`) — usa o FRAME INTEIRO, nunca recorta/dá zoom
+  tentando "preencher" uma caixa pequena (19/10/2026, decisão explícita
+  do usuário). **Qualquer posição de texto/elemento vizinho a um
+  preview de tamanho variável (sprite OU fallback de cor) precisa ser
+  calculada a partir do tamanho REAL do preview** (`icon_bottom =
+  icon_top + preview_sz`, texto/label seguinte usa esse valor + gap),
+  **nunca um deslocamento hardcoded** que por coincidência batia com o
+  tamanho antigo do ícone — bug latente evitado: o texto ao lado do
+  ícone na tela de seleção usava `r.x + 64*sc` fixo, que só "funcionava"
+  porque 64 era o valor exato do NOVO tamanho de preview por
+  coincidência; teria quebrado silenciosamente se o preview mudasse de
+  tamanho de novo no futuro. Ver PROBLEMAS_ARQUITETURA.md §291.
 - **Entry point server-side novo que executa handler compartilhado em nome
   de um player** (skill/spell/projectile/channeling) →
   `WorldServer.register_map_services_for(player_eid)` ANTES do handler —

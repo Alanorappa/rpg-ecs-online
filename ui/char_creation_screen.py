@@ -465,7 +465,12 @@ def _run_creation(screen, clock, sc: float, net=None) -> "dict | None":
     py = sh // 2 - PH // 2
 
     CARD_W = int(180 * sc)
-    CARD_H = int(160 * sc)
+    # 160 -> 185 (19/10/2026): preview de classe passou de ícone 36x36 pra
+    # sprite idle-down real de 64x64 (ver _get_class_preview_frame) — card
+    # mais alto pra caber nome/descrição abaixo do sprite maior sem
+    # sobrepor. `cards_y`/botões abaixo têm folga de sobra (ver cálculo no
+    # PROBLEMAS_ARQUITETURA.md §291), não precisam mudar.
+    CARD_H = int(185 * sc)
     cards_y = py + int(190 * sc)
     total_w = len(_CLASSES) * CARD_W + (len(_CLASSES) - 1) * int(16 * sc)
     cards_x = px + PW // 2 - total_w // 2
@@ -603,21 +608,32 @@ def _run_creation(screen, clock, sc: float, net=None) -> "dict | None":
             pygame.draw.rect(screen, bg,  r, border_radius=6)
             pygame.draw.rect(screen, bdr, r, bdr_w, border_radius=6)
 
-            icon_col = _LOCK_COL if locked else _CLASS_COLORS.get(cls["id"], (150, 150, 150))
-            icon_r   = pygame.Rect(r.x + r.w // 2 - icon_sz // 2, r.y + int(18 * sc), icon_sz, icon_sz)
-            pygame.draw.rect(screen, icon_col, icon_r, border_radius=4)
+            icon_top = r.y + int(14 * sc)
+            frame = None if locked else _get_class_preview_frame(cls["id"], sc)
+            if frame is not None:
+                preview_sz = frame.get_width()
+                screen.blit(frame, (r.x + r.w // 2 - preview_sz // 2, icon_top))
+            else:
+                preview_sz = icon_sz
+                icon_col = _LOCK_COL if locked else _CLASS_COLORS.get(cls["id"], (150, 150, 150))
+                icon_r   = pygame.Rect(r.x + r.w // 2 - preview_sz // 2, icon_top, preview_sz, preview_sz)
+                pygame.draw.rect(screen, icon_col, icon_r, border_radius=4)
+            icon_bottom = icon_top + preview_sz
 
             n_col  = _LOCK_TXT if locked else (_SEL_BDR if is_sel else _TEXT_COL)
             n_surf = font_sm.render(cls["label"], False, n_col)
-            screen.blit(n_surf, (r.x + r.w // 2 - n_surf.get_width() // 2, r.y + int(64 * sc)))
+            name_y = icon_bottom + int(6 * sc)
+            screen.blit(n_surf, (r.x + r.w // 2 - n_surf.get_width() // 2, name_y))
 
+            desc_y = name_y + n_surf.get_height() + int(6 * sc)
             for li, line in enumerate(cls["description"].split("\n")):
                 d = font_xs.render(line, False, _LOCK_TXT if locked else _TEXT_COL)
                 screen.blit(d, (r.x + r.w // 2 - d.get_width() // 2,
-                                r.y + int(90 * sc) + li * (font_xs.get_height() + int(2 * sc))))
+                                desc_y + li * (font_xs.get_height() + int(2 * sc))))
             if locked:
                 lock_s = font_xs.render("[em breve]", False, _LOCK_COL)
-                screen.blit(lock_s, (r.x + r.w // 2 - lock_s.get_width() // 2, r.y + int(138 * sc)))
+                lock_y = desc_y + 2 * (font_xs.get_height() + int(2 * sc)) + int(6 * sc)
+                screen.blit(lock_s, (r.x + r.w // 2 - lock_s.get_width() // 2, lock_y))
 
         confirm_label = "Criando..." if creating_pending else "Confirmar"
         for r, label, bg, bdr, disabled in [
@@ -632,6 +648,31 @@ def _run_creation(screen, clock, sc: float, net=None) -> "dict | None":
             screen.blit(s, s.get_rect(center=r.center))
 
         pygame.display.flip()
+
+
+# ── Preview de classe (19/10/2026, pedido do usuário) ───────────────────────
+# Sprite idle-down animado (mesmo mecanismo do jogo,
+# engine/character_animation.py) no lugar do retângulo colorido antigo, nas
+# 2 telas (seleção e criação). Frame real é 64x64, mas o personagem
+# desenhado ocupa só o tile de colisão central de 32x32 (mesma convenção de
+# `CHAR_COLLISION_SIZE` — ver CLAUDE.md) — por isso usa o frame INTEIRO
+# (nunca recorta/aumenta zoom tentando "preencher" a caixa), só escalado por
+# `sc` igual todo o resto desta tela, pra ficar proporcional em qualquer
+# resolução. `None` = sem sprite ainda pra essa classe/direção — cai pro
+# retângulo de cor de sempre (mesmo padrão de fallback usado no resto do
+# jogo). Ver PROBLEMAS_ARQUITETURA.md §291.
+_CLASS_PREVIEW_BASE_SIZE = 64
+
+
+def _get_class_preview_frame(class_id: str, sc: float) -> "pygame.Surface | None":
+    from engine.character_animation import get_character_frame
+    frame = get_character_frame(class_id, "idle", "down", pygame.time.get_ticks())
+    if frame is None:
+        return None
+    size_px = int(_CLASS_PREVIEW_BASE_SIZE * sc)
+    if frame.get_width() != size_px:
+        frame = pygame.transform.scale(frame, (size_px, size_px))
+    return frame
 
 
 # ── Render da seleção ────────────────────────────────────────────────────────
@@ -655,22 +696,29 @@ def _draw_selection(screen, saves, occupied, can_create,
         pygame.draw.rect(screen, bg,      r, border_radius=5)
         pygame.draw.rect(screen, _BORDER, r, 1, border_radius=5)
 
-        icon_sz = int(36 * sc)
-        col = _CLASS_COLORS.get(s["class_id"], (150, 150, 150))
-        icon = pygame.Rect(r.x + int(14 * sc), r.y + slot_h // 2 - icon_sz // 2, icon_sz, icon_sz)
-        pygame.draw.rect(screen, col, icon, border_radius=4)
+        icon_x = r.x + int(14 * sc)
+        frame = _get_class_preview_frame(s["class_id"], sc)
+        if frame is not None:
+            icon_sz = frame.get_width()
+            screen.blit(frame, (icon_x, r.y + slot_h // 2 - icon_sz // 2))
+        else:
+            icon_sz = int(36 * sc)
+            col  = _CLASS_COLORS.get(s["class_id"], (150, 150, 150))
+            icon = pygame.Rect(icon_x, r.y + slot_h // 2 - icon_sz // 2, icon_sz, icon_sz)
+            pygame.draw.rect(screen, col, icon, border_radius=4)
+        text_x = icon_x + icon_sz + int(14 * sc)
 
         name_s = font_md.render(s["name"], False, _TITLE_COL)
-        screen.blit(name_s, (r.x + int(64 * sc), r.y + int(12 * sc)))
+        screen.blit(name_s, (text_x, r.y + int(12 * sc)))
 
         cls_label = s["class_id"].capitalize()
         info_s = font_sm.render(f"{cls_label}  —  Nivel {s['level']}", False, _TEXT_COL)
-        screen.blit(info_s, (r.x + int(64 * sc), r.y + int(12 * sc) + name_s.get_height() + int(2 * sc)))
+        screen.blit(info_s, (text_x, r.y + int(12 * sc) + name_s.get_height() + int(2 * sc)))
 
         if s["saved_at"]:
             date_str = s["saved_at"].replace("T", "  ")
             date_s = font_xs.render(date_str, False, _SUB_COL)
-            screen.blit(date_s, (r.x + int(64 * sc), r.y + slot_h - date_s.get_height() - int(8 * sc)))
+            screen.blit(date_s, (text_x, r.y + slot_h - date_s.get_height() - int(8 * sc)))
 
         play_r = _play_btn_rect(r, slot_h, sc)
         hov_p  = play_r.collidepoint(mx, my)

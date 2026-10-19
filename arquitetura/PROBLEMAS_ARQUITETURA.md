@@ -28390,3 +28390,68 @@ DIFERENTES por direção, essa constante precisa virar um dict por
 direção (não feito agora, usuário confirmou que os 4 estão no mesmo
 índice). Validação visual de verdade (a flecha "aparecer" exatamente
 no flash) ainda depende de playtest manual do usuário.
+
+## 291. Sprite idle-down real nas telas de seleção/criação de personagem (19/10/2026)
+
+**Pedido do usuário**: "na tela de seleção de personagem e na tela de
+criação de personagem, quero que coloque o sprite idle down de cada
+classe no lugar do retângulo."
+
+**Investigação**: as 2 telas vivem no MESMO arquivo
+(`ui/char_creation_screen.py`) — `run_online()` (chamada de
+`main.py::_char_run`) despacha entre `_draw_selection()` (lista de
+personagens existentes, ícone de classe de 36x36 ao lado do nome) e
+`_run_creation()` (criar personagem novo, ícone de classe de 36x36
+dentro de cada card das 3 classes). Os 2 ícones eram
+`pygame.draw.rect()` preenchido com `_CLASS_COLORS[class_id]` — nenhum
+sprite de verdade.
+
+**Desenho, 2 perguntas feitas ao usuário antes de codar**:
+1. Animado (loop idle, mesmo mecanismo do jogo) vs frame estático —
+   escolhido ANIMADO.
+2. Tamanho: manter 36x36 (encolhido) vs aumentar a área — usuário
+   esclareceu que o frame real é 64x64 mas o personagem desenhado só
+   ocupa os 32x32 centrais (mesma convenção de `CHAR_COLLISION_SIZE`
+   documentada pro resto do jogo) — pediu pra usar o FRAME INTEIRO
+   (64x64) centralizado, nunca recortar/dar zoom tentando "preencher"
+   uma caixa pequena.
+
+**Fix**: `_get_class_preview_frame(class_id, sc)` (novo, módulo) —
+chama `engine.character_animation.get_character_frame(class_id,
+"idle", "down", pygame.time.get_ticks())` (MESMO mecanismo de
+animação do jogo, zero código novo de animação) e escala o frame
+(64px base) por `sc` — igual todo resto desta tela já escala por
+resolução — devolve `None` se não existir sprite ainda (fallback pro
+retângulo de cor ANTIGO, mesmo padrão de "sem arte ainda" usado no
+resto do projeto, zero regressão pra uma classe futura sem sprite).
+
+- **`_draw_selection`**: ícone passou de 36x36 fixo pra `frame.
+  get_width()` (64×sc) — texto (nome/classe/data) ao lado do ícone
+  usava um deslocamento HARDCODED (`r.x + 64*sc`, coincidência do
+  valor antigo já ser 64) — virou `text_x = icon_x + icon_sz +
+  14*sc`, calculado a partir do tamanho REAL do ícone (sprite ou
+  fallback de cor) — nunca mais quebra se o tamanho do preview mudar
+  de novo no futuro.
+- **`_run_creation`** (cards de classe): label/descrição/"[em breve]"
+  usavam offsets Y hardcoded (ex: `r.y + 64*sc` pro nome) assumindo um
+  ícone de 36px — virou cálculo SEQUENCIAL a partir do fundo real do
+  ícone (`icon_bottom = icon_top + preview_sz`, depois cada elemento
+  seguinte usa o fundo do anterior + gap) — robusto a qualquer tamanho
+  de preview futuro, não só o atual. `CARD_H` (altura do card) subiu
+  de 160 pra 185 pra caber o sprite maior sem sobrepor o texto —
+  conferido por script (baseline sc=1.0): conteúdo real termina em
+  y=448, card termina em y=505 (57px de folga), botões Voltar/
+  Confirmar começam em y=530 (25px de folga do card) — zero overlap.
+
+**Teste**: `tests/test_client_ui.py` (288 testes, nenhum toca
+`_draw_selection`/`_run_creation` diretamente — só `_drain_char_
+select_batch`, lógica de rede, intocada) sem regressão. Sem suíte
+automatizada pro RENDER em si (telas pré-jogo, sem precedente de teste
+de layout no projeto) — validado por 2 smoke scripts manuais nesta
+sessão: (1) `_get_class_preview_frame` devolve Surface 64x64 pras 3
+classes reais + `_draw_selection` roda sem exceção com dados
+sintéticos; (2) replica o corpo de desenho dos cards de `_run_creation`
+fora do loop bloqueante, confirma que o conteúdo cabe dentro do card
+novo (sem a tela real abrir, só matemática de posição). Validação
+visual de verdade (como fica na tela, de perto) ainda depende de
+playtest manual do usuário.
