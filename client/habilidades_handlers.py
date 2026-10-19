@@ -78,6 +78,63 @@ def _get_loading_background(size: "tuple[int, int]") -> "pygame.Surface | None":
     return scaled
 
 
+# ── Barra de progresso com sprite (19/10/2026, pedido do usuário) ──────────
+# `assets/content/loading_screen_bar.png` — moldura/trilho prontos no PNG;
+# o marcador de cor #291000 (41,16,0) dentro da imagem marca tanto a
+# POSIÇÃO/TAMANHO do retângulo de preenchimento (margem simétrica dos 2
+# lados, mesma altura do marcador) quanto a COR do preenchimento (pedido
+# explícito do usuário — a cor do marcador É a cor de quem "anda" na
+# barra, não só uma guia de posição). Escala reaproveitada de `ui.
+# hud_bars.SCALE` (nearest-neighbor fixo, 2x hoje) — "mesma escala que os
+# nameplates têm no jogo", NUNCA um número novo/duplicado. Ver
+# PROBLEMAS_ARQUITETURA.md (HISTORICO_FEATURES.md).
+_LOADING_BAR_IMG_PATH = "assets/content/loading_screen_bar.png"
+_LOADING_BAR_MARKER_COLOR = (0x29, 0x10, 0x00)
+_loading_bar_cache: "dict | None" = None  # {"img": Surface, "fill_rect": Rect} ou None (sem arquivo)
+
+
+def _detect_bar_fill_rect(raw: "pygame.Surface") -> "pygame.Rect":
+    """Acha o retângulo de preenchimento a partir do marcador de cor
+    (#291000) — margem horizontal simétrica (distância do marcador até a
+    borda esquerda = distância até a borda direita) e altura/topo EXATOS
+    do marcador (não um cálculo de margem, a altura é intencional e não
+    deriva de nada simétrico). Fallback (marcador não encontrado — PNG
+    editado sem o marcador) → retângulo com 3px de margem em todos os
+    lados do próprio PNG, pra nunca quebrar mesmo sem o marcador."""
+    w, h = raw.get_size()
+    xs, ys = [], []
+    for x in range(w):
+        for y in range(h):
+            if raw.get_at((x, y))[:3] == _LOADING_BAR_MARKER_COLOR:
+                xs.append(x)
+                ys.append(y)
+    if not xs:
+        return pygame.Rect(3, 3, max(1, w - 6), max(1, h - 6))
+    x0, y0 = min(xs), min(ys)
+    y1 = max(ys)
+    fill_w = w - 2 * x0  # margem simétrica: mesma distância da borda direita
+    return pygame.Rect(x0, y0, max(1, fill_w), y1 - y0 + 1)
+
+
+def _get_loading_bar() -> "dict | None":
+    global _loading_bar_cache
+    if _loading_bar_cache is not None:
+        return _loading_bar_cache if _loading_bar_cache else None
+    from ui.asset_cache import get_image
+    from ui.hud_bars import SCALE as _HUD_SCALE
+    raw = get_image(_LOADING_BAR_IMG_PATH)
+    if raw is None:
+        _loading_bar_cache = {}
+        return None
+    fill_native = _detect_bar_fill_rect(raw)
+    w, h = raw.get_size()
+    img_scaled = pygame.transform.scale(raw, (w * _HUD_SCALE, h * _HUD_SCALE))
+    fill_scaled = pygame.Rect(fill_native.x * _HUD_SCALE, fill_native.y * _HUD_SCALE,
+                              fill_native.w * _HUD_SCALE, fill_native.h * _HUD_SCALE)
+    _loading_bar_cache = {"img": img_scaled, "fill_rect": fill_scaled}
+    return _loading_bar_cache
+
+
 class HabilidadesHandlers:
 
     # ── Painel de Habilidades (H) ─────────────────────────────────────────────
@@ -289,15 +346,6 @@ class HabilidadesHandlers:
             pygame.draw.circle(_grad, (30, 20, 10, _alpha), (sw // 2, sh // 2), _r)
         self.screen.blit(_grad, (0, 0))
 
-        # Título
-        _title = self.font_lg.render("RPG Online", False, (220, 185, 80))
-        self.screen.blit(_title, _title.get_rect(centerx=sw // 2, centery=sh // 2 - 60))
-
-        # Linha decorativa
-        pygame.draw.line(self.screen, (80, 62, 30),
-                         (sw // 2 - 120, sh // 2 - 32),
-                         (sw // 2 + 120, sh // 2 - 32), 1)
-
         # Status — 2 fases (28/09/2026): "assets" (preload_all rodando,
         # ver __init__) tem prioridade de exibição sobre a fase de rede,
         # mesmo que a conexão já tenha sido aberta em paralelo.
@@ -310,30 +358,54 @@ class HabilidadesHandlers:
             msg = f"Reconectando{dots}"
         else:
             msg = f"Conectando ao servidor{dots}"
-        _status = self.font_sm.render(msg, False, (150, 130, 70))
-        self.screen.blit(_status, _status.get_rect(centerx=sw // 2, centery=sh // 2 + 10))
 
-        # Barra de progresso linear — fase "assets": done/total real do
-        # preload; fase "server": 0% no início → 100% quando
-        # loading_min_t zera (_loading_min_t começa em 1.5 e decrementa
-        # a cada frame).
-        _BAR_W, _BAR_H = 400, 10
-        _bx = sw // 2 - _BAR_W // 2
-        _by = sh // 2 + 32
+        # Barra de progresso — sprite (19/10/2026, pedido do usuário):
+        # moldura/trilho vêm do PNG, SCALE igual nameplate (ver
+        # _get_loading_bar); centralizada no eixo horizontal, encostada
+        # 20px acima do limite inferior da tela no eixo vertical. "Sem
+        # arte ainda" cai pro desenho antigo (retângulos de cor), mesmo
+        # padrão de fallback do resto do projeto.
         if _phase == "assets" and self._preload_total > 0:
             _pct = max(0.0, min(1.0, self._preload_done / self._preload_total))
         else:
             _pct = max(0.0, min(1.0, 1.0 - self._loading_min_t / 1.5))
-        _fill = max(1, int(_BAR_W * _pct))
-        pygame.draw.rect(self.screen, (70, 15, 15),  (_bx, _by, _BAR_W, _BAR_H), border_radius=3)
-        pygame.draw.rect(self.screen, (25, 90, 25),  (_bx, _by, _fill,  _BAR_H), border_radius=3)
-        pygame.draw.rect(self.screen, (50, 35, 20),  (_bx, _by, _BAR_W, _BAR_H), 1, border_radius=3)
 
-        # Dica de timeout restante (só aparece nos últimos 5s)
-        if self._loading_timeout < 5.0:
-            _hint = self.font_xs.render(
-                f"Sem resposta do servidor — continuando em {self._loading_timeout:.0f}s...", False, (120, 80, 60))
-            self.screen.blit(_hint, _hint.get_rect(centerx=sw // 2, centery=sh // 2 + 55))
+        _bar = _get_loading_bar()
+        if _bar is not None:
+            _bar_img  = _bar["img"]
+            _fill_r   = _bar["fill_rect"]
+            _bar_w, _bar_h = _bar_img.get_size()
+            _bx = sw // 2 - _bar_w // 2
+            _by = sh - 20 - _bar_h
+            self.screen.blit(_bar_img, (_bx, _by))
+            _fill_w = max(0, int(_fill_r.w * _pct))
+            if _fill_w > 0:
+                pygame.draw.rect(self.screen, _LOADING_BAR_MARKER_COLOR,
+                                 (_bx + _fill_r.x, _by + _fill_r.y, _fill_w, _fill_r.h))
+            _status = self.font_sm.render(msg, False, (150, 130, 70))
+            self.screen.blit(_status, _status.get_rect(centerx=sw // 2, bottom=_by - 5))
+            if self._loading_timeout < 5.0:
+                _hint = self.font_xs.render(
+                    f"Sem resposta do servidor — continuando em {self._loading_timeout:.0f}s...",
+                    False, (120, 80, 60))
+                self.screen.blit(_hint, _hint.get_rect(centerx=sw // 2, top=_by + _bar_h + 6))
+        else:
+            # Fallback sem o PNG — layout antigo (retângulos de cor),
+            # centralizado na tela.
+            _status = self.font_sm.render(msg, False, (150, 130, 70))
+            self.screen.blit(_status, _status.get_rect(centerx=sw // 2, centery=sh // 2 + 10))
+            _BAR_W, _BAR_H = 400, 10
+            _bx = sw // 2 - _BAR_W // 2
+            _by = sh // 2 + 32
+            _fill = max(1, int(_BAR_W * _pct))
+            pygame.draw.rect(self.screen, (70, 15, 15),  (_bx, _by, _BAR_W, _BAR_H), border_radius=3)
+            pygame.draw.rect(self.screen, (25, 90, 25),  (_bx, _by, _fill,  _BAR_H), border_radius=3)
+            pygame.draw.rect(self.screen, (50, 35, 20),  (_bx, _by, _BAR_W, _BAR_H), 1, border_radius=3)
+            if self._loading_timeout < 5.0:
+                _hint = self.font_xs.render(
+                    f"Sem resposta do servidor — continuando em {self._loading_timeout:.0f}s...",
+                    False, (120, 80, 60))
+                self.screen.blit(_hint, _hint.get_rect(centerx=sw // 2, centery=sh // 2 + 55))
 
     def _draw_map_transition_screen(self, status: str) -> None:
         """Tela de transição (28/09/2026, pedido do usuário — ver

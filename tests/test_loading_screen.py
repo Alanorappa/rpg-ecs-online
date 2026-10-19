@@ -20,7 +20,11 @@ from client.habilidades_handlers import HabilidadesHandlers
 
 class _LoadingScreenFixture(HabilidadesHandlers):
     def __init__(self):
-        self.screen         = pygame.Surface((640, 480))
+        # 1280x720 (19/10/2026) — a barra de sprite escalada (SCALE do
+        # nameplate, hoje 2x) é mais larga que a tela de teste antiga de
+        # 640x480 comportava (760px de barra não cabia), causando
+        # IndexError ao ler pixel fora da Surface.
+        self.screen         = pygame.Surface((1280, 720))
         self.font_lg         = pygame.font.SysFont(None, 32)
         self.font_sm         = pygame.font.SysFont(None, 18)
         self.font_xs         = pygame.font.SysFont(None, 14)
@@ -34,14 +38,24 @@ class _LoadingScreenFixture(HabilidadesHandlers):
 
 
 def _bar_fill_px(screen: pygame.Surface) -> int:
-    """Mede a barra de progresso contando pixels verdes (25,90,25) na
-    linha vertical do meio da barra — mesma geometria de
-    _draw_loading_screen (sw//2 - 200 .. sw//2 + 200, sh//2 + 32)."""
+    """Mede a barra de progresso contando pixels da cor de preenchimento
+    (#291000, ver _LOADING_BAR_MARKER_COLOR) na linha horizontal do meio
+    do retângulo de preenchimento — geometria lida DINAMICAMENTE de
+    _get_loading_bar() (19/10/2026, barra virou sprite — nunca hardcoda
+    de novo a posição/cor antigas, que mudam se o PNG ou o SCALE do
+    nameplate mudarem)."""
+    from client.habilidades_handlers import _get_loading_bar, _LOADING_BAR_MARKER_COLOR
+    bar = _get_loading_bar()
     sw, sh = screen.get_size()
-    y = sh // 2 + 32 + 5
+    bar_img = bar["img"]
+    fill_r  = bar["fill_rect"]
+    bar_w, bar_h = bar_img.get_size()
+    bx = sw // 2 - bar_w // 2
+    by = sh - 20 - bar_h
+    y = by + fill_r.y + fill_r.h // 2
     count = 0
-    for x in range(sw // 2 - 200, sw // 2 + 200):
-        if screen.get_at((x, y))[:3] == (25, 90, 25):
+    for x in range(bx + fill_r.x, bx + fill_r.x + fill_r.w):
+        if screen.get_at((x, y))[:3] == _LOADING_BAR_MARKER_COLOR:
             count += 1
     return count
 
@@ -71,7 +85,9 @@ class TestLoadingScreenFaseAssets(unittest.TestCase):
         fx._preload_done  = 100   # preload: 100% completo
         fx._draw_loading_screen(0.0)
         fill = _bar_fill_px(fx.screen)
-        self.assertGreater(fill, 380, "preload 100% deveria mostrar a barra quase cheia")
+        from client.habilidades_handlers import _get_loading_bar
+        _full_w = _get_loading_bar()["fill_rect"].w
+        self.assertGreater(fill, _full_w * 0.9, "preload 100% deveria mostrar a barra quase cheia")
 
     def test_nao_lanca_com_preload_total_zero(self):
         fx = _LoadingScreenFixture()

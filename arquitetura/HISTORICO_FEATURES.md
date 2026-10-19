@@ -5286,3 +5286,55 @@ não encontra nada. Validação visual de verdade (ver as imagens
 alternando entre reinícios do jogo) depende de playtest manual do
 usuário, com mais de uma imagem de verdade no disco.
 
+## 61. Barra de progresso da tela de loading vira sprite, escala igual ao nameplate (19/10/2026)
+
+**Pedido do usuário**: usar `assets/content/loading_screen_bar.png`
+centralizada no eixo horizontal e encostada ~20px acima do limite
+inferior da tela; o marcador de cor `#291000` dentro da imagem marca o
+início/tamanho do preenchimento, que deve terminar simetricamente do
+outro lado; remover o título "RPG Online", manter só o status
+("Carregando recursos"/"Carregando personagem") 5px ACIMA da barra; e
+usar "a mesma escala que os nameplates dos personagens têm no jogo".
+
+**Investigação**: escaneei a imagem pixel a pixel — a cor `#291000`
+aparece só nas colunas 3-4, linhas 3-12 (imagem nativa 380×16). Pedi
+confirmação ao usuário se essa cor era só um marcador de POSIÇÃO ou
+também a cor de preenchimento de verdade — confirmou que é as 2 coisas
+(ele já tinha dito isso na primeira mensagem, eu que não tinha certeza).
+"Escala dos nameplates" → `ui/hud_bars.py::SCALE` (hoje 2x,
+nearest-neighbor via `pygame.transform.scale`, usado por
+`build_player_hud`/`build_mob_hud`/badge de NPC) — reusada direto, nunca
+um número novo duplicado.
+
+**Fix**: `_detect_bar_fill_rect(raw)` acha o retângulo de preenchimento
+automaticamente a partir do marcador — margem horizontal SIMÉTRICA
+(distância do marcador até a borda esquerda = até a direita, calculado
+a partir da posição real do marcador, nunca um número fixo tipo "3px")
+e altura/topo EXATOS do marcador (não deriva de simetria nenhuma,
+intencional pelo tamanho do próprio marcador). Sem marcador encontrado
+(PNG editado sem ele) → fallback de 3px de margem em todo lado, nunca
+quebra. `_get_loading_bar()` carrega 1x, detecta o retângulo, e escala
+TUDO (imagem + retângulo) por `SCALE` — cacheado em variável de módulo,
+sem recalcular depois. Removidos: título "RPG Online" e a linha
+decorativa que ficava logo abaixo dele (não fazia mais sentido sem o
+título — layout inteiro passou a ser ancorado na barra, não mais
+centralizado na tela). Dica de timeout reposicionada logo ABAIXO da
+barra (mesmo espaçamento de 5-6px, espelhado). Sem o PNG da barra →
+cai pro desenho antigo completo (retângulos de cor, posição central
+antiga) — fallback preservado por inteiro, zero regressão se o arquivo
+sumir.
+
+**Teste**: `tests/test_loading_screen.py` tinha 3 testes que mediam a
+barra por COORDENADA/COR fixas (geometria antiga, centro da tela,
+verde) — todos quebraram com a mudança de posição/cor, como esperado
+(teste validando o desenho ANTIGO, não um bug). Reescritos pra ler a
+geometria/cor de `_get_loading_bar()` dinamicamente (nunca mais hardcoda
+posição/cor que podem mudar de novo se o PNG ou o `SCALE` do nameplate
+mudarem). Fixture de teste também precisou crescer de 640×480 pra
+1280×720 — a barra escalada (760px) não cabia mais na tela de teste
+antiga, causando `IndexError` ao ler pixel fora da Surface. `tests/
+test_sound_muted_during_loading.py`/`tests/test_client_ui.py` (259
+testes) sem regressão. Validação visual de verdade (posição/tamanho
+reais na tela, "ficou do jeito que eu descrevi") ainda depende de
+playtest manual do usuário.
+
