@@ -5338,3 +5338,40 @@ testes) sem regressão. Validação visual de verdade (posição/tamanho
 reais na tela, "ficou do jeito que eu descrevi") ainda depende de
 playtest manual do usuário.
 
+## 62. Contorno no texto da tela de loading + progresso único entre as 2 fases (19/10/2026)
+
+**Pedido do usuário**: "preciso que você coloque contorno nas letras
+do texto de carregamento pois não dá pra ler do jeito que está, a
+letra é clara assim como o fundo"; e "não dá para fazer o carregamento
+dos recursos e do personagem na mesma barra? ou seja, a evolução dos 2
+ser uma só em vez de 2 carregamentos da barra."
+
+**Contorno**: reusa `ui/floating_text.py::_render_outlined` (ponto
+único de verdade de texto com contorno já usado no FLT de dano, nunca
+uma 2ª implementação) — texto do status ("Carregando recursos.../
+Carregando personagem...") e da dica de timeout, `thickness=2`. Cor do
+texto em si NÃO mudou (continua a mesma — o pedido foi contorno, não
+recor; mudar as duas coisas ao mesmo tempo teria sido decidir uma cor
+nova sozinho sem necessidade).
+
+**Progresso único**: antes, cada fase ("assets" = preload rodando,
+"server" = aguardando LOGIN_OK) reiniciava seu próprio ciclo 0%→100% —
+a barra "resetava" visualmente na troca de fase. Agora
+`_ASSETS_PHASE_WEIGHT` (0.5, metade pra cada fase — ponto de partida
+razoável sem dado real de duração relativa de cada uma, fácil de
+recalibrar depois) reserva a fração `[0, 0.5]` pra "assets" e `[0.5,
+1.0]` pra "server" — 1 progressão contínua, nunca mais 2 ciclos
+separados. Verificado por cálculo direto: assets 0%→50%→100% mapeia
+pra combined 0.0→0.25→0.5; server início→fim mapeia pra 0.5→1.0 — sem
+salto/reset na transição.
+
+**Teste**: `tests/test_loading_screen.py` tinha 1 teste que esperava
+"preload 100% = barra quase cheia" (comportamento ANTIGO, 2 ciclos
+separados) — reescrito pra esperar 50% (peso da fase assets), já que
+"quase cheia" deixou de ser verdade de propósito com o progresso
+único. Docstring do módulo de teste atualizado pra não descrever mais
+"2 fases = 2 barras". `tests/test_sound_muted_during_loading.py`/
+`tests/test_client_ui.py` (259 testes) sem regressão. Validação visual
+de verdade (texto legível na prática, sensação de "uma barra só"
+durante o boot real) ainda depende de playtest manual do usuário.
+

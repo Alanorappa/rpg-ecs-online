@@ -365,10 +365,30 @@ class HabilidadesHandlers:
         # 20px acima do limite inferior da tela no eixo vertical. "Sem
         # arte ainda" cai pro desenho antigo (retângulos de cor), mesmo
         # padrão de fallback do resto do projeto.
-        if _phase == "assets" and self._preload_total > 0:
-            _pct = max(0.0, min(1.0, self._preload_done / self._preload_total))
+        #
+        # Progresso ÚNICO pras 2 fases (19/10/2026, pedido do usuário:
+        # "não dá pra fazer o carregamento dos recursos e do personagem
+        # na mesma barra?") — em vez de cada fase reiniciar um ciclo
+        # 0%→100% próprio (a barra "resetava" visualmente na troca de
+        # fase), "assets" ocupa a fração [0, _ASSETS_PHASE_WEIGHT] e
+        # "server" ocupa o resto [_ASSETS_PHASE_WEIGHT, 1.0] — uma única
+        # progressão contínua. 0.5 (metade pra cada fase) é um ponto de
+        # partida razoável sem dado real de duração de cada fase — fácil
+        # de recalibrar depois, é só esta 1 constante.
+        _ASSETS_PHASE_WEIGHT = 0.5
+        if _phase == "assets":
+            _assets_pct = (self._preload_done / self._preload_total) if self._preload_total > 0 else 0.0
+            _pct = max(0.0, min(1.0, _assets_pct)) * _ASSETS_PHASE_WEIGHT
         else:
-            _pct = max(0.0, min(1.0, 1.0 - self._loading_min_t / 1.5))
+            _server_pct = max(0.0, min(1.0, 1.0 - self._loading_min_t / 1.5))
+            _pct = _ASSETS_PHASE_WEIGHT + _server_pct * (1.0 - _ASSETS_PHASE_WEIGHT)
+
+        # Texto com CONTORNO (19/10/2026, pedido do usuário — "a letra é
+        # clara assim como o fundo", ilegível em cima da imagem nova) —
+        # reusa `ui/floating_text.py::_render_outlined`, o MESMO ponto
+        # único de verdade de texto com contorno já usado no FLT de
+        # dano, nunca uma 2ª implementação de contorno de texto.
+        from ui.floating_text import _render_outlined as _outl
 
         _bar = _get_loading_bar()
         if _bar is not None:
@@ -382,17 +402,17 @@ class HabilidadesHandlers:
             if _fill_w > 0:
                 pygame.draw.rect(self.screen, _LOADING_BAR_MARKER_COLOR,
                                  (_bx + _fill_r.x, _by + _fill_r.y, _fill_w, _fill_r.h))
-            _status = self.font_sm.render(msg, False, (150, 130, 70))
+            _status = _outl(self.font_sm, msg, (150, 130, 70), thickness=2)
             self.screen.blit(_status, _status.get_rect(centerx=sw // 2, bottom=_by - 5))
             if self._loading_timeout < 5.0:
-                _hint = self.font_xs.render(
+                _hint = _outl(self.font_xs,
                     f"Sem resposta do servidor — continuando em {self._loading_timeout:.0f}s...",
-                    False, (120, 80, 60))
+                    (120, 80, 60), thickness=2)
                 self.screen.blit(_hint, _hint.get_rect(centerx=sw // 2, top=_by + _bar_h + 6))
         else:
             # Fallback sem o PNG — layout antigo (retângulos de cor),
             # centralizado na tela.
-            _status = self.font_sm.render(msg, False, (150, 130, 70))
+            _status = _outl(self.font_sm, msg, (150, 130, 70), thickness=2)
             self.screen.blit(_status, _status.get_rect(centerx=sw // 2, centery=sh // 2 + 10))
             _BAR_W, _BAR_H = 400, 10
             _bx = sw // 2 - _BAR_W // 2
@@ -402,9 +422,9 @@ class HabilidadesHandlers:
             pygame.draw.rect(self.screen, (25, 90, 25),  (_bx, _by, _fill,  _BAR_H), border_radius=3)
             pygame.draw.rect(self.screen, (50, 35, 20),  (_bx, _by, _BAR_W, _BAR_H), 1, border_radius=3)
             if self._loading_timeout < 5.0:
-                _hint = self.font_xs.render(
+                _hint = _outl(self.font_xs,
                     f"Sem resposta do servidor — continuando em {self._loading_timeout:.0f}s...",
-                    False, (120, 80, 60))
+                    (120, 80, 60), thickness=2)
                 self.screen.blit(_hint, _hint.get_rect(centerx=sw // 2, centery=sh // 2 + 55))
 
     def _draw_map_transition_screen(self, status: str) -> None:

@@ -306,3 +306,4 @@
 - [19/10/2026] (feature) Imagem de fundo nas telas de login e loading do client — tags: ui, personagem — HISTORICO_FEATURES.md §59
 - [19/10/2026] (feature) Fundo da tela de loading sorteado entre variantes "_1/_2/_3" — tags: ui — HISTORICO_FEATURES.md §60
 - [19/10/2026] (feature) Barra de progresso da tela de loading vira sprite, escala igual ao nameplate — tags: ui — HISTORICO_FEATURES.md §61
+- [19/10/2026] (feature) Contorno no texto da tela de loading + progresso único entre as 2 fases — tags: ui — HISTORICO_FEATURES.md §62
