@@ -43,6 +43,25 @@ _INP_ACT   = (150, 115, 220)
 
 _TIMEOUT = 10.0
 
+# Fundo de tela (19/10/2026, pedido do usuário) — carregado 1x via
+# ui/asset_cache.py (ponto único de decode de imagem do cliente, nunca
+# pygame.image.load direto) e escalado pra cobrir a janela inteira,
+# cacheado por tamanho de janela (recalcula só se a janela mudar de
+# tamanho, nunca todo frame). Sem o arquivo → cai pro fundo sólido de
+# sempre (_BG), mesmo padrão de fallback usado em todo o projeto.
+_BG_IMG_PATH = "assets/content/login_screen.png"
+_bg_scaled_cache: "dict[tuple[int, int], pygame.Surface]" = {}
+
+
+def _get_login_background(size: "tuple[int, int]") -> "pygame.Surface | None":
+    if size in _bg_scaled_cache:
+        return _bg_scaled_cache[size]
+    from ui.asset_cache import get_image
+    raw = get_image(_BG_IMG_PATH)
+    scaled = pygame.transform.scale(raw, size) if raw is not None else None
+    _bg_scaled_cache[size] = scaled
+    return scaled
+
 
 class _TextInput:
     def __init__(self, rect, placeholder="", password=False, max_len=24):
@@ -249,7 +268,11 @@ def run(screen: pygame.Surface, host: str = "localhost", port: int = 8765,
                 _safe_disconnect(net); st["net"] = None; st["pending"] = ""
 
         # ── Render ────────────────────────────────────────────────────────────
-        screen.fill(_BG)
+        _bg_img = _get_login_background((W, H))
+        if _bg_img is not None:
+            screen.blit(_bg_img, (0, 0))
+        else:
+            screen.fill(_BG)
         _panel(screen, pygame.Rect(px, py, PW, PH))
         title = font_title.render("RPG ECS Online", False, _TITLE_COL)
         screen.blit(title, title.get_rect(centerx=W // 2, y=py + 14))

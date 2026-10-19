@@ -2,8 +2,8 @@
 
 > Log datado de toda funcionalidade/melhoria implementada a pedido do
 > usuário — não é lugar de bug nem de problema estrutural (ver
-> `PROBLEMAS_ARQUITETURA.md`/`HISTORICO_BUGS.md`). Números são§ deste
-> arquivo, não herdados de `PROBLEMAS_ARQUITETURA.md` (onde a entrada
+> `PROBLEMAS_ARQUITETURA.md`/`HISTORICO_BUGS.md`). Números são PRÓPRIOS
+> deste arquivo, não herdados de `PROBLEMAS_ARQUITETURA.md` (onde a entrada
 > morava antes de 19/10/2026 fica como stub, "(movido)", apontando pra
 > cá). Ver `arquitetura/INDICE.md` pra buscar por tag/palavra-chave.
 
@@ -5206,4 +5206,41 @@ visual de verdade (como o "espiar por cima" fica na prática, se o
 usuário gosta do tamanho 200% ou quer calibrar diferente) ainda
 depende de playtest manual — pedido do usuário foi explicitamente
 "para testar", não necessariamente o valor final.
+
+## 59. Imagem de fundo nas telas de login e loading do client (19/10/2026)
+
+**Pedido do usuário**: "quero que coloque a imagem
+`assets/content/login_screen.png` na tela de login do client, e não do
+launcher, e na tela de loading a `assets/content/loading_screen.png`
+como fundo de tela."
+
+**Investigação**: tela de login é `ui/login_screen.py::run()` (loop
+bloqueante, roda ANTES de qualquer `GameEngine` existir — nunca
+confundir com `launcher/login_ui.py`, telas DIFERENTES, uma é o jogo e
+a outra o launcher de atualização, só o jogo foi pedido). Tela de
+loading é `client/habilidades_handlers.py::_draw_loading_screen`
+(mixin de `GameEngine`, nome do arquivo é legado — o método mora ali
+desde antes de existir arquivo próprio pra loading screen).
+
+**Fix**: as 2 imagens (800×446 e 800×441, ambas ~16:9) são carregadas
+1x via `ui/asset_cache.py::get_image()` (ponto único de decode de
+imagem do cliente — nunca `pygame.image.load` direto) e escaladas pra
+cobrir a janela inteira (`pygame.transform.scale`), com um cache
+PRÓPRIO por tela indexado por `(largura, altura)` da janela — só
+recalcula o scale se a janela mudar de tamanho, nunca todo frame.
+Substituem o `screen.fill(cor sólida)` de cada tela; sem o arquivo no
+disco (`get_image` devolve `None`), cai pro fundo sólido de sempre —
+mesmo padrão de fallback usado em todo o projeto pra "sem arte ainda".
+Resto do desenho de cada tela (painel de login, gradiente/barra de
+progresso do loading) continua por cima, sem mudança.
+
+**Teste**: `tests/test_loading_screen.py`, `tests/test_sound_muted_
+during_loading.py`, `tests/test_main_reconnect_login_fallback.py`,
+`tests/test_mid_session_reconnect.py`, `tests/test_client_ui.py` (264
+testes) sem regressão. Smoke scripts confirmam que as 2 funções de
+background carregam e escalam certo pras 2 imagens reais, e que o
+método `_draw_loading_screen` roda ponta a ponta sem exceção com o
+background novo. Validação visual de verdade (como as imagens ficam
+atrás do painel/barra de progresso) ainda depende de playtest manual
+do usuário.
 

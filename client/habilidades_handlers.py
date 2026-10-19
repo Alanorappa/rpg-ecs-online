@@ -15,6 +15,23 @@ from engine.components import PlayerSkills
 from ui.icon_manager import ICONS
 from ui.ui_sizes import UI
 
+# Fundo da tela de loading (19/10/2026, pedido do usuário) — mesmo padrão
+# de cache-por-tamanho-de-janela já usado em ui/login_screen.py (carrega
+# 1x via ui/asset_cache.py, escala só quando o tamanho da janela muda,
+# nunca todo frame). Sem o arquivo → cai pro fundo sólido de sempre.
+_LOADING_BG_IMG_PATH = "assets/content/loading_screen.png"
+_loading_bg_scaled_cache: "dict[tuple[int, int], pygame.Surface]" = {}
+
+
+def _get_loading_background(size: "tuple[int, int]") -> "pygame.Surface | None":
+    if size in _loading_bg_scaled_cache:
+        return _loading_bg_scaled_cache[size]
+    from ui.asset_cache import get_image
+    raw = get_image(_LOADING_BG_IMG_PATH)
+    scaled = pygame.transform.scale(raw, size) if raw is not None else None
+    _loading_bg_scaled_cache[size] = scaled
+    return scaled
+
 
 class HabilidadesHandlers:
 
@@ -213,7 +230,11 @@ class HabilidadesHandlers:
         dots = "." * (int(self._loading_anim_t * 2) % 4)
 
         sw, sh = self.screen.get_width(), self.screen.get_height()
-        self.screen.fill((8, 6, 4))
+        _bg_img = _get_loading_background((sw, sh))
+        if _bg_img is not None:
+            self.screen.blit(_bg_img, (0, 0))
+        else:
+            self.screen.fill((8, 6, 4))
 
         # Gradiente sutil no centro
         _grad = pygame.Surface((sw, sh), pygame.SRCALPHA)
