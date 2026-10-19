@@ -686,6 +686,23 @@ padrão a quebrar, não só os bugs individuais.
   "pesquisar antes de codar" já existir, o que prova que reciclar
   pesquisa de um tópico mais amplo não substitui pesquisar a decisão
   específica em jogo).
+- **Descoberta de variantes numeradas de um asset** (sprite, imagem de
+  fundo, qualquer arquivo onde "várias versões, escolhida em runtime"
+  faz sentido) → SEMPRE probe sequencial via `os.path.exists`
+  (`{base}_1`, `{base}_2`, ... parando no primeiro número ausente),
+  NUNCA `glob` — ordem de glob não é garantida e pode incluir arquivo
+  não relacionado por engano. Mesmo padrão em 2 lugares hoje:
+  `engine/entity_disguise.py::discover_sprite_variants` (disfarce) e
+  `client/habilidades_handlers.py::_discover_loading_bg_variants` (fundo
+  da tela de loading, 19/10/2026 — `loading_screen.png` sem sufixo
+  SEMPRE entra no sorteio também, nunca é tratado como "_1"). Numeração
+  precisa ser CONSECUTIVA sem buraco — um `_2` sem `_1` nunca é
+  encontrado. Se a escolha deve ficar FIXA pelo processo inteiro (não
+  re-sortear a cada vez que a tela reaparece), cachear o PATH escolhido
+  numa variável de módulo com sentinela dedicado (`_UNSET = object()`)
+  — nunca `None` como "ainda não sorteei", porque `None` também é um
+  resultado válido ("nenhum arquivo achado"). Ver
+  HISTORICO_FEATURES.md §60.
 - **Animação BASE de personagem** (idle/andar, qualquer direção, qualquer
   classe — não confundir com override TEMPORÁRIO de aparência acima) →
   `engine/character_animation.py::get_character_frame(class_id, state,

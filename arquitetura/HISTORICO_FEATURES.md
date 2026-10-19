@@ -5244,3 +5244,45 @@ background novo. Validação visual de verdade (como as imagens ficam
 atrás do painel/barra de progresso) ainda depende de playtest manual
 do usuário.
 
+## 60. Fundo da tela de loading sorteado entre variantes "_1/_2/_3" (19/10/2026)
+
+**Pedido do usuário**: "é possível fazer com que a tela de loading
+varie? Se eu colocar diferentes imagens com o mesmo nome e '_1/_2/_3'
+no nome, você consegue escolher elas aleatoriamente?"
+
+**Desenho — reusa um padrão JÁ EXISTENTE no projeto**, em vez de
+inventar um novo: `engine/entity_disguise.py::discover_sprite_variants`
+já faz descoberta SEQUENCIAL de variantes numeradas (`os.path.exists`
+um a um, para no primeiro buraco) — mesma técnica aplicada aqui pra
+`loading_screen_1.png`, `_2`, `_3`... NUNCA `glob` (ordem de glob não é
+garantida, poderia incluir arquivo não relacionado por engano).
+`loading_screen.png` (sem sufixo, já em uso desde §59) sempre entra no
+sorteio também, nunca é tratado como "_1" — conceito separado, pra quem
+só tinha o arquivo único de antes continuar funcionando sem precisar
+renomear nada.
+
+**Fix**: `_choose_loading_bg_path()` sorteia 1 caminho entre os
+candidatos encontrados — só 1 VEZ por processo (cacheado em variável de
+módulo com sentinela `_UNSET`, pra distinguir "ainda não sorteou" de
+"sorteou None" — nenhum arquivo achado). Trocar de imagem no meio da
+mesma sessão de jogo seria mais estranho que repetitivo, então a
+escolha vale pro processo inteiro, não por "toda vez que a tela de
+loading aparece" (reconexão, por exemplo, mostra a MESMA imagem
+sorteada no boot).
+
+**Limitação conhecida, herdada do padrão que foi reaproveitado**: a
+numeração precisa ser CONSECUTIVA sem buraco (`_1`, `_2`, `_3`, nunca
+pular pra `_5` direto) — a descoberta para no primeiro número ausente,
+mesmo padrão de `discover_sprite_variants`. Testado explicitamente
+(script manual): `_2` sozinho, sem `_1`, é ignorado por completo.
+
+**Teste**: `tests/test_loading_screen.py`, `tests/test_sound_muted_
+during_loading.py`, `tests/test_client_ui.py` (259 testes) sem
+regressão. 3 scripts manuais confirmam: (1) com só o arquivo único de
+hoje, o sorteio sempre escolhe ele; (2) com 4 arquivos fake
+(base+_1+_2+_3), os 4 aparecem numa distribuição razoavelmente uniforme
+em 300 sorteios; (3) um buraco na numeração (`_2` sem `_1`) corretamente
+não encontra nada. Validação visual de verdade (ver as imagens
+alternando entre reinícios do jogo) depende de playtest manual do
+usuário, com mais de uma imagem de verdade no disco.
+

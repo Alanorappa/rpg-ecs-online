@@ -304,3 +304,4 @@
 - [19/10/2026] (feature) Preview de classe em 200% (128x128) — painel de criação cresce, lista de seleção "espia" fora da linha (19/10/2026) — tags: personagem — HISTORICO_FEATURES.md §58
 - [19/10/2026] (bug) §292 confirmado em playtest real: texto nascia em cima do sprite na lista de seleção (19/10/2026) — tags: animacao, mob — HISTORICO_BUGS.md §93
 - [19/10/2026] (feature) Imagem de fundo nas telas de login e loading do client — tags: ui, personagem — HISTORICO_FEATURES.md §59
+- [19/10/2026] (feature) Fundo da tela de loading sorteado entre variantes "_1/_2/_3" — tags: ui — HISTORICO_FEATURES.md §60

@@ -19,15 +19,60 @@ from ui.ui_sizes import UI
 # de cache-por-tamanho-de-janela já usado em ui/login_screen.py (carrega
 # 1x via ui/asset_cache.py, escala só quando o tamanho da janela muda,
 # nunca todo frame). Sem o arquivo → cai pro fundo sólido de sempre.
-_LOADING_BG_IMG_PATH = "assets/content/loading_screen.png"
+#
+# Variantes aleatórias (19/10/2026, pedido do usuário) — mesmo padrão de
+# descoberta SEQUENCIAL já usado em `engine/entity_disguise.py::
+# discover_sprite_variants` (probe `os.path.exists` um a um, para no
+# primeiro buraco, nunca glob — ordem de glob não é garantida e poderia
+# pegar arquivo não relacionado por engano). `loading_screen.png` (sem
+# sufixo, já em uso desde a feature anterior) sempre entra no sorteio
+# também, nunca é substituído pelo "_1" — são conceitos separados, pra
+# quem só tinha o arquivo único de antes continuar funcionando sem
+# precisar renomear nada. A escolha é feita 1 VEZ por processo (sorteia
+# na 1ª vez que a tela de loading precisa desenhar, nunca recalcula depois
+# — trocar de imagem no meio da mesma sessão seria mais estranho que
+# "piscar" que repetitivo).
+_LOADING_BG_BASE = "assets/content/loading_screen"
+_UNSET = object()  # sentinel — distingue "ainda não sorteou" de "sorteou None" (nenhum arquivo achado)
+_loading_bg_chosen_path = _UNSET
 _loading_bg_scaled_cache: "dict[tuple[int, int], pygame.Surface]" = {}
+
+
+def _discover_loading_bg_variants() -> "list[str]":
+    import os
+    candidates = []
+    base_path = f"{_LOADING_BG_BASE}.png"
+    if os.path.exists(base_path):
+        candidates.append(base_path)
+    n = 1
+    while True:
+        p = f"{_LOADING_BG_BASE}_{n}.png"
+        if not os.path.exists(p):
+            break
+        candidates.append(p)
+        n += 1
+    return candidates
+
+
+def _choose_loading_bg_path() -> "str | None":
+    global _loading_bg_chosen_path
+    if _loading_bg_chosen_path is not _UNSET:
+        return _loading_bg_chosen_path
+    import random
+    candidates = _discover_loading_bg_variants()
+    _loading_bg_chosen_path = random.choice(candidates) if candidates else None
+    return _loading_bg_chosen_path
 
 
 def _get_loading_background(size: "tuple[int, int]") -> "pygame.Surface | None":
     if size in _loading_bg_scaled_cache:
         return _loading_bg_scaled_cache[size]
+    path = _choose_loading_bg_path()
+    if path is None:
+        _loading_bg_scaled_cache[size] = None
+        return None
     from ui.asset_cache import get_image
-    raw = get_image(_LOADING_BG_IMG_PATH)
+    raw = get_image(path)
     scaled = pygame.transform.scale(raw, size) if raw is not None else None
     _loading_bg_scaled_cache[size] = scaled
     return scaled
