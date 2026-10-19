@@ -1059,13 +1059,20 @@ padrão a quebrar, não só os bugs individuais.
     `CARD_H` do card se o preview crescer, nunca sobrepõe.
   - **Seleção** (`_draw_selection`, lista vertical, painel de altura
     FIXA que não cabe o preview em tamanho grande sem cortar) — texto
-    usa `_LIST_ICON_NOMINAL` (64px FIXO, nunca o tamanho real do
-    preview) pra nunca se mover quando o preview muda de tamanho; o
-    sprite em si é coletado durante o loop (`_pending_previews`) e
-    desenhado num 2º PASSE, depois de TODAS as linhas/botões — sem
-    isso, a linha seguinte (desenhada depois, ordem natural do loop)
-    cobriria a parte de baixo do sprite "espiando" por cima da linha
-    anterior.
+    usa `_LIST_TEXT_OFFSET` (150px FIXO desde §293 — valor ANTERIOR,
+    64+14=78, era menor que a largura real do sprite de 128px e o
+    texto nascia por cima do desenho, bug real relatado com print) —
+    nunca o tamanho real do preview, pra nunca se mover quando o
+    preview muda de tamanho; o sprite em si é coletado durante o loop
+    (`_pending_previews`) e desenhado num 2º PASSE, depois de TODAS as
+    linhas/botões — sem isso, a linha seguinte (desenhada depois,
+    ordem natural do loop) cobriria a parte de baixo do sprite
+    "espiando" por cima da linha anterior. **Sempre que
+    `_CLASS_PREVIEW_BASE_SIZE` mudar de novo, conferir que
+    `_LIST_TEXT_OFFSET` (seleção) ainda é maior que a largura real do
+    sprite** — os 2 números não são derivados um do outro, é fácil
+    esquecer de recalibrar um ao mudar o outro (foi exatamente o que
+    aconteceu em §293).
   Ver PROBLEMAS_ARQUITETURA.md §291/§292.
 - **Entry point server-side novo que executa handler compartilhado em nome
   de um player** (skill/spell/projectile/channeling) →

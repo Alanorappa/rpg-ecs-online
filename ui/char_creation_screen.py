@@ -701,11 +701,14 @@ def _draw_selection(screen, saves, occupied, can_create,
     # linha (acima/abaixo do fundo cinza) em vez de cortar/espremer dentro
     # dela. Desenhado por ÚLTIMO (depois de TODAS as linhas+botões) pra
     # nunca ficar coberto pela linha SEGUINTE, que senão cortaria a parte
-    # de baixo do sprite da linha anterior. `_LIST_ICON_NOMINAL` é só o
+    # de baixo do sprite da linha anterior. `_LIST_TEXT_OFFSET` é só o
     # espaço reservado pro texto ao lado — NUNCA o tamanho real do sprite,
     # que pode ser bem maior sem empurrar o texto (mesmo texto fica no
-    # mesmo lugar não importa o tamanho do preview).
-    _LIST_ICON_NOMINAL = int(64 * sc)
+    # mesmo lugar não importa o tamanho do preview). 150px (19/10/2026,
+    # pedido do usuário com print anotado — valor anterior, 64+14=78,
+    # era menor que a largura real do sprite de 128px e o texto nascia
+    # SOBRE o desenho).
+    _LIST_TEXT_OFFSET = int(150 * sc)
     _pending_previews: list = []
 
     for i, s in enumerate(saves):
@@ -725,7 +728,7 @@ def _draw_selection(screen, saves, occupied, can_create,
             col  = _CLASS_COLORS.get(s["class_id"], (150, 150, 150))
             icon = pygame.Rect(icon_x, r.y + slot_h // 2 - icon_sz // 2, icon_sz, icon_sz)
             pygame.draw.rect(screen, col, icon, border_radius=4)
-        text_x = icon_x + _LIST_ICON_NOMINAL + int(14 * sc)
+        text_x = icon_x + _LIST_TEXT_OFFSET
 
         name_s = font_md.render(s["name"], False, _TITLE_COL)
         screen.blit(name_s, (text_x, r.y + int(12 * sc)))

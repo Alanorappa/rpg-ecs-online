@@ -28509,3 +28509,27 @@ visual de verdade (como o "espiar por cima" fica na prática, se o
 usuário gosta do tamanho 200% ou quer calibrar diferente) ainda
 depende de playtest manual — pedido do usuário foi explicitamente
 "para testar", não necessariamente o valor final.
+
+## 293. §292 confirmado em playtest real: texto nascia em cima do sprite na lista de seleção (19/10/2026)
+
+**Sintoma, com print anotado do usuário**: nome/classe/level da linha
+de seleção apareciam SOBRE o sprite (print mostrava uma seta de
+"150px" da borda esquerda do retrato até onde o texto deveria
+começar). Causa raiz: `_LIST_ICON_NOMINAL` (introduzido em §292) tinha
+valor `64+14=78px` de `icon_x` — menor que a largura REAL do sprite de
+128px, que começa em `icon_x` e vai até `icon_x+128`. O texto, calculado
+a partir desse nominal errado, nascia 50px DENTRO da área do sprite.
+
+**Fix**: `_LIST_ICON_NOMINAL` virou `_LIST_TEXT_OFFSET = int(150 *
+sc)` — número único, direto do valor que o usuário mediu/pediu no
+print, substituindo o cálculo antigo (`64+14`) que nunca foi
+recalibrado depois do preview crescer pra 128px em §292. `text_x =
+icon_x + _LIST_TEXT_OFFSET` (era `icon_x + nominal + gap` separados,
+virou 1 número só — mais simples, já que não há mais 2 conceitos
+distintos aqui).
+
+**Teste**: smoke script (`_draw_selection` com 2 personagens
+sintéticos) roda sem exceção; sem suíte automatizada de layout pra
+este arquivo (ver §291/§292) — validação visual de verdade (texto
+não encosta mais no sprite) ainda depende de playtest manual do
+usuário.
