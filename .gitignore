@@ -11,6 +11,23 @@ build/
 # Save files
 saves/
 
+# Material de origem de arte (PSD/ASEPRITE/packs de referência do
+# craftpix, licenças, cupons) — nunca carregado em runtime pelo jogo,
+# só serve de referência pra gerar os sprites finais em assets/sprites/.
+# 19/10/2026, pedido do usuário — também excluído do build do cliente
+# (ver release_tools/build_client.ps1). NUNCA ignorar assets/content/
+# inteiro: a pasta tem arquivos soltos na RAIZ carregados em runtime de
+# verdade (login_screen.png, loading_screen_*.png, loading_screen_bar.png
+# — ver ui/login_screen.py e client/habilidades_handlers.py); só as
+# SUBPASTAS abaixo são material de origem descartável.
+assets/content/aranha_anim_v21/
+assets/content/craftpix-net-*/
+assets/content/frames/
+assets/content/mago/
+assets/content/PNG/
+assets/content/PSD/
+assets/content/Tiled_files/
+
 # Debug logs (gerados por mob_combat_debug.py)
 logs/
 crash.log

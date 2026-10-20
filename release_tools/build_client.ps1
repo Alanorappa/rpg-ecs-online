@@ -35,7 +35,17 @@ if (-not $?) { throw "PyInstaller falhou" }
 $dist = "dist\RPG_Online"
 
 Write-Host "== Copiando assets/ e maps/ para $dist =="
-robocopy "assets" (Join-Path $dist "assets") /E /NFL /NDL /NJH /NJS | Out-Null
+# /XD so nas SUBPASTAS de origem de assets/content (19/10/2026, pedido do
+# usuario) - packs craftpix/PSD/PNG/Tiled_files/frames/mago/aranha_anim_v21
+# sao material de ORIGEM, nunca carregado em runtime pelo jogo, so inchavam
+# o executavel distribuido (~115 MB) sem uso real pro jogador final. NUNCA
+# excluir a pasta "content" inteira - ela tem arquivos soltos na RAIZ que
+# SAO carregados em runtime (login_screen.png, loading_screen_*.png,
+# loading_screen_bar.png - ver ui/login_screen.py e
+# client/habilidades_handlers.py); excluir a pasta inteira quebraria essas
+# telas no executavel (cairiam no fallback de cor solida, silenciosamente).
+robocopy "assets" (Join-Path $dist "assets") /E /NFL /NDL /NJH /NJS `
+    /XD "aranha_anim_v21" "craftpix-net-*" "frames" "mago" "PNG" "PSD" "Tiled_files" | Out-Null
 # maps: so os mapas ATIVOS (map_1 + cavernas + transicoes). Excluidos:
 #   map_main_*/map_worm_cave_* - conteudo nao referenciado por nenhum codigo (~42 MB)
 #   *.png - fontes da ferramenta dev png_to_map, nao carregados pelo jogo
