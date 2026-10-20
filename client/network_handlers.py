@@ -345,13 +345,24 @@ class NetworkHandlers:
                                 _sk_sr.charges += 1
                             if _srv_cd_fail > 0:
                                 _sk_sr.current_cooldown = float(_srv_cd_fail)
-                from engine.components import SpellCast as _SCFail, CombatState as _CSFail
+                from engine.components import SpellCast as _SCFail, CombatState as _CSFail, TileMovement as _TMFail
                 _sc_fail = self.world.get_component(self.player_entity, _SCFail)
                 if _sc_fail and _sc_fail.spell_id == sid:
                     self.world.remove_component(self.player_entity, _SCFail)
                 _cs_fail = self.world.get_component(self.player_entity, _CSFail)
                 if _cs_fail:
                     _cs_fail.is_casting = False
+                # Servidor rejeitou o cast (19/10/2026) — mesma limpeza da
+                # animação de windup que o cancelamento local por movimento já
+                # faz (ui/spell_system.py::SpellCastSystem.update); sem isso o
+                # personagem fica travado na pose de cast quando a rejeição
+                # chega DEPOIS do cast_start já ter tocado (ex: alvo morreu
+                # durante o cast_time). No-op seguro se não havia cast visual
+                # ativo (anim_attack_state já vazio).
+                _tm_fail = self.world.get_component(self.player_entity, _TMFail)
+                if _tm_fail:
+                    from engine.character_animation import clear_attack_anim_state as _caas_fail
+                    _caas_fail(_tm_fail)
                 _fail_reason = payload.get("reason", "")
                 if _fail_reason:
                     from ui.floating_text import WARN as _WARN_fail

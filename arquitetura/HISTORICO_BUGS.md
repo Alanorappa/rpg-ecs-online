@@ -6580,3 +6580,49 @@ sintéticos) roda sem exceção; sem suíte automatizada de layout pra
 este arquivo (ver §291/§292) — validação visual de verdade (texto
 não encosta mais no sprite) ainda depende de playtest manual do
 usuário.
+
+## 94. Personagem travava na pose de cast depois de cancelar (mago e arqueiro) (19/10/2026)
+
+Pedido do usuário: cancelar um cast (Bola de Fogo, Tiro Múltiplo, etc.)
+devia desligar a animação de windup, mas o personagem ficava preso na
+última pose de cast indefinidamente.
+
+**Causa raiz**: `trigger_cast_anim` (`engine/character_animation.py`,
+ligado por `cast_start` via `SKILL_EFFECT`, ver CLAUDE.md) seta
+`anim_attack_hold_last_frame=True` — esse estado NUNCA expira sozinho
+por design (segura o último frame esperando o evento `"launch"/
+"impact"/"miss"` real). Quando o cast completa normalmente esse evento
+chega e `trigger_attack_anim` sobrescreve a pose sem problema; mas
+quando o cast é CANCELADO, esse evento nunca chega — nenhum dos 2
+pontos que removem o `SpellCast`/zeram `is_casting` chamava
+`clear_attack_anim_state()` pra desligar a animação. A própria
+docstring de `clear_attack_anim_state` já citava "cast" entre os
+estados que precisam de limpeza manual (15/10/2026, pro revive) — só
+nunca tinha sido de fato conectada ao cancelamento de cast.
+Mecanismo genérico (chave = `sid` do SKILL_CATALOG, não por classe) —
+afeta igualmente mago e arqueiro, qualquer skill com `cast_time>0`.
+
+**Fix**: `clear_attack_anim_state(tm)` chamado nos 2 pontos reais de
+cancelamento de `SpellCast`:
+- `ui/spell_system.py::SpellCastSystem.update()` — cancelamento LOCAL
+  por movimento (o caminho mais comum, cobre qualquer classe/skill).
+- `client/network_handlers.py::_handle_msg_skill_result` — rejeição
+  SERVER-AUTHORITATIVE de um `SKILL_RESULT{failed:true}` pro mesmo
+  `sid` que já estava em cast (cenário real, embora raro: 2ª tentativa
+  da mesma skill rejeitada por CD/carga enquanto a 1ª ainda está no
+  meio do `cast_time`). No-op seguro quando não havia animação de cast
+  ativa.
+`Channeling` (Calamidade Flamejante) ficou de fora de propósito —
+`cast_time=0.0` no catálogo (é canalização, não cast), `cast_start`
+nunca dispara pra ela, não existe animação de windup pra travar.
+
+**Teste**: `tests/test_client_ui.py::
+test_cancelar_cast_por_movimento_limpa_anim_attack_state` e
+`::test_skill_result_falho_limpa_anim_attack_state_do_cast` — ambos
+simulam `anim_attack_state` já ligado (como se `cast_start` já tivesse
+disparado) e confirmam que o cancelamento limpa `anim_attack_state`/
+`anim_attack_hold_last_frame`. Suíte relacionada (336 testes,
+`test_client_ui`/`test_skill_effect_no_local_dup_sound`/
+`test_tiro_multiplo_reticle_cache`/`test_channeling_system_get_first`/
+`test_portal`) sem regressão. Reprodução em jogo (iniciar cast e mover
+o personagem) ainda depende de playtest manual do usuário.

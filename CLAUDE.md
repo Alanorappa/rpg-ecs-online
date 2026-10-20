@@ -864,6 +864,20 @@ padrão a quebrar, não só os bugs individuais.
   (`sid==""`) continua ali; disparar nos 2 lugares duplicaria a
   animação pra skill de projétil (lançamento + impacto). Ver
   PROBLEMAS_ARQUITETURA.md §281/§284.
+  **Cast CANCELADO (movimento, rejeição do servidor) tem que chamar
+  `clear_attack_anim_state(tm)` explicitamente** (19/10/2026) — como
+  `anim_attack_hold_last_frame=True` nunca expira sozinho, um cast
+  cancelado nunca recebe o `"launch"/"impact"/"miss"` que normalmente
+  desligaria a pose, e o personagem fica travado pra sempre. Os 2
+  pontos reais que removem `SpellCast`/zeram `is_casting` já chamam:
+  `ui/spell_system.py::SpellCastSystem.update()` (cancelamento LOCAL
+  por movimento) e `client/network_handlers.py::
+  _handle_msg_skill_result` (rejeição server-authoritative tardia).
+  Mecanismo genérico por `sid`, afeta mago e arqueiro igualmente — NUNCA
+  um 3º ponto que remova `SpellCast` sem o clear correspondente.
+  `Channeling` (Calamidade Flamejante) fica de fora — `cast_time=0.0`
+  no catálogo, `cast_start` nunca dispara pra ela. Ver
+  HISTORICO_BUGS.md §94.
   **Animação de MORTE do player** (15/10/2026, pedido do usuário) →
   `engine.character_animation.trigger_death_anim(tile_movement,
   class_id, now_ms)` — mesma técnica do mob (toca 1 ciclo, trava no

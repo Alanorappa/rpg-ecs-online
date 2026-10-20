@@ -309,3 +309,4 @@
 - [19/10/2026] (feature) Contorno no texto da tela de loading + progresso único entre as 2 fases — tags: ui — HISTORICO_FEATURES.md §62
 - [19/10/2026] (feature) Build do cliente e git passam a excluir material de origem de assets/content — tags: build, git — HISTORICO_FEATURES.md §63
 - [19/10/2026] (feature) Imagens de UI (login/loading/launcher) movidas pra assets/ui/ — tags: ui, launcher — HISTORICO_FEATURES.md §64
+- [19/10/2026] (bug) Personagem travava na pose de cast depois de cancelar (mago e arqueiro) — tags: animacao, mago, arqueiro — HISTORICO_BUGS.md §94

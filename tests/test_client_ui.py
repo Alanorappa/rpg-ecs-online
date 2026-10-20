@@ -2495,6 +2495,90 @@ def test_recarregar_visual_only_nao_mexe_em_bag_nem_aljava_online():
     assert quiver.arrow_count == 0, "cliente não deve encher a aljava — só o servidor"
 
 
+# ── ui/spell_system.py::SpellCastSystem.update — cancelar cast por movimento
+# limpa a animação de windup (19/10/2026, pedido do usuário: mago e arqueiro
+# ficavam travados na pose de cast depois de cancelar). `trigger_cast_anim`
+# (engine/character_animation.py, disparado por SKILL_EFFECT{event:
+# "cast_start"}) liga `anim_attack_hold_last_frame=True` — sem clear_attack_
+# anim_state no cancelamento, o personagem nunca volta pra idle/run, porque
+# o evento "launch"/"impact" que normalmente limparia isso nunca chega
+# (o cast nunca completou). Vale pra QUALQUER classe/skill com cast_time
+# (bola_de_fogo do mago, tiro_multiplo do arqueiro, etc.) — o mecanismo é
+# genérico, sem if/elif por spell_id.
+
+def test_cancelar_cast_por_movimento_limpa_anim_attack_state():
+    from engine.world import World
+    from engine.components import SpellCast, CombatState, TileMovement, PlayerControlled
+    from ui.spell_system import SpellCastSystem
+
+    world = World()
+    player = world.create_entity()
+    world.add_component(player, PlayerControlled())
+
+    tm = TileMovement(is_moving=True)
+    tm.anim_attack_state           = "mago_bola_de_fogo_cast"
+    tm.anim_attack_hold_last_frame = True
+    world.add_component(player, tm)
+
+    combat_state = CombatState()
+    combat_state.is_casting = True
+    world.add_component(player, combat_state)
+
+    spell_cast = SpellCast(spell_id="bola_de_fogo", cast_time=1.5,
+                           interruptible=True, visual_only=True)
+    world.add_component(player, spell_cast)
+
+    screen = pygame.display.get_surface()
+    sys_spell = SpellCastSystem(world, screen)
+    sys_spell.update(events=[], dt=0.1)
+
+    assert tm.anim_attack_state == "", \
+        "cancelar o cast por movimento deve desligar a animação de windup"
+    assert tm.anim_attack_hold_last_frame is False
+    assert combat_state.is_casting is False
+    assert world.get_component(player, SpellCast) is None
+
+
+# ── client/network_handlers.py::_handle_msg_skill_result — rejeição do
+# servidor pra um cast já em andamento também limpa a animação de windup
+# (mesma classe de bug do teste acima, caminho server-authoritative em vez
+# de cancelamento local por movimento).
+
+def test_skill_result_falho_limpa_anim_attack_state_do_cast():
+    from engine.world import World
+    from engine.components import SpellCast, CombatState, TileMovement, PlayerSkills
+    from client.network_handlers import NetworkHandlers
+
+    world = World()
+    player = world.create_entity()
+
+    tm = TileMovement()
+    tm.anim_attack_state           = "arqueiro_tiro_multiplo_cast"
+    tm.anim_attack_hold_last_frame = True
+    world.add_component(player, tm)
+
+    combat_state = CombatState()
+    combat_state.is_casting = True
+    world.add_component(player, combat_state)
+    world.add_component(player, SpellCast(spell_id="tiro_multiplo", cast_time=1.0))
+    world.add_component(player, PlayerSkills())
+
+    handlers = NetworkHandlers.__new__(NetworkHandlers)
+    handlers.world = world
+    handlers.player_entity = player
+    handlers._my_eid = 7
+
+    handlers._handle_msg_skill_result({
+        "caster_eid": 7, "sid": "tiro_multiplo", "targets": [],
+        "failed": True, "cooldown": 0, "reason": "",
+    })
+
+    assert tm.anim_attack_state == "", \
+        "rejeição do servidor deve desligar a animação de windup do cast"
+    assert tm.anim_attack_hold_last_frame is False
+    assert combat_state.is_casting is False
+
+
 # ── client/network_handlers.py::_handle_msg_stats_update — confirmação de
 # aljava (quiver_arrow_count) ignora update cujo quiver_item_id não bate com
 # a aljava equipada AGORA (16/09/2026, bug real relatado pelo usuário: trocar

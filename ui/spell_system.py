@@ -171,6 +171,12 @@ class SpellCastSystem(System):
                     self.interrupted_visual_casts.append(spell_cast.spell_id)
                 self.world.remove_component(entity_id, SpellCast)
                 combat_state.is_casting = False
+                # Desliga a animação de windup (trigger_cast_anim) — sem isso o
+                # personagem fica travado na pose de cast pra sempre, já que ela
+                # segura o último frame esperando um "launch"/"impact"/"miss" que
+                # nunca chega quando o cast é cancelado (19/10/2026, ver CLAUDE.md).
+                from engine.character_animation import clear_attack_anim_state as _caas_cancel
+                _caas_cancel(tm)
                 SOUNDS.fadeout_skills(300)
                 WARN.add("Cast interrompido!")
                 return
