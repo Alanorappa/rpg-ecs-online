@@ -5375,3 +5375,26 @@ separados) — reescrito pra esperar 50% (peso da fase assets), já que
 de verdade (texto legível na prática, sensação de "uma barra só"
 durante o boot real) ainda depende de playtest manual do usuário.
 
+## 63. Build do cliente e git passam a excluir material de origem de assets/content (19/10/2026)
+
+`assets/content/` guardava, misturados na mesma pasta: (a) packs
+craftpix/PSD/PNG/Tiled_files/frames/mago/aranha_anim_v21 — material de
+ORIGEM pra gerar sprites finais em `assets/sprites/`, nunca carregado
+em runtime — e (b) arquivos soltos na RAIZ (`login_screen.png`,
+`loading_screen_1.png`...`_5.png`, `loading_screen_bar.png`)
+carregados de verdade em runtime pelas features de §59-§62 acima.
+Pedido do usuário foi "ignorar a pasta content nos commits e pra gerar
+o executável" — uma 1ª tentativa literal (`.gitignore`/robocopy `/XD
+"content"` excluindo a pasta INTEIRA) teria quebrado login/loading no
+executável, descoberta ANTES de comitar (grep em `*.py` confirmou os 2
+consumidores). Corrigido pra excluir só as 7 SUBPASTAS de origem pelo
+nome (`.gitignore`: `assets/content/PNG/`, `.../PSD/`, `.../Tiled_
+files/`, `.../frames/`, `.../mago/`, `.../aranha_anim_v21/`, `.../
+craftpix-net-*/`; `release_tools/build_client.ps1`: mesmo conjunto via
+`/XD` no robocopy de `assets/`) — os arquivos soltos na raiz continuam
+versionados e no executável. `git rm -r --cached` removeu 3493
+arquivos do índice (nada apagado do disco). Build validado: executável
+gerado (104,6 MB) com os PNGs de runtime presentes e as 7 subpastas
+ausentes. Ver CLAUDE.md pra nunca reintroduzir uma exclusão "pasta
+inteira" sem checar arquivos soltos na raiz primeiro.
+

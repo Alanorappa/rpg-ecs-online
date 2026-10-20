@@ -307,3 +307,4 @@
 - [19/10/2026] (feature) Fundo da tela de loading sorteado entre variantes "_1/_2/_3" — tags: ui — HISTORICO_FEATURES.md §60
 - [19/10/2026] (feature) Barra de progresso da tela de loading vira sprite, escala igual ao nameplate — tags: ui — HISTORICO_FEATURES.md §61
 - [19/10/2026] (feature) Contorno no texto da tela de loading + progresso único entre as 2 fases — tags: ui — HISTORICO_FEATURES.md §62
+- [19/10/2026] (feature) Build do cliente e git passam a excluir material de origem de assets/content — tags: build, git — HISTORICO_FEATURES.md §63
