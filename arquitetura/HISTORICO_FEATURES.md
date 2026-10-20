@@ -5398,3 +5398,28 @@ gerado (104,6 MB) com os PNGs de runtime presentes e as 7 subpastas
 ausentes. Ver CLAUDE.md pra nunca reintroduzir uma exclusão "pasta
 inteira" sem checar arquivos soltos na raiz primeiro.
 
+## 64. Imagens de UI (login/loading/launcher) movidas pra assets/ui/ (19/10/2026)
+
+Usuário reorganizou manualmente: `login_screen.png`, `loading_screen_1.
+png`...`_5.png`, `loading_screen_bar.png` saíram de `assets/content/`
+(onde foram colocadas na pressa de §59-§63, misturadas com material de
+origem) e `Launcher.png` saiu de `assets/hud/` (onde nunca pertenceu de
+verdade — não é uma barra de HP/nameplate como os outros arquivos
+daquela pasta) — todas as 7 imagens foram pra uma pasta nova
+`assets/ui/`, dedicada a arte de telas de UI fora do mundo de jogo.
+Atualizados os 3 pontos que liam o caminho antigo:
+`client/habilidades_handlers.py::_LOADING_BG_BASE`/
+`_LOADING_BAR_IMG_PATH` (tela de loading), `ui/login_screen.py::
+_BG_IMG_PATH` (tela de login do jogo) e `launcher/login_ui.py::
+_ASSET_PATH` (janela do Launcher) — nenhuma lógica mudou, só o
+caminho. `arquitetura/ARQUITETURA ONLINE.md` (seção do Launcher)
+também atualizada pra refletir o novo caminho. Como consequência
+colateral boa: `assets/content/` agora só tem as 7 subpastas de origem
+(§63) + 4 arquivos soltos minúsculos (license/readme/desktop.ini/
+mask.ase) — nenhum arquivo de runtime real sobrou lá, mas a exclusão
+por subpasta de §63 continua certa do mesmo jeito (nunca excluir a
+pasta `content` inteira sem reconferir se algo novo foi colocado solto
+na raiz dela). Validado: `tests/test_loading_screen.py` +
+`tests/test_client_ui.py` (256 testes) sem regressão; paths
+confirmados existentes em disco antes do commit.
+

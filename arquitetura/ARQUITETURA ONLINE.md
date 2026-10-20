@@ -1568,8 +1568,9 @@ launch_game()` → `main.py` → `GameEngine.__init__` →
 `client/online_mode_handlers.py::_do_login()`) — sem isso, o client
 sempre pedia login de novo mesmo com o Launcher já autenticado.
 
-**Visual do Launcher**: arte de fundo própria (`assets/hud/Launcher.png`,
-arte do usuário) via `tk.Canvas`, janela do tamanho EXATO da imagem
+**Visual do Launcher**: arte de fundo própria (`assets/ui/Launcher.png`,
+arte do usuário, movida de `assets/hud/` em 19/10/2026) via `tk.Canvas`,
+janela do tamanho EXATO da imagem
 (500×601) — `launcher/login_ui.py` posiciona os widgets (login/status)
 dentro do painel escuro reservado na própria arte, paleta
 dourada/pedra escura combinando (nunca cor tkinter padrão de sistema).

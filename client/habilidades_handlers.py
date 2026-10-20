@@ -32,7 +32,7 @@ from ui.ui_sizes import UI
 # na 1ª vez que a tela de loading precisa desenhar, nunca recalcula depois
 # — trocar de imagem no meio da mesma sessão seria mais estranho que
 # "piscar" que repetitivo).
-_LOADING_BG_BASE = "assets/content/loading_screen"
+_LOADING_BG_BASE = "assets/ui/loading_screen"
 _UNSET = object()  # sentinel — distingue "ainda não sorteou" de "sorteou None" (nenhum arquivo achado)
 _loading_bg_chosen_path = _UNSET
 _loading_bg_scaled_cache: "dict[tuple[int, int], pygame.Surface]" = {}
@@ -79,7 +79,7 @@ def _get_loading_background(size: "tuple[int, int]") -> "pygame.Surface | None":
 
 
 # ── Barra de progresso com sprite (19/10/2026, pedido do usuário) ──────────
-# `assets/content/loading_screen_bar.png` — moldura/trilho prontos no PNG;
+# `assets/ui/loading_screen_bar.png` — moldura/trilho prontos no PNG;
 # o marcador de cor #291000 (41,16,0) dentro da imagem marca tanto a
 # POSIÇÃO/TAMANHO do retângulo de preenchimento (margem simétrica dos 2
 # lados, mesma altura do marcador) quanto a COR do preenchimento (pedido
@@ -88,7 +88,7 @@ def _get_loading_background(size: "tuple[int, int]") -> "pygame.Surface | None":
 # hud_bars.SCALE` (nearest-neighbor fixo, 2x hoje) — "mesma escala que os
 # nameplates têm no jogo", NUNCA um número novo/duplicado. Ver
 # PROBLEMAS_ARQUITETURA.md (HISTORICO_FEATURES.md).
-_LOADING_BAR_IMG_PATH = "assets/content/loading_screen_bar.png"
+_LOADING_BAR_IMG_PATH = "assets/ui/loading_screen_bar.png"
 _LOADING_BAR_MARKER_COLOR = (0x29, 0x10, 0x00)
 _loading_bar_cache: "dict | None" = None  # {"img": Surface, "fill_rect": Rect} ou None (sem arquivo)
 

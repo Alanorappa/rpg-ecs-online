@@ -49,7 +49,7 @@ _TIMEOUT = 10.0
 # cacheado por tamanho de janela (recalcula só se a janela mudar de
 # tamanho, nunca todo frame). Sem o arquivo → cai pro fundo sólido de
 # sempre (_BG), mesmo padrão de fallback usado em todo o projeto.
-_BG_IMG_PATH = "assets/content/login_screen.png"
+_BG_IMG_PATH = "assets/ui/login_screen.png"
 _bg_scaled_cache: "dict[tuple[int, int], pygame.Surface]" = {}
 
 

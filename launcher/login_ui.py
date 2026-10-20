@@ -9,7 +9,8 @@ resultado volta pra thread principal via `Tk.after()`, única forma
 segura de mexer em widget tkinter fora da main thread.
 
 Visual (08/10/2026, pedido do usuário): arte de fundo própria
-(`assets/hud/Launcher.png`, arte do usuário) — janela do TAMANHO EXATO
+(`assets/ui/Launcher.png`, arte do usuário, movida de `assets/hud/`
+em 19/10/2026 — ver CLAUDE.md) — janela do TAMANHO EXATO
 da imagem, widgets posicionados sobre a faixa escura de pedra na
 metade de baixo da arte (reservada pra isso no próprio desenho).
 
@@ -41,7 +42,7 @@ _ERROR      = "#e05a5a"
 _OK         = "#56c27a"
 _FIELD_BG   = "#2a2d33"
 
-_ASSET_PATH = "assets/hud/Launcher.png"
+_ASSET_PATH = "assets/ui/Launcher.png"
 
 # Layout compacto de campo (09/10/2026, pedido do usuário — campo "muito
 # largo"): label ao lado do entry (não em cima), largura fixa menor,
