@@ -53,13 +53,25 @@ SLIDER_TRACK   = (13, 4)
 SLIDER_FILL_BAR   = (14, 4)
 SLIDER_FILL_BAR_W = 3
 
-# Botão: 3 colunas (ponta esq., meio repetível, ponta dir.) x 2 linhas,
-# idle nas colunas 6-8 e pressionado nas 9-11, linhas 10-11 do atlas.
-# A arte ocupa só a faixa y=10..24 dentro dos 32px (2 tiles) do bloco.
+# Botão: 3 colunas (ponta esq., meio repetível, ponta dir.), idle nas
+# colunas 6-8 e pressionado nas 9-11. Duas cópias da mesma arte no
+# atlas, que só diferem no encaixe vertical na grade:
+#  - "baixo" (1 linha, linha 9 do atlas): arte em y=1..15 do tile —
+#    preenche exatamente 1 linha da janela (lista empilhada do menu).
+#  - "alto" (2 linhas, linhas 10-11): arte em y=10..24 dos 32px —
+#    fica "entre" 2 linhas da janela (botão solto, ex: Voltar).
 _BTN_IDLE_COL0    = 6
 _BTN_PRESSED_COL0 = 9
-_BTN_ROW0         = 10
-BTN_ART_Y0, BTN_ART_Y1 = 10, 25
+_BTN_ROW_SHORT    = 9
+_BTN_ROW_TALL     = 10
+_BTN_ART_Y_SHORT  = (1, 16)
+_BTN_ART_Y_TALL   = (10, 25)
+
+
+def button_art_y(tall: bool) -> tuple:
+    """(y0, y1) RAW da arte do botão dentro do bloco carimbado — usar no
+    hit-test (o resto do bloco é transparente)."""
+    return _BTN_ART_Y_TALL if tall else _BTN_ART_Y_SHORT
 
 
 def _load() -> "pygame.Surface":
@@ -121,15 +133,17 @@ def wood_panel_raw(tw: int, th: int) -> "pygame.Surface":
 
 
 def blit_button(dst: "pygame.Surface", tx: int, ty: int, width_tiles: int,
-                pressed: bool = False) -> None:
-    """Botão de `width_tiles` tiles (mín. 2) x 2 tiles, carimbado em
-    (tx, ty) de `dst` (RAW). Pontas fixas, meio repetido."""
+                pressed: bool = False, tall: bool = True) -> None:
+    """Botão de `width_tiles` tiles (mín. 2) carimbado em (tx, ty) de
+    `dst` (RAW) — 2 linhas de altura se `tall`, 1 se não (ver cópias
+    "alto"/"baixo" acima). Pontas fixas, meio repetido."""
     col0 = _BTN_PRESSED_COL0 if pressed else _BTN_IDLE_COL0
+    row0, rows = (_BTN_ROW_TALL, 2) if tall else (_BTN_ROW_SHORT, 1)
     w = max(2, width_tiles)
     for i in range(w):
         col = col0 if i == 0 else (col0 + 2 if i == w - 1 else col0 + 1)
-        for k in range(2):
-            blit_tile(dst, (col, _BTN_ROW0 + k), tx + i, ty + k)
+        for k in range(rows):
+            blit_tile(dst, (col, row0 + k), tx + i, ty + k)
 
 
 def scale_up(raw: "pygame.Surface") -> "pygame.Surface":

@@ -133,7 +133,7 @@ class ModalStackHandlers:
             self._pause_submenu    = ""
             self._sound_drag       = ""
             self._sound_arrow_hold = None
-            self._sound_back_pressed = False
+            self._mm_pressed = ""
         else:
             self._show_pause = False
 

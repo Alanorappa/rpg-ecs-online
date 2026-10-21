@@ -68,7 +68,7 @@ def test_painel_de_madeira_repete_tiles_sem_esticar():
 def test_botao_largo_repete_o_tile_do_meio():
     raw = pygame.Surface((5 * T, 2 * T), pygame.SRCALPHA)
     ui_atlas.blit_button(raw, 0, 0, 5)
-    c0, r0 = ui_atlas._BTN_IDLE_COL0, ui_atlas._BTN_ROW0
+    c0, r0 = ui_atlas._BTN_IDLE_COL0, ui_atlas._BTN_ROW_TALL
     for k in range(2):
         left = raw.subsurface((0, k * T, T, T)).copy()
         assert _same(left, _atlas_tile_bytes((c0, r0 + k)))
@@ -93,24 +93,23 @@ class _MenuFixture(MenuHandlers):
         self._pause_submenu = "sound"
         self._sound_drag    = ""
         self._sound_arrow_hold = None
-        self._sound_back_pressed = False
+        self._mm_pressed    = ""
         self._save_config_calls = 0
+        self._scale = 1.0
+        self._window_mode_pref = "fullscreen"
+        self.ui_scale_set = []
 
-    def _u(self, px: int) -> int:
-        return px
-
-    def _set_panel_scale(self, *a, **k):
-        pass
+    def _set_ui_scale(self, v):
+        self.ui_scale_set.append(v)
 
     def _save_config(self):
         self._save_config_calls += 1
 
-    def origin(self):
-        pw, ph = self._SND_TW * T * S, self._SND_TH * T * S
-        return (self.screen.get_width() - pw) // 2, (self.screen.get_height() - ph) // 2
-
-    def to_screen(self, rx, ry):
-        px, py = self.origin()
+    def to_screen(self, rx, ry, tw=None, th=None):
+        tw = tw or self._SND_TW
+        th = th or self._SND_TH
+        px = (self.screen.get_width()  - tw * T * S) // 2
+        py = (self.screen.get_height() - th * T * S) // 2
         return int(px + rx * S), int(py + ry * S)
 
 
@@ -260,11 +259,24 @@ def test_volume_zero_mostra_icone_de_som_desligado():
         SOUNDS.music_enabled, SOUNDS.music_volume = orig
 
 
-def _back_center(fx):
-    bx0 = fx._SND_BTN_COL * T
-    bx1 = (fx._SND_BTN_COL + fx._SND_BTN_W) * T
-    by  = fx._SND_BTN_ROW * T + (ui_atlas.BTN_ART_Y0 + ui_atlas.BTN_ART_Y1) / 2
-    return fx.to_screen((bx0 + bx1) / 2, by)
+def _btn_center(fx, tx, ty, w, tall, tw=None, th=None):
+    y0, y1 = ui_atlas.button_art_y(tall)
+    return fx.to_screen((tx + w / 2) * T, ty * T + (y0 + y1) / 2, tw, th)
+
+
+def _back_center(fx, tw=None, th=None, row=None):
+    tw = tw or fx._SND_TW
+    w = fx._mm_tiles_for(["Voltar"], 3)
+    return _btn_center(fx, (tw - w) // 2, row if row is not None else fx._SND_BTN_ROW,
+                       w, True, tw, th)
+
+
+def _press_and_release(fx, draw, pos):
+    """Clique completo: aperta (frame com botão segurado) e solta."""
+    with _fake_mouse_and_clock():
+        r1 = draw(_click_at(pos))
+    r2 = draw(_release_at(pos))
+    return r1, r2
 
 
 def _release_at(pos):
@@ -280,7 +292,7 @@ def test_botao_voltar_afunda_ao_apertar_e_fecha_ao_soltar():
     with _bigger_display():
         with _fake_mouse_and_clock():
             fx._draw_sound_submenu(_click_at(pos))
-        assert fx._sound_back_pressed is True
+        assert fx._mm_pressed == "snd:voltar"
         assert fx._pause_submenu == "sound", "não pode fechar no clique, só no soltar"
         fx._draw_sound_submenu(_release_at(pos))
     assert fx._pause_submenu == ""
@@ -294,17 +306,134 @@ def test_soltar_fora_do_botao_cancela():
             fx._draw_sound_submenu(_click_at(pos))
         fx._draw_sound_submenu(_release_at((pos[0], pos[1] - 200)))
     assert fx._pause_submenu == "sound"
-    assert fx._sound_back_pressed is False
+    assert fx._mm_pressed == ""
 
 
 def test_clique_fora_do_botao_nao_fecha():
     """Faixa transparente do bloco 3x2 do botão (acima da arte) não
     conta como clique no botão."""
     fx = _MenuFixture()
-    bx = (fx._SND_BTN_COL + 1) * T + T / 2
+    w = fx._mm_tiles_for(["Voltar"], 3)
+    bx = ((fx._SND_TW - w) // 2 + 1) * T + T / 2
     by = fx._SND_BTN_ROW * T + 2
     with _bigger_display():
         with _fake_mouse_and_clock():
             fx._draw_sound_submenu(_click_at(fx.to_screen(bx, by)))
         fx._draw_sound_submenu(_release_at(fx.to_screen(bx, by)))
     assert fx._pause_submenu == "sound"
+
+
+# ── Menu principal / confirmação de saída / Resolução / Interface ─────────
+
+def test_menu_principal_botao_age_no_soltar_e_abre_submenu():
+    fx = _MenuFixture()
+    fx._pause_submenu = ""
+    tw, th, btn_w = fx._main_layout()
+    labels = [lbl for lbl, _ in fx._MAIN_BTNS]
+    i_som = labels.index("Som")
+    pos = _btn_center(fx, 1, fx._MAIN_ROW0 + i_som, btn_w, False, tw, th)
+    with _bigger_display():
+        r1, r2 = _press_and_release(fx, fx._draw_pause_menu, pos)
+    assert r1 is None
+    assert fx._pause_submenu == "sound"
+
+
+def test_menu_principal_continuar_devolve_resume():
+    fx = _MenuFixture()
+    fx._pause_submenu = ""
+    tw, th, btn_w = fx._main_layout()
+    pos = _btn_center(fx, 1, fx._MAIN_ROW0, btn_w, False, tw, th)
+    with _bigger_display():
+        _, r2 = _press_and_release(fx, fx._draw_pause_menu, pos)
+    assert r2 == "resume"
+
+
+def test_textos_cabem_nos_botoes_e_seletores_com_fonte_grande():
+    """Regressão: a fonte acompanha a escala de UI do jogador (no jogo,
+    1.25 ou mais), o atlas não — com largura fixa em tiles, "Atalhos do
+    teclado" vazava do botão e "1.5x — 1920 × 1080" passava por cima das
+    setas. Simula escala de UI 2.0 (fonte 44) e confere cada caso."""
+    from ui.fonts import make as _font
+    from ui.settings_screen import SCALE_OPTIONS
+    fx = _MenuFixture()
+    fx.font_md = _font(44)
+    S_, T_ = ui_atlas.SCALE, ui_atlas.TILE
+
+    def fits(text, tiles):
+        return fx.font_md.size(text)[0] <= tiles * T_ * S_ - 2 * fx._MM_TEXT_PAD * S_
+
+    tw, th, btn_w = fx._main_layout()
+    for label, _ in fx._MAIN_BTNS:
+        assert fits(label, btn_w), f"'{label}' não cabe no botão do menu ({btn_w} tiles)"
+    assert tw == btn_w + 2
+
+    tw, inner = fx._res_layout()
+    for label in [l for l, _ in SCALE_OPTIONS] + ["Tela cheia", "Janela"]:
+        assert fits(label, inner), f"'{label}' passa por cima das setas ({inner} tiles)"
+
+    tw, inner = fx._iface_layout()
+    assert fits(f"{2.0:.2f}×", inner)
+    assert fx.font_md.size(fx._IFACE_LABEL)[0] <= (tw - 2) * T_ * S_
+
+    tw, btn_w, col_sim, col_nao = fx._quit_layout()
+    assert fx.font_md.size(fx._QUIT_MSG)[0] <= (tw - 2) * T_ * S_
+    assert fits("Não", btn_w) and col_nao + btn_w <= tw - 1
+
+    assert fits("Voltar", fx._mm_tiles_for(["Voltar"], 3))
+
+
+def test_menu_principal_textos_em_portugues():
+    fx = _MenuFixture()
+    labels = [lbl for lbl, _ in fx._MAIN_BTNS]
+    assert labels == ["Continuar", "Resolução", "Som", "Interface", "Atalhos do teclado",
+                      "Voltar ao Spawn", "Deslogar", "Sair"]
+
+
+def test_confirmacao_sair_sim_devolve_quit_e_nao_volta():
+    fx = _MenuFixture()
+    fx._pause_submenu = "quit_confirm"
+    tw, btn_w, col_sim, col_nao = fx._quit_layout()
+    th, row = fx._QUIT_TH, fx._QUIT_BTN_ROW
+    with _bigger_display():
+        _, r2 = _press_and_release(fx, fx._draw_pause_menu,
+                                   _btn_center(fx, col_sim, row, btn_w, False, tw, th))
+    assert r2 == "quit"
+    fx = _MenuFixture()
+    fx._pause_submenu = "quit_confirm"
+    with _bigger_display():
+        _, r2 = _press_and_release(fx, fx._draw_pause_menu,
+                                   _btn_center(fx, col_nao, row, btn_w, False, tw, th))
+    assert r2 is None and fx._pause_submenu == ""
+
+
+def test_resolucao_setas_trocam_escala_e_modo():
+    fx = _MenuFixture()
+    fx._pause_submenu = "resolution"
+    tw, inner = fx._res_layout()
+    th = fx._RES_TH
+    right_scale = fx.to_screen((inner + 2) * T + 8, fx._RES_ROW_SCALE * T + 8, tw, th)
+    left_scale  = fx.to_screen(1 * T + 8, fx._RES_ROW_SCALE * T + 8, tw, th)
+    mode_arrow  = fx.to_screen(1 * T + 8, fx._RES_ROW_MODE * T + 8, tw, th)
+    with _bigger_display():
+        _, r = _press_and_release(fx, fx._draw_pause_menu, right_scale)
+        assert r == "resolution:1.25"
+        _, r = _press_and_release(fx, fx._draw_pause_menu, left_scale)
+        assert r is None, "já está na menor escala — seta esquerda não faz nada"
+        _, r = _press_and_release(fx, fx._draw_pause_menu, mode_arrow)
+        assert r == "window_mode:windowed_fullsize"
+
+
+def test_interface_setas_mudam_1_passo():
+    fx = _MenuFixture()
+    fx._pause_submenu = "interface"
+    fx._ui_scale = 1.25
+    tw, inner = fx._iface_layout()
+    th = fx._IFACE_TH
+    col_l = (tw - (inner + 2)) // 2
+    col_r = col_l + inner + 1
+    with _bigger_display():
+        _press_and_release(fx, fx._draw_pause_menu,
+                           fx.to_screen(col_r * T + 8, fx._IFACE_ROW_SEL * T + 8, tw, th))
+        _press_and_release(fx, fx._draw_pause_menu,
+                           fx.to_screen(col_l * T + 8, fx._IFACE_ROW_SEL * T + 8, tw, th))
+    assert fx.ui_scale_set == [1.5, 1.0]

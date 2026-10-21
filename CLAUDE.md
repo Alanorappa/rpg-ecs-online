@@ -1978,8 +1978,12 @@ padrão a quebrar, não só os bugs individuais.
   A posição de cada tile numa janela vem do mockup do usuário
   (`assets/content/exemplo.png`), extraída por comparação pixel a
   pixel tile a tile — nunca de olho. Botão age no SOLTAR do mouse (age
-  no clique = janela fecha antes do estado pressionado aparecer). Ver
-  HISTORICO_FEATURES.md §65.
+  no clique = janela fecha antes do estado pressionado aparecer).
+  Largura de botão/seletor/janela NUNCA é número fixo de tiles quando
+  tem texto — a fonte acompanha a escala de UI do jogador, o atlas não:
+  medir com a MESMA fonte do desenho (`MenuHandlers._mm_tiles_for`).
+  Menus do pausa: reusar os helpers `_mm_*` de `client/menu_handlers.py`.
+  Ver HISTORICO_FEATURES.md §65/§66.
 - **Ícone ANIMADO acima da cabeça de uma entidade, no MUNDO** (marcador
   de quest, ou categoria futura parecida) → `ui/world_icon_animator.py::
   get_frame(name, size, now_ms)` — spritesheet horizontal em

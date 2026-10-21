@@ -5479,3 +5479,27 @@ no nível do módulo vaza pro resto da sessão do pytest (quebrou
 `test_clique_na_sidebar_troca_categoria`) — o tamanho maior de janela é
 setado e desfeito por teste. Validado em jogo pelo usuário.
 
+## 66. Menu de pausa inteiro no atlas de UI + larguras a partir do texto (20/10/2026)
+
+Continuação de §65. `client/menu_handlers.py` reescrito com helpers
+comuns: `_mm_begin` (painel de madeira em tiles + mouse em espaço RAW),
+`_mm_button` (age no SOLTAR, id em `self._mm_pressed` — substitui o
+`_sound_back_pressed` só da tela de som), `_mm_selector` (◀ texto ▶ com
+as setas do atlas), `_mm_text`, `_mm_end` (amplia, desenha textos).
+Telas: **Menu** (botões "baixos" — cópia de 1 linha do botão, linha 9
+do atlas — empilhados como no mockup), **Sair** (Sim/Não), **Resolução**
+(2 seletores: escala e Tela cheia/Janela — decisão do usuário: "tudo em
+setas"), **Interface** (◀ 1.25× ▶ — decisão do usuário: só setas +
+valor), **Som** (§65). Textos traduzidos pro português (decisão do
+usuário). `_mm_panel`/`_mm_button` antigos e `UI.MENU_*_W/H`
+(`ui/ui_sizes.py`) removidos — tamanho agora é em tiles.
+
+**Bug achado em playtest**: larguras fixas em tiles faziam o texto
+vazar do botão ("Atalhos do teclado") e passar por cima das setas
+("1.5x — 1920 × 1080") — a fonte acompanha a escala de UI do jogador
+(1.25+ no jogo), o atlas não. Fix: `_mm_tiles_for(textos, mínimo)` mede
+com a MESMA fonte do desenho (`font_md`) + folga de 6px RAW por lado;
+botão, seletor (maior valor POSSÍVEL, pra janela não mudar de tamanho
+ao trocar de opção) e janela crescem com o texto. Teste de regressão
+simula escala de UI 2.0 (`test_textos_cabem_nos_botoes_e_seletores_com_fonte_grande`).
+
