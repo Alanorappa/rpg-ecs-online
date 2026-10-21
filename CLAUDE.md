@@ -1412,7 +1412,13 @@ padrão a quebrar, não só os bugs individuais.
   `self._quest_system.can_start(qid)`, método que NUNCA existiu em
   `QuestSystem` — quebraria com `AttributeError` assim que um ferreiro
   tivesse quest disponível pra iniciar. Ver PROBLEMAS_ARQUITETURA.md
-  §139.
+  §139. **Quais funções um NPC oferece / qual abre no clique / abas no
+  topo da janela** → `ui/npc_interaction.py::npc_services`/
+  `default_npc_service`/`service_tabs`/`open_npc_service` (ordem fixa,
+  Missões sempre primeiro quando há quest) — NUNCA um menu de "o que
+  deseja?" próprio nem checagem de componente avulsa num System; função
+  nova de NPC = 1 entrada em `_SERVICES` + o System dono consumindo o
+  kind dele no `update()` (ver HISTORICO_FEATURES.md §74).
 - **Qualquer NPC de serviço (loja/treinador/ferreiro/correio/futuro)
   precisando travar a interação até o player completar uma quest** →
   componente `NPCUnlock(quest_id)` (`engine/components.py`, 06/10/2026)

@@ -101,3 +101,9 @@ sempre na ÚLTIMA coluna da janela (encostada na borda direita) e só
 quando o conteúdo não cabe; botões e controles centralizados como grupo
 (1 tile entre botões); quantidade editável sempre no campo de texto
 (9,4)–(11,4) entre as setas.
+
+**Abas de serviço do NPC (HISTORICO_FEATURES.md §74):** mesma peça de
+aba (0..5,12) na linha 1 de qualquer janela de NPC
+(`ui/npc_interaction.py::service_tabs`); na janela de pergaminho,
+`quest_window_raw(tw, th, tab_rows=1)` põe uma linha escura pras abas
+entre o título e o pergaminho.
