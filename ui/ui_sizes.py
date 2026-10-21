@@ -42,8 +42,6 @@ class UI:
     TRAINER_W, TRAINER_H         = 640, 480   # modal de treinamento de skills (trainer NPC)
     RANKING_W, RANKING_H         = 720, 560   # modal de Ranking Geral (tecla K)
     RANKING_SIDEBAR_W            = 180        # coluna esquerda de categorias
-    SHOP_W, SHOP_H                = 1120, 700  # modal de loja (comerciante NPC) — o maior painel do jogo
-    SHOP_QTY_MODAL_W, SHOP_QTY_MODAL_H = 460, 240  # mini-modal "quantidade" que abre por cima da loja
     LOOT_MODAL_W                  = 260        # janela de loot (clique direito em corpo) — altura é dinâmica (TITLE_H + nº de linhas)
     QUEST_DIALOG_W, QUEST_DIALOG_H     = 480, 400  # diálogo de aceitar/entregar quest (NPC com !/?)
     # Recompensa de item no diálogo de entrega (23/07/2026, pedido do usuário)
@@ -124,14 +122,6 @@ class UI:
 
     # ── Loja (comerciante NPC) — geometria interna ──────────────────────────
     # Arquivo: systems.py (classe ShopSystem)
-    SHOP_ROW_H         = 50    # altura de cada linha de item (à venda ou na mochila)
-    SHOP_ICON_SZ       = 42    # tamanho do ícone do item em cada linha
-    SHOP_MAX_ROWS      = 10    # quantas linhas ficam visíveis de uma vez antes de precisar rolar (contagem)
-    SHOP_LEFT_W        = 530   # largura da coluna ESQUERDA (itens à venda pelo NPC)
-    SHOP_RIGHT_W       = 530   # largura da coluna DIREITA (mochila do jogador, pra vender)
-    SHOP_GAP           = 12    # espaço entre as duas colunas
-    SHOP_BODY_Y_OFFSET = 126   # distância do topo do painel até a primeira linha de item (reserva título+abas)
-    SHOP_FOOTER_H      = 62    # altura reservada no rodapé pro saldo de ouro + dica de uso
 
     # ── Loot (clique direito em corpo) — geometria interna ──────────────────
     # Arquivo: systems.py (classe LootSystem). Esse modal NÃO é centralizado
@@ -273,10 +263,6 @@ class UI:
     TRAINER_OFFSET_Y      = 0
     RANKING_OFFSET_X      = 0
     RANKING_OFFSET_Y      = 0
-    SHOP_OFFSET_X         = 0
-    SHOP_OFFSET_Y         = 0
-    SHOP_QTY_MODAL_OFFSET_X = 0
-    SHOP_QTY_MODAL_OFFSET_Y = 0
     QUEST_DIALOG_OFFSET_X  = 0
     QUEST_DIALOG_OFFSET_Y  = 0
     QUEST_JOURNAL_OFFSET_X = 0

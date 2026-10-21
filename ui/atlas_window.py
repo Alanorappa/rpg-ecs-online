@@ -108,12 +108,16 @@ class Frame:
     tela) onde a janela é centralizada."""
 
     def __init__(self, screen: pygame.Surface, events: list, tw: int, th: int, *,
-                 area: pygame.Rect, press: PressState, font, style: str = "wood",
+                 area: pygame.Rect, press: "PressState | None", font, style: str = "wood",
                  offset=(0, 0), overlay: bool = True,
                  raw: "pygame.Surface | None" = None) -> None:
         """`raw` = painel já montado (ex: ui_atlas.quest_window_raw) no
         lugar de `style`."""
-        self.screen, self.press_state, self.font = screen, press, font
+        # press=None: janela só de FUNDO (ex: por baixo de um modal) — estado
+        # próprio descartável. Compartilhar o PressState do modal faria o end()
+        # do fundo (mouse solto) zerar o botão afundado do modal antes dele
+        # disparar (bug real: seleção de personagem e loja).
+        self.screen, self.press_state, self.font = screen, press or PressState(), font
         self.raw = (raw if raw is not None else ui_atlas.panel_raw(style, tw, th)).copy()
         self.pw, self.ph = self.raw.get_width() * S, self.raw.get_height() * S
         self.px = area.centerx - self.pw // 2 + offset[0]
@@ -124,6 +128,9 @@ class Frame:
         self.rx, self.ry = (mx - self.px) / S, (my - self.py) / S
         self.clicked  = any(e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 for e in events)
         self.released = any(e.type == pygame.MOUSEBUTTONUP   and e.button == 1 for e in events)
+        # Clique DIREITO (ações secundárias: equipar, comprar, vender...) —
+        # também age no soltar; sem estado "afundado" (não há sprite pra isso).
+        self.rreleased = any(e.type == pygame.MOUSEBUTTONUP and e.button == 3 for e in events)
         self.down     = pygame.mouse.get_pressed()[0]
         self.wheel    = sum(e.y for e in events if e.type == pygame.MOUSEWHEEL)
         self.texts: list = []   # (texto, x_raw, y_raw, cor, fonte, âncora)
@@ -357,6 +364,10 @@ class Frame:
         True = clicado (no soltar)."""
         return self.press(close_id, tx * T, ty * T, (tx + 1) * T, (ty + 1) * T)[1]
 
+    def right_click(self, x0, y0, x1, y1) -> bool:
+        """Clique DIREITO solto sobre a área RAW (x0,y0)-(x1,y1)."""
+        return self.rreleased and self.hover(x0, y0, x1, y1)
+
     def end(self, title: str = "", title_col=TITLE_COL) -> None:
         """Amplia o painel, desenha título e textos e encerra o estado de
         botão pressionado ao soltar o mouse."""
@@ -373,3 +384,66 @@ class Frame:
 def slot_icon_px() -> int:
     """Tamanho em px de TELA do ícone dentro de um slot (1px de borda RAW)."""
     return (T - 2) * S
+
+
+# ── Modal de quantidade (loja, troca, correio...) ────────────────────────────
+
+def quantity_state(max_qty: int) -> dict:
+    """Estado do modal de quantidade (o dono guarda até fechar)."""
+    return {"qty": 1, "text": "1", "max_qty": max(1, int(max_qty))}
+
+
+def quantity_key(state: dict, event) -> "str | None":
+    """Teclado do modal: dígitos/backspace editam, ENTER confirma, ESC
+    cancela. Devolve "ok", "cancel" ou None."""
+    if event.type != pygame.KEYDOWN:
+        return None
+    if event.key == pygame.K_ESCAPE:
+        return "cancel"
+    if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+        return "ok"
+    if event.key == pygame.K_BACKSPACE:
+        state["text"] = state["text"][:-1]
+    elif event.unicode and event.unicode.isdigit() and len(state["text"]) < 6:
+        state["text"] = ("" if state["text"] == "0" else state["text"]) + event.unicode
+    else:
+        return None
+    try:
+        state["qty"] = max(1, min(int(state["text"] or "1"), state["max_qty"]))
+    except ValueError:
+        state["qty"] = 1
+    return None
+
+
+def quantity_window(screen, events, state: dict, *, area: pygame.Rect, press: PressState,
+                    font, small_font, title: str, info: str, confirm_label: str,
+                    confirm_enabled: bool = True, hits: "dict | None" = None) -> "str | None":
+    """Janela escura pequena de quantidade: título, linha de informação
+    (preço/total), seletor ◀ quantidade ▶ (roda do mouse também muda),
+    Cancelar / Confirmar. Devolve "ok", "cancel" ou None. Teclado (dígitos,
+    ENTER, ESC) fica com o dono via quantity_key."""
+    bw = tiles_for(font, ["Cancelar", confirm_label], 3)
+    tw = max(tiles_for(font, [title], 1) + 2, tiles_for(small_font, [info], 1) + 2, 2 * bw + 3, 9)
+    th = 7
+    f = Frame(screen, events, tw, th, area=area, press=press, font=font, style="dark")
+    f.text(info, tw * T / 2, 2.5 * T, TEXT_COL, small_font)
+    col_l, col_r = tw // 2 - 3, tw // 2 + 2
+    step = f.selector("qty", 3, col_l, col_r, str(state["qty"]))
+    if f.hover(0, 0, tw * T, th * T) and f.wheel:
+        step += f.wheel
+    if step:
+        state["qty"] = max(1, min(state["max_qty"], state["qty"] + step))
+        state["text"] = str(state["qty"])
+    result = None
+    if f.button("qty:cancel", 1, 4, bw, "Cancelar"):
+        result = "cancel"
+    if f.button("qty:ok", tw - 1 - bw, 4, bw, confirm_label, enabled=confirm_enabled):
+        result = "ok"
+    if hits is not None:
+        ay0, ay1 = ui_atlas.button_art_y(True)
+        for hid, col in (("qty:cancel", 1), ("qty:ok", tw - 1 - bw)):
+            hits[hid] = pygame.Rect(f.px + col * T * S, f.py + (4 * T + ay0) * S, bw * T * S, (ay1 - ay0) * S)
+        hits["qty:-"] = pygame.Rect(f.px + col_l * T * S, f.py + 3 * T * S, T * S, T * S)
+        hits["qty:+"] = pygame.Rect(f.px + col_r * T * S, f.py + 3 * T * S, T * S, T * S)
+    f.end(title)
+    return result

@@ -178,11 +178,10 @@ def run_online(screen: pygame.Surface,
         can_create = len(chars) < MAX_CHARACTERS_PER_ACCOUNT
         confirming = confirm_del_id >= 0
         # Confirmação aberta: a lista de fundo é só desenho — sem eventos e
-        # com um estado de botão DESCARTÁVEL (o dela, ao ver o mouse solto,
-        # zeraria o botão afundado da confirmação antes dela disparar).
+        # press=None (estado descartável, ver atlas_window.Frame).
         action, panel_rect = _draw_selection(
             screen, [] if confirming else events, chars, can_create,
-            aw.PressState() if confirming else press, scroll,
+            None if confirming else press, scroll,
             font_md, font_sm, font_xs, sc)
 
         if confirming:

@@ -6,14 +6,16 @@ jogador). Extraído de ui/systems.py (18/09/2026, ver
 PROBLEMAS_ARQUITETURA.md §185, item #2 do backlog de 14).
 """
 from __future__ import annotations
+import math
 import pygame
 # TODO(B4): _font é usado apenas em sistemas visuais (HUD, FloatingText). O servidor
 # importa `from systems import EnemyAISystem` e acaba carregando Pygame fonts pelo
 # caminho. Funciona com SDL_VIDEODRIVER=dummy, mas é dependência desnecessária.
 # Fix futuro: mover sistemas visuais para ClientSystems ou usar lazy import em render().
 from ui.fonts import make as _font
+from ui import atlas_window as aw
+from ui import ui_atlas
 from ui.ui_scale_mixin import UIScaleMixin
-from ui.ui_sizes import UI
 
 # Re-exporta apply_effect de core_systems para compatibilidade com todo o código
 # que já faz `from systems import apply_effect`.
@@ -35,7 +37,7 @@ from engine.utils import chebyshev, get_camera_offset
 # com ui/systems.py — seguro no topo.
 from ui.combat_log import LOG
 from ui.icon_manager import ICONS
-from ui.ui_helpers import item_tooltip_lines, fill_surf
+from ui.ui_helpers import item_tooltip_lines
 from ui.npc_interaction import walk_to_npc, suppress_chase
 from content.merchant_data import SHOPS, INSTANCE_SHOP_STOCK_BY_CLASS
 from content.item_table import RARITY_COLORS as _SHARED_RARITY_COLORS
@@ -61,26 +63,17 @@ class ShopSystem(UIScaleMixin, System):
     """
     Sistema de comerciantes NPC.
     - Clique direito no NPC → abre painel de loja.
-    - Painel esquerdo: itens à venda (clique direito = comprar).
-    - Painel direito: mochila do jogador (clique direito = vender).
+    - Esquerda: itens à venda (clique direito = comprar; Shift = quantidade).
+    - Direita: mochila do jogador em grade (clique direito = vender).
+    - Visual: atlas de UI (ui/atlas_window.py), ações no SOLTAR do mouse.
     - Botão [↩ Desfazer] fica sempre renderizado desabilitado (histórico de
       transação nunca é populado — servidor é autoritativo). Já era assim
       antes desta limpeza (07/08/2026, Fase 2); mantido intacto — remoção
       da UI é decisão de produto, não decidida aqui. Ver PROBLEMAS_ARQUITETURA.md.
     """
 
-    _FONT_BASES = {"_font_sm": 22, "_font_md": 30, "_font_lg": 38}
+    _FONT_BASES = {"_font_xs": 15, "_font_sm": 22, "_font_md": 30, "_font_lg": 38}
 
-    PANEL_W       = UI.SHOP_W
-    PANEL_H       = UI.SHOP_H
-    ROW_H         = UI.SHOP_ROW_H
-    ICON_S        = UI.SHOP_ICON_SZ
-    MAX_ROWS      = UI.SHOP_MAX_ROWS
-    LEFT_W        = UI.SHOP_LEFT_W
-    RIGHT_W       = UI.SHOP_RIGHT_W
-    GAP           = UI.SHOP_GAP
-    BODY_Y_OFFSET = UI.SHOP_BODY_Y_OFFSET   # distância do topo do painel até a primeira linha de item
-    FOOTER_H      = UI.SHOP_FOOTER_H        # altura reservada para ouro + dica no rodapé
     SELL_RATIO    = 0.4
     MAX_HISTORY   = 20
 
@@ -99,7 +92,6 @@ class ShopSystem(UIScaleMixin, System):
         self._pending_merchant_id: int   = -1   # aguardando jogador chegar
         self._right_click_consumed: bool = False
         self.transaction_history: list = []
-        self._shop_scroll: int = 0
         self._bag_scroll:  int = 0
         # Online: injetado pelo GameEngine. None = modo offline (lógica local)
         self._net = None
@@ -107,8 +99,15 @@ class ShopSystem(UIScaleMixin, System):
         self._open_cooldown: float = 0.0  # impede compra/venda logo após abrir a loja
         # Modal de quantidade (Shift+clique direito em item stackável)
         self._qty_modal: dict | None = None  # None = fechado
-
-        SW, SH = screen.get_size()
+        # Atlas de UI: botão afundado, rolagem da lista à venda, eventos do
+        # frame (guardados em handle_events, consumidos em render), área
+        # segura (injetada por game.py) e rects de tela clicáveis (testes).
+        self._press = aw.PressState()
+        self._shop_scroll_st = aw.ScrollState()
+        self._frame_events: list = []
+        self.safe_area_fn = None
+        self._hit_rects: dict = {}
+        self._shop_title = ""
 
     @property
     def open_merchant_id(self) -> int:
@@ -135,13 +134,9 @@ class ShopSystem(UIScaleMixin, System):
         """Abre a loja para o merchant_eid especificado, resetando estado interno."""
         self.open_merchant_id   = merchant_eid
         self._pending_merchant_id = -1
-        self._shop_scroll       = 0
+        self._shop_scroll_st    = aw.ScrollState()
         self._bag_scroll        = 0
         self._open_cooldown     = 0.3
-
-    def _panel_origin(self):
-        x0, y0 = self._safe_panel_origin(self.PANEL_W, self.PANEL_H)
-        return x0 + UI.SHOP_OFFSET_X, y0 + UI.SHOP_OFFSET_Y
 
     def _get_cam(self):
         SW = self.world_surf.get_width()
@@ -166,7 +161,7 @@ class ShopSystem(UIScaleMixin, System):
         if quest_logic.is_npc_unlocked(self.world, eid, ql):
             self.open_merchant_id     = eid
             self._pending_merchant_id = -1
-            self._shop_scroll = 0
+            self._shop_scroll_st = aw.ScrollState()
             self._bag_scroll  = 0
             self._open_cooldown = 0.5
             _m = self.world.get_component(eid, Merchant)
@@ -227,16 +222,7 @@ class ShopSystem(UIScaleMixin, System):
         cam_x, cam_y = self._get_cam()
 
         for event in events:
-            if event.type == pygame.MOUSEWHEEL and self.is_open and self._qty_modal is None:
-                x0, y0  = self._panel_origin()
-                mx, _my = pygame.mouse.get_pos()
-                mid_x   = x0 + self.GAP + self.LEFT_W
-                if mx < mid_x:
-                    self._shop_scroll = max(0, self._shop_scroll - event.y)
-                else:
-                    self._bag_scroll  = max(0, self._bag_scroll  - event.y)
-
-            elif (event.type == pygame.MOUSEBUTTONDOWN
+            if (event.type == pygame.MOUSEBUTTONDOWN
                   and event.button == 3
                   and not self.is_open):
                 mx, my = event.pos
@@ -325,15 +311,8 @@ class ShopSystem(UIScaleMixin, System):
             LOG.add("Inventario cheio!", (255, 160, 0))
             return
         max_qty     = max(1, min(max_by_gold, max_by_inv, preview.max_stack * 10))
-        self._qty_modal = {
-            "entry":    entry,
-            "shop_id":  shop_id,
-            "preview":  preview,
-            "max_qty":  max_qty,
-            "qty":      1,
-            "text":     "1",
-            "dragging": False,
-        }
+        self._qty_modal = {**aw.quantity_state(max_qty),
+                           "entry": entry, "shop_id": shop_id, "preview": preview}
 
     def _close_qty_modal(self) -> None:
         self._qty_modal = None
@@ -364,7 +343,7 @@ class ShopSystem(UIScaleMixin, System):
     def _close(self) -> None:
         self.open_merchant_id     = -1
         self._pending_merchant_id = -1
-        self._shop_scroll         = 0
+        self._shop_scroll_st      = aw.ScrollState()
         self._bag_scroll          = 0
 
     # ------------------------------------------------------------------
@@ -386,162 +365,33 @@ class ShopSystem(UIScaleMixin, System):
     # ------------------------------------------------------------------
     # Eventos de UI
     # ------------------------------------------------------------------
+    # Atlas de UI (21/10/2026): botões/slots agem no SOLTAR dentro de
+    # render() (ui/atlas_window.py); aqui só ESC e o teclado do modal de
+    # quantidade, e os eventos do frame ficam guardados pro render.
 
     def handle_events(self, events: list) -> None:
         if not self.is_open:
             return
-        merch = self.world.get_component(self.open_merchant_id, Merchant)
-        if not merch:
+        if not self.world.get_component(self.open_merchant_id, Merchant):
             self._close()
             return
-
-        if merch.shop_id == "instance_shop":
-            _char_ev  = self.world.get_component(self.player_entity, CharacterStats)
-            stock = INSTANCE_SHOP_STOCK_BY_CLASS.get(_char_ev.class_id if _char_ev else None, [])
-        else:
-            stock = SHOPS.get(merch.shop_id, {}).get("stock", [])
-        inv    = self.world.get_component(self.player_entity, Inventory)
-        x0, y0 = self._panel_origin()
-        gap     = self._u(self.GAP)
-        left_w  = self._u(self.LEFT_W)
-        right_w = self._u(self.RIGHT_W)
-        row_h   = self._u(self.ROW_H)
-        mid_x   = x0 + gap + left_w
-        body_y  = y0 + self._u(self.BODY_Y_OFFSET)
-
         for event in events:
-            # ── Modal de quantidade aberto → processa antes de tudo ────────
             if self._qty_modal is not None:
-                self._handle_qty_modal_event(event)
-                continue  # consome o evento; não deixa cair na lógica da loja
-
+                res = aw.quantity_key(self._qty_modal, event)
+                if res == "ok":
+                    self._confirm_qty_modal()
+                elif res == "cancel":
+                    self._close_qty_modal()
+                continue
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 self._close()
                 return
+        self._frame_events = list(events)
 
-            if event.type == pygame.MOUSEWHEEL:
-                if mx < mid_x:
-                    self._shop_scroll = max(0, self._shop_scroll - event.y)
-                else:
-                    self._bag_scroll  = max(0, self._bag_scroll  - event.y)
-                continue
-
-            if event.type != pygame.MOUSEBUTTONDOWN:
-                continue
-            mx, my = event.pos
-
-            # Botão fechar
-            close_r = pygame.Rect(x0 + self._u(self.PANEL_W) - self._u(40), y0 + self._u(6), self._u(34), self._u(34))
-            if event.button == 1 and close_r.collidepoint(mx, my):
-                self._close()
-                return
-
-            mods = pygame.key.get_mods()
-            shift = bool(mods & pygame.KMOD_SHIFT)
-
-            # Painel esquerdo: comprar
-            if event.button == 3 and mx < mid_x and self._open_cooldown <= 0:
-                for i, entry in enumerate(stock):
-                    vis_i = i - self._shop_scroll
-                    if 0 <= vis_i < self.MAX_ROWS:
-                        r = pygame.Rect(x0 + gap,
-                                        body_y + vis_i * row_h,
-                                        left_w - self._u(4), row_h - self._u(2))
-                        if r.collidepoint(mx, my):
-                            preview = entry["factory"]()
-                            if shift and getattr(preview, "max_stack", 1) > 1:
-                                self._open_qty_modal(entry, shop_id=merch.shop_id)
-                            else:
-                                self._buy(entry, shop_id=merch.shop_id)
-                            return
-
-            # Painel direito: vender (clique direito)
-            if event.button == 3 and mx >= mid_x and inv and self._open_cooldown <= 0:
-                for i, item in enumerate(inv.items):
-                    vis_i = i - self._bag_scroll
-                    if 0 <= vis_i < self.MAX_ROWS:
-                        r = pygame.Rect(mid_x + gap,
-                                        body_y + vis_i * row_h,
-                                        right_w - self._u(4), row_h - self._u(2))
-                        if r.collidepoint(mx, my):
-                            self._sell(i)
-                            return
-
-    def _handle_qty_modal_event(self, event) -> None:
-        """Processa eventos enquanto o modal de quantidade está aberto."""
+    def _confirm_qty_modal(self) -> None:
         m = self._qty_modal
-
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE:
-                self._close_qty_modal()
-            elif event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
-                self._buy_qty(m["entry"], m["qty"], shop_id=m.get("shop_id", ""))
-                self._close_qty_modal()
-            elif event.key == pygame.K_BACKSPACE:
-                m["text"] = m["text"][:-1] or "0"
-                try:
-                    m["qty"] = max(1, min(int(m["text"]), m["max_qty"]))
-                except ValueError:
-                    m["qty"] = 1
-            elif event.unicode.isdigit():
-                new_text = (m["text"] if m["text"] != "0" else "") + event.unicode
-                if len(new_text) <= 6:
-                    m["text"] = new_text
-                    try:
-                        m["qty"] = max(1, min(int(new_text), m["max_qty"]))
-                    except ValueError:
-                        pass
-            return
-
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            mx, my = event.pos
-            self._set_panel_scale(UI.SHOP_QTY_MODAL_W, UI.SHOP_QTY_MODAL_H)
-            SW, SH  = self.hud_surf.get_size()
-            mw, mh  = self._u(UI.SHOP_QTY_MODAL_W), self._u(UI.SHOP_QTY_MODAL_H)
-            mx0     = (SW - mw) // 2 + UI.SHOP_QTY_MODAL_OFFSET_X
-            my0     = (SH - mh) // 2 + UI.SHOP_QTY_MODAL_OFFSET_Y
-
-            # Slider
-            sl_x  = mx0 + self._u(20)
-            sl_y  = my0 + self._u(130)
-            sl_w  = mw - self._u(40)
-            sl_r  = pygame.Rect(sl_x, sl_y - self._u(10), sl_w, self._u(20))
-            if sl_r.collidepoint(mx, my):
-                ratio      = max(0.0, min(1.0, (mx - sl_x) / sl_w))
-                m["qty"]   = max(1, round(ratio * m["max_qty"]))
-                m["text"]  = str(m["qty"])
-                m["dragging"] = True
-                return
-
-            # Botão Cancelar
-            btn_cancel = pygame.Rect(mx0 + self._u(20),      my0 + mh - self._u(54), self._u(190), self._u(38))
-            btn_ok     = pygame.Rect(mx0 + mw - self._u(210), my0 + mh - self._u(54), self._u(190), self._u(38))
-            if btn_cancel.collidepoint(mx, my):
-                self._close_qty_modal()
-                return
-            if btn_ok.collidepoint(mx, my):
-                self._buy_qty(m["entry"], m["qty"], shop_id=m.get("shop_id", ""))
-                self._close_qty_modal()
-                return
-
-            # Clique fora fecha
-            modal_r = pygame.Rect(mx0, my0, mw, mh)
-            if not modal_r.collidepoint(mx, my):
-                self._close_qty_modal()
-
-        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-            m["dragging"] = False
-
-        elif event.type == pygame.MOUSEMOTION and m.get("dragging"):
-            self._set_panel_scale(UI.SHOP_QTY_MODAL_W, UI.SHOP_QTY_MODAL_H)
-            SW, SH  = self.hud_surf.get_size()
-            mw      = self._u(UI.SHOP_QTY_MODAL_W)
-            mx0     = (SW - mw) // 2 + UI.SHOP_QTY_MODAL_OFFSET_X
-            sl_x, sl_w = mx0 + self._u(20), mw - self._u(40)
-            mx_now  = event.pos[0]
-            ratio   = max(0.0, min(1.0, (mx_now - sl_x) / sl_w))
-            m["qty"]  = max(1, round(ratio * m["max_qty"]))
-            m["text"] = str(m["qty"])
+        self._buy_qty(m["entry"], m["qty"], shop_id=m.get("shop_id", ""))
+        self._close_qty_modal()
 
     # ------------------------------------------------------------------
     # Render — NPC no mundo
@@ -551,333 +401,203 @@ class ShopSystem(UIScaleMixin, System):
         pass  # indicador "LOJA" removido — NPC segue o padrão de tooltip
 
     # ------------------------------------------------------------------
-    # Render — painel de loja
+    # Render — painel de loja (atlas de UI)
     # ------------------------------------------------------------------
+    # Janela escura com barra de título (nome da loja) e X. Esquerda: lista
+    # à venda (slot + nome + preço, rolável). Divisória. Direita: mochila
+    # em grade (mesma do inventário). Embaixo: ouro do jogador. Clique
+    # DIREITO compra/vende (Shift+direito = quantidade); age no soltar.
+
+    _LIST_ROWS  = 8      # linhas visíveis da lista à venda
+    _ROW_H      = 18     # px RAW por linha (slot de 16 + folga)
+    _BAG_COLS   = 5
+
+    def _area(self) -> pygame.Rect:
+        if self.safe_area_fn is not None:
+            return self.safe_area_fn()
+        SW, SH = self.hud_surf.get_size()
+        return aw.safe_area(SW, SH, SH)
+
+    def _stock(self, merch) -> list:
+        if merch.shop_id == "instance_shop":
+            char = self.world.get_component(self.player_entity, CharacterStats)
+            return INSTANCE_SHOP_STOCK_BY_CLASS.get(char.class_id if char else None, [])
+        return SHOPS.get(merch.shop_id, {}).get("stock", [])
+
+    def _layout(self, stock_previews, stock, inv) -> dict:
+        T, S = aw.T, aw.S
+        fsm = self._font_sm
+        name_w = max([fsm.size(p.name)[0] for p in stock_previews] + [fsm.size("Mochila 20/20")[0]]) / S
+        price_w = max([fsm.size(f"{e['price']}g")[0] for e in stock] + [1]) / S
+        list_w = 4 + T + 4 + name_w + 8 + price_w + 4          # px RAW
+        list_cols = max(8, math.ceil(list_w / T))
+        bag_rows = math.ceil((inv.max_slots if inv else 20) / self._BAG_COLS)
+        # 0 título | 1 cabeçalho | 2..: lista/mochila | divisória | ouro | borda
+        body_rows = max(math.ceil(self._LIST_ROWS * self._ROW_H / T), bag_rows)
+        sb_col = 1 + list_cols                      # barra de rolagem da lista
+        div_col = sb_col + 1
+        bag_col0 = div_col + 1
+        tw = bag_col0 + self._BAG_COLS + 1
+        th = 2 + body_rows + 3
+        title_w = aw.tiles_for(self._font_md, [self._shop_title], 1) + 3
+        tw = max(tw, title_w)
+        return {"tw": tw, "th": th, "list_cols": list_cols, "sb_col": sb_col, "div_col": div_col,
+                "bag_col0": tw - 1 - self._BAG_COLS, "bag_rows": bag_rows, "body_rows": body_rows,
+                "price_x": (1 + list_cols) * T - 4}
 
     def render(self, cam_x: float = 0, cam_y: float = 0) -> None:
+        events, self._frame_events = self._frame_events, []
         self.pending_tooltip = None
+        self._hit_rects = {}
         if not self.is_open:
             return
-
         merch = self.world.get_component(self.open_merchant_id, Merchant)
         if not merch:
             self._close()
             return
-
-        shop  = SHOPS.get(merch.shop_id, {})
+        T, S = aw.T, aw.S
+        shop   = SHOPS.get(merch.shop_id, {})
         inv    = self.world.get_component(self.player_entity, Inventory)
         wallet = self.world.get_component(self.player_entity, Wallet)
+        equip  = self.world.get_component(self.player_entity, Equipment)
         bag    = inv.items if inv else []
-        _char_shop  = self.world.get_component(self.player_entity, CharacterStats)
-        _viewer_cls = _char_shop.class_id if _char_shop else None
-        # Loja de instância: catálogo inteiro filtrado por tema de classe
-        # (25/08/2026) — só cosmético aqui, servidor valida de verdade em
-        # process_shop_buy (instance_shop_class_allows, mesma função).
-        if merch.shop_id == "instance_shop":
-            stock = INSTANCE_SHOP_STOCK_BY_CLASS.get(_viewer_cls, [])
-        else:
-            stock = shop.get("stock", [])
+        char   = self.world.get_component(self.player_entity, CharacterStats)
+        viewer_cls = char.class_id if char else None
+        stock = self._stock(merch)
+        previews = [e["factory"]() for e in stock]
+        self._shop_title = shop.get("name", "Comerciante")
+        modal_open = self._qty_modal is not None
+        lay = self._layout(previews, stock, inv)
+        tw, th = lay["tw"], lay["th"]
+        f = aw.Frame(self.hud_surf, [] if modal_open else events, tw, th, area=self._area(),
+                     press=None if modal_open else self._press, font=self._font_md,
+                     raw=ui_atlas.titled_dark_window_raw(tw, th))
+        mx, my = pygame.mouse.get_pos()
+        ip = aw.slot_icon_px()
+        can_act = self._open_cooldown <= 0 and not modal_open
+        shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
 
-        SW, SH  = self.hud_surf.get_size()
-        x0, y0  = self._panel_origin()
-        W, H    = self._u(self.PANEL_W), self._u(self.PANEL_H)
-        gap     = self._u(self.GAP)
-        left_w  = self._u(self.LEFT_W)
-        right_w = self._u(self.RIGHT_W)
-        row_h   = self._u(self.ROW_H)
-        icon_s  = self._u(self.ICON_S)
-        mid_x   = x0 + gap + left_w
-        mx, my  = pygame.mouse.get_pos()
-        _modal_open = self._qty_modal is not None
+        f.text(self._shop_title, (tw - 1) * T / 2, aw.TITLE_BAR_Y, (240, 228, 200))
+        if f.close_button("shop:close", tw - 1):
+            self._close()
+            return
+        self._hit("shop:close", f, (tw - 1) * T, 0, tw * T, T)
 
-        # Overlay escuro
-        self.hud_surf.blit(fill_surf((SW, SH), (0, 0, 0, 160)), (0, 0))
+        hdr = (190, 170, 120)
+        f.text(f"À venda ({len(stock)})", T, 1.5 * T, hdr, self._font_sm, anchor="midleft")
+        f.text(f"Mochila {len(bag)}/{inv.max_slots if inv else 0}", lay["bag_col0"] * T, 1.5 * T,
+               hdr, self._font_sm, anchor="midleft")
+        f.divider_v(lay["div_col"] * T + T // 2, T, (th - 3) * T)
+        f.divider_h((th - 3) * T, T, (tw - 1) * T)
 
-        # Fundo do painel
-        self.hud_surf.blit(fill_surf((W, H), (15, 10, 5, 235)), (x0, y0))
-        pygame.draw.rect(self.hud_surf, (140, 100, 60), (x0, y0, W, H), 2, border_radius=4)
-
-        # --- Header ---
-        title = self._font_lg.render(f"  {shop.get('name', 'Comerciante')}", False, (255, 220, 120))
-        self.hud_surf.blit(title, (x0 + self._u(8), y0 + self._u(8)))
-
-        close_r   = pygame.Rect(x0 + W - self._u(40), y0 + self._u(6), self._u(34), self._u(34))
-        close_hov = close_r.collidepoint(mx, my)
-        pygame.draw.rect(self.hud_surf, (180, 60, 60) if close_hov else (100, 35, 35), close_r, border_radius=3)
-        xs = self._font_md.render("X", False, (255, 255, 255))
-        self.hud_surf.blit(xs, (close_r.centerx - xs.get_width() // 2,
-                              close_r.centery - xs.get_height() // 2))
-
-        LINE1 = y0 + self._u(50)   # linha após o título
-        UNDO_Y = y0 + self._u(54)  # barra de desfazer
-        LINE2 = y0 + self._u(92)   # linha após desfazer
-        COL_Y = y0 + self._u(96)   # cabeçalhos das colunas
-        body_y = y0 + self._u(self.BODY_Y_OFFSET)
-
-        pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + self._u(4), LINE1), (x0 + W - self._u(4), LINE1))
-
-        # --- Barra de desfazer ---
-        undo_r   = pygame.Rect(x0 + gap, UNDO_Y, self._u(145), self._u(32))
-        has_hist = bool(self.transaction_history)
-        undo_hov = undo_r.collidepoint(mx, my) and has_hist
-        undo_bg  = (55, 80, 55) if undo_hov else ((38, 55, 38) if has_hist else (28, 28, 28))
-        undo_col = (150, 220, 150) if has_hist else (70, 70, 70)
-        pygame.draw.rect(self.hud_surf, undo_bg,  undo_r, border_radius=3)
-        pygame.draw.rect(self.hud_surf, undo_col, undo_r, 1, border_radius=3)
-        self.hud_surf.blit(self._font_sm.render("↩ Desfazer", False, undo_col),
-                         (undo_r.x + self._u(8), undo_r.y + self._u(7)))
-
-        if self.transaction_history:
-            tx  = self.transaction_history[-1]
-            if tx["type"] == "buy":
-                desc = f"Ultima: comprou {tx['item'].name} por {tx['price']}g"
-            else:
-                desc = f"Ultima: vendeu {tx['item'].name} por {tx['sell_value']}g"
-            self.hud_surf.blit(self._font_sm.render(desc, False, (150, 150, 150)),
-                             (x0 + gap + self._u(155), UNDO_Y + self._u(7)))
-
-        pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + self._u(4), LINE2), (x0 + W - self._u(4), LINE2))
-
-        # Divisor vertical
-        pygame.draw.line(self.hud_surf, (90, 70, 40), (mid_x, LINE1), (mid_x, y0 + H - self._u(36)))
-
-        # --- Cabeçalhos das colunas ---
-        hdr_col = (160, 130, 80)
-        hint    = (90, 80, 60)
-        self.hud_surf.blit(self._font_md.render(f"LOJA  ({len(stock)} itens)", False, hdr_col),
-                         (x0 + gap + self._u(4), COL_Y))
-        self.hud_surf.blit(self._font_sm.render("clique dir. p/ comprar  |  Shift+dir. = qtd.", False, hint),
-                         (x0 + gap + self._u(4), COL_Y + self._u(26)))
-        self.hud_surf.blit(self._font_md.render(f"MOCHILA  ({len(bag)}/{inv.max_slots if inv else 0})", False, hdr_col),
-                         (mid_x + gap + self._u(4), COL_Y))
-        self.hud_surf.blit(self._font_sm.render("clique dir. p/ vender", False, hint),
-                         (mid_x + gap + self._u(4), COL_Y + self._u(26)))
-
-        pygame.draw.line(self.hud_surf, (70, 55, 30), (x0 + self._u(4), body_y - self._u(2)), (x0 + W - self._u(4), body_y - self._u(2)))
-
-        # --- Painel esquerdo: itens da loja ---
-        max_shop = max(0, len(stock) - self.MAX_ROWS)
-        self._shop_scroll = min(self._shop_scroll, max_shop)
-
-        for i, entry in enumerate(stock):
-            vis_i = i - self._shop_scroll
-            if not (0 <= vis_i < self.MAX_ROWS):
-                continue
-            row_y = body_y + vis_i * row_h
-            r     = pygame.Rect(x0 + gap, row_y, left_w - self._u(4), row_h - self._u(2))
-
-            # Preview do item (instância temporária apenas para display)
-            preview    = entry["factory"]()
-            can_afford = wallet and wallet.gold >= entry["price"]
-            inv_full   = inv and len(inv.items) >= inv.max_slots
-
-            hov  = r.collidepoint(mx, my) and not _modal_open
-            if not can_afford or inv_full:
-                bg_c   = (40, 18, 18) if hov else (22, 10, 10)
-                bord_c = (110, 45, 45) if hov else (48, 22, 22)
-            else:
-                bg_c   = (50, 40, 20) if hov else (28, 20, 10)
-                bord_c = (180, 140, 60) if hov else (60, 45, 25)
-
-            pygame.draw.rect(self.hud_surf, bg_c,   r, border_radius=3)
-            pygame.draw.rect(self.hud_surf, bord_c, r, 1, border_radius=3)
-
-            rar_col = self._RARITY_COLORS.get(preview.rarity, (100, 100, 100))
-            ic_r    = pygame.Rect(r.x + self._u(4), r.y + (row_h - self._u(2) - icon_s) // 2,
-                                  icon_s, icon_s)
-            pygame.draw.rect(self.hud_surf, (38, 30, 14), ic_r, border_radius=2)
-            icon_surf = ICONS.get(ICONS.item_key(preview), icon_s)
-            if icon_surf:
-                self.hud_surf.blit(icon_surf, ic_r)
-            else:
-                pygame.draw.rect(self.hud_surf, rar_col, ic_r, 1, border_radius=2)
-                pygame.draw.circle(self.hud_surf, rar_col, (ic_r.right - self._u(4), ic_r.bottom - self._u(4)), self._u(3))
-
-            name_col = rar_col if (can_afford and not inv_full) else (90, 70, 70)
-            self.hud_surf.blit(self._font_sm.render(preview.name, False, name_col),
-                             (ic_r.right + self._u(6), r.y + self._u(6)))
-            self.hud_surf.blit(self._font_sm.render(preview.item_type, False, (95, 85, 65)),
-                             (ic_r.right + self._u(6), r.y + self._u(24)))
-
-            price_col = (255, 215, 0) if (can_afford and not inv_full) else (130, 70, 70)
-            ps = self._font_sm.render(f"{entry['price']}g", False, price_col)
-            self.hud_surf.blit(ps, (r.right - ps.get_width() - self._u(8), r.y + self._u(14)))
-
-            if hov:
-                lines = item_tooltip_lines(preview, _viewer_cls)
-                if not can_afford:
+        # ── Lista à venda (rolável) ───────────────────────────────────────
+        view_y0, view_h = 2 * T, self._LIST_ROWS * self._ROW_H
+        content_h = max(1, len(stock) * self._ROW_H)
+        sb_rows = lay["body_rows"]
+        off = f.scrollbar(self._shop_scroll_st, lay["sb_col"], 2, 2 + sb_rows - 1,
+                          max(0, content_h - view_h), step=self._ROW_H)
+        list_w = lay["list_cols"] * T
+        in_view = view_y0 <= f.ry < view_y0 + view_h and T <= f.rx < T + list_w
+        fc = f.child(pygame.Surface((list_w, content_h), pygame.SRCALPHA),
+                     f.ry - view_y0 + off if in_view else -10_000)
+        fc.rx = f.rx - T
+        inv_full = inv is not None and len(inv.items) >= inv.max_slots
+        for i, (entry, prev) in enumerate(zip(stock, previews)):
+            y = i * self._ROW_H + 1
+            ok = (wallet is not None and wallet.gold >= entry["price"]) and not inv_full
+            rar = self._RARITY_COLORS.get(prev.rarity, (200, 200, 200))
+            hov, _ = fc.slot(f"shop:buy:{i}", 2, y, ICONS.get(ICONS.item_key(prev), ip),
+                             dark=True, dim=not ok)
+            row_hov = fc.hover(0, y - 1, list_w, y - 1 + self._ROW_H)
+            fc.text(prev.name, 2 + T + 4, y + T / 2, rar if ok else (110, 90, 90),
+                    self._font_sm, anchor="midleft")
+            fc.text(f"{entry['price']}g", list_w - 4, y + T / 2,
+                    (255, 215, 0) if ok else (130, 70, 70), self._font_sm, anchor="midright")
+            ry = view_y0 + y - off
+            if view_y0 <= ry and ry + T <= view_y0 + view_h:
+                self._hit(f"shop:buy:{i}", f, T, ry - 1, T + list_w, ry - 1 + self._ROW_H)
+            if row_hov or hov:
+                lines = item_tooltip_lines(prev, viewer_cls)
+                if wallet is None or wallet.gold < entry["price"]:
                     lines.append(("Ouro insuficiente!", (220, 80, 80)))
                 elif inv_full:
                     lines.append(("Mochila cheia!", (220, 150, 50)))
-                lines.append((f"Preco: {entry['price']}g | Venda estimada: {self._sell_price(preview)}g",
+                lines.append((f"Preço: {entry['price']}g | Venda estimada: {self._sell_price(prev)}g",
                               (120, 120, 120)))
-                # 7-tuple: title_color + Shift+hover comparison with equipped item
-                equip_c = self.world.get_component(self.player_entity, Equipment)
-                eq_item = equip_c.slots.get(preview.slot) if equip_c and preview.slot else None
-                self.pending_tooltip = (mx, my, preview.name, lines, rar_col, preview, eq_item)
+                lines.append(("Clique dir. p/ comprar | Shift+dir. = quantidade", (140, 140, 140)))
+                eq_item = equip.slots.get(prev.slot) if equip and prev.slot else None
+                self.pending_tooltip = (mx, my, prev.name, lines, rar, prev, eq_item)
+                if can_act and fc.rreleased:
+                    if shift and getattr(prev, "max_stack", 1) > 1:
+                        self._open_qty_modal(entry, shop_id=merch.shop_id)
+                    else:
+                        self._buy(entry, shop_id=merch.shop_id)
 
-        # Scrollbar loja
-        if len(stock) > self.MAX_ROWS:
-            sb_h    = self.MAX_ROWS * row_h
-            sb_x    = x0 + gap + left_w - self._u(8)
-            th      = max(20, sb_h * self.MAX_ROWS // len(stock))
-            ty      = body_y + (sb_h - th) * self._shop_scroll // max(1, max_shop)
-            pygame.draw.rect(self.hud_surf, (45, 35, 20), (sb_x, body_y, self._u(5), sb_h), border_radius=2)
-            pygame.draw.rect(self.hud_surf, (140, 110, 60), (sb_x, ty, self._u(5), th), border_radius=2)
+        # ── Mochila (clique direito vende) ────────────────────────────────
+        cells = []
+        for item in bag:
+            cells.append(None if item is None else
+                         (ICONS.get(ICONS.item_key(item), ip),
+                          item.stack if getattr(item, "max_stack", 1) > 1 else 0))
+        hov_i, _ = f.grid("shop:bag", lay["bag_col0"], 2, self._BAG_COLS, lay["bag_rows"], cells,
+                          count_font=self._font_xs)
+        for i in range(len(bag)):
+            c, r = i % self._BAG_COLS, i // self._BAG_COLS
+            self._hit(f"shop:sell:{i}", f, (lay["bag_col0"] + c) * T, (2 + r) * T,
+                      (lay["bag_col0"] + c + 1) * T, (3 + r) * T)
+        item = bag[hov_i] if 0 <= hov_i < len(bag) else None
+        if item is not None:
+            sp = self._sell_price(item)
+            rar = self._RARITY_COLORS.get(item.rarity, (200, 200, 200))
+            lines = item_tooltip_lines(item, viewer_cls)
+            if getattr(item, "stack", 1) > 1:
+                lines.append((f"Quantidade: {item.stack}", (180, 180, 180)))
+            lines.append((f"Venda: {sp}g | Valor base: {item.value}g", (120, 120, 120)))
+            lines.append(("Clique dir. p/ vender", (140, 140, 140)))
+            eq_item = equip.slots.get(item.slot) if equip and item.slot else None
+            self.pending_tooltip = (mx, my, item.name, lines, rar, item, eq_item)
+            if can_act and f.rreleased:
+                self._sell(hov_i)
 
-        # --- Painel direito: mochila ---
-        max_bag = max(0, len(bag) - self.MAX_ROWS)
-        self._bag_scroll = min(self._bag_scroll, max_bag)
-
-        for i, item in enumerate(bag):
-            vis_i = i - self._bag_scroll
-            if not (0 <= vis_i < self.MAX_ROWS):
-                continue
-            row_y = body_y + vis_i * row_h
-            r     = pygame.Rect(mid_x + gap, row_y, right_w - self._u(4), row_h - self._u(2))
-
-            hov    = r.collidepoint(mx, my) and not _modal_open
-            bg_c   = (50, 40, 20) if hov else (28, 20, 10)
-            bord_c = (180, 140, 60) if hov else (60, 45, 25)
-            pygame.draw.rect(self.hud_surf, bg_c,   r, border_radius=3)
-            pygame.draw.rect(self.hud_surf, bord_c, r, 1, border_radius=3)
-
-            rar_col = self._RARITY_COLORS.get(item.rarity, (100, 100, 100))
-            ic_r    = pygame.Rect(r.x + self._u(4), r.y + (row_h - self._u(2) - icon_s) // 2,
-                                  icon_s, icon_s)
-            pygame.draw.rect(self.hud_surf, (38, 30, 14), ic_r, border_radius=2)
-            icon_surf = ICONS.get(ICONS.item_key(item), icon_s)
-            if icon_surf:
-                self.hud_surf.blit(icon_surf, ic_r)
-            else:
-                pygame.draw.rect(self.hud_surf, rar_col, ic_r, 1, border_radius=2)
-                pygame.draw.circle(self.hud_surf, rar_col, (ic_r.right - self._u(4), ic_r.bottom - self._u(4)), self._u(3))
-            from ui.ui_helpers import draw_stack_count as _dsc
-            _dsc(self.hud_surf, item, ic_r, self._font_sm)
-
-            stack = getattr(item, "stack", 1)
-            name_label = f"{item.name}" if stack <= 1 else f"{item.name} x{stack}"
-            self.hud_surf.blit(self._font_sm.render(name_label, False, rar_col),
-                             (ic_r.right + self._u(6), r.y + self._u(6)))
-            slot_label = item.slot if item.slot else item.item_type
-            self.hud_surf.blit(self._font_sm.render(slot_label, False, (95, 85, 65)),
-                             (ic_r.right + self._u(6), r.y + self._u(24)))
-
-            sp     = self._sell_price(item)
-            sp_s   = self._font_sm.render(f"+{sp}g", False, (120, 200, 100))
-            self.hud_surf.blit(sp_s, (r.right - sp_s.get_width() - self._u(8), r.y + self._u(14)))
-
-            if hov:
-                lines = item_tooltip_lines(item, _viewer_cls)
-                if stack > 1:
-                    lines.append((f"Quantidade: {stack}", (180, 180, 180)))
-                lines.append((f"Venda: {sp}g | Valor base: {item.value}g", (120, 120, 120)))
-                equip_c = self.world.get_component(self.player_entity, Equipment)
-                eq_item = equip_c.slots.get(item.slot) if equip_c and item.slot else None
-                self.pending_tooltip = (mx, my, item.name, lines, rar_col, item, eq_item)
-
-        # Scrollbar mochila
-        if len(bag) > self.MAX_ROWS:
-            sb_h = self.MAX_ROWS * row_h
-            sb_x = mid_x + gap + right_w - self._u(8)
-            th   = max(20, sb_h * self.MAX_ROWS // len(bag))
-            ty   = body_y + (sb_h - th) * self._bag_scroll // max(1, max_bag)
-            pygame.draw.rect(self.hud_surf, (45, 35, 20), (sb_x, body_y, self._u(5), sb_h), border_radius=2)
-            pygame.draw.rect(self.hud_surf, (140, 110, 60), (sb_x, ty, self._u(5), th), border_radius=2)
-
-        # --- Footer: ouro do jogador ---
-        foot_y = y0 + H - self._u(self.FOOTER_H)
-        pygame.draw.line(self.hud_surf, (90, 70, 40), (x0 + self._u(4), foot_y), (x0 + W - self._u(4), foot_y))
+        # ── Rodapé: Desfazer (nunca funcionou — histórico não é populado)
+        #    + ouro ──────────────────────────────────────────────────────
+        bw = aw.tiles_for(self._font_sm, ["Desfazer"], 3)
+        f.button("shop:undo", 1, th - 2, bw, "Desfazer", tall=False,
+                 enabled=bool(self.transaction_history))
         if wallet:
-            gold_s = self._font_md.render(f"Seu ouro: {wallet.gold}g", False, (255, 215, 0))
-            self.hud_surf.blit(gold_s, (x0 + W // 2 - gold_s.get_width() // 2, foot_y + self._u(10)))
+            f.text(f"Seu ouro: {wallet.gold}g", (tw - 1) * T - 4, (th - 2) * T + T / 2,
+                   (255, 215, 0), self._font_md, anchor="midright")
 
-        # --- Modal de quantidade ---
+        f.end()
+        content = ui_atlas.scale_up(fc.raw)
+        aw.draw_texts(content, fc.texts, self._font_sm)
+        aw.draw_overlays(content, fc.overlays)
+        view = content.subsurface((0, off * S, content.get_width(),
+                                   min(view_h, content_h - off) * S))
+        self.hud_surf.blit(view, (f.px + T * S, f.py + view_y0 * S))
+        self._panel_rect = pygame.Rect(f.px, f.py, f.pw, f.ph)
+
         if self._qty_modal is not None:
-            self.pending_tooltip = None  # modal suprime tooltip dos itens abaixo
-            self._render_qty_modal(wallet)
+            self.pending_tooltip = None   # modal suprime tooltip dos itens abaixo
+            self._render_qty_modal(wallet, events)
 
-    def _render_qty_modal(self, wallet) -> None:
-        """Renderiza o modal de seleção de quantidade."""
-        m       = self._qty_modal
-        self._set_panel_scale(UI.SHOP_QTY_MODAL_W, UI.SHOP_QTY_MODAL_H)
-        SW, SH  = self.hud_surf.get_size()
-        mw, mh  = self._u(UI.SHOP_QTY_MODAL_W), self._u(UI.SHOP_QTY_MODAL_H)
-        mx0     = (SW - mw) // 2 + UI.SHOP_QTY_MODAL_OFFSET_X
-        my0     = (SH - mh) // 2 + UI.SHOP_QTY_MODAL_OFFSET_Y
+    def _hit(self, hit_id: str, f, x0, y0, x1, y1) -> None:
+        """Rect de TELA de um elemento clicável — só pros testes."""
+        self._hit_rects[hit_id] = pygame.Rect(f.px + round(x0 * aw.S), f.py + round(y0 * aw.S),
+                                              round((x1 - x0) * aw.S), round((y1 - y0) * aw.S))
 
-        # Overlay semitransparente
-        self.hud_surf.blit(fill_surf((SW, SH), (0, 0, 0, 130)), (0, 0))
-
-        # Fundo do modal
-        self.hud_surf.blit(fill_surf((mw, mh), (18, 14, 8, 245)), (mx0, my0))
-        pygame.draw.rect(self.hud_surf, (180, 140, 70), (mx0, my0, mw, mh), 2, border_radius=6)
-
-        # Título
-        title_s = self._font_md.render(m["preview"].name, False, (255, 220, 100))
-        self.hud_surf.blit(title_s, (mx0 + mw // 2 - title_s.get_width() // 2, my0 + self._u(12)))
-
-        # Preço
-        price    = m["entry"]["price"]
-        total    = price * m["qty"]
-        gold_avail = wallet.gold if wallet else 0
-        price_col  = (255, 215, 0) if total <= gold_avail else (220, 80, 80)
-        price_s  = self._font_sm.render(
-            f"{price}g por unidade  |  Total: {total}g  (ouro: {gold_avail}g)", False, price_col)
-        self.hud_surf.blit(price_s, (mx0 + mw // 2 - price_s.get_width() // 2, my0 + self._u(42)))
-
-        # ── Slider ────────────────────────────────────────────────────────
-        sl_x  = mx0 + self._u(20)
-        sl_y  = my0 + self._u(130)
-        sl_w  = mw - self._u(40)
-        ratio = (m["qty"] - 1) / max(1, m["max_qty"] - 1) if m["max_qty"] > 1 else 0.0
-        handle_x = sl_x + int(ratio * sl_w)
-
-        pygame.draw.rect(self.hud_surf, (50, 40, 25), (sl_x, sl_y - self._u(3), sl_w, self._u(6)), border_radius=3)
-        pygame.draw.rect(self.hud_surf, (160, 120, 50), (sl_x, sl_y - self._u(3), int(ratio * sl_w), self._u(6)), border_radius=3)
-        pygame.draw.circle(self.hud_surf, (220, 180, 80), (handle_x, sl_y), self._u(10))
-        pygame.draw.circle(self.hud_surf, (255, 220, 120), (handle_x, sl_y), self._u(10), 2)
-
-        # Labels min/max do slider
-        self.hud_surf.blit(self._font_sm.render("1", False, (130, 110, 70)),
-                           (sl_x, sl_y + self._u(14)))
-        max_s = self._font_sm.render(str(m["max_qty"]), False, (130, 110, 70))
-        self.hud_surf.blit(max_s, (sl_x + sl_w - max_s.get_width(), sl_y + self._u(14)))
-
-        # ── Campo de texto ────────────────────────────────────────────────
-        qty_s = self._font_lg.render(str(m["qty"]), False, (255, 255, 255))
-        txt_x = mx0 + mw // 2 - qty_s.get_width() // 2
-        self.hud_surf.blit(qty_s, (txt_x, my0 + self._u(76)))
-        # Cursor piscante
-        if (pygame.time.get_ticks() // 500) % 2 == 0:
-            cx = txt_x + qty_s.get_width() + 2
-            pygame.draw.line(self.hud_surf, (200, 200, 200),
-                             (cx, my0 + self._u(78)), (cx, my0 + self._u(78) + qty_s.get_height() - 4), 2)
-
-        # ── Botões ────────────────────────────────────────────────────────
-        btn_cancel = pygame.Rect(mx0 + self._u(20),       my0 + mh - self._u(54), self._u(190), self._u(38))
-        btn_ok     = pygame.Rect(mx0 + mw - self._u(210), my0 + mh - self._u(54), self._u(190), self._u(38))
-        mmx, mmy   = pygame.mouse.get_pos()
-
-        for btn, label, ok in ((btn_cancel, "Cancelar", False), (btn_ok, f"Comprar {m['qty']}", True)):
-            can_buy  = ok and total <= gold_avail
-            hov      = btn.collidepoint(mmx, mmy)
-            if ok:
-                col_bg   = (40, 100, 40) if (can_buy and hov) else ((30, 75, 30) if can_buy else (50, 25, 25))
-                col_brd  = (100, 220, 100) if can_buy else (120, 60, 60)
-                col_txt  = (150, 255, 150) if can_buy else (180, 100, 100)
-            else:
-                col_bg  = (70, 40, 30) if hov else (50, 28, 20)
-                col_brd = (180, 100, 60)
-                col_txt = (220, 160, 100)
-            pygame.draw.rect(self.hud_surf, col_bg,  btn, border_radius=4)
-            pygame.draw.rect(self.hud_surf, col_brd, btn, 1, border_radius=4)
-            lbl_s = self._font_sm.render(label, False, col_txt)
-            self.hud_surf.blit(lbl_s, (btn.centerx - lbl_s.get_width() // 2,
-                                        btn.centery - lbl_s.get_height() // 2))
-
-        # Dica ESC
-        esc_s = self._font_sm.render("ESC cancela  |  ENTER confirma", False, (80, 70, 50))
-        self.hud_surf.blit(esc_s, (mx0 + mw // 2 - esc_s.get_width() // 2, my0 + mh - self._u(14)))
-
-
+    def _render_qty_modal(self, wallet, events) -> None:
+        m = self._qty_modal
+        price = m["entry"]["price"]
+        total = price * m["qty"]
+        gold = wallet.gold if wallet else 0
+        res = aw.quantity_window(
+            self.hud_surf, events, m, area=self._area(), press=self._press,
+            font=self._font_md, small_font=self._font_sm, title=m["preview"].name,
+            info=f"{price}g por unidade  |  Total: {total}g  (ouro: {gold}g)",
+            confirm_label=f"Comprar {m['qty']}", confirm_enabled=total <= gold,
+            hits=self._hit_rects)
+        if res == "ok":
+            self._confirm_qty_modal()
+        elif res == "cancel":
+            self._close_qty_modal()
