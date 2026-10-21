@@ -164,7 +164,7 @@ class QuestReward(NamedTuple):
     items:  tuple = ()   # SEMPRE concedidos ao entregar a quest
     choice: tuple = ()   # jogador escolhe 1 destes (mesmo formato de items) —
                           # UI de escolha só aparece no diálogo de entrega
-                          # (ui/quest_system.py::QuestDialogSystem._render_turnin)
+                          # (ui/quest_system.py::QuestDialogSystem._content_turnin)
     # Skill de recompensa (25/07/2026, pedido do usuário) — chave de
     # content/skill_config.py::SKILL_CATALOG (não o nome de exibição).
     # Diferente de items: o SERVIDOR grava em PlayerSkills.learned_skill_ids

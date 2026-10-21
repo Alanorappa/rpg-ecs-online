@@ -5545,3 +5545,54 @@ tudo, roda do mouse, Fechar salva e fecha, modal e todas as janelas do
 menu de pausa dentro da área segura (fonte normal e grande), textos
 cabem com fonte grande.
 
+## 68. Diálogo de quest no atlas de UI + `ui/atlas_window.py` (20/10/2026)
+
+Continuação de §65–§67. Pedido do usuário: "podemos criar a janela de
+diálogo das quests?". Decisões do usuário: (1) extrair os ajudantes de
+janela do atlas pra um módulo comum; (2) ícones de recompensa no
+pergaminho, no fim do texto (rolam junto), cada um no slot claro (9,5);
+(3) "Concluir" quando falta escolher a recompensa = sprite normal com
+texto cinza, sem ação.
+
+**`ui/atlas_window.py` (novo)** — ponto único de montagem/interação de
+janela do atlas, antes espalhado como `_mm_*` em
+`client/menu_handlers.py`: `Frame` (painel centralizado na área segura,
+mouse em espaço RAW, `button`/`text_field`/`selector`/`text`/`press`,
+`child` pra conteúdo rolável, `scrollbar`, `end`), `PressState` (botão
+afundado — age no soltar), `ScrollState` (rolagem + seta segurada +
+puxador arrastado), `safe_area`, `tiles_for`, `draw_texts`. Menu de
+pausa e modal de atalhos migrados; a barra de rolagem que era código
+inline do modal de atalhos virou `Frame.scrollbar` (o diálogo de quest
+usa a mesma). Estado no GameEngine: `_mm_press` (PressState),
+`_hbe_scroll` (ScrollState; substitui `_mkb_scroll`/`_hbe_arrow_hold`/
+`_hbe_grip_drag`).
+
+**Diálogo de quest** (`ui/quest_system.py::QuestDialogSystem`) —
+janela 1 do mockup mapeada tile a tile (`ui_atlas.quest_window_raw`):
+barra de título com o nome do NPC (ou do item, quando aberto pela bag)
+e X funcionando; pergaminho com texto escuro rolável; barra de rolagem
+sempre visível na coluna da direita (como no mockup); rodapé escuro com
+botões "altos" — Recusar/Aceitar nas pontas, Concluir ou Fechar
+(lista) centralizado. Lista de quests vira linhas clicáveis no
+pergaminho. Largura sai da largura de texto antiga (QUEST_DIALOG_W) em
+tiles inteiros, mín. 11×13 tiles (tamanho do mockup); altura cresce com
+o texto até o limite da área segura e depois rola. `handle_events` só
+trata ESC e guarda os eventos; botões/linhas/slots agem no SOLTAR
+dentro de `render()` (Frame). Área segura injetada por game.py
+(`safe_area_fn = self._mm_safe_area`). `_hit_rects` guarda o rect de
+tela de cada elemento clicável (pros testes). Textos com acento
+corrigidos ("Missão Completa!", "Escolha uma missão:"). Removidos:
+`_render_list/_detail/_turnin`, `_blit_scrollable`,
+`_draw_reward_icon_row/_skill_icon`, rects `_accept_rect` & cia,
+`_panel_origin`, `UI.QUEST_REWARD_ICON/_GAP`. Lógica de aceitar/
+entregar/escolher (mensagens pro servidor, regra do talk_to_npc na
+lista) inalterada — só mudou de lugar (`_accept`, `_complete`,
+`_select_from_list`).
+
+**Teste**: `tests/test_quest_reward_ui.py` (escolha de recompensa,
+Concluir desabilitado, tooltip da skill, X fecha, soltar fora não
+dispara, texto longo rola e fica na tela),
+`tests/test_quest_dialog_list_turnin_click.py`, `tests/test_client_ui.py`
+(aceitar/recusar pelo item) — clique completo via
+`tests.helpers.click_quest_dialog`; `tests/test_ui_atlas.py` (menu e
+atalhos no módulo novo).

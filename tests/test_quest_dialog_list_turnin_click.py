@@ -46,6 +46,7 @@ from engine.components import (
 )
 from ui.quest_system import QuestSystem, QuestDialogSystem
 from content.quests_data import QUESTS, QuestDef, QuestReward, ObjectiveDef
+from tests.helpers import click_quest_dialog
 
 QID_TALK  = "qdlc_bem_vindo"     # dada por outro NPC, só talk_to_npc aqui
 QID_AVAIL = "qdlc_merchant"      # oferecida pelo PRÓPRIO NPC de entrega
@@ -97,10 +98,7 @@ class TestListClickAbreTurninParaQuestDeTalk(unittest.TestCase):
         self.assertEqual(self.dlg._dialog_state, "list")
 
     def _simula_clique_na_lista(self, qid: str) -> None:
-        rect = pygame.Rect(0, 0, 100, 20)
-        self.dlg._list_rects = {qid: rect}
-        event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(10, 10))
-        self.dlg.handle_events([event])
+        click_quest_dialog(self.dlg, f"q:row:{qid}")
 
     def test_clicar_na_quest_de_talk_abre_turnin_nao_detail(self):
         self.dlg._open_dialog(self.avido)

@@ -1981,18 +1981,22 @@ padrão a quebrar, não só os bugs individuais.
   no clique = janela fecha antes do estado pressionado aparecer).
   Largura de botão/seletor/janela NUNCA é número fixo de tiles quando
   tem texto — a fonte acompanha a escala de UI do jogador, o atlas não:
-  medir com a MESMA fonte do desenho (`MenuHandlers._mm_tiles_for`).
-  Menus do pausa: reusar os helpers `_mm_*` de `client/menu_handlers.py`.
+  medir com a MESMA fonte do desenho (`atlas_window.tiles_for`).
+  **Montar/interagir com a janela SEMPRE via `ui/atlas_window.py`**
+  (`Frame` — botão no soltar, campo, seletor, `scrollbar`, `child` pra
+  conteúdo rolável; `PressState`/`ScrollState` por sistema) — NUNCA
+  reimplementar botão/rolagem/hit-test numa tela à parte.
   **Toda janela do atlas fica dentro da área segura padrão**
-  (`MenuHandlers._mm_safe_area`: margem de 10% da altura no topo e
-  acima da barra de ações, 10% da largura nas laterais) — `_mm_begin`
-  já centraliza nela; janela com lista longa limita a altura a ela e
+  (`atlas_window.safe_area` / `MenuHandlers._mm_safe_area`: margem de
+  10% da altura no topo e acima da barra de ações, 10% da largura nas
+  laterais) — `Frame` já centraliza nela (sistema fora do GameEngine
+  recebe a função injetada, ex: `QuestDialogSystem.safe_area_fn`); janela com lista longa limita a altura a ela e
   rola, nunca cobre a barra de ações nem encosta nas bordas.
   **Antes de usar qualquer peça do atlas, consultar o catálogo
   `arquitetura/ATLAS_UI.md`** (o que cada tile é e pra que serve — ex:
   campo de texto (9,4)–(11,4) pra qualquer valor que o jogador define);
   peça nova/uso novo → atualizar o catálogo no mesmo commit. Ver
-  HISTORICO_FEATURES.md §65/§66/§67.
+  HISTORICO_FEATURES.md §65/§66/§67/§68.
 - **Ícone ANIMADO acima da cabeça de uma entidade, no MUNDO** (marcador
   de quest, ou categoria futura parecida) → `ui/world_icon_animator.py::
   get_frame(name, size, now_ms)` — spritesheet horizontal em

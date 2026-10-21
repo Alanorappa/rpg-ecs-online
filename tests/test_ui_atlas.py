@@ -466,10 +466,8 @@ class _HbeFixture(MenuHandlers, HotbarEditorHandlers):
         self._menu_keys = {"inventario": pygame.K_i}
         self._show_hotbar_editor = True
         self._mkb_rebind = None
-        self._mkb_scroll = 0
+        self._hbe_scroll = aw.ScrollState()
         self._mm_press = PressState()
-        self._hbe_arrow_hold = None
-        self._hbe_grip_drag = None
         self._save_calls = 0
 
     def _save_config(self):
@@ -502,7 +500,7 @@ class _HbeFixture(MenuHandlers, HotbarEditorHandlers):
         lay = self.layout()
         y0, y1 = ui_atlas.FIELD_ART_Y
         rx = (lay["L"] + 2 + lay["K"] / 2) * T
-        ry = lay["view_y0"] + content_row * T + (y0 + y1) / 2 - self._mkb_scroll
+        ry = lay["view_y0"] + content_row * T + (y0 + y1) / 2 - self._hbe_scroll.offset
         return self.to_screen(rx, ry)
 
 
@@ -523,10 +521,10 @@ def test_atalhos_seta_de_rolagem_rola_1_linha_e_segurar_repete():
     down = fx.to_screen((lay["tw"] - 1) * T + 8, (2 + lay["view_rows"] - 1) * T + 8)
     with _bigger_display(), _fake_mouse_and_clock() as clk:
         fx._draw_hotbar_editor(_click_at(down))
-        assert fx._mkb_scroll == T
+        assert fx._hbe_scroll.offset == T
         clk.now += fx._HBE_HOLD_MS
         fx._draw_hotbar_editor([])
-        assert fx._mkb_scroll == 2 * T
+        assert fx._hbe_scroll.offset == 2 * T
 
 
 def test_atalhos_arrastar_puxador_ate_o_fim_rola_tudo():
@@ -538,10 +536,10 @@ def test_atalhos_arrastar_puxador_ate_o_fim_rola_tudo():
     bottom = fx.to_screen(sb_x, (2 + lay["view_rows"]) * T)
     with _bigger_display(), _fake_mouse_and_clock():
         fx._draw_hotbar_editor(_click_at(grip))
-        assert fx._hbe_grip_drag is not None
+        assert fx._hbe_scroll.drag is not None
         pygame.mouse.set_pos(bottom)
         fx._draw_hotbar_editor([])
-    assert fx._mkb_scroll == max_scroll
+    assert fx._hbe_scroll.offset == max_scroll
 
 
 def test_atalhos_roda_do_mouse_rola():
@@ -549,7 +547,7 @@ def test_atalhos_roda_do_mouse_rola():
     with _bigger_display():
         pygame.mouse.set_pos(fx.to_screen(5 * T, 5 * T))
         fx._draw_hotbar_editor([pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=-2)])
-    assert fx._mkb_scroll == 2 * T
+    assert fx._hbe_scroll.offset == 2 * T
 
 
 def test_atalhos_fechar_salva_e_fecha():

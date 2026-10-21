@@ -98,7 +98,8 @@ class _ProximityPanelsFixture:
         self._hbe_rebind_slot = None
         self._hbe_tab = 0
         self._mkb_rebind = None
-        self._mkb_scroll = 0
+        from ui.atlas_window import ScrollState
+        self._hbe_scroll = ScrollState()
         self._drag_state = None
 
     def _get_drag(self):

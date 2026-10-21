@@ -3958,9 +3958,8 @@ def test_aceitar_no_modal_aberto_por_item_manda_quest_accept_com_npc_name_vazio(
     try:
         dlg, world, player = _make_item_quest_dialog()
         dlg.open_for_item(qid, item_name)
-        dlg.render()   # popula _accept_rect/_decline_rect
-        ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=dlg._accept_rect.center)
-        dlg.handle_events([ev])
+        from tests.helpers import click_quest_dialog
+        click_quest_dialog(dlg, "q:accept")
         assert dlg._qs._net.sent == [(MsgType.QUEST_ACCEPT, {"quest_id": qid, "npc_name": ""})]
         assert dlg.is_open is False
     finally:
@@ -3973,9 +3972,8 @@ def test_recusar_no_modal_aberto_por_item_so_fecha_sem_mandar_nada():
     try:
         dlg, world, player = _make_item_quest_dialog()
         dlg.open_for_item(qid, item_name)
-        dlg.render()
-        ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=dlg._decline_rect.center)
-        dlg.handle_events([ev])
+        from tests.helpers import click_quest_dialog
+        click_quest_dialog(dlg, "q:decline")
         assert dlg._qs._net.sent == []
         assert dlg.is_open is False
     finally:

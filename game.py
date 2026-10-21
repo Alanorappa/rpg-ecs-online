@@ -37,7 +37,7 @@ from ui.ui_compare import draw_compare_panel
 from ui.talent_system import TalentSystem
 from ui.char_stats_ui import CharStatsUI
 from ui.skill_level_ui import SkillLevelUI
-from ui.atlas_window import PressState
+from ui.atlas_window import PressState, ScrollState
 from ui.ui_helpers import item_tooltip_lines, draw_stack_count, RARITY_COLORS as _ITEM_RARITY_COLORS, fill_surf
 from ui.map_overlay import MapOverlay
 from ui.minimap import Minimap
@@ -481,9 +481,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._menu_keys: dict = {}                # carregado do config — veja _load_menu_keys
         self._hbe_skill_scroll: int = 0
         self._hbe_expand_slots: bool = False
-        self._mkb_scroll: int = 0                       # rolagem do modal de atalhos (px RAW do atlas)
-        self._hbe_arrow_hold: "tuple | None" = None     # (dir, próximo_ms) — seta da rolagem segurada
-        self._hbe_grip_drag: "float | None" = None      # offset do puxador sendo arrastado
+        self._hbe_scroll = ScrollState()                # rolagem do modal de atalhos (ui/atlas_window.py)
         self._show_habilidades: bool = False     # painel Habilidades (tecla H)
         self._show_skills: bool = False          # painel Skill Level (tecla L)
         self._show_ranking: bool = False         # modal de Ranking Geral (tecla K)
@@ -601,6 +599,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._buff_bar = BuffBar(self.world, self.player_entity)
         self._quest_dialog  = QuestDialogSystem(
             self.world, self.player_entity, self.screen, self._quest_system)
+        self._quest_dialog.safe_area_fn = self._mm_safe_area   # área segura das janelas do atlas
         self._quest_journal = QuestJournalSystem(
             self.world, self.player_entity, self.screen, self._quest_system)
         from ui.crafting_system import BlacksmithSystem
@@ -1588,9 +1587,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._hbe_rebind_slot    = None
         self._hbe_tab            = 0
         self._mkb_rebind         = None
-        self._mkb_scroll         = 0
-        self._hbe_arrow_hold     = None
-        self._hbe_grip_drag      = None
+        self._hbe_scroll         = ScrollState()
 
     # Game loop
     # ------------------------------------------------------------------
@@ -3214,7 +3211,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                     self._show_pause         = False
                     self._pause_submenu      = ""
                     self._show_hotbar_editor = True
-                    self._mkb_scroll         = 0
+                    self._hbe_scroll         = ScrollState()
                 elif action == "unstuck":
                     self._show_pause    = False
                     self._pause_submenu = ""

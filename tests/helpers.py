@@ -284,3 +284,24 @@ def get_player_hp(ws, session_id: str) -> tuple[int, int]:
     eid = ws._player_eids.get(session_id)
     cs  = ws.world.get_component(eid, CombatStats) if eid else None
     return (cs.current_hp, cs.max_hp) if cs else (0, 0)
+
+
+def click_quest_dialog(dlg, hit_id: str) -> None:
+    """Clique completo (aperta + solta) num elemento do diálogo de quest
+    (ui/quest_system.py::QuestDialogSystem) — botões do atlas agem no
+    SOLTAR, dentro de render() (ui/atlas_window.py). `hit_id` = chave de
+    `dlg._hit_rects` (ex: "q:accept", "q:complete", "q:slot:choice:<item>",
+    "q:row:<quest_id>"). Mouse falso: o driver dummy não move o cursor."""
+    dlg.render()
+    pos = dlg._hit_rects[hit_id].center
+    orig_pos, orig_pressed = pygame.mouse.get_pos, pygame.mouse.get_pressed
+    pygame.mouse.get_pos = lambda: pos
+    try:
+        pygame.mouse.get_pressed = lambda num_buttons=3: (True, False, False)
+        dlg.handle_events([pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pos)])
+        dlg.render()
+        pygame.mouse.get_pressed = lambda num_buttons=3: (False, False, False)
+        dlg.handle_events([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=pos)])
+        dlg.render()
+    finally:
+        pygame.mouse.get_pos, pygame.mouse.get_pressed = orig_pos, orig_pressed

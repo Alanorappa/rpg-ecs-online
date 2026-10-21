@@ -38,11 +38,9 @@ class HotbarEditorHandlers:
         self._hbe_cons_rebind_slot  = None
         self._hbe_tab               = 0
         self._mkb_rebind            = None
-        self._mkb_scroll            = 0
+        self._hbe_scroll            = aw.ScrollState()
         self._hbe_skill_scroll      = 0
         self._hbe_expand_slots      = False
-        self._hbe_arrow_hold        = None
-        self._hbe_grip_drag         = None
         self._save_config()
 
     @staticmethod
@@ -124,58 +122,13 @@ class HotbarEditorHandlers:
         f = self._mm_begin(events, tw, th, (UI.HOTBAR_EDITOR_OFFSET_X, UI.HOTBAR_EDITOR_OFFSET_Y),
                            style="dark")
         rx, ry = f.rx, f.ry
-        now = pygame.time.get_ticks()
-        if f.released or not f.down:
-            self._hbe_arrow_hold = None
-            self._hbe_grip_drag = None
-
-        over_panel = 0 <= rx < tw * T and 0 <= ry < th * T
-        for e in events:
-            if e.type == pygame.MOUSEWHEEL and over_panel:
-                self._mkb_scroll -= e.y * T
-        self._mkb_scroll = max(0, min(max_scroll, self._mkb_scroll))
-
         # ── Barra de rolagem (coluna da borda direita) ─────────────────────
         sb_col = tw - 1
-        up_row, down_row = 2, 2 + lay["view_rows"] - 1
-        if max_scroll > 0:
-            in_sb = sb_col * T <= rx < (sb_col + 1) * T
-            grip_min, grip_max = (up_row + 1) * T, down_row * T - T
-            grip_y = grip_min + round((grip_max - grip_min) * self._mkb_scroll / max_scroll)
-            if f.clicked and in_sb:
-                if up_row * T <= ry < (up_row + 1) * T:
-                    self._mkb_scroll -= T
-                    self._hbe_arrow_hold = (-1, now + self._HBE_HOLD_MS)
-                elif down_row * T <= ry < (down_row + 1) * T:
-                    self._mkb_scroll += T
-                    self._hbe_arrow_hold = (+1, now + self._HBE_HOLD_MS)
-                elif grip_min <= ry < grip_max + T:
-                    # Clique no trilho: o puxador pula pra lá e já começa a arrastar.
-                    off = ry - grip_y if grip_y <= ry < grip_y + T else T / 2
-                    self._hbe_grip_drag = off
-            hold = self._hbe_arrow_hold
-            if hold and now >= hold[1]:
-                self._mkb_scroll += hold[0] * T
-                self._hbe_arrow_hold = (hold[0], now + self._HBE_HOLD_MS)
-            if self._hbe_grip_drag is not None and grip_max > grip_min:
-                frac = (ry - self._hbe_grip_drag - grip_min) / (grip_max - grip_min)
-                self._mkb_scroll = round(max(0.0, min(1.0, frac)) * max_scroll)
-            self._mkb_scroll = max(0, min(max_scroll, self._mkb_scroll))
-            grip_y = grip_min + round((grip_max - grip_min) * self._mkb_scroll / max_scroll)
-
-            hold = self._hbe_arrow_hold
-            raw = f.raw
-            ui_atlas.blit_tile(raw, ui_atlas.SCROLL_UP_PRESSED if hold and hold[0] < 0
-                               else ui_atlas.SCROLL_UP, sb_col, up_row)
-            for r in range(up_row + 1, down_row):
-                ui_atlas.blit_tile(raw, ui_atlas.SCROLL_TRACK, sb_col, r)
-            ui_atlas.blit_tile(raw, ui_atlas.SCROLL_DOWN_PRESSED if hold and hold[0] > 0
-                               else ui_atlas.SCROLL_DOWN, sb_col, down_row)
-            ui_atlas.blit_tile_px(raw, ui_atlas.SCROLL_GRIP_PRESSED if self._hbe_grip_drag is not None
-                                  else ui_atlas.SCROLL_GRIP, sb_col * T, grip_y)
+        f.scrollbar(self._hbe_scroll, sb_col, 2, 2 + lay["view_rows"] - 1, max_scroll,
+                    hold_ms=self._HBE_HOLD_MS)
 
         # ── Conteúdo rolável (montado inteiro, recortado pela janela) ──────
-        scroll = self._mkb_scroll
+        scroll = self._hbe_scroll.offset
         in_view = vy0 <= ry < vy0 + vh and 0 <= rx < sb_col * T
         fc = f.child(pygame.Surface((sb_col * T, content_h), pygame.SRCALPHA),
                      ry - vy0 + scroll if in_view else -10_000)

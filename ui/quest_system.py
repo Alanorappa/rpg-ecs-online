@@ -11,7 +11,10 @@ Evento: quest_events.py (fire(), QUEST_EVENTS deque)
 Comp:   components.py   (QuestLog, QuestGiver)
 """
 from __future__ import annotations
+import math
 import pygame
+from ui import atlas_window as aw
+from ui import ui_atlas
 from ui.ui_helpers import fill_surf
 from ui.fonts import make as _font
 
@@ -24,6 +27,8 @@ from ui.floating_text import PROC
 from ui.ui_scale_mixin import UIScaleMixin
 from ui.ui_sizes import UI
 from ui.npc_interaction import walk_to_npc, suppress_chase
+
+T, S = aw.T, aw.S
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -397,8 +402,6 @@ class QuestDialogSystem(UIScaleMixin, System):
     Prioridade: ? amarelo > ! amarelo > ? cinza
     """
 
-    PANEL_W = UI.QUEST_DIALOG_W
-    PANEL_H = UI.QUEST_DIALOG_H
     PAD     = UI.QUEST_DIALOG_PAD
 
     COL_GOLD   = (255, 215,   0)
@@ -428,13 +431,6 @@ class QuestDialogSystem(UIScaleMixin, System):
         self._pending_npc_id:       int  = -1
         self._right_click_consumed: bool = False
 
-        # Rects para hit-test em handle_events
-        self._list_rects:    dict                    = {}
-        self._accept_rect:   "pygame.Rect | None"    = None
-        self._decline_rect:  "pygame.Rect | None"    = None
-        self._complete_rect: "pygame.Rect | None"    = None
-        self._close_rect:    "pygame.Rect | None"    = None
-
         # Cache de superfícies de marcador-fallback, por (cor, símbolo) — era
         # atributo do CORPO da classe (compartilhado por acidente entre
         # instâncias, achado 04 do benchmark, PROBLEMAS_ARQUITETURA.md
@@ -446,11 +442,9 @@ class QuestDialogSystem(UIScaleMixin, System):
         self._fallback_marker_cache: dict = {}
 
         # Escolha de recompensa (23/07/2026, pedido do usuário) — só
-        # relevante quando QuestReward.choice não é vazio. Rects populados
-        # em _render_turnin, consumidos em handle_events; escolha em si
+        # relevante quando QuestReward.choice não é vazio. Escolha em si
         # reseta sempre que um diálogo de entrega NOVO abre (_open_dialog/
         # clique na lista), pra nunca vazar a escolha de uma quest anterior.
-        self._reward_choice_rects: list = []   # [(rect, item_key), ...]
         self._turnin_chosen_item: "str | None" = None
 
         # Tooltip de item de recompensa (hover nos ícones) — mesmo padrão
@@ -459,10 +453,17 @@ class QuestDialogSystem(UIScaleMixin, System):
         # frame e copiado pra self._pending_tooltip (ver game.py).
         self.pending_tooltip = None
 
-        # Scroll (px) do bloco de texto rolável em "detail"/"turnin" — conteúdo
-        # variável (descrição + objetivos + recompensa) pode ultrapassar a
-        # altura fixa do painel; ver _render_detail/_render_turnin.
-        self._detail_scroll: int = 0
+        # Rolagem do conteúdo do pergaminho (texto + recompensas variam por
+        # quest e podem passar da altura da janela) — ver render().
+        self._scroll = aw.ScrollState()
+        # Botão afundado (age no soltar), eventos do frame (guardados em
+        # handle_events, consumidos em render), área segura da tela
+        # (injetada por game.py — GameEngine._mm_safe_area) e rects de
+        # tela dos elementos clicáveis (só pra teste/depuração).
+        self._press = aw.PressState()
+        self._frame_events: list = []
+        self.safe_area_fn = None
+        self._hit_rects: dict = {}
 
         # Diálogo aberto a partir de um item (clique direito na bag), sem
         # NPC real por trás (25/07/2026, pedido do usuário: reaproveitar o
@@ -544,112 +545,67 @@ class QuestDialogSystem(UIScaleMixin, System):
     # ── Eventos do modal ─────────────────────────────────────────────────────
 
     def handle_events(self, events: list) -> None:
+        """ESC fecha; o resto (botões, linhas da lista, ícones de escolha,
+        rolagem) é tratado em render() pelo Frame do atlas
+        (ui/atlas_window.py — botões agem no SOLTAR do mouse), com os
+        eventos guardados aqui."""
         if not self.is_open:
             return
         for event in events:
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 self._close()
                 return
-            if event.type == pygame.MOUSEWHEEL:
-                if self._dialog_state in ("detail", "turnin"):
-                    self._detail_scroll = max(0, self._detail_scroll - event.y * self._u(24))
-                return
-            if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
-                continue
-            mx, my = event.pos
+        self._frame_events = list(events)
 
-            # Botão X (fechar)
-            if hasattr(self, "_close_rect") and self._close_rect and \
-                    self._close_rect.collidepoint(mx, my):
-                self._close()
-                return
+    def _select_from_list(self, qid: str) -> None:
+        self._dialog_selected_qid = qid
+        self._scroll              = aw.ScrollState()
+        self._turnin_chosen_item  = None
+        # Bug real relatado pelo usuário (05/10/2026): clicar numa quest
+        # completável-por-talk_to_npc (ex: "bem_vindo_guerreiro", único
+        # objetivo é falar com o NPC) dentro da LISTA abria o diálogo de
+        # ACEITAR de novo em vez de ENTREGAR. self._qs.can_turn_in(qid) só
+        # olha o progresso bruto de ql.active — online, _process_talk_to_npc
+        # é no-op de propósito (nunca muta QuestLog sem o servidor
+        # confirmar). Precisa do MESMO critério de _open_dialog
+        # (_get_completable_quests com pending_npc_name).
+        from engine.components import NPC as _NPCclick
+        _npc_c_click = self.world.get_component(self._dialog_npc_id, _NPCclick)
+        _npc_name_click = _npc_c_click.name if _npc_c_click else ""
+        _comp_click = self._get_completable_quests(self._dialog_npc_id, _npc_name_click)
+        self._dialog_state = "turnin" if qid in _comp_click else "detail"
 
+    def _accept(self) -> None:
+        qid = self._dialog_selected_qid
+        # Server-autoritativo: aceite local era do modo offline, removido
+        # deste branch (15/07/2026, item A2 §11).
+        if self._qs._net:
+            from shared.messages import MsgType as _MTqa
+            # Fonte "item" não tem NPC real — manda npc_name="" pra não
+            # disparar talk_to_npc de um NPC inexistente
+            # (server/session.py::_handle_quest_accept só aplica o evento
+            # se npc_name vier preenchido).
+            _npc_nm = "" if self._item_source else self._npc_name(self._dialog_npc_id)
+            self._qs._net.send(_MTqa.QUEST_ACCEPT, {"quest_id": qid, "npc_name": _npc_nm})
+        self._close()
 
-            if self._dialog_state == "list":
-                for qid, rect in self._list_rects.items():
-                    if rect.collidepoint(mx, my):
-                        self._dialog_selected_qid = qid
-                        self._detail_scroll        = 0
-                        self._turnin_chosen_item   = None
-                        # Bug real relatado pelo usuário (05/10/2026):
-                        # clicar numa quest completável-por-talk_to_npc
-                        # (ex: "bem_vindo_guerreiro", único objetivo é
-                        # falar com o NPC) dentro da LISTA (len(total)>1
-                        # — o NPC tem outra quest disponível além dela,
-                        # ex: "merchant_greeting") abria o diálogo de
-                        # ACEITAR de novo em vez de ENTREGAR.
-                        # self._qs.can_turn_in(qid) só olha o progresso
-                        # bruto de ql.active — online, _process_talk_to_npc
-                        # (chamado em _open_dialog, ANTES da lista existir)
-                        # é no-op de propósito (nunca muta QuestLog sem o
-                        # servidor confirmar), então o objetivo talk_to_npc
-                        # nunca aparece "de verdade" completo aqui. O MESMO
-                        # problema que _open_dialog já resolve pra `comp`
-                        # (usa _get_completable_quests com pending_npc_name,
-                        # que cai em can_turn_in_after_talk) nunca era
-                        # refeito aqui — precisa do MESMO critério, não do
-                        # can_turn_in cru.
-                        from engine.components import NPC as _NPCclick
-                        _npc_c_click = self.world.get_component(self._dialog_npc_id, _NPCclick)
-                        _npc_name_click = _npc_c_click.name if _npc_c_click else ""
-                        _comp_click = self._get_completable_quests(self._dialog_npc_id, _npc_name_click)
-                        self._dialog_state = "turnin" if qid in _comp_click else "detail"
-                        return
-
-            elif self._dialog_state == "detail":
-                if self._accept_rect and self._accept_rect.collidepoint(mx, my):
-                    qid = self._dialog_selected_qid
-                    # Server-autoritativo: aceite local era do modo offline,
-                    # removido deste branch (15/07/2026, item A2 §11).
-                    if self._qs._net:
-                        from shared.messages import MsgType as _MTqa
-                        # Fonte "item" não tem NPC real — manda npc_name=""
-                        # pra não disparar talk_to_npc de um NPC inexistente
-                        # (server/session.py::_handle_quest_accept só aplica
-                        # o evento se npc_name vier preenchido).
-                        _npc_nm = "" if self._item_source else self._npc_name(self._dialog_npc_id)
-                        self._qs._net.send(_MTqa.QUEST_ACCEPT, {
-                            "quest_id": qid, "npc_name": _npc_nm,
-                        })
-                    self._close()
-                    return
-                if self._decline_rect and self._decline_rect.collidepoint(mx, my):
-                    self._close()
-                    return
-
-            elif self._dialog_state == "turnin":
-                # Ícones de escolha de recompensa (23/07/2026, pedido do
-                # usuário) — clique seleciona 1 (nunca fecha o diálogo);
-                # checado ANTES do botão Concluir, que fica condicionado
-                # a essa escolha existir quando há pool de escolha.
-                for rect, item_key in self._reward_choice_rects:
-                    if rect.collidepoint(mx, my):
-                        self._turnin_chosen_item = item_key
-                        return
-
-                if self._complete_rect and self._complete_rect.collidepoint(mx, my):
-                    qdef = QUESTS.get(self._dialog_selected_qid)
-                    if qdef and qdef.reward.choice and self._turnin_chosen_item is None:
-                        # Sem seleção ainda — botão existe mas não faz nada
-                        # (feedback visual de "desabilitado" já é dado no
-                        # render, ver _render_turnin).
-                        return
-                    saved_npc = self._dialog_npc_id
-                    qid = self._dialog_selected_qid
-                    chosen = self._turnin_chosen_item or ""
-                    self._close()
-                    # Server-autoritativo: entrega local era do modo offline,
-                    # removida deste branch (15/07/2026, item A2 §11).
-                    # Reabertura de quests em cadeia depende da confirmação do
-                    # servidor (QUEST_UPDATE) — não reflete nesta mesma frame,
-                    # latência aceitável (1 round-trip).
-                    if self._qs._net:
-                        from shared.messages import MsgType as _MTqt
-                        self._qs._net.send(_MTqt.QUEST_TURN_IN, {
-                            "quest_id": qid, "npc_name": self._npc_name(saved_npc),
-                            "chosen_item": chosen,
-                        })
-                    return
+    def _complete(self) -> None:
+        qdef = QUESTS.get(self._dialog_selected_qid)
+        if qdef and qdef.reward.choice and self._turnin_chosen_item is None:
+            return   # sem escolha ainda — botão "desabilitado" (ver render())
+        saved_npc = self._dialog_npc_id
+        qid = self._dialog_selected_qid
+        chosen = self._turnin_chosen_item or ""
+        self._close()
+        # Server-autoritativo: entrega local era do modo offline, removida
+        # deste branch (15/07/2026, item A2 §11). Reabertura de quests em
+        # cadeia depende da confirmação do servidor (QUEST_UPDATE).
+        if self._qs._net:
+            from shared.messages import MsgType as _MTqt
+            self._qs._net.send(_MTqt.QUEST_TURN_IN, {
+                "quest_id": qid, "npc_name": self._npc_name(saved_npc),
+                "chosen_item": chosen,
+            })
 
     # ── Marcador de estado de quest (fonte única) ────────────────────────────
     # Reaproveitado por render_world() (indicador acima da cabeça, no mundo)
@@ -784,194 +740,312 @@ class QuestDialogSystem(UIScaleMixin, System):
             self._fallback_marker_cache[key] = surf
         return surf
 
-    # ── Render — modal ───────────────────────────────────────────────────────
+    # ── Render — modal (atlas de UI, janela de pergaminho do mockup) ─────────
+    # Layout em tiles (ui_atlas.quest_window_raw): linha 0 = título (nome do
+    # NPC) + X; pergaminho com o texto rolável; coluna da direita = barra
+    # de rolagem; rodapé escuro = botões "altos". Conteúdo (texto + slots
+    # de recompensa) é montado inteiro num Surface à parte e recortado
+    # pela área visível do pergaminho — os slots rolam junto com o texto
+    # (decisão do usuário: recompensas no fim do texto).
+
+    _PADX      = 10   # px RAW do texto até a borda esq./dir. do pergaminho
+    _VIEW_PAD  = 6    # px RAW de folga no topo/base do pergaminho
+    _SLOT_GAP  = 2    # px RAW entre slots de recompensa
+    _MIN_TW, _MIN_TH = 11, 13   # tamanho da janela do mockup
+
+    INK        = ( 62,  40,  22)
+    INK_SOFT   = (105,  78,  50)
+    INK_TITLE  = (120,  36,  24)
+    INK_GOLD   = (135,  90,  10)
+    INK_HOVER  = (165,  55,  30)
+    TITLE_BAR  = (240, 228, 200)
+
+    def _lh(self, font) -> int:
+        """Altura de linha da fonte em px RAW (fonte acompanha a escala de
+        UI do jogador, o atlas não)."""
+        return math.ceil(font.get_linesize() / S)
+
+    def _window_tiles_w(self, footer_labels: list) -> int:
+        wrap_raw = self._u(UI.QUEST_DIALOG_W - 2 * self.PAD - 32) / S
+        tw = math.ceil((wrap_raw + 2 * self._PADX) / T) + 1
+        bw = aw.tiles_for(self._font_body, footer_labels or ["Fechar"], 3)
+        tw = max(self._MIN_TW, tw, 2 * bw + 3)
+        max_tw = self._area().width // (T * S)
+        return max(4, min(tw, max_tw))
+
+    def _area(self) -> pygame.Rect:
+        if self.safe_area_fn is not None:
+            return self.safe_area_fn()
+        SW, SH = self.hud_surf.get_size()
+        return aw.safe_area(SW, SH, SH)
 
     def render(self, cam_x: float = 0, cam_y: float = 0) -> None:
+        events, self._frame_events = self._frame_events, []
         if not self.is_open:
             return
         from engine.components import QuestGiver as _QG, NPC as _NPC
 
-        giver = None
         if self._item_source:
-            # Sem NPC real por trás (aberto via item na bag) — cabeçalho usa
-            # o nome do item; estado sempre "detail" (open_for_item nunca
-            # entra em "list"), então _render_list(giver) nunca é chamado
-            # com giver=None aqui.
-            npc_name = self._item_source_label or "Missao"
+            # Sem NPC real por trás (aberto via item na bag) — título usa o
+            # nome do item; estado sempre "detail" (open_for_item).
+            npc_name = self._item_source_label or "Missão"
         else:
-            giver = self.world.get_component(self._dialog_npc_id, _QG)
-            if giver is None:
+            if self.world.get_component(self._dialog_npc_id, _QG) is None:
                 self._close()
                 return
             _npc_comp = self.world.get_component(self._dialog_npc_id, _NPC)
             npc_name  = _npc_comp.name if _npc_comp else "NPC"
 
-        SW, SH = self.hud_surf.get_size()
-        self.hud_surf.blit(fill_surf((SW, SH), (0, 0, 0, 160)), (0, 0))
+        self.pending_tooltip = None
+        self._hit_rects = {}
+        state = self._dialog_state
+        qdef = QUESTS.get(self._dialog_selected_qid)
+        if state in ("detail", "turnin") and qdef is None:
+            return
 
-        x0, y0 = self._panel_origin()
-        W, H   = self._u(self.PANEL_W), self._u(self.PANEL_H)
-        self.hud_surf.blit(fill_surf((W, H), self.COL_BG), (x0, y0))
-        pygame.draw.rect(self.hud_surf, self.COL_BORDER, (x0, y0, W, H), 2, border_radius=4)
+        if state == "detail":
+            footer = [("q:decline", "Recusar", True), ("q:accept", "Aceitar", True)]
+        elif state == "turnin":
+            needs_choice = bool(qdef.reward.choice) and self._turnin_chosen_item is None
+            footer = [("q:complete", "Concluir", not needs_choice)]
+        else:
+            footer = [("q:fechar", "Fechar", True)]
 
-        # Header: nome do NPC
-        npc_surf = self._font_lg.render(npc_name, False, self.COL_TITLE)
-        self.hud_surf.blit(npc_surf, (x0 + self._u(self.PAD), y0 + self._u(self.PAD)))
-        pygame.draw.line(self.hud_surf, self.COL_BORDER,
-                         (x0 + self._u(4), y0 + self._u(42)), (x0 + W - self._u(4), y0 + self._u(42)))
+        tw = self._window_tiles_w([lbl for _, lbl, _ in footer])
+        content_w = (tw - 1) * T
+        wrap_px = (content_w - 2 * self._PADX) * S
+        if state == "list":
+            items, content_h = self._content_list(npc_name)
+        elif state == "detail":
+            items, content_h = self._content_detail(qdef, wrap_px)
+        else:
+            items, content_h = self._content_turnin(qdef, wrap_px)
 
-        # Botão fechar (X)
-        close_r = pygame.Rect(x0 + W - self._u(36), y0 + self._u(4), self._u(32), self._u(32))
-        mx, my  = pygame.mouse.get_pos()
-        hov_x   = close_r.collidepoint(mx, my)
-        pygame.draw.rect(self.hud_surf, (180, 60, 60) if hov_x else (100, 35, 35),
-                         close_r, border_radius=3)
-        xs = self._font_body.render("X", False, (255, 255, 255))
-        self.hud_surf.blit(xs, (close_r.centerx - xs.get_width() // 2,
-                              close_r.centery - xs.get_height() // 2))
-        self._close_rect = close_r
+        max_th = self._area().height // (T * S)
+        need_th = 3 + math.ceil((content_h + 2 * self._VIEW_PAD) / T)
+        th = max(min(self._MIN_TH, max_th), min(need_th, max_th), 6)
+        view_y0 = T + self._VIEW_PAD
+        view_h  = (th - 3) * T - 2 * self._VIEW_PAD
+        max_scroll = max(0, content_h - view_h)
 
-        if self._dialog_state == "list":
-            self._render_list(x0, y0, giver, npc_name)
-        elif self._dialog_state == "detail":
-            self._render_detail(x0, y0)
-        elif self._dialog_state == "turnin":
-            self._render_turnin(x0, y0)
+        f = aw.Frame(self.hud_surf, events, tw, th, area=self._area(), press=self._press,
+                     font=self._font_body, raw=ui_atlas.quest_window_raw(tw, th),
+                     offset=(self._u(UI.QUEST_DIALOG_OFFSET_X), self._u(UI.QUEST_DIALOG_OFFSET_Y)))
+        action = None
 
-    # ── Sub-renders ──────────────────────────────────────────────────────────
+        # Título (nome do NPC) + X
+        f.text(npc_name, content_w / 2, T / 2, self.TITLE_BAR)
+        if f.press("q:close", (tw - 1) * T, 0, tw * T, T)[1]:
+            action = ("close",)
+        self._hit("q:close", f, (tw - 1) * T, 0, tw * T, T)
 
-    def _render_list(self, x0: int, y0: int, giver, npc_name: str = "") -> None:
-        """`npc_name` (04/09/2026, bug real reportado pelo usuário) vai pra
-        `_get_completable_quests` como `pending_npc_name` — sem isso, uma
-        quest cujo único objetivo pendente é "falar com ESTE NPC" ficava de
-        fora da lista mesmo já estando 100% completável (mesma checagem que
-        `_open_dialog` já faz certo ao decidir o estado inicial do diálogo;
-        esta função reconstrói a lista do zero pra desenhar e repetia o
-        cálculo sem o parâmetro)."""
-        self._list_rects = {}
+        scroll = f.scrollbar(self._scroll, tw - 1, 1, th - 3, max_scroll, always=True)
+
+        # Botões do rodapé (1 = centralizado; 2 = nas pontas, como no mockup)
+        bw = aw.tiles_for(self._font_body, [lbl for _, lbl, _ in footer], 3)
+        if len(footer) == 1:
+            cols = [(tw - bw) // 2]
+        else:
+            cols = [1, tw - 1 - bw]
+        by = th - ui_atlas.QUEST_FOOTER_ROWS
+        ay0, ay1 = ui_atlas.button_art_y(True)
+        for (bid, label, enabled), col in zip(footer, cols):
+            if f.button(bid, col, by, bw, label, tall=True, enabled=enabled):
+                action = (bid,)
+            self._hit(bid, f, col * T, by * T + ay0, (col + bw) * T, by * T + ay1)
+
+        # Conteúdo rolável — mouse convertido pro espaço do conteúdo só
+        # quando está dentro da área visível do pergaminho.
+        in_view = view_y0 <= f.ry < view_y0 + view_h and 0 <= f.rx < content_w
+        fc = f.child(pygame.Surface((content_w, max(1, content_h)), pygame.SRCALPHA),
+                     f.ry - view_y0 + scroll if in_view else -10_000)
+        icons = []   # (surf, x_raw, y_raw, dim, selected, stack)
+        for it in items:
+            kind = it[0]
+            if kind == "text":
+                _, text, x, y, color, font = it
+                fc.text(text, x, y, color, font=font, anchor="topleft")
+            elif kind == "row":
+                _, qid, label, y0, y1 = it
+                hov = 0 <= fc.rx < content_w and y0 <= fc.ry < y1
+                if fc.press(f"q:row:{qid}", 0, y0, content_w, y1)[1]:
+                    action = ("row", qid)
+                fc.text(label, self._PADX, y0 + 2, self.INK_HOVER if hov else self.INK,
+                        font=self._font_body, anchor="topleft")
+                self._hit(f"q:row:{qid}", f, 0, view_y0 + y0 - scroll, content_w, view_y0 + y1 - scroll)
+            elif kind == "slot":
+                _, sel_kind, key, obj, x, y = it
+                ui_atlas.blit_tile_px(fc.raw, ui_atlas.SLOT, x, y)
+                hov = x <= fc.rx < x + T and y <= fc.ry < y + T
+                selectable = sel_kind == "choice"
+                selected = selectable and self._turnin_chosen_item == key
+                dim = selectable and self._turnin_chosen_item is not None and not selected
+                if selectable and fc.press(f"q:choice:{key}", x, y, x + T, y + T)[1]:
+                    action = ("choice", key)
+                self._hit(f"q:slot:{sel_kind}:{key}", f, x, view_y0 + y - scroll, x + T,
+                          view_y0 + y + T - scroll)
+                icons.append((sel_kind, obj, x, y, dim, selected))
+                if hov:
+                    self._set_reward_tooltip(sel_kind, obj)
+
+        f.end()
+        content = ui_atlas.scale_up(fc.raw)
+        aw.draw_texts(content, fc.texts, self._font_body)
+        self._draw_reward_icons(content, icons)
+        top = min(scroll, max(0, content.get_height() // S - view_h))
+        view = content.subsurface((0, top * S, content.get_width(),
+                                   min(view_h, content_h - top) * S))
+        self.hud_surf.blit(view, (f.px, f.py + view_y0 * S))
+
+        if action is None:
+            return
+        if action[0] in ("close", "q:fechar", "q:decline"):
+            self._close()
+        elif action[0] == "q:accept":
+            self._accept()
+        elif action[0] == "q:complete":
+            self._complete()
+        elif action[0] == "row":
+            self._select_from_list(action[1])
+        elif action[0] == "choice":
+            self._turnin_chosen_item = action[1]
+
+    def _hit(self, hit_id: str, f, x0, y0, x1, y1) -> None:
+        """Rect de TELA de um elemento clicável (RAW → tela) — usado pelos
+        testes pra achar onde clicar; a interação de verdade é do Frame."""
+        self._hit_rects[hit_id] = pygame.Rect(f.px + round(x0 * S), f.py + round(y0 * S),
+                                              round((x1 - x0) * S), round((y1 - y0) * S))
+
+    # ── Conteúdo de cada estado: lista de itens + altura (px RAW) ───────────
+
+    def _text_items(self, items: list, y: int, text: str, color, font, wrap_px: int,
+                    indent: int = 0) -> int:
+        for line in self._wrap(text, wrap_px - indent * S, font):
+            items.append(("text", line, self._PADX + indent, y, color, font))
+            y += self._lh(font)
+        return y
+
+    def _content_list(self, npc_name: str) -> tuple:
+        """`npc_name` vai pra `_get_completable_quests` como
+        `pending_npc_name` (04/09/2026, bug real): sem isso, uma quest cujo
+        único objetivo pendente é "falar com ESTE NPC" ficava de fora da
+        lista mesmo já completável."""
         avail = self._get_available_quests(self._dialog_npc_id)
         comp  = self._get_completable_quests(self._dialog_npc_id, npc_name)
-        mx, my = pygame.mouse.get_pos()
-        PAD = self._u(self.PAD)
-        y = y0 + self._u(52)
-
-        hint = self._font_sm.render("Escolha uma missao:", False, self.COL_GREY)
-        self.hud_surf.blit(hint, (x0 + PAD, y))
-        y += self._u(26)
-
+        items, y = [], 0
+        items.append(("text", "Escolha uma missão:", self._PADX, y, self.INK_SOFT, self._font_sm))
+        y += self._lh(self._font_sm) + 4
+        row_h = self._lh(self._font_body) + 4
         for qid, is_turnin in [(q, True) for q in comp] + [(q, False) for q in avail]:
             qdef = QUESTS.get(qid)
             if qdef is None:
                 continue
-            symbol = "?" if is_turnin else "!"
-            color  = self.COL_GOLD
-            row_r  = pygame.Rect(x0 + PAD, y, self._u(self.PANEL_W) - PAD * 2, self._u(34))
-            if row_r.collidepoint(mx, my):
-                pygame.draw.rect(self.hud_surf, (45, 38, 18), row_r, border_radius=3)
-                pygame.draw.rect(self.hud_surf, self.COL_BORDER, row_r, 1, border_radius=3)
-            label = self._font_body.render(f"[{symbol}]  {qdef.title}", False, color)
-            self.hud_surf.blit(label, (x0 + PAD + self._u(6), y + self._u(6)))
-            self._list_rects[qid] = row_r
-            y += self._u(38)
+            items.append(("row", qid, f"[{'?' if is_turnin else '!'}]  {qdef.title}", y, y + row_h))
+            y += row_h + 2
+        return items, y
 
-    def _blit_scrollable(self, ops: list, x0: int, view_top: int,
-                         panel_w: int, view_h: int) -> None:
-        """Desenha `ops` (lista de (surf, rel_y), rel_y relativo ao topo do
-        bloco) dentro da faixa [view_top, view_top+view_h), cortando
-        (set_clip) o que passar da altura disponível e aplicando
-        self._detail_scroll (px, clampado aqui). Desenha uma barra de
-        rolagem à direita quando o conteúdo não cabe inteiro — mesmo padrão
-        visual de crafting_system.py (thumb proporcional). Usado por
-        _render_detail/_render_turnin — conteúdo de texto varia por quest,
-        diferente do painel fixo original que deixava a descrição/objetivos
-        vazar pra fora do modal (bug relatado pelo usuário 13/07/2026)."""
-        view_h = max(0, view_h)
-        content_h = 0
-        for surf, rel_y in ops:
-            content_h = max(content_h, rel_y + surf.get_height())
-
-        max_scroll = max(0, content_h - view_h)
-        self._detail_scroll = max(0, min(self._detail_scroll, max_scroll))
-
-        PAD = self._u(self.PAD)
-        prev_clip = self.hud_surf.get_clip()
-        self.hud_surf.set_clip(pygame.Rect(x0, view_top, panel_w, view_h))
-        for surf, rel_y in ops:
-            self.hud_surf.blit(surf, (x0 + PAD, view_top + rel_y - self._detail_scroll))
-        self.hud_surf.set_clip(prev_clip)
-
-        if max_scroll > 0 and view_h > 0:
-            sb_w    = self._u(5)
-            sb_x    = x0 + panel_w - self._u(10)
-            thumb_h = max(self._u(20), int(view_h * view_h / content_h))
-            thumb_y = view_top + int((view_h - thumb_h) * self._detail_scroll / max_scroll)
-            pygame.draw.rect(self.hud_surf, (40, 34, 18), (sb_x, view_top, sb_w, view_h), border_radius=2)
-            pygame.draw.rect(self.hud_surf, self.COL_BORDER, (sb_x, thumb_y, sb_w, thumb_h), border_radius=2)
-
-    def _render_detail(self, x0: int, y0: int) -> None:
-        self._accept_rect  = None
-        self._decline_rect = None
-        qdef = QUESTS.get(self._dialog_selected_qid)
-        if qdef is None:
-            return
-
-        W, PAD = self._u(self.PANEL_W), self._u(self.PAD)
-        mx, my = pygame.mouse.get_pos()
-
-        # Botões na base do painel — alinhados à direita: [Recusar] [Aceitar]
-        btn_y  = y0 + self._u(self.PANEL_H) - self._u(48)
-
-        # ── Monta as linhas de conteúdo em coordenadas RELATIVAS (y=0 no
-        # topo do bloco) — permite medir a altura total antes de desenhar,
-        # pra rolar/cortar sem depender do conteúdo caber no painel fixo
-        # (descrição/objetivos têm tamanho variável por quest). Ver
-        # ARQUITETURA_ONLINE.md — modal overflow reportado pelo usuário.
-        ops: list[tuple] = []   # (surf, rel_y)
-        ry = 0
-
-        ts = self._font_lg.render(qdef.title, False, self.COL_TITLE)
-        ops.append((ts, ry)); ry += self._u(32)
-
-        from engine.components import CharacterStats as _CharQD
-        from engine.quest_logic import format_quest_text as _fmt_qd
-        _char_qd = self.world.get_component(self.player_entity, _CharQD)
-        description_txt = _fmt_qd(qdef.description, _char_qd.name if _char_qd else "")
-        for line in self._wrap(description_txt, W - PAD * 2, self._font_body):
-            ops.append((self._font_body.render(line, False, self.COL_WHITE), ry))
-            ry += self._u(25)
-        ry += self._u(8)
-
-        ops.append((self._font_sm.render("Objetivos:", False, self.COL_GREY), ry))
-        ry += self._u(23)
-        for obj in qdef.objectives:
-            s = self._font_sm.render(f"  {QuestSystem._obj_label(obj, 0, show_progress=False)}",
-                                     False, self.COL_GREY)
-            ops.append((s, ry)); ry += self._u(21)
-        ry += self._u(8)
-
+    def _reward_text(self, qdef) -> str:
         parts = []
         if qdef.reward.xp:   parts.append(f"+{qdef.reward.xp} XP")
         if qdef.reward.gold: parts.append(f"+{qdef.reward.gold} ouro")
-        if parts:
-            rew = self._font_sm.render("Recompensa: " + ", ".join(parts),
-                                       False, self.COL_GOLD)
-            ops.append((rew, ry)); ry += rew.get_height()
+        return ", ".join(parts)
 
-        self._blit_scrollable(ops, x0, y0 + self._u(52), W, btn_y - self._u(10) - (y0 + self._u(52)))
-        acc_r  = pygame.Rect(x0 + self._u(self.PANEL_W) - PAD - self._u(150), btn_y, self._u(150), self._u(32))
-        dec_r  = pygame.Rect(x0 + self._u(self.PANEL_W) - PAD - self._u(150) - self._u(158), btn_y, self._u(150), self._u(32))
-        for rect, label, c_hov, c_nor in [
-            (dec_r, "Recusar",  (120, 50, 50), (70, 30, 30)),
-            (acc_r, "Aceitar",  (60, 120, 60), (35, 70, 35)),
-        ]:
-            hov = rect.collidepoint(mx, my)
-            pygame.draw.rect(self.hud_surf, c_hov if hov else c_nor, rect, border_radius=4)
-            pygame.draw.rect(self.hud_surf, self.COL_BORDER, rect, 1, border_radius=4)
-            txt = self._font_body.render(label, False, self.COL_WHITE)
-            self.hud_surf.blit(txt, (rect.centerx - txt.get_width() // 2,
-                                   rect.centery - txt.get_height() // 2))
-        self._accept_rect  = acc_r
-        self._decline_rect = dec_r
+    def _content_detail(self, qdef, wrap_px: int) -> tuple:
+        from engine.components import CharacterStats as _CharQD
+        from engine.quest_logic import format_quest_text as _fmt_qd
+        _char_qd = self.world.get_component(self.player_entity, _CharQD)
+        items, y = [], 0
+        y = self._text_items(items, y, qdef.title, self.INK_TITLE, self._font_lg, wrap_px) + 4
+        desc = _fmt_qd(qdef.description, _char_qd.name if _char_qd else "")
+        y = self._text_items(items, y, desc, self.INK, self._font_body, wrap_px) + 6
+        y = self._text_items(items, y, "Objetivos:", self.INK_SOFT, self._font_sm, wrap_px)
+        for obj in qdef.objectives:
+            y = self._text_items(items, y, QuestSystem._obj_label(obj, 0, show_progress=False),
+                                 self.INK_SOFT, self._font_sm, wrap_px, indent=8)
+        rew = self._reward_text(qdef)
+        if rew:
+            y = self._text_items(items, y + 6, "Recompensa: " + rew, self.INK_GOLD,
+                                 self._font_sm, wrap_px)
+        return items, y
+
+    def _content_turnin(self, qdef, wrap_px: int) -> tuple:
+        from engine.components import CharacterStats as _CharQT
+        from engine.quest_logic import format_quest_text as _fmt_qt
+        _char_qt = self.world.get_component(self.player_entity, _CharQT)
+        items, y = [], 0
+        y = self._text_items(items, y, "Missão Completa!", self.INK_GOLD, self._font_lg, wrap_px)
+        y = self._text_items(items, y, qdef.title, self.INK_TITLE, self._font_body, wrap_px) + 6
+        completion = getattr(qdef, "completion", "") or "Bom trabalho. Aqui está sua recompensa."
+        completion = _fmt_qt(completion, _char_qt.name if _char_qt else "")
+        y = self._text_items(items, y, completion, self.INK, self._font_body, wrap_px) + 8
+        rew = self._reward_text(qdef)
+        if rew:
+            y = self._text_items(items, y, "Recompensa: " + rew, self.INK_GOLD,
+                                 self._font_sm, wrap_px) + 4
+
+        # Itens de recompensa (23/07/2026) — fixos (`items`, sempre
+        # concedidos) + skill + pool de escolha (`choice`, jogador escolhe
+        # 1). Cada um num slot do atlas, no fim do texto (rola junto).
+        fixed  = [("item", k, it) for k, it in self._reward_item_objects(qdef.reward.items)]
+        skill  = self._reward_skill_info(qdef.reward.skill)
+        if skill:
+            fixed.append(("skill", skill[0], skill))
+        y = self._slot_row(items, y, fixed)
+        choice = [("choice", k, it) for k, it in self._reward_item_objects(qdef.reward.choice)]
+        if choice:
+            y = self._text_items(items, y + 2, "Escolha uma recompensa:", self.INK_SOFT,
+                                 self._font_sm, wrap_px) + 2
+            y = self._slot_row(items, y, choice)
+        return items, y
+
+    def _slot_row(self, items: list, y: int, entries: list) -> int:
+        if not entries:
+            return y
+        x = self._PADX
+        for sel_kind, key, obj in entries:
+            items.append(("slot", sel_kind, key, obj, x, y))
+            x += T + self._SLOT_GAP
+        return y + T + 4
+
+    # ── Recompensas: ícones e tooltip ────────────────────────────────────────
+
+    def _draw_reward_icons(self, content: pygame.Surface, icons: list) -> None:
+        """Ícones por cima dos slots já ampliados (ícone em resolução de
+        tela, nunca ampliado em bloco). Escolha: selecionado ganha
+        contorno dourado; os outros ficam esmaecidos depois de escolher."""
+        from ui.icon_manager import ICONS
+        inner = (T - 2) * S
+        for sel_kind, obj, x, y, dim, selected in icons:
+            px, py = (x + 1) * S, (y + 1) * S
+            if sel_kind == "skill":
+                surf = ICONS.get(f"skill_{obj[0]}", inner)
+                stack = 1
+            else:
+                surf = ICONS.get(ICONS.item_key(obj), inner)
+                stack = obj.stack
+            if surf is not None:
+                content.blit(surf, (px, py))
+            if dim:
+                content.blit(fill_surf((inner, inner), (0, 0, 0, 150)), (px, py))
+            if selected:
+                pygame.draw.rect(content, (255, 215, 60), (x * S, y * S, T * S, T * S), 2)
+            if stack > 1:
+                st = self._font_sm.render(str(stack), False, (255, 255, 255))
+                content.blit(st, (px + inner - st.get_width(), py + inner - st.get_height()))
+
+    def _set_reward_tooltip(self, sel_kind: str, obj) -> None:
+        mx, my = pygame.mouse.get_pos()
+        if sel_kind == "skill":
+            skill_id, name = obj
+            self.pending_tooltip = (mx, my, name, self._reward_skill_tooltip_lines(skill_id),
+                                    (180, 140, 230))
+            return
+        from ui.ui_helpers import item_tooltip_lines, RARITY_COLORS
+        from engine.components import CharacterStats as _CharRI
+        _char_ri = self.world.get_component(self.player_entity, _CharRI)
+        rar_col = RARITY_COLORS.get(obj.rarity, (200, 200, 200))
+        self.pending_tooltip = (mx, my, obj.name,
+                                item_tooltip_lines(obj, getattr(_char_ri, "class_id", None)), rar_col)
 
     def _reward_item_objects(self, entries: tuple) -> list:
         """Normaliza e instancia os itens de QuestReward.items/choice pra
@@ -1029,203 +1103,6 @@ class QuestDialogSystem(UIScaleMixin, System):
             lines.append((f"Custo: {rage} de raiva", (160, 160, 160)))
         return lines
 
-    def _draw_reward_skill_icon(self, skill_id: str, name: str, top_y: int, x: int) -> None:
-        """Ícone da skill de recompensa — fixo, sem clique/seleção (skill
-        de recompensa não tem "escolha", só 1 por quest), só tooltip no
-        hover. Mesmo estilo visual de _draw_reward_icon_row; ícone
-        skill_<id> (ui/icon_manager.py), mesma convenção da hotbar."""
-        from ui.icon_manager import ICONS
-        mx, my = pygame.mouse.get_pos()
-        icon_s = self._u(UI.QUEST_REWARD_ICON)
-        r = pygame.Rect(x, top_y, icon_s, icon_s)
-        hovered = r.collidepoint(mx, my)
-        icon_surf = ICONS.get(f"skill_{skill_id}", icon_s)
-        bg = pygame.Surface((icon_s, icon_s), pygame.SRCALPHA)
-        if icon_surf:
-            bg.blit(icon_surf, (0, 0))
-        else:
-            bg.fill((80, 60, 120, 255))
-        self.hud_surf.blit(bg, r.topleft)
-        pygame.draw.rect(self.hud_surf, (180, 140, 230) if hovered else self.COL_BORDER,
-                         r, 1, border_radius=3)
-        if hovered:
-            lines = self._reward_skill_tooltip_lines(skill_id)
-            self.pending_tooltip = (mx, my, name, lines, (180, 140, 230))
-
-    def _draw_reward_icon_row(self, items: list, top_y: int, panel_x0: int, panel_w: int,
-                              selectable: bool) -> None:
-        """Desenha 1 linha de ícones de item de recompensa — usado tanto
-        pros itens FIXOS (selectable=False, só tooltip no hover) quanto
-        pro pool de ESCOLHA (selectable=True, clique seleciona 1 — ver
-        handle_events). Ícones não-selecionados quando `selectable` E já
-        existe uma escolha feita ficam com aparência "inativa" (esmaecidos
-        + sem borda colorida), mesmo princípio visual de skill em
-        cooldown/bloqueada."""
-        from ui.icon_manager import ICONS
-        from ui.ui_helpers import item_tooltip_lines, RARITY_COLORS
-        from engine.components import CharacterStats as _CharRI
-        mx, my = pygame.mouse.get_pos()
-        icon_s = self._u(UI.QUEST_REWARD_ICON)
-        gap    = self._u(UI.QUEST_REWARD_ICON_GAP)
-        x = panel_x0 + self._u(self.PAD)
-        _char_ri = self.world.get_component(self.player_entity, _CharRI)
-        _viewer_cls = getattr(_char_ri, "class_id", None)
-
-        for item_key, item in items:
-            r = pygame.Rect(x, top_y, icon_s, icon_s)
-            hovered  = r.collidepoint(mx, my)
-            selected = selectable and self._turnin_chosen_item == item_key
-            inactive = (selectable and self._turnin_chosen_item is not None
-                       and not selected)
-
-            icon_surf = ICONS.get(ICONS.item_key(item), icon_s)
-            rar_col   = RARITY_COLORS.get(item.rarity, (200, 200, 200))
-            border_col = (255, 215, 60) if selected else (rar_col if hovered else self.COL_BORDER)
-
-            bg = pygame.Surface((icon_s, icon_s), pygame.SRCALPHA)
-            if icon_surf:
-                bg.blit(icon_surf, (0, 0))
-            else:
-                bg.fill((*rar_col, 255))
-            if inactive:
-                # Esmaece — mesmo princípio visual de skill em cooldown/
-                # bloqueada (overlay escuro semi-transparente por cima).
-                dim = pygame.Surface((icon_s, icon_s), pygame.SRCALPHA)
-                dim.fill((0, 0, 0, 150))
-                bg.blit(dim, (0, 0))
-            self.hud_surf.blit(bg, r.topleft)
-            pygame.draw.rect(self.hud_surf, border_col, r, 2 if selected else 1, border_radius=3)
-            if item.stack > 1:
-                st_s = self._font_sm.render(str(item.stack), False, (255, 255, 255))
-                self.hud_surf.blit(st_s, (r.right - st_s.get_width() - self._u(2),
-                                         r.bottom - st_s.get_height()))
-
-            # Rect de hit-test SEMPRE registrado (não só quando hovered) —
-            # bug real encontrado por teste: registrar só dentro do hover
-            # só "funcionava" em jogo de verdade por coincidência (render
-            # e clique lêem o mouse no mesmo frame), mas quebra em qualquer
-            # cenário onde os dois não coincidem exatamente (ex.: teste
-            # automatizado, ou o mouse mover 1px entre os dois reads).
-            if selectable:
-                self._reward_choice_rects.append((r, item_key))
-
-            if hovered:
-                lines = item_tooltip_lines(item, _viewer_cls)
-                self.pending_tooltip = (mx, my, item.name, lines, rar_col)
-
-            x += icon_s + gap
-
-    def _render_turnin(self, x0: int, y0: int) -> None:
-        self._complete_rect = None
-        self._reward_choice_rects = []
-        self.pending_tooltip = None
-        qdef = QUESTS.get(self._dialog_selected_qid)
-        if qdef is None:
-            return
-
-        W        = self._u(self.PANEL_W)
-        PAD      = self._u(self.PAD)
-        max_w    = W - PAD * 2
-        mx, my   = pygame.mouse.get_pos()
-        btn_y    = y0 + self._u(self.PANEL_H) - self._u(48)
-
-        # Itens de recompensa (23/07/2026, pedido do usuário) — fixos
-        # (items) sempre concedidos + pool de escolha (choice, jogador
-        # escolhe 1). Reservam uma faixa FIXA (não rolável) logo acima do
-        # botão Concluir — mesmo raciocínio de manter os botões de ação
-        # sempre visíveis/clicáveis independente do quanto a descrição
-        # role.
-        fixed_items  = self._reward_item_objects(qdef.reward.items)
-        choice_items = self._reward_item_objects(qdef.reward.choice)
-        reward_skill = self._reward_skill_info(qdef.reward.skill)
-        icon_row_h = self._u(UI.QUEST_REWARD_ICON) + self._u(6)
-        reward_area_h = 0
-        if fixed_items or reward_skill:
-            reward_area_h += icon_row_h
-        if choice_items:
-            reward_area_h += self._u(18) + icon_row_h   # texto "Escolha..." + linha de ícones
-
-        ops: list[tuple] = []   # (surf, rel_y) — ver _render_detail
-        ry = 0
-
-        hdr = self._font_lg.render("Missao Completa!", False, self.COL_GOLD)
-        ops.append((hdr, ry)); ry += self._u(32)
-
-        ts = self._font_body.render(qdef.title, False, self.COL_TITLE)
-        ops.append((ts, ry)); ry += self._u(26)
-
-        # Linha separadora — vira uma "surf" de 1px pra rolar junto com o
-        # resto do conteúdo (senão ficaria fixa entre o título e o texto,
-        # dessincronizando do que ela deveria separar assim que rolasse).
-        sep_surf = pygame.Surface((max_w, 1))
-        sep_surf.fill(self.COL_BORDER)
-        ops.append((sep_surf, ry)); ry += self._u(10)
-
-        from engine.components import CharacterStats as _CharQT
-        from engine.quest_logic import format_quest_text as _fmt_qt
-        _char_qt = self.world.get_component(self.player_entity, _CharQT)
-        completion_text = getattr(qdef, "completion", "") or "Bom trabalho. Aqui esta sua recompensa."
-        completion_text = _fmt_qt(completion_text, _char_qt.name if _char_qt else "")
-        for line in self._wrap(completion_text, max_w, self._font_body):
-            s = self._font_body.render(line, False, self.COL_WHITE)
-            ops.append((s, ry)); ry += s.get_height() + self._u(2)
-        ry += self._u(12)
-
-        parts = []
-        if qdef.reward.xp:   parts.append(f"+{qdef.reward.xp} XP")
-        if qdef.reward.gold: parts.append(f"+{qdef.reward.gold} ouro")
-        if parts:
-            rew_hdr = self._font_sm.render("Recompensa:", False, (160, 140, 80))
-            ops.append((rew_hdr, ry)); ry += rew_hdr.get_height() + self._u(4)
-            rew = self._font_body.render("  " + "  |  ".join(parts), False, self.COL_GOLD)
-            ops.append((rew, ry)); ry += rew.get_height()
-
-        view_top = y0 + self._u(52)
-        # Ícones ficam logo ABAIXO do conteúdo de verdade (texto curto — a
-        # maioria das quests — não deveria deixar um vão vazio até uma
-        # linha fixa lá embaixo, bug real reportado pelo usuário 24/07/2026
-        # com print). Só quando o conteúdo é LONGO o bastante pra colidir
-        # com a faixa de ícones é que ela fica presa perto do botão
-        # Concluir (nesse caso o texto rola por baixo, os ícones não).
-        max_reward_top = btn_y - self._u(10) - reward_area_h
-        content_end_y  = view_top + ry + self._u(6)
-        reward_top = max(view_top, min(content_end_y, max_reward_top))
-        self._blit_scrollable(ops, x0, view_top, W, reward_top - self._u(6) - view_top)
-
-        # Ícones de recompensa — faixa fixa, sempre visível (não rola)
-        icon_y = reward_top
-        if fixed_items or reward_skill:
-            if fixed_items:
-                self._draw_reward_icon_row(fixed_items, icon_y, x0, W, selectable=False)
-            if reward_skill:
-                icon_s = self._u(UI.QUEST_REWARD_ICON)
-                gap    = self._u(UI.QUEST_REWARD_ICON_GAP)
-                _skill_x = x0 + self._u(self.PAD) + len(fixed_items) * (icon_s + gap)
-                self._draw_reward_skill_icon(reward_skill[0], reward_skill[1], icon_y, _skill_x)
-            icon_y += icon_row_h
-        if choice_items:
-            choice_lbl = self._font_sm.render("Escolha uma recompensa:", False, (160, 140, 80))
-            self.hud_surf.blit(choice_lbl, (x0 + PAD, icon_y))
-            icon_y += self._u(18)
-            self._draw_reward_icon_row(choice_items, icon_y, x0, W, selectable=True)
-
-        # Botão Concluir — esmaecido/sem ação até escolher uma recompensa,
-        # se a quest tiver pool de escolha (ver handle_events).
-        needs_choice = bool(qdef.reward.choice) and self._turnin_chosen_item is None
-        comp_r = pygame.Rect(x0 + self._u(self.PANEL_W) - PAD - self._u(180), btn_y, self._u(180), self._u(32))
-        hov    = comp_r.collidepoint(mx, my) and not needs_choice
-        if needs_choice:
-            bg_col = (40, 40, 40)
-        else:
-            bg_col = (60, 110, 60) if hov else (35, 65, 35)
-        pygame.draw.rect(self.hud_surf, bg_col, comp_r, border_radius=4)
-        pygame.draw.rect(self.hud_surf, self.COL_BORDER, comp_r, 1, border_radius=4)
-        txt_col = (120, 120, 120) if needs_choice else self.COL_WHITE
-        txt = self._font_body.render("Concluir", False, txt_col)
-        self.hud_surf.blit(txt, (comp_r.centerx - txt.get_width() // 2,
-                               comp_r.centery - txt.get_height() // 2))
-        self._complete_rect = comp_r
-
     # ── Helpers de diálogo ───────────────────────────────────────────────────
 
     def _open_dialog(self, npc_id: int) -> None:
@@ -1255,8 +1132,7 @@ class QuestDialogSystem(UIScaleMixin, System):
             return
 
         self._dialog_npc_id      = npc_id
-        self._list_rects         = {}
-        self._detail_scroll      = 0
+        self._scroll             = aw.ScrollState()
         self._turnin_chosen_item = None
 
         if len(total) == 1:
@@ -1286,8 +1162,7 @@ class QuestDialogSystem(UIScaleMixin, System):
         self._item_source_label   = label
         self._dialog_selected_qid = qid
         self._dialog_state        = "detail"
-        self._list_rects          = {}
-        self._detail_scroll       = 0
+        self._scroll              = aw.ScrollState()
         self._turnin_chosen_item  = None
         return True
 
@@ -1297,12 +1172,6 @@ class QuestDialogSystem(UIScaleMixin, System):
         self._dialog_selected_qid = ""
         self._item_source         = False
         self._item_source_label   = ""
-        self._list_rects          = {}
-        self._accept_rect         = None
-        self._decline_rect        = None
-        self._complete_rect       = None
-        self._close_rect          = None
-        self._reward_choice_rects = []
         self._turnin_chosen_item  = None
 
     # ── Consultas ao QuestLog ────────────────────────────────────────────────
@@ -1369,10 +1238,6 @@ class QuestDialogSystem(UIScaleMixin, System):
     def _cheby(t1, t2) -> int:
         from engine.utils import chebyshev
         return chebyshev(t1[0], t1[1], t2[0], t2[1])
-
-    def _panel_origin(self):
-        x0, y0 = self._safe_panel_origin(self.PANEL_W, self.PANEL_H)
-        return x0 + UI.QUEST_DIALOG_OFFSET_X, y0 + UI.QUEST_DIALOG_OFFSET_Y
 
     @staticmethod
     def _wrap(text: str, max_px: int, font) -> list:

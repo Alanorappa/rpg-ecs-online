@@ -307,7 +307,10 @@ rpg_ecs_online/
 │   │   elementos com o atlas assets/ui/ui_elements.png (grade de tiles
 │   │   16x16, carimbados/repetidos, nunca esticados; SCALE fixo de
 │   │   hud_bars) — catálogo de peças em arquitetura/ATLAS_UI.md,
-│   │   histórico em HISTORICO_FEATURES.md §65–§67
+│   │   histórico em HISTORICO_FEATURES.md §65–§68
+│   ├── atlas_window.py              ← (20/10/2026) montagem/interação de janela do
+│   │   atlas (Frame, PressState, ScrollState, safe_area) — menu de pausa,
+│   │   atalhos, diálogo de quest; ver HISTORICO_FEATURES.md §68
 │   ├── fonts.py, sound_manager.py, icon_manager.py, tile_sprite_manager.py, fov.py
 │   ├── asset_cache.py               ← (28/09/2026, §215) cache ÚNICO de
 │   │   imagem/som por caminho de arquivo (get_image/get_sound) — todo

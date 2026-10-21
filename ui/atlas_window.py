@@ -42,6 +42,18 @@ class PressState:
         self.pressed = ""
 
 
+class ScrollState:
+    """Estado de 1 barra de rolagem (persiste entre frames): `offset` em px
+    RAW, seta segurada (`hold` = (direção, próximo_ms)) e puxador sendo
+    arrastado (`drag` = offset do clique dentro do puxador)."""
+    __slots__ = ("offset", "hold", "drag")
+
+    def __init__(self) -> None:
+        self.offset = 0
+        self.hold: "tuple | None" = None
+        self.drag: "float | None" = None
+
+
 def safe_area(screen_w: int, screen_h: int, hotbar_top: int) -> pygame.Rect:
     """Área segura PADRÃO de toda janela do atlas (decisão do usuário):
     margem de 10% da altura no topo e acima da barra de ações, 10% da
@@ -72,9 +84,12 @@ class Frame:
 
     def __init__(self, screen: pygame.Surface, events: list, tw: int, th: int, *,
                  area: pygame.Rect, press: PressState, font, style: str = "wood",
-                 offset=(0, 0), overlay: bool = True) -> None:
+                 offset=(0, 0), overlay: bool = True,
+                 raw: "pygame.Surface | None" = None) -> None:
+        """`raw` = painel já montado (ex: ui_atlas.quest_window_raw) no
+        lugar de `style`."""
         self.screen, self.press_state, self.font = screen, press, font
-        self.raw = ui_atlas.panel_raw(style, tw, th).copy()
+        self.raw = (raw if raw is not None else ui_atlas.panel_raw(style, tw, th)).copy()
         self.pw, self.ph = self.raw.get_width() * S, self.raw.get_height() * S
         self.px = area.centerx - self.pw // 2 + offset[0]
         self.py = area.centery - self.ph // 2 + offset[1]
@@ -85,6 +100,7 @@ class Frame:
         self.clicked  = any(e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 for e in events)
         self.released = any(e.type == pygame.MOUSEBUTTONUP   and e.button == 1 for e in events)
         self.down     = pygame.mouse.get_pressed()[0]
+        self.wheel    = sum(e.y for e in events if e.type == pygame.MOUSEWHEEL)
         self.texts: list = []   # (texto, x_raw, y_raw, cor, fonte, âncora)
 
     def child(self, raw: pygame.Surface, ry: float) -> "Frame":
@@ -150,6 +166,64 @@ class Frame:
                 step = d
         self.text(text, (col_l + 1 + col_r) * T / 2, ty * T + T / 2)
         return step
+
+    def scrollbar(self, st: ScrollState, col: int, up_row: int, down_row: int,
+                  max_scroll: int, step: int = T, hold_ms: int = 250,
+                  always: bool = False) -> int:
+        """Barra de rolagem vertical na coluna `col`, seta ▲ em `up_row` e
+        ▼ em `down_row`, trilho entre elas. Clique na seta = 1 passo,
+        segurar repete a cada `hold_ms`; puxador arrastável; clique no
+        trilho pula o puxador pra lá; roda do mouse sobre a janela. Sem
+        nada pra rolar: não desenha, ou (`always`) desenha parada com o
+        puxador no topo. Devolve `st.offset` (px RAW)."""
+        now = pygame.time.get_ticks()
+        if self.released or not self.down:
+            st.hold = None
+            st.drag = None
+        if 0 <= self.rx < self.pw / S and 0 <= self.ry < self.ph / S:
+            st.offset -= self.wheel * step
+        st.offset = max(0, min(max_scroll, st.offset))
+        if max_scroll <= 0:
+            st.hold = st.drag = None
+            if always:
+                self._draw_scrollbar(st, col, up_row, down_row, (up_row + 1) * T)
+            return st.offset
+
+        ry = self.ry
+        in_col = col * T <= self.rx < (col + 1) * T
+        grip_min, grip_max = (up_row + 1) * T, down_row * T - T
+        grip_y = grip_min + round((grip_max - grip_min) * st.offset / max_scroll)
+        if self.clicked and in_col:
+            if up_row * T <= ry < (up_row + 1) * T:
+                st.offset -= step
+                st.hold = (-1, now + hold_ms)
+            elif down_row * T <= ry < (down_row + 1) * T:
+                st.offset += step
+                st.hold = (+1, now + hold_ms)
+            elif grip_min <= ry < grip_max + T:
+                st.drag = ry - grip_y if grip_y <= ry < grip_y + T else T / 2
+        if st.hold and now >= st.hold[1]:
+            st.offset += st.hold[0] * step
+            st.hold = (st.hold[0], now + hold_ms)
+        if st.drag is not None and grip_max > grip_min:
+            frac = (ry - st.drag - grip_min) / (grip_max - grip_min)
+            st.offset = round(max(0.0, min(1.0, frac)) * max_scroll)
+        st.offset = max(0, min(max_scroll, st.offset))
+        grip_y = grip_min + round((grip_max - grip_min) * st.offset / max_scroll)
+        self._draw_scrollbar(st, col, up_row, down_row, grip_y)
+        return st.offset
+
+    def _draw_scrollbar(self, st: ScrollState, col: int, up_row: int, down_row: int,
+                        grip_y: int) -> None:
+        hold = st.hold
+        ui_atlas.blit_tile(self.raw, ui_atlas.SCROLL_UP_PRESSED if hold and hold[0] < 0
+                           else ui_atlas.SCROLL_UP, col, up_row)
+        for r in range(up_row + 1, down_row):
+            ui_atlas.blit_tile(self.raw, ui_atlas.SCROLL_TRACK, col, r)
+        ui_atlas.blit_tile(self.raw, ui_atlas.SCROLL_DOWN_PRESSED if hold and hold[0] > 0
+                           else ui_atlas.SCROLL_DOWN, col, down_row)
+        ui_atlas.blit_tile_px(self.raw, ui_atlas.SCROLL_GRIP_PRESSED if st.drag is not None
+                              else ui_atlas.SCROLL_GRIP, col * T, grip_y)
 
     def end(self, title: str = "", title_col=TITLE_COL) -> None:
         """Amplia o painel, desenha título e textos e encerra o estado de

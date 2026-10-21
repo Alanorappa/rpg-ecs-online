@@ -3,7 +3,9 @@
 Referência de cada elemento do atlas desenhado pelo usuário. Código: `ui/ui_atlas.py`
 (ponto único — as constantes de lá são a fonte de verdade das coordenadas; este
 arquivo explica o que cada uma É e PARA QUE serve). Mockup de uso:
-`assets/content/exemplo.png`.
+`assets/content/exemplo.png`. Montagem/interação de janela (centralizar na área
+segura, botão no soltar, campo, seletor, barra de rolagem): `ui/atlas_window.py`
+(`Frame`, `PressState`, `ScrollState`) — usado por TODA tela do atlas.
 
 ## Regras gerais
 
@@ -17,7 +19,8 @@ arquivo explica o que cada uma É e PARA QUE serve). Mockup de uso:
   medido com a fonte de desenho — a fonte acompanha a escala de UI, o atlas não.
 - **Área segura**: toda janela fica centralizada dentro de uma margem de 10% da altura
   da tela no topo e acima da barra de ações, e 10% da largura nas laterais
-  (`MenuHandlers._mm_safe_area`). Lista que não cabe rola.
+  (`atlas_window.safe_area`; no GameEngine, `MenuHandlers._mm_safe_area`). Lista que
+  não cabe rola.
 - Variante "pressionada" (quando existe) é o mesmo elemento na coluna/bloco ao lado,
   mais chapado. Botões agem no **soltar** do mouse.
 
@@ -27,7 +30,7 @@ arquivo explica o que cada uma É e PARA QUE serve). Mockup de uso:
 |---|---|---|---|
 | Painel de madeira | (0,8)–(3,11) | `_PANELS["wood"]` | Menus (pausa, som, resolução...). Cantos (0,8)/(3,8)/(0,11)/(3,11); bordas topo (2,8) [variante (1,8)], base (1,11) [(2,11)], esq. (0,10) [(0,9)], dir. (3,10) [(3,9)]; miolo liso (1,10). |
 | Painel escuro | (6,0)–(11,3) | `_PANELS["dark"]` | Janelas de lista (atalhos, seleção de personagem, inventário). Cantos (6,0)/(11,0)/(6,3)/(11,3); topo (7,0); base (8,3) [variante (7,3)]; esq. (6,1); dir. (11,1); miolo (7,1). |
-| Janela com barra de título + pergaminho | (0,0)–(5,7) | — (ainda não mapeado no código) | Diálogo de quest / inventário: barra de título cinza na linha 0 (puxador central), botão fechar "X" em (5,0), pergaminho em (1..4, 1..6). Mapear tile a tile no mockup antes de usar. |
+| Janela de pergaminho | (0,0)–(5,7) + rodapé escuro | `_QUEST`, `quest_window_raw` | Diálogo de quest (mockup, janela 1). Linha 0 = barra de título: (0,0) esq., (2,0) puxador na 2ª coluna, (1,0) repetido, X `QUEST_CLOSE` (5,0) na última. Pergaminho nas colunas 0..tw-2: cantos (1,1)/(4,1)/(1,6)/(4,6); topo (2,1) [variante (3,1)]; base (3,6) [(2,6)]; esq. (1,2..5) e depois (1,3) repetido; dir. (4,2..5) e depois (4,3); miolo liso (2,4) com manchas (2,2)/(3,2)/(2,3)/(3,4)/(2,5) espalhadas. Coluna da direita = cromado (5,1) com a barra de rolagem por cima. Rodapé (2 linhas, botões "altos"): (6,1)/(6,3) esq., (7,1)/(8,3) meio, (5,1)/(11,3) dir. |
 
 ## Molduras e campos
 
@@ -35,7 +38,7 @@ arquivo explica o que cada uma É e PARA QUE serve). Mockup de uso:
 |---|---|---|---|
 | Moldura vazada | (6,4)–(8,6) | `_FRAME`, `blit_frame` | Agrupar linhas (seções da lista de atalhos, linhas da seleção de personagem). Cantos e bordas; miolo transparente. Mín. 2×2. |
 | Campo de texto | (9,4) esq., (10,4) meio, (11,4) dir. | `blit_text_field`, `FIELD_ART_Y` | **Qualquer campo onde o jogador digita ou define um valor** (tecla de atalho, nome...). 1 linha; meio repetível. Arte em y 2..13 do tile. |
-| Slot claro | (9,5) | — (pendente) | Slot de equipamento/inventário (a confirmar no mapeamento do inventário). |
+| Slot claro | (9,5) | `SLOT` | Slot de item com ícone por cima (recompensas do diálogo de quest; equipamento/inventário a confirmar). Ícone desenhado em resolução de tela dentro de 1px de borda. |
 | Slot marrom | (10,5) | — (pendente) | Célula da grade do inventário (a confirmar). |
 | Setinhas de paginação | (9,6) | — (pendente) | ◂ ▸ pequenas (criação de personagem / inventário, a confirmar). |
 
@@ -61,6 +64,10 @@ Ponta esquerda / meio (repetível) / ponta direita nas 3 colunas de cada bloco.
 | Trilho vertical | (12,5) | `SCROLL_TRACK` | Barra de rolagem (repetido entre ▲ e ▼). (12,4) é uma variante mais fina, não usada. |
 | Puxador | (12,6) · (13,6) | `SCROLL_GRIP` | Posição da rolagem; arrastável. Posicionado em pixel livre. |
 
+Barra de rolagem montada e interativa: `atlas_window.Frame.scrollbar` (estado em
+`ScrollState`) — `always=True` desenha parada mesmo sem nada pra rolar (diálogo de
+quest, como no mockup).
+
 ## Ícones
 
 | Elemento | Tiles (ligado · desligado) | Constante | Uso |
@@ -70,5 +77,6 @@ Ponta esquerda / meio (repetível) / ponta direita nas 3 colunas de cada bloco.
 
 ## Histórico
 
-Ver `arquitetura/HISTORICO_FEATURES.md` §65 (atlas + tela de som), §66 (menu de pausa)
-e §67 (modal de atalhos do teclado + campo de texto).
+Ver `arquitetura/HISTORICO_FEATURES.md` §65 (atlas + tela de som), §66 (menu de pausa),
+§67 (modal de atalhos do teclado + campo de texto) e §68 (diálogo de quest + módulo
+`ui/atlas_window.py`).

@@ -74,6 +74,27 @@ SCROLL_TRACK        = (12, 5)
 SCROLL_GRIP         = (12, 6)
 SCROLL_GRIP_PRESSED = (13, 6)
 
+# Janela de pergaminho (diálogo de quest no mockup): barra de título
+# cinza, pergaminho (4x6 tiles a partir de (1,1)), coluna cromada à
+# direita (onde vai a barra de rolagem) e rodapé escuro dos botões.
+_QUEST = {
+    "title_left": (0, 0), "title_notch": (2, 0), "title_mid": (1, 0),
+    "chrome_right": (5, 1),
+    "p_tl": (1, 1), "p_top": [(2, 1), (3, 1)], "p_tr": (4, 1),
+    "p_left":  [(1, 2), (1, 3), (1, 4), (1, 5)], "p_left_rep": (1, 3),
+    "p_right": [(4, 2), (4, 3), (4, 4), (4, 5)], "p_right_rep": (4, 3),
+    "p_bl": (1, 6), "p_bottom": [(3, 6), (2, 6)], "p_br": (4, 6),
+    # Miolo liso + manchas decorativas espalhadas (como no mockup).
+    "p_center": (2, 4), "p_deco": [(2, 2), (3, 2), (2, 3), (3, 4), (2, 5)],
+    "f_left": (6, 1), "f_bl": (6, 3), "f_center": (7, 1), "f_bottom": (8, 3),
+    "f_right": (5, 1), "f_br": (11, 3),
+}
+QUEST_CLOSE = (5, 0)       # X da barra de título (sem versão pressionada)
+QUEST_FOOTER_ROWS = 2      # rodapé = 1 botão "alto"
+
+# Slot de item (quadrado claro de 1 tile) — ícone desenhado por cima.
+SLOT = (9, 5)
+
 # Elementos de 1 tile — (coluna, linha) no atlas.
 ICON_SFX_ON    = (12, 7)
 ICON_SFX_OFF   = (13, 7)
@@ -173,6 +194,55 @@ def panel_raw(style: str, tw: int, th: int) -> "pygame.Surface":
 
 def wood_panel_raw(tw: int, th: int) -> "pygame.Surface":
     return panel_raw("wood", tw, th)
+
+
+def quest_window_raw(tw: int, th: int) -> "pygame.Surface":
+    """Janela de pergaminho de tw x th tiles (mín. 4x6), RAW, cacheada:
+    linha 0 = barra de título (X na última coluna); linhas 1..th-3 =
+    pergaminho nas colunas 0..tw-2 + coluna cromada tw-1 (barra de
+    rolagem); 2 últimas linhas = rodapé escuro dos botões."""
+    key = ("quest", tw, th)
+    cached = _panel_cache.get(key)
+    if cached is not None:
+        return cached
+    q = _QUEST
+    surf = pygame.Surface((tw * TILE, th * TILE), pygame.SRCALPHA)
+    pc, p_top, p_bot = tw - 2, 1, th - QUEST_FOOTER_ROWS - 1
+    for i in range(tw):
+        t = (q["title_left"] if i == 0 else QUEST_CLOSE if i == tw - 1
+             else q["title_notch"] if i == 1 else q["title_mid"])
+        blit_tile(surf, t, i, 0)
+    for j in range(p_top, p_bot + 1):
+        k = j - p_top   # linha dentro do pergaminho
+        for i in range(tw):
+            if i == tw - 1:
+                t = q["chrome_right"]
+            elif j == p_top:
+                t = q["p_tl"] if i == 0 else q["p_tr"] if i == pc else q["p_top"][i % 4 == 2]
+            elif j == p_bot:
+                t = q["p_bl"] if i == 0 else q["p_br"] if i == pc else q["p_bottom"][i % 6 == 1]
+            elif i == 0:
+                t = q["p_left"][k - 1] if k - 1 < len(q["p_left"]) else q["p_left_rep"]
+            elif i == pc:
+                t = q["p_right"][k - 1] if k - 1 < len(q["p_right"]) else q["p_right_rep"]
+            else:
+                h = (i * 7 + j * 13) % 17
+                t = q["p_deco"][h % len(q["p_deco"])] if h < 2 else q["p_center"]
+            blit_tile(surf, t, i, j)
+    for j in range(p_bot + 1, th):
+        last = j == th - 1
+        for i in range(tw):
+            if i == 0:
+                t = q["f_bl"] if last else q["f_left"]
+            elif i == tw - 1:
+                t = q["f_br"] if last else q["f_right"]
+            else:
+                t = q["f_bottom"] if last else q["f_center"]
+            blit_tile(surf, t, i, j)
+    if len(_panel_cache) >= _PANEL_CACHE_MAX:
+        _panel_cache.clear()
+    _panel_cache[key] = surf
+    return surf
 
 
 def blit_frame(dst: "pygame.Surface", tx: int, ty: int, tw: int, th: int) -> None:

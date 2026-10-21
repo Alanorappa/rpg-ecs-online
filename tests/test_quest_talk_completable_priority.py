@@ -5,7 +5,7 @@ NPC X" não era detectada como completável em NENHUM dos lugares que
 decidem o que mostrar ao clicar com o direito em X — nem no atalho que
 pula o menu de ação (TrainerSystem._open_menu), nem na lista de opções
 do menu (_compute_options), nem na lista de quests do diálogo
-(QuestDialogSystem._render_list), nem no ícone acima da cabeça
+(QuestDialogSystem._content_list), nem no ícone acima da cabeça
 (marker_for). Todos esses lugares chamavam `_get_completable_quests`
 SEM `pending_npc_name` — só `QuestDialogSystem._open_dialog` (chamado
 DEPOIS de já se decidir abrir o diálogo de quest) passava esse
