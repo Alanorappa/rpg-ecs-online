@@ -1130,11 +1130,11 @@ padrão a quebrar, não só os bugs individuais.
   valor exato do tamanho de preview da ÉPOCA por coincidência. 2
   padrões diferentes, por design, não por descuido (cada tela escolhe
   o que faz sentido pro próprio layout):
-  - **Criação** (`_run_creation`, cards lado a lado, espaço vertical de
-    sobra): texto/label flui logo ABAIXO do preview, calculado a
-    partir do tamanho REAL dele (`icon_bottom = icon_top + preview_sz`,
-    cada elemento seguinte usa o fundo do anterior + gap) — cresce o
-    `CARD_H` do card se o preview crescer, nunca sobrepõe.
+  - **Criação** (`_draw_creation`, atlas de UI, cards lado a lado):
+    nome/descrição fluem logo ABAIXO do boneco visível
+    (`_CRE_PREVIEW_TOP` + 32px RAW), e a altura do card vem do conteúdo
+    medido (`_cre_layout`) — cresce sozinha se o texto crescer, nunca
+    sobrepõe.
   - **Seleção** (`_draw_selection`, atlas de UI, molduras de altura
     FIXA de 3 tiles) — texto numa coluna fixa em px RAW
     (`_SEL_TEXT_X`), nunca derivada do tamanho real do preview; o
@@ -1988,7 +1988,7 @@ padrão a quebrar, não só os bugs individuais.
   `arquitetura/ATLAS_UI.md`** (o que cada tile é e pra que serve — ex:
   campo de texto (9,4)–(11,4) pra qualquer valor que o jogador define);
   peça nova/uso novo → atualizar o catálogo no mesmo commit. Ver
-  HISTORICO_FEATURES.md §65–§69.
+  HISTORICO_FEATURES.md §65–§70.
 - **Ícone ANIMADO acima da cabeça de uma entidade, no MUNDO** (marcador
   de quest, ou categoria futura parecida) → `ui/world_icon_animator.py::
   get_frame(name, size, now_ms)` — spritesheet horizontal em

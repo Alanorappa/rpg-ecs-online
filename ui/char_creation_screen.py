@@ -3,8 +3,7 @@
 Tela de seleção e criação de personagens (estilo WoW).
 
 Função pública: run_online(screen, char_list, net) -> bool (ver docstring).
-Seleção no visual do atlas de UI (ui/atlas_window.py); criação ainda no
-visual antigo.
+Seleção e criação no visual do atlas de UI (ui/atlas_window.py).
 """
 from __future__ import annotations
 import math
@@ -13,31 +12,10 @@ from ui import atlas_window as aw
 from ui import ui_atlas
 from ui.fonts import make as _font
 
-# ── Paleta ───────────────────────────────────────────────────────────────────
+# ── Paleta (fundo e textos fora das janelas do atlas) ───────────────────────
 _BG        = (8, 8, 14)
-_PANEL_BG  = (18, 16, 26)
-_BORDER    = (70, 55, 110)
 _TITLE_COL = (210, 185, 255)
-_TEXT_COL  = (185, 170, 215)
-_SUB_COL   = (130, 115, 160)
-_SEL_BG    = (45, 35, 70)
-_SEL_BDR   = (170, 130, 255)
-_HOV_BG    = (30, 24, 48)
-_BTN_BG    = (45, 35, 70)
-_BTN_HOV   = (75, 58, 120)
-_BTN_TXT   = (220, 205, 255)
-_DEL_BG    = (60, 18, 18)
-_DEL_HOV   = (100, 28, 28)
 _DEL_TXT   = (255, 140, 140)
-_LOCK_COL  = (80, 70, 95)
-_LOCK_TXT  = (100, 90, 115)
-_INPUT_BG  = (14, 12, 22)
-_INPUT_BDR = (90, 70, 140)
-_INPUT_ACT = (170, 130, 255)
-_NEW_BG    = (22, 32, 22)
-_NEW_BDR   = (70, 110, 70)
-_NEW_TXT   = (140, 210, 140)
-_NEW_HOV   = (30, 50, 30)
 
 _CLASS_COLORS = {
     "guerreiro": (200, 100,  60),
@@ -51,9 +29,6 @@ _CLASSES = [
     {"id": "mago",      "label": "Mago",      "locked": False, "description": "Mestre das artes arcanas.\nAlto poder mágico e controle de área."},
     {"id": "arqueiro",  "label": "Arqueiro",  "locked": False, "description": "Mestre do arco e da flecha.\nAtaques ranged e controle de posicionamento."},
 ]
-
-# ── Layout base (referência 720p) ─────────────────────────────────────────────
-_BASE_BTN_W, _BASE_BTN_H = 200, 42
 
 
 def _sc(screen: pygame.Surface) -> float:
@@ -254,6 +229,171 @@ def run_online(screen: pygame.Surface,
 
 
 # ── Tela de criação ──────────────────────────────────────────────────────────
+# Atlas de UI (20/10/2026): janela escura do mockup (canto inferior de
+# assets/content/exemplo.png, mapeada tile a tile) — campo de nome +
+# Sortear no topo, 1 card por classe (preview + nome + descrição), a
+# classe ESCOLHIDA ganha a moldura do atlas (as outras ficam sem — decisão
+# do usuário), Voltar/Confirmar "altos" encostados na borda de baixo.
+# Cards alargam repetindo as bordas da moldura pra caber a descrição
+# (quebrada em linhas). Botões agem no SOLTAR (ui/atlas_window.py).
+
+_CRE_TOP_ROWS   = 4     # título (2) + linha do nome + linha da mensagem de erro
+_CRE_CARD_MIN_W = 4     # tiles (mockup)
+_CRE_DESC_W     = 6     # tiles de texto da descrição antes de quebrar
+_CRE_CARD_PAD   = 6     # px RAW de folga interna do card
+_CRE_PREVIEW_TOP = 14   # px RAW: topo do boneco visível (abaixo do contorno da moldura, ~8px pra dentro)
+
+_CRE_NAME_COL = (230, 210, 160)
+_CRE_DESC_COL = (185, 170, 140)
+_CRE_LOCK_COL = (120, 112, 100)
+_CRE_ERR_COL  = (255, 140, 140)
+
+
+def _cre_layout(font_md, font_sm, font_xs, name_max_len: int) -> dict:
+    """Tamanhos em tiles a partir do texto medido."""
+    T, S = aw.T, aw.S
+    wrap_px = _CRE_DESC_W * T * S
+    descs = {}
+    widest = 0
+    for cls in _CLASSES:
+        lines = []
+        for para in cls["description"].split("\n"):
+            lines += _wrap_text(para, wrap_px, font_xs)
+        descs[cls["id"]] = lines
+        widest = max([widest, font_sm.size(cls["label"])[0]] + [font_xs.size(l)[0] for l in lines])
+    card_w = max(_CRE_CARD_MIN_W, math.ceil((widest / S + 2 * _CRE_CARD_PAD) / T))
+    lh_sm = math.ceil(font_sm.get_linesize() / S)
+    lh_xs = math.ceil(font_xs.get_linesize() / S)
+    n_lines = max(len(v) for v in descs.values()) + 1   # + "[em breve]" em classe travada
+    content_h = _CRE_PREVIEW_TOP + 32 + 4 + lh_sm + 4 + n_lines * lh_xs + _CRE_CARD_PAD
+    card_h = max(6, math.ceil(content_h / T))
+    field_w = aw.tiles_for(font_md, ["M" * name_max_len], 5)
+    reroll_w = aw.tiles_for(font_md, ["Sortear"], 3)
+    btn_w = aw.tiles_for(font_md, ["Voltar", "Confirmar", "Criando..."], 3)
+    title_w = aw.tiles_for(font_md, ["Criar Personagem"], 1) + 2
+    tw = max(len(_CLASSES) * card_w + 2, field_w + 1 + reroll_w + 2, 2 * btn_w + 3, title_w)
+    card_w = (tw - 2) // len(_CLASSES)
+    th = _CRE_TOP_ROWS + card_h + 2
+    return {"tw": tw, "th": th, "card_w": card_w, "card_h": card_h, "descs": descs,
+            "field_w": field_w, "reroll_w": reroll_w, "btn_w": btn_w,
+            "lh_sm": lh_sm, "lh_xs": lh_xs}
+
+
+def _wrap_text(text: str, max_px: int, font) -> list:
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        test = f"{cur} {w}".strip()
+        if cur and font.size(test)[0] > max_px:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = test
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _draw_creation(screen, events, st: dict, press, font_md, font_sm, font_xs,
+                   name_max_len: int, hits: "dict | None" = None) -> "tuple | None":
+    """Desenha a criação e devolve a ação disparada (no soltar): ("field",
+    ativo), ("reroll",), ("class", id), ("confirm",), ("back",) ou None.
+    `st`: name_text, name_active, suggest_pending, creating_pending,
+    error_msg, selected_class. `hits` (opcional): rects de TELA pros testes."""
+    T, S = aw.T, aw.S
+    sw, sh = screen.get_size()
+    screen.fill(_BG)
+    lay = _cre_layout(font_md, font_sm, font_xs, name_max_len)
+    tw, th, cw, ch = lay["tw"], lay["th"], lay["card_w"], lay["card_h"]
+    f = aw.Frame(screen, events, tw, th, area=aw.safe_area(sw, sh, sh), press=press,
+                 font=font_md, raw=ui_atlas.dark_list_window_raw(tw, th), overlay=False)
+    action = None
+
+    def _hit(hid, x0, y0, x1, y1):
+        if hits is not None:
+            hits[hid] = pygame.Rect(f.px + int(x0 * S), f.py + int(y0 * S),
+                                    int((x1 - x0) * S), int((y1 - y0) * S))
+
+    # ── Nome + Sortear (linha 2) ──────────────────────────────────────────
+    fw, rw = lay["field_w"], lay["reroll_w"]
+    fcol = (tw - (fw + 1 + rw)) // 2
+    if st["name_text"]:
+        cursor = "|" if st["name_active"] and pygame.time.get_ticks() % 1000 < 500 else ""
+        shown, color = st["name_text"] + cursor, None
+    elif st["suggest_pending"]:
+        shown, color = "Gerando nome...", _CRE_LOCK_COL
+    else:
+        shown, color = ("|" if st["name_active"] else ""), None
+    ay0, ay1 = ui_atlas.FIELD_ART_Y
+    inset = ui_atlas.FIELD_ART_INSET_X
+    fx0, fx1 = fcol * T + inset, (fcol + fw) * T - inset
+    over_field = fx0 <= f.rx < fx1 and 2 * T + ay0 <= f.ry < 2 * T + ay1
+    if f.text_field("cre:name", fcol, 2, fw, shown, active=st["name_active"]):
+        action = ("field", True)
+    elif f.clicked and not over_field and st["name_active"]:
+        action = ("field", False)
+    if color is not None:   # placeholder cinza (text_field só conhece normal/ativo)
+        f.texts[-1] = f.texts[-1][:3] + (color,) + f.texts[-1][4:]
+    _hit("cre:name", fx0, 2 * T + ay0, fx1, 2 * T + ay1)
+    rcol = fcol + fw + 1
+    if f.button("cre:reroll", rcol, 2, rw, "Sortear", tall=False,
+                enabled=not st["suggest_pending"]):
+        action = ("reroll",)
+    by0, by1 = ui_atlas.button_art_y(False)
+    _hit("cre:reroll", rcol * T, 2 * T + by0, (rcol + rw) * T, 2 * T + by1)
+    if st["error_msg"]:
+        f.text(st["error_msg"], tw * T / 2, 3 * T + T / 2, _CRE_ERR_COL, font=font_xs)
+
+    # ── Cards de classe ───────────────────────────────────────────────────
+    previews = []
+    for idx, cls in enumerate(_CLASSES):
+        cx0 = 1 + idx * cw
+        x0, y0 = cx0 * T, _CRE_TOP_ROWS * T
+        x1, y1 = (cx0 + cw) * T, (_CRE_TOP_ROWS + ch) * T
+        locked = cls["locked"]
+        selected = cls["id"] == st["selected_class"]
+        if selected:
+            ui_atlas.blit_frame(f.raw, cx0, _CRE_TOP_ROWS, cw, ch)
+        if not locked and f.press(f"cre:class:{cls['id']}", x0, y0, x1, y1)[1]:
+            action = ("class", cls["id"])
+        _hit(f"cre:class:{cls['id']}", x0, y0, x1, y1)
+        mid = (x0 + x1) / 2
+        vis_top = y0 + _CRE_PREVIEW_TOP
+        frame = None if locked else _get_class_preview_frame(cls["id"], 1.0)
+        if frame is not None:
+            # Boneco visível = 32x32 central do frame de 64 (128px a 2x).
+            previews.append((frame, int(mid * S) - frame.get_width() // 2,
+                             int((vis_top - 16) * S)))
+        else:
+            col = _CRE_LOCK_COL if locked else _CLASS_COLORS.get(cls["id"], (150, 150, 150))
+            pygame.draw.rect(f.raw, col, (int(mid) - 10, vis_top + 6, 20, 20))
+        ty = vis_top + 32 + 4
+        f.text(cls["label"], mid, ty, _CRE_LOCK_COL if locked else
+               (aw.ACTIVE_COL if selected else _CRE_NAME_COL), font=font_sm, anchor="midtop")
+        ty += lay["lh_sm"] + 4
+        lines = list(lay["descs"][cls["id"]]) + (["[em breve]"] if locked else [])
+        for line in lines:
+            f.text(line, mid, ty, _CRE_LOCK_COL if locked else _CRE_DESC_COL,
+                   font=font_xs, anchor="midtop")
+            ty += lay["lh_xs"]
+
+    # ── Voltar / Confirmar (botões altos encostados na borda de baixo) ───
+    bw = lay["btn_w"]
+    by = th - 2
+    if f.button("cre:back", 1, by, bw, "Voltar"):
+        action = ("back",)
+    pending = st["creating_pending"]
+    if f.button("cre:confirm", tw - 1 - bw, by, bw, "Criando..." if pending else "Confirmar",
+                enabled=not pending):
+        action = ("confirm",)
+    ty0, ty1 = ui_atlas.button_art_y(True)
+    _hit("cre:back", T, by * T + ty0, (1 + bw) * T, by * T + ty1)
+    _hit("cre:confirm", (tw - 1 - bw) * T, by * T + ty0, (tw - 1) * T, by * T + ty1)
+
+    f.end("Criar Personagem")
+    for frame, px, py in previews:
+        screen.blit(frame, (f.px + px, f.py + py))
+    return action
+
 
 def _run_creation(screen, clock, sc: float, net=None) -> "dict | None":
     """Tela de criação de personagem. Retorna dict ou None (voltar).
@@ -261,9 +401,8 @@ def _run_creation(screen, clock, sc: float, net=None) -> "dict | None":
     `net`: se fornecido (modo online), a caixa de nome já vem preenchida
     com uma sugestão verificada contra o banco (SUGGEST_NAME/
     NAME_SUGGESTION — só o servidor sabe quais nomes já existem) e o botão
-    "Sortear" pede uma nova ao servidor. Sem `net` (modo offline, sem
-    banco compartilhado), a sugestão é gerada localmente e o botão
-    "Sortear" só gera outra local, sem round-trip de rede.
+    "Sortear" pede uma nova ao servidor. Sem `net`, a sugestão é gerada
+    localmente e "Sortear" só gera outra local, sem round-trip de rede.
 
     No modo online, "Confirmar" manda CREATE_CHARACTER e ESPERA a
     resposta do servidor AQUI DENTRO — se vier CHARACTER_ERROR (ex:
@@ -286,222 +425,95 @@ def _run_creation(screen, clock, sc: float, net=None) -> "dict | None":
         "creation_failed":     "Erro ao criar personagem. Tente novamente.",
     }
 
-    name_text        = ""
-    name_active      = False
+    st = {"name_text": "", "name_active": False, "suggest_pending": False,
+          "creating_pending": False, "error_msg": "", "selected_class": "guerreiro"}
     name_user_edited = False   # trava a auto-sugestão assim que o jogador digita
-    suggest_pending  = False   # aguardando NAME_SUGGESTION do servidor
-    creating_pending = False   # aguardando CHARACTER_CREATED/CHARACTER_ERROR
     creating_start   = 0.0
-    error_msg        = ""
-    selected_class   = "guerreiro"
-    MAX_NAME         = NAME_MAX_LEN
+    press = aw.PressState()
 
     def _request_suggestion():
-        nonlocal suggest_pending, name_text
         if net is not None:
             net.send(_MT_names.SUGGEST_NAME, {})
-            suggest_pending = True
+            st["suggest_pending"] = True
         else:
-            name_text = generate_name_candidate()
+            st["name_text"] = generate_name_candidate()
 
     _request_suggestion()
 
-    font_lg = _font(int(34 * sc))
     font_md = _font(int(24 * sc))
     font_sm = _font(int(19 * sc))
     font_xs = _font(int(15 * sc))
 
-    sw, sh = screen.get_size()
-    PW = int(700 * sc)
-    # 460 -> 500 (19/10/2026, §292): acompanha o CARD_H maior logo abaixo —
-    # mesma folga de ~18px entre botões e fundo do painel que o design
-    # original já tinha (só recalculada pro painel maior).
-    PH = int(500 * sc)
-    px = sw // 2 - PW // 2
-    py = sh // 2 - PH // 2
-
-    CARD_W = int(180 * sc)
-    # 160 -> 185 (preview 64x64) -> 212 (19/10/2026, §292 — preview 128x128):
-    # card mais alto pra caber nome/descrição abaixo do sprite maior sem
-    # sobrepor (conferido por script: conteúdo termina em y=192 na base
-    # 720p, CARD_H=212 deixa ~20px de folga). `cards_y` não muda; `PH`
-    # acima cresceu junto pra manter folga até os botões Voltar/Confirmar.
-    CARD_H = int(212 * sc)
-    cards_y = py + int(190 * sc)
-    total_w = len(_CLASSES) * CARD_W + (len(_CLASSES) - 1) * int(16 * sc)
-    cards_x = px + PW // 2 - total_w // 2
-
-    btn_w = int(_BASE_BTN_W * sc)
-    btn_h = int(_BASE_BTN_H * sc)
-
-    def _card_rect(idx):
-        return pygame.Rect(cards_x + idx * (CARD_W + int(16 * sc)), cards_y, CARD_W, CARD_H)
-
-    btn_confirm = pygame.Rect(px + PW - btn_w - int(20 * sc), py + PH - btn_h - int(18 * sc), btn_w, btn_h)
-    btn_back    = pygame.Rect(px + int(20 * sc),               py + PH - btn_h - int(18 * sc), btn_w, btn_h)
-    name_rect   = pygame.Rect(px + PW // 2 - int(180 * sc) - int(50 * sc), py + int(108 * sc), int(360 * sc), int(38 * sc))
-    reroll_rect = pygame.Rect(name_rect.right + int(8 * sc), name_rect.y, int(84 * sc), name_rect.h)
-
     while True:
         clock.tick(60)
-        mx, my = pygame.mouse.get_pos()
 
         if net is not None:
             for mt, payload, _seq, _ts in net.poll():
                 if mt == _MT_names.NAME_SUGGESTION:
-                    suggest_pending = False
+                    st["suggest_pending"] = False
                     if not name_user_edited:
-                        name_text = payload.get("name", "")
+                        st["name_text"] = payload.get("name", "")
                 elif mt == _MT_names.CHARACTER_CREATED:
                     return payload.get("char")
                 elif mt == _MT_names.CHARACTER_ERROR:
-                    creating_pending = False
-                    error_msg = _ERROR_MESSAGES.get(
+                    st["creating_pending"] = False
+                    st["error_msg"] = _ERROR_MESSAGES.get(
                         payload.get("reason"), "Erro ao criar personagem.")
 
-            if creating_pending and time.time() - creating_start > 15.0:
-                creating_pending = False
-                error_msg = "Servidor não respondeu. Tente novamente."
+            if st["creating_pending"] and time.time() - creating_start > 15.0:
+                st["creating_pending"] = False
+                st["error_msg"] = "Servidor não respondeu. Tente novamente."
 
-        for event in pygame.event.get():
+        events = pygame.event.get()
+        for event in events:
             if event.type == pygame.QUIT:
                 return None
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     return None
-                if name_active:
+                if st["name_active"]:
+                    name_text = st["name_text"]
                     if event.key == pygame.K_BACKSPACE:
                         name_text = name_text[:-1]
                         name_user_edited = True
-                        error_msg = ""
+                        st["error_msg"] = ""
                     elif event.key == pygame.K_RETURN:
-                        name_active = False
-                    elif (len(name_text) < MAX_NAME and event.unicode
+                        st["name_active"] = False
+                    elif (len(name_text) < NAME_MAX_LEN and event.unicode
                           and is_valid_name_char(event.unicode)):
                         name_text += event.unicode
                         name_user_edited = True
-                        error_msg = ""
+                        st["error_msg"] = ""
                     # 1ª letra sempre maiúscula, digitada em qualquer caixa —
                     # jogador pode digitar tudo minúsculo sem se preocupar.
-                    name_text = normalize_name(name_text)
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                name_active = name_rect.collidepoint(mx, my)
-                if reroll_rect.collidepoint(mx, my) and not suggest_pending:
-                    name_user_edited = False
-                    error_msg = ""
-                    _request_suggestion()
-                for idx, cls in enumerate(_CLASSES):
-                    if not cls["locked"] and _card_rect(idx).collidepoint(mx, my):
-                        selected_class = cls["id"]
-                if btn_confirm.collidepoint(mx, my) and not creating_pending:
-                    candidate = name_text.strip()
-                    if not is_valid_name(candidate):
-                        error_msg = (f"Nome precisa ter {NAME_MIN_LEN}-{NAME_MAX_LEN} "
-                                     "letras, sem espaço/número/símbolo.")
-                    elif net is not None:
-                        net.send(_MT_names.CREATE_CHARACTER, {
-                            "name": candidate, "class_id": selected_class})
-                        creating_pending = True
-                        creating_start   = time.time()
-                        error_msg        = ""
-                    else:
-                        return {"name": candidate, "class_id": selected_class}
-                if btn_back.collidepoint(mx, my):
-                    return None
+                    st["name_text"] = normalize_name(name_text)
 
-        screen.fill(_BG)
-        panel = pygame.Rect(px, py, PW, PH)
-        pygame.draw.rect(screen, _PANEL_BG, panel, border_radius=8)
-        pygame.draw.rect(screen, _BORDER,   panel, 2, border_radius=8)
-
-        title = font_lg.render("Criar Personagem", False, _TITLE_COL)
-        screen.blit(title, (px + PW // 2 - title.get_width() // 2, py + int(18 * sc)))
-
-        lbl = font_sm.render("Nome do personagem:", False, _TEXT_COL)
-        screen.blit(lbl, (name_rect.x, name_rect.y - lbl.get_height() - int(4 * sc)))
-
-        bdr_col = _INPUT_ACT if name_active else _INPUT_BDR
-        pygame.draw.rect(screen, _INPUT_BG, name_rect, border_radius=4)
-        pygame.draw.rect(screen, bdr_col,   name_rect, 2, border_radius=4)
-        cursor   = "|" if name_active and pygame.time.get_ticks() % 1000 < 500 else ""
-        if name_text:
-            disp_txt, txt_col = name_text + cursor, _TEXT_COL
-        elif suggest_pending:
-            disp_txt, txt_col = "Gerando nome...", _LOCK_TXT
-        else:
-            disp_txt, txt_col = cursor, _TEXT_COL
-        txt_surf = font_md.render(disp_txt, False, txt_col)
-        screen.blit(txt_surf, (name_rect.x + int(10 * sc),
-                               name_rect.y + name_rect.h // 2 - txt_surf.get_height() // 2))
-
-        reroll_hov = reroll_rect.collidepoint(mx, my) and not suggest_pending
-        pygame.draw.rect(screen, _BTN_HOV if reroll_hov else _BTN_BG, reroll_rect, border_radius=4)
-        pygame.draw.rect(screen, _BORDER, reroll_rect, 2, border_radius=4)
-        reroll_s = font_sm.render("Sortear", False, _BTN_TXT)
-        screen.blit(reroll_s, reroll_s.get_rect(center=reroll_rect.center))
-
-        if error_msg:
-            err_s = font_xs.render(error_msg, False, _DEL_TXT)
-            screen.blit(err_s, (name_rect.x, name_rect.bottom + int(4 * sc)))
-
-        lbl2 = font_sm.render("Escolha sua classe:", False, _TEXT_COL)
-        screen.blit(lbl2, (px + PW // 2 - lbl2.get_width() // 2, cards_y - lbl2.get_height() - int(8 * sc)))
-
-        icon_sz = int(36 * sc)
-        for idx, cls in enumerate(_CLASSES):
-            r      = _card_rect(idx)
-            locked = cls["locked"]
-            is_sel = cls["id"] == selected_class
-            hov    = r.collidepoint(mx, my) and not locked
-            if locked:
-                bg, bdr, bdr_w = (16, 14, 22), _LOCK_COL, 1
-            elif is_sel:
-                bg, bdr, bdr_w = _SEL_BG, _SEL_BDR, 2
-            elif hov:
-                bg, bdr, bdr_w = _HOV_BG, _BORDER, 1
-            else:
-                bg, bdr, bdr_w = _PANEL_BG, _BORDER, 1
-            pygame.draw.rect(screen, bg,  r, border_radius=6)
-            pygame.draw.rect(screen, bdr, r, bdr_w, border_radius=6)
-
-            icon_top = r.y + int(14 * sc)
-            frame = None if locked else _get_class_preview_frame(cls["id"], sc)
-            if frame is not None:
-                preview_sz = frame.get_width()
-                screen.blit(frame, (r.x + r.w // 2 - preview_sz // 2, icon_top))
-            else:
-                preview_sz = icon_sz
-                icon_col = _LOCK_COL if locked else _CLASS_COLORS.get(cls["id"], (150, 150, 150))
-                icon_r   = pygame.Rect(r.x + r.w // 2 - preview_sz // 2, icon_top, preview_sz, preview_sz)
-                pygame.draw.rect(screen, icon_col, icon_r, border_radius=4)
-            icon_bottom = icon_top + preview_sz
-
-            n_col  = _LOCK_TXT if locked else (_SEL_BDR if is_sel else _TEXT_COL)
-            n_surf = font_sm.render(cls["label"], False, n_col)
-            name_y = icon_bottom + int(6 * sc)
-            screen.blit(n_surf, (r.x + r.w // 2 - n_surf.get_width() // 2, name_y))
-
-            desc_y = name_y + n_surf.get_height() + int(6 * sc)
-            for li, line in enumerate(cls["description"].split("\n")):
-                d = font_xs.render(line, False, _LOCK_TXT if locked else _TEXT_COL)
-                screen.blit(d, (r.x + r.w // 2 - d.get_width() // 2,
-                                desc_y + li * (font_xs.get_height() + int(2 * sc))))
-            if locked:
-                lock_s = font_xs.render("[em breve]", False, _LOCK_COL)
-                lock_y = desc_y + 2 * (font_xs.get_height() + int(2 * sc)) + int(6 * sc)
-                screen.blit(lock_s, (r.x + r.w // 2 - lock_s.get_width() // 2, lock_y))
-
-        confirm_label = "Criando..." if creating_pending else "Confirmar"
-        for r, label, bg, bdr, disabled in [
-            (btn_back,    "Voltar",      _BTN_BG,  _BORDER,  False),
-            (btn_confirm, confirm_label, _BTN_BG,  _SEL_BDR, creating_pending),
-        ]:
-            hov = r.collidepoint(mx, my) and not disabled
-            pygame.draw.rect(screen, _BTN_HOV if hov else bg, r, border_radius=5)
-            pygame.draw.rect(screen, bdr, r, 2, border_radius=5)
-            txt_c = _LOCK_TXT if disabled else _BTN_TXT
-            s = font_md.render(label, False, txt_c)
-            screen.blit(s, s.get_rect(center=r.center))
+        action = _draw_creation(screen, events, st, press, font_md, font_sm, font_xs, NAME_MAX_LEN)
+        if action is not None:
+            kind = action[0]
+            if kind == "field":
+                st["name_active"] = action[1]
+            elif kind == "reroll":
+                name_user_edited = False
+                st["error_msg"] = ""
+                _request_suggestion()
+            elif kind == "class":
+                st["selected_class"] = action[1]
+            elif kind == "back":
+                return None
+            elif kind == "confirm":
+                candidate = st["name_text"].strip()
+                if not is_valid_name(candidate):
+                    st["error_msg"] = (f"Nome precisa ter {NAME_MIN_LEN}-{NAME_MAX_LEN} "
+                                       "letras, sem espaço/número/símbolo.")
+                elif net is not None:
+                    net.send(_MT_names.CREATE_CHARACTER, {
+                        "name": candidate, "class_id": st["selected_class"]})
+                    st["creating_pending"] = True
+                    creating_start = time.time()
+                    st["error_msg"] = ""
+                else:
+                    return {"name": candidate, "class_id": st["selected_class"]}
 
         pygame.display.flip()
 

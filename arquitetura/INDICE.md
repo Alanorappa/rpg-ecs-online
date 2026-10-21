@@ -317,3 +317,4 @@
 - [20/10/2026] (feature) Diálogo de quest: rolagem só quando precisa; teste de fonte regular (Pixelify Sans) revertido — tags: ui, atlas, quest, fonte — HISTORICO_FEATURES.md §68
 - [20/10/2026] (feature) Seleção de personagem no atlas de UI (molduras, rolagem, confirmação de exclusão) — tags: ui, atlas, personagem, selecao — HISTORICO_FEATURES.md §69
 - [20/10/2026] (bug) Limite de personagens por conta era 3 (servidor+cliente), passou pra 8 numa constante única — tags: personagem, limite, auth — HISTORICO_BUGS.md §95
+- [21/10/2026] (feature) Criação de personagem no atlas de UI (campo de nome, cards de classe com contorno na escolhida) — tags: ui, atlas, personagem, criacao — HISTORICO_FEATURES.md §70

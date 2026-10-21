@@ -5647,3 +5647,29 @@ soltar com o índice certo, apertar sem soltar não dispara, Criar/Sair,
 Criar desabilitado no limite, 3 molduras mínimas e rolagem com 8,
 janela na área segura com fonte grande, confirmação Excluir/Cancelar,
 confirmação aberta bloqueia a lista.
+
+## 70. Criação de personagem no atlas de UI (21/10/2026)
+
+Continuação de §69. `ui/char_creation_screen.py::_run_creation` com a
+janela escura do mockup (canto inferior de `assets/content/exemplo.png`,
+mapeada tile a tile): título, campo de nome (campo de texto do atlas)
++ Sortear (botão baixo) no topo, mensagem de erro logo abaixo, 1 card
+por classe (preview animado + nome + descrição), Voltar/Confirmar
+"altos" encostados na borda de baixo (como no mockup). Decisões do
+usuário: a classe ESCOLHIDA ganha o contorno do atlas (moldura vazada),
+as outras ficam sem; cards alargam repetindo as bordas da moldura pra
+caber a descrição, que quebra em linhas (`_CRE_DESC_W`). Sem rótulos
+("Nome do personagem:"/"Escolha sua classe:"), como no mockup.
+
+Desenho separado do loop: `_draw_creation(screen, events, st, ...)`
+devolve a ação disparada no SOLTAR (`field`/`reroll`/`class`/`confirm`/
+`back`); `_run_creation` continua dono da rede (SUGGEST_NAME/
+CREATE_CHARACTER/espera do CHARACTER_CREATED) e do teclado, lógica
+inalterada. Boneco desenhado 14px RAW abaixo do topo do card (o
+contorno da moldura fica ~8px pra dentro do tile — com 4px a cabeça
+passava por cima dele). Paleta antiga e `_BASE_BTN_W/H` removidas.
+
+**Teste**: `tests/test_char_select_ui.py` — botões da criação disparam
+só no soltar, clicar fora do campo desativa, Confirmar desabilitado
+enquanto cria, Sortear desabilitado enquanto gera nome, tudo dentro da
+área segura com fonte grande.

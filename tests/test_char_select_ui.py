@@ -159,3 +159,70 @@ def test_confirmacao_aberta_bloqueia_botoes_da_lista():
     finally:
         pygame.mouse.get_pos, pygame.mouse.get_pressed = orig
     assert action is None and answer is None
+
+
+# ── Criação (ui/char_creation_screen.py::_draw_creation) ─────────────────────
+
+from shared.character_names import NAME_MAX_LEN
+
+
+def _cre_state(**over):
+    st = {"name_text": "Aldric", "name_active": False, "suggest_pending": False,
+          "creating_pending": False, "error_msg": "", "selected_class": "guerreiro"}
+    st.update(over)
+    return st
+
+
+def _cre_frame(st, press, events=(), fonts=None):
+    fmd, fsm, fxs = fonts or (_font(24), _font(19), _font(15))
+    hits = {}
+    action = cs._draw_creation(pygame.Surface((_W, _H)), list(events), st, press,
+                               fmd, fsm, fxs, NAME_MAX_LEN, hits)
+    return action, hits
+
+
+def _cre_click(st, hit_id):
+    press = aw.PressState()
+    _, hits = _cre_frame(st, press)
+    pos = hits[hit_id].center
+    orig = pygame.mouse.get_pos, pygame.mouse.get_pressed
+    try:
+        pygame.mouse.get_pos = lambda: pos
+        pygame.mouse.get_pressed = lambda num_buttons=3: (True, False, False)
+        down, _ = _cre_frame(st, press, [pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pos)])
+        pygame.mouse.get_pressed = lambda num_buttons=3: (False, False, False)
+        up, _ = _cre_frame(st, press, [pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=pos)])
+    finally:
+        pygame.mouse.get_pos, pygame.mouse.get_pressed = orig
+    return down, up
+
+
+def test_criacao_botoes_disparam_no_soltar():
+    st = _cre_state()
+    for hid, expected in (("cre:class:mago", ("class", "mago")), ("cre:reroll", ("reroll",)),
+                          ("cre:confirm", ("confirm",)), ("cre:back", ("back",)),
+                          ("cre:name", ("field", True))):
+        down, up = _cre_click(st, hid)
+        assert up == expected, hid
+        assert down != expected, hid   # nada dispara só por apertar
+
+
+def test_criacao_clicar_fora_do_campo_desativa():
+    down, _ = _cre_click(_cre_state(name_active=True), "cre:class:mago")
+    assert down == ("field", False)
+
+
+def test_criacao_confirmar_desabilitado_enquanto_cria():
+    assert _cre_click(_cre_state(creating_pending=True), "cre:confirm")[1] is None
+
+
+def test_criacao_sortear_desabilitado_enquanto_gera_nome():
+    assert _cre_click(_cre_state(suggest_pending=True, name_text=""), "cre:reroll")[1] is None
+
+
+def test_criacao_janela_dentro_da_area_segura_com_fonte_grande():
+    fonts = (_font(40), _font(32), _font(26))
+    _, hits = _cre_frame(_cre_state(), aw.PressState(), fonts=fonts)
+    area = aw.safe_area(_W, _H, _H)
+    for hid, r in hits.items():
+        assert area.contains(r), hid

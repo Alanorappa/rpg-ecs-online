@@ -36,7 +36,7 @@ segura, botão no soltar, campo, seletor, barra de rolagem): `ui/atlas_window.py
 
 | Elemento | Tiles | Constante | Uso |
 |---|---|---|---|
-| Moldura vazada | (6,4)–(8,6) | `_FRAME`, `blit_frame` | Agrupar linhas (seções da lista de atalhos, linhas da seleção de personagem). Cantos e bordas; miolo transparente. Mín. 2×2. |
+| Moldura vazada | (6,4)–(8,6) | `_FRAME`, `blit_frame` | Agrupar linhas (seções da lista de atalhos, linhas da seleção de personagem) e marcar o item ESCOLHIDO (card de classe na criação de personagem — só o escolhido tem moldura). Cantos e bordas; miolo transparente; contorno ~8px pra dentro do tile. Mín. 2×2. |
 | Campo de texto | (9,4) esq., (10,4) meio, (11,4) dir. | `blit_text_field`, `FIELD_ART_Y` | **Qualquer campo onde o jogador digita ou define um valor** (tecla de atalho, nome...). 1 linha; meio repetível. Arte em y 2..13 do tile. |
 | Slot claro | (9,5) | `SLOT` | Slot de item com ícone por cima (recompensas do diálogo de quest; equipamento/inventário a confirmar). Ícone desenhado em resolução de tela dentro de 1px de borda. |
 | Slot marrom | (10,5) | — (pendente) | Célula da grade do inventário (a confirmar). |
@@ -79,4 +79,4 @@ existe pra desenhá-la parada mesmo sem rolagem, se algum dia uma tela pedir.
 
 Ver `arquitetura/HISTORICO_FEATURES.md` §65 (atlas + tela de som), §66 (menu de pausa),
 §67 (modal de atalhos do teclado + campo de texto), §68 (diálogo de quest + módulo
-`ui/atlas_window.py`) e §69 (seleção de personagem).
+`ui/atlas_window.py`), §69 (seleção de personagem) e §70 (criação de personagem).
