@@ -23,6 +23,7 @@ _bg_result/_arena_modal_open (arena_handlers.py/bg_queue_handlers.py/
 battleground_handlers.py) + self._send_arena_forfeit/_send_bg_leave.
 """
 from ui.sound_manager import SOUNDS
+from ui.atlas_window import PressState
 
 
 class ModalStackHandlers:
@@ -133,7 +134,7 @@ class ModalStackHandlers:
             self._pause_submenu    = ""
             self._sound_drag       = ""
             self._sound_arrow_hold = None
-            self._mm_pressed = ""
+            self._mm_press = PressState()
         else:
             self._show_pause = False
 

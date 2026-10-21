@@ -6,148 +6,35 @@ classe NÃO deve ser instanciada diretamente — ela é herdada por
 GameEngine, que fornece self.screen, self.font_md/font_sm, self._scale/
 _ui_scale e os demais atributos referenciados aqui.
 
-Todas as telas são montadas com tiles 16x16 do atlas de UI do usuário
-(ui/ui_atlas.py — painel de madeira, botões, setas), no estilo do mockup
-assets/content/exemplo.png, em escala FIXA (ui_atlas.SCALE, igual
-nameplate) — nunca a escala de UI do jogador. Helpers _mm_* abaixo são o
-ponto comum: painel, botão (age no SOLTAR do mouse), seletor ◀ valor ▶.
+Todas as telas são montadas com o atlas de UI do usuário via
+ui/atlas_window.py (ponto único: painel na área segura, botão que age no
+SOLTAR, campo, seletor ◀ valor ▶) — aqui só ficam o conteúdo e o layout
+de cada tela.
 """
 import math
 
 import pygame
-from ui.ui_helpers import fill_surf
 
 from ui.sound_manager import SOUNDS
 from ui.ui_sizes import UI
 from ui import ui_atlas
+from ui import atlas_window as aw
 
 
 class MenuHandlers:
-    _MM_TITLE_COL = (220, 190, 110)
-    _MM_BTN_TXT   = (230, 210, 160)
-    _MM_TEXT_COL  = (240, 225, 185)
-    _MM_TITLE_Y   = ui_atlas.TILE   # centro (RAW) do título de cada janela
-
-    # ── helpers comuns (atlas de UI) ──────────────────────────────────────
-
-    def _mm_overlay(self):
-        self.screen.blit(fill_surf((self.screen.get_width(), self.screen.get_height()), (0, 0, 0, 150)), (0, 0))
-
-    # Área segura PADRÃO de toda janela do atlas (decisão do usuário,
-    # 20/10/2026): margem de 10% da altura da tela no topo e acima da
-    # barra de ações, e 10% da largura nas laterais. Janela é centralizada
-    # dentro dela; janela com lista longa limita a altura a ela e rola.
-    _MM_SAFE_MARGIN = 0.10
+    # ── ligação com ui/atlas_window.py (fonte/tela/estado do GameEngine) ──
 
     def _mm_safe_area(self) -> "pygame.Rect":
-        sw, sh = self.screen.get_width(), self.screen.get_height()
-        mx, my = round(sw * self._MM_SAFE_MARGIN), round(sh * self._MM_SAFE_MARGIN)
-        bottom = self._hotbar_top_y() - my
-        return pygame.Rect(mx, my, sw - 2 * mx, max(0, bottom - my))
+        return aw.safe_area(self.screen.get_width(), self.screen.get_height(),
+                            self._hotbar_top_y())
 
     def _mm_begin(self, events: list, tw: int, th: int, offset=(0, 0),
-                  style: str = "wood") -> dict:
-        """Escurece o fundo, cria o painel (`style` "wood"/"dark", tw x th
-        tiles, RAW, cópia pronta pra carimbar por cima) centralizado na
-        área segura (`_mm_safe_area`), e lê o mouse já convertido pra
-        espaço RAW do painel. Também usado pelo modal de atalhos
-        (client/hotbar_editor_handlers.py — mesmo GameEngine)."""
-        S = ui_atlas.SCALE
-        raw = ui_atlas.panel_raw(style, tw, th).copy()
-        pw, ph = raw.get_width() * S, raw.get_height() * S
-        area = self._mm_safe_area()
-        px = area.centerx - pw // 2 + offset[0]
-        py = area.centery - ph // 2 + offset[1]
-        self._mm_overlay()
-        mx, my = pygame.mouse.get_pos()
-        return {
-            "raw": raw, "px": px, "py": py, "pw": pw, "ph": ph,
-            "rx": (mx - px) / S, "ry": (my - py) / S,
-            "clicked":  any(e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 for e in events),
-            "released": any(e.type == pygame.MOUSEBUTTONUP   and e.button == 1 for e in events),
-            "down":     pygame.mouse.get_pressed()[0],
-            "texts":    [],   # (texto, x_raw, y_raw, cor, fonte, âncora) — desenhados por cima no fim
-        }
+                  style: str = "wood") -> aw.Frame:
+        return aw.Frame(self.screen, events, tw, th, area=self._mm_safe_area(),
+                        press=self._mm_press, font=self.font_md, style=style, offset=offset)
 
-    def _mm_press(self, f: dict, btn_id: str, x0, y0, x1, y1) -> tuple:
-        """Estado de um botão na área RAW (x0,y0)-(x1,y1). Age no SOLTAR
-        (agir no clique fecha/troca a janela no mesmo frame e o estado
-        pressionado nunca aparece); soltar fora cancela. Devolve
-        (desenhar_pressionado, disparou)."""
-        hov = x0 <= f["rx"] < x1 and y0 <= f["ry"] < y1
-        if f["clicked"] and hov:
-            self._mm_pressed = btn_id
-        held  = self._mm_pressed == btn_id
-        fired = f["released"] and hov and held
-        return held and hov and not f["released"], fired
-
-    def _mm_button(self, f: dict, btn_id: str, tx: int, ty: int, w: int,
-                   label: str, tall: bool = True) -> bool:
-        """Botão do atlas (w tiles de largura) com texto. True = disparou."""
-        T = ui_atlas.TILE
-        ay0, ay1 = ui_atlas.button_art_y(tall)
-        x0, x1 = tx * T, (tx + w) * T
-        y0, y1 = ty * T + ay0, ty * T + ay1
-        pressed, fired = self._mm_press(f, btn_id, x0, y0, x1, y1)
-        ui_atlas.blit_button(f["raw"], tx, ty, w, pressed=pressed, tall=tall)
-        self._mm_text(f, label, (x0 + x1) / 2, (y0 + y1) / 2, self._MM_BTN_TXT)
-        return fired
-
-    def _mm_text_field(self, f: dict, field_id: str, tx: int, ty: int, w: int,
-                       text: str, active: bool = False) -> bool:
-        """Campo de texto do atlas (w tiles, 1 linha) com o valor dentro.
-        `active` = aguardando entrada (texto destacado). True = clicado
-        (dispara no soltar, como os botões)."""
-        T = ui_atlas.TILE
-        inset = ui_atlas.FIELD_ART_INSET_X
-        ay0, ay1 = ui_atlas.FIELD_ART_Y
-        x0, x1 = tx * T + inset, (tx + w) * T - inset
-        y0, y1 = ty * T + ay0, ty * T + ay1
-        _, fired = self._mm_press(f, field_id, x0, y0, x1, y1)
-        ui_atlas.blit_text_field(f["raw"], tx, ty, w)
-        self._mm_text(f, text, (x0 + x1) / 2, (y0 + y1) / 2,
-                      (255, 225, 82) if active else self._MM_TEXT_COL)
-        return fired
-
-    def _mm_selector(self, f: dict, sel_id: str, ty: int, col_l: int, col_r: int,
-                     text: str) -> int:
-        """Linha ◀ texto ▶ (setas do atlas nas colunas col_l/col_r, texto
-        centralizado entre elas). Devolve -1/+1 quando uma seta dispara
-        (no soltar), 0 caso contrário."""
-        T = ui_atlas.TILE
-        step = 0
-        for col, d, idle, pressed_t in ((col_l, -1, ui_atlas.ARROW_LEFT, ui_atlas.ARROW_LEFT_PRESSED),
-                                        (col_r, +1, ui_atlas.ARROW_RIGHT, ui_atlas.ARROW_RIGHT_PRESSED)):
-            pressed, fired = self._mm_press(f, f"{sel_id}:{d}", col * T, ty * T, (col + 1) * T, (ty + 1) * T)
-            ui_atlas.blit_tile(f["raw"], pressed_t if pressed else idle, col, ty)
-            if fired:
-                step = d
-        self._mm_text(f, text, (col_l + 1 + col_r) * T / 2, ty * T + T / 2)
-        return step
-
-    def _mm_text(self, f: dict, text: str, x_raw: float, y_raw: float, color=None,
-                 font=None, anchor: str = "center") -> None:
-        """Texto a desenhar por cima do painel no fim (`anchor` = atributo
-        de Rect do pygame: "center", "midleft"...)."""
-        f["texts"].append((text, x_raw, y_raw, color or self._MM_TEXT_COL, font, anchor))
-
-    def _mm_draw_texts(self, surf: "pygame.Surface", texts: list, ox: int = 0, oy: int = 0) -> None:
-        S = ui_atlas.SCALE
-        for text, x, y, color, font, anchor in texts:
-            t = (font or self.font_md).render(text, False, color)
-            surf.blit(t, t.get_rect(**{anchor: (ox + x * S, oy + y * S)}))
-
-    def _mm_end(self, f: dict, title: str) -> None:
-        """Amplia o painel pro tamanho de tela, desenha título e textos por
-        cima e encerra o estado de botão pressionado ao soltar o mouse."""
-        S = ui_atlas.SCALE
-        px, py = f["px"], f["py"]
-        self.screen.blit(ui_atlas.scale_up(f["raw"]), (px, py))
-        surf = self.font_md.render(title, False, self._MM_TITLE_COL)
-        self.screen.blit(surf, surf.get_rect(center=(px + f["pw"] // 2, py + self._MM_TITLE_Y * S)))
-        self._mm_draw_texts(self.screen, f["texts"], px, py)
-        if f["released"] or not f["down"]:
-            self._mm_pressed = ""
+    def _mm_tiles_for(self, texts, min_tiles: int, font=None) -> int:
+        return aw.tiles_for(font or self.font_md, texts, min_tiles)
 
     # ── Menu principal ─────────────────────────────────────────────────────
     def _draw_pause_menu(self, events: list) -> "str | None":
@@ -162,16 +49,7 @@ class MenuHandlers:
             return self._draw_quit_confirm(events)
         return self._draw_main_menu(events)
 
-    # ── Larguras a partir do TEXTO ─────────────────────────────────────────
-    # A fonte acompanha a escala de UI do jogador, mas o atlas é fixo em
-    # SCALE — larguras de botão/seletor/janela NUNCA podem ser número
-    # fixo de tiles (bug real: texto vazando do botão com escala de UI
-    # 1.25). Mede com a MESMA fonte usada pra desenhar (font_md).
-    _MM_TEXT_PAD = 6   # px RAW de folga de cada lado (bordas do botão)
-
-    def _mm_tiles_for(self, texts, min_tiles: int, font=None) -> int:
-        widest = max((font or self.font_md).size(t)[0] for t in texts) / ui_atlas.SCALE
-        return max(min_tiles, math.ceil((widest + 2 * self._MM_TEXT_PAD) / ui_atlas.TILE))
+    # ── Larguras a partir do TEXTO (ver atlas_window.tiles_for) ───────────
 
     def _mm_selector_layout(self, values, min_inner: int = 5) -> tuple:
         """(tw, inner) — janela com seletor ◀ texto ▶: borda, seta, `inner`
@@ -204,9 +82,9 @@ class MenuHandlers:
         f = self._mm_begin(events, tw, th, (UI.MENU_MAIN_OFFSET_X, UI.MENU_MAIN_OFFSET_Y))
         action = None
         for i, (label, act) in enumerate(self._MAIN_BTNS):
-            if self._mm_button(f, f"main:{act}", 1, self._MAIN_ROW0 + i, btn_w, label, tall=False):
+            if f.button(f"main:{act}", 1, self._MAIN_ROW0 + i, btn_w, label, tall=False):
                 action = act
-        self._mm_end(f, "Menu")
+        f.end("Menu")
         if action and action.startswith("submenu:"):
             self._pause_submenu = action.split(":")[1]
             return None
@@ -228,10 +106,10 @@ class MenuHandlers:
         f = self._mm_begin(events, tw, self._QUIT_TH,
                            (UI.MENU_QUIT_CONFIRM_OFFSET_X, UI.MENU_QUIT_CONFIRM_OFFSET_Y))
         T = ui_atlas.TILE
-        self._mm_text(f, self._QUIT_MSG, tw * T / 2, 2 * T)
-        sim = self._mm_button(f, "quit:sim", col_sim, self._QUIT_BTN_ROW, btn_w, "Sim", tall=False)
-        nao = self._mm_button(f, "quit:nao", col_nao, self._QUIT_BTN_ROW, btn_w, "Não", tall=False)
-        self._mm_end(f, "Sair")
+        f.text(self._QUIT_MSG, tw * T / 2, 2 * T)
+        sim = f.button("quit:sim", col_sim, self._QUIT_BTN_ROW, btn_w, "Sim", tall=False)
+        nao = f.button("quit:nao", col_nao, self._QUIT_BTN_ROW, btn_w, "Não", tall=False)
+        f.end("Sair")
         if sim:
             return "quit"
         if nao:
@@ -260,26 +138,26 @@ class MenuHandlers:
         col_r = inner + 2
 
         idx = min(range(len(SCALE_OPTIONS)), key=lambda i: abs(SCALE_OPTIONS[i][1] - self._scale))
-        step = self._mm_selector(f, "res:scale", self._RES_ROW_SCALE, 1, col_r, SCALE_OPTIONS[idx][0])
+        step = f.selector("res:scale", self._RES_ROW_SCALE, 1, col_r, SCALE_OPTIONS[idx][0])
         new_idx = idx + step
         if step and 0 <= new_idx < len(SCALE_OPTIONS):
             action = f"resolution:{SCALE_OPTIONS[new_idx][1]}"
 
         is_fullscreen = (self._window_mode_pref == "fullscreen")
-        if self._mm_selector(f, "res:mode", self._RES_ROW_MODE, 1, col_r,
+        if f.selector("res:mode", self._RES_ROW_MODE, 1, col_r,
                              "Tela cheia" if is_fullscreen else "Janela"):
             action = f"window_mode:{'windowed_fullsize' if is_fullscreen else 'fullscreen'}"
 
         back = self._mm_back_button(f, "res:voltar", tw, self._RES_BTN_ROW)
-        self._mm_end(f, "Resolução")
+        f.end("Resolução")
         if back:
             self._pause_submenu = ""
         return action
 
-    def _mm_back_button(self, f: dict, btn_id: str, tw: int, ty: int) -> bool:
+    def _mm_back_button(self, f: aw.Frame, btn_id: str, tw: int, ty: int) -> bool:
         """Botão "Voltar" (alto) centralizado na janela de tw tiles."""
         w = self._mm_tiles_for(["Voltar"], 3)
-        return self._mm_button(f, btn_id, (tw - w) // 2, ty, w, "Voltar")
+        return f.button(btn_id, (tw - w) // 2, ty, w, "Voltar")
 
     # ── Submenu Interface (escala da UI) ───────────────────────────────────
     _IFACE_STEPS = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
@@ -299,13 +177,13 @@ class MenuHandlers:
         T = ui_atlas.TILE
         steps = self._IFACE_STEPS
         cur = min(range(len(steps)), key=lambda i: abs(steps[i] - self._ui_scale))
-        self._mm_text(f, self._IFACE_LABEL, tw * T / 2,
-                      self._IFACE_ROW_LABEL * T + T / 2, self._MM_TITLE_COL)
+        f.text(self._IFACE_LABEL, tw * T / 2,
+               self._IFACE_ROW_LABEL * T + T / 2, aw.TITLE_COL)
         col_l = (tw - (inner + 2)) // 2
-        step = self._mm_selector(f, "iface:scale", self._IFACE_ROW_SEL, col_l, col_l + inner + 1,
+        step = f.selector("iface:scale", self._IFACE_ROW_SEL, col_l, col_l + inner + 1,
                                  f"{steps[cur]:.2f}×")
         back = self._mm_back_button(f, "iface:voltar", tw, self._IFACE_BTN_ROW)
-        self._mm_end(f, "Interface")
+        f.end("Interface")
         if step and 0 <= cur + step < len(steps):
             self._set_ui_scale(steps[cur + step])
         if back:
@@ -321,10 +199,10 @@ class MenuHandlers:
         acima."""
         f = self._mm_begin(events, self._SND_TW, self._SND_TH,
                            (UI.MENU_SOUND_OFFSET_X, UI.MENU_SOUND_OFFSET_Y))
-        T, raw = ui_atlas.TILE, f["raw"]
-        rx, ry, clicked = f["rx"], f["ry"], f["clicked"]
+        T, raw = ui_atlas.TILE, f.raw
+        rx, ry, clicked = f.rx, f.ry, f.clicked
         now = pygame.time.get_ticks()
-        if f["released"] or not f["down"]:
+        if f.released or not f.down:
             if self._sound_drag or self._sound_arrow_hold:
                 self._save_config()
             self._sound_drag       = ""
@@ -388,11 +266,11 @@ class MenuHandlers:
                                self._SND_COL_ARROW_R, ty)
             for k in range(round(vol * n_max)):
                 ui_atlas.blit_tile_px(raw, ui_atlas.SLIDER_FILL_BAR, bar_x0 + k * bar_w, ty * T)
-            self._mm_text(f, f"{round(vol * 100)}%", bar_x0 + n_max * bar_w / 2,
-                          ty * T - self._SND_PCT_GAP, self._MM_BTN_TXT)
+            f.text(f"{round(vol * 100)}%", bar_x0 + n_max * bar_w / 2,
+                   ty * T - self._SND_PCT_GAP, aw.BTN_TXT)
 
         back = self._mm_back_button(f, "snd:voltar", self._SND_TW, self._SND_BTN_ROW)
-        self._mm_end(f, "Som")
+        f.end("Som")
         if back:
             self._pause_submenu    = ""
             self._sound_drag       = ""

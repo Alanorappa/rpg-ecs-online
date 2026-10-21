@@ -37,6 +37,7 @@ from ui.ui_compare import draw_compare_panel
 from ui.talent_system import TalentSystem
 from ui.char_stats_ui import CharStatsUI
 from ui.skill_level_ui import SkillLevelUI
+from ui.atlas_window import PressState
 from ui.ui_helpers import item_tooltip_lines, draw_stack_count, RARITY_COLORS as _ITEM_RARITY_COLORS, fill_surf
 from ui.map_overlay import MapOverlay
 from ui.minimap import Minimap
@@ -469,7 +470,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._pending_logout    = False  # "Deslogar" — volta pra seleção de personagem (main.py)
         self._sound_drag        = ""
         self._sound_arrow_hold: "tuple | None" = None  # (key, dir, próximo_ms) — seta do slider de som segurada
-        self._mm_pressed = ""  # id do botão do menu de pausa afundado (age no soltar — client/menu_handlers.py)
+        self._mm_press = PressState()  # botão do atlas afundado (age no soltar — ui/atlas_window.py)
         self._show_hotbar_editor = False
         self._hbe_drag_from: tuple | None = None  # ("panel", skill_id) | ("slot", idx)
         self._hbe_rebind_slot: int | None = None
@@ -1581,7 +1582,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._pause_submenu      = ""
         self._sound_drag         = ""
         self._sound_arrow_hold   = None
-        self._mm_pressed         = ""
+        self._mm_press           = PressState()
         self._show_hotbar_editor = False
         self._hbe_drag_from      = None
         self._hbe_rebind_slot    = None

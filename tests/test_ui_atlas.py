@@ -25,6 +25,8 @@ if pygame.display.get_surface() is None:
     pygame.display.set_mode((320, 240))
 
 from ui import ui_atlas
+from ui import atlas_window as aw
+from ui.atlas_window import PressState
 from client.menu_handlers import MenuHandlers
 from client.hotbar_editor_handlers import HotbarEditorHandlers
 from ui.sound_manager import SOUNDS
@@ -94,7 +96,7 @@ class _MenuFixture(MenuHandlers):
         self._pause_submenu = "sound"
         self._sound_drag    = ""
         self._sound_arrow_hold = None
-        self._mm_pressed    = ""
+        self._mm_press      = PressState()
         self._save_config_calls = 0
         self._scale = 1.0
         self._window_mode_pref = "fullscreen"
@@ -299,7 +301,7 @@ def test_botao_voltar_afunda_ao_apertar_e_fecha_ao_soltar():
     with _bigger_display():
         with _fake_mouse_and_clock():
             fx._draw_sound_submenu(_click_at(pos))
-        assert fx._mm_pressed == "snd:voltar"
+        assert fx._mm_press.pressed == "snd:voltar"
         assert fx._pause_submenu == "sound", "não pode fechar no clique, só no soltar"
         fx._draw_sound_submenu(_release_at(pos))
     assert fx._pause_submenu == ""
@@ -313,7 +315,7 @@ def test_soltar_fora_do_botao_cancela():
             fx._draw_sound_submenu(_click_at(pos))
         fx._draw_sound_submenu(_release_at((pos[0], pos[1] - 200)))
     assert fx._pause_submenu == "sound"
-    assert fx._mm_pressed == ""
+    assert fx._mm_press.pressed == ""
 
 
 def test_clique_fora_do_botao_nao_fecha():
@@ -367,7 +369,7 @@ def test_textos_cabem_nos_botoes_e_seletores_com_fonte_grande():
     S_, T_ = ui_atlas.SCALE, ui_atlas.TILE
 
     def fits(text, tiles):
-        return fx.font_md.size(text)[0] <= tiles * T_ * S_ - 2 * fx._MM_TEXT_PAD * S_
+        return fx.font_md.size(text)[0] <= tiles * T_ * S_ - 2 * aw.TEXT_PAD * S_
 
     tw, th, btn_w = fx._main_layout()
     for label, _ in fx._MAIN_BTNS:
@@ -465,7 +467,7 @@ class _HbeFixture(MenuHandlers, HotbarEditorHandlers):
         self._show_hotbar_editor = True
         self._mkb_rebind = None
         self._mkb_scroll = 0
-        self._mm_pressed = ""
+        self._mm_press = PressState()
         self._hbe_arrow_hold = None
         self._hbe_grip_drag = None
         self._save_calls = 0
@@ -595,7 +597,7 @@ def test_atalhos_textos_cabem_com_fonte_grande():
     from engine.components import PlayerSkills, ConsumableBar
     fx = _HbeFixture(font_size=44)
     lay = fx.layout()
-    pad = fx._MM_TEXT_PAD * S
+    pad = aw.TEXT_PAD * S
     ps = fx.world.get_component(fx.player_entity, PlayerSkills)
     cb = fx.world.get_component(fx.player_entity, ConsumableBar)
     for _, rows in fx._hbe_sections(ps, cb):

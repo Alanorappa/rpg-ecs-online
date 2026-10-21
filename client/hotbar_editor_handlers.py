@@ -5,7 +5,7 @@ habilidade e consumíveis, com captura de tecla e botões Salvar/Fechar.
 Separado de game.py para manter GameEngine conciso. Esta classe NÃO
 deve ser instanciada diretamente — ela é herdada por GameEngine, que
 fornece self.world, self.player_entity, self.screen, self.font_*,
-self._menu_keys, self._mkb_rebind e os helpers _mm_* do atlas de UI
+self._menu_keys, self._mkb_rebind e os helpers _mm_* (ui/atlas_window.py via
 (client/menu_handlers.py — mesmo GameEngine).
 
 Visual (20/10/2026): atlas de UI (ui/ui_atlas.py) no estilo da janela de
@@ -16,6 +16,7 @@ borda direita com setas clicáveis (segurar repete) e puxador arrastável.
 import pygame
 
 from engine.components import PlayerSkills
+from ui import atlas_window as aw
 from ui import ui_atlas
 from ui.ui_sizes import UI
 
@@ -122,9 +123,9 @@ class HotbarEditorHandlers:
 
         f = self._mm_begin(events, tw, th, (UI.HOTBAR_EDITOR_OFFSET_X, UI.HOTBAR_EDITOR_OFFSET_Y),
                            style="dark")
-        rx, ry = f["rx"], f["ry"]
+        rx, ry = f.rx, f.ry
         now = pygame.time.get_ticks()
-        if f["released"] or not f["down"]:
+        if f.released or not f.down:
             self._hbe_arrow_hold = None
             self._hbe_grip_drag = None
 
@@ -141,7 +142,7 @@ class HotbarEditorHandlers:
             in_sb = sb_col * T <= rx < (sb_col + 1) * T
             grip_min, grip_max = (up_row + 1) * T, down_row * T - T
             grip_y = grip_min + round((grip_max - grip_min) * self._mkb_scroll / max_scroll)
-            if f["clicked"] and in_sb:
+            if f.clicked and in_sb:
                 if up_row * T <= ry < (up_row + 1) * T:
                     self._mkb_scroll -= T
                     self._hbe_arrow_hold = (-1, now + self._HBE_HOLD_MS)
@@ -163,7 +164,7 @@ class HotbarEditorHandlers:
             grip_y = grip_min + round((grip_max - grip_min) * self._mkb_scroll / max_scroll)
 
             hold = self._hbe_arrow_hold
-            raw = f["raw"]
+            raw = f.raw
             ui_atlas.blit_tile(raw, ui_atlas.SCROLL_UP_PRESSED if hold and hold[0] < 0
                                else ui_atlas.SCROLL_UP, sb_col, up_row)
             for r in range(up_row + 1, down_row):
@@ -176,41 +177,39 @@ class HotbarEditorHandlers:
         # ── Conteúdo rolável (montado inteiro, recortado pela janela) ──────
         scroll = self._mkb_scroll
         in_view = vy0 <= ry < vy0 + vh and 0 <= rx < sb_col * T
-        fc = dict(f)
-        fc["raw"] = pygame.Surface((sb_col * T, content_h), pygame.SRCALPHA)
-        fc["texts"] = []
-        fc["ry"] = ry - vy0 + scroll if in_view else -10_000
+        fc = f.child(pygame.Surface((sb_col * T, content_h), pygame.SRCALPHA),
+                     ry - vy0 + scroll if in_view else -10_000)
         key_col = L + 2
         r = 0
         for title, rows in sections:
-            self._mm_text(fc, title, T, r * T + T / 2, self._MM_TITLE_COL, anchor="midleft")
+            fc.text(title, T, r * T + T / 2, aw.TITLE_COL, anchor="midleft")
             r += 1
-            ui_atlas.blit_frame(fc["raw"], 0, r, L + K + 3, len(rows) + 2)
+            ui_atlas.blit_frame(fc.raw, 0, r, L + K + 3, len(rows) + 2)
             for i, (label, code, key_id) in enumerate(rows):
                 rr = r + 1 + i
-                self._mm_text(fc, label, T + 4, rr * T + T / 2, anchor="midleft")
+                fc.text(label, T + 4, rr * T + T / 2, anchor="midleft")
                 waiting = self._mkb_rebind == key_id
-                if self._mm_text_field(fc, f"hbe:{key_id}", key_col, rr, K,
+                if fc.text_field(f"hbe:{key_id}", key_col, rr, K,
                                        "..." if waiting else self._hbe_key_name(code),
                                        active=waiting):
                     self._mkb_rebind = key_id
             r += len(rows) + 2
 
         # ── Dica + Salvar / Fechar ────────────────────────────────────────
-        self._mm_text(f, self._HBE_HINT_WAIT if self._mkb_rebind else self._HBE_HINT_IDLE,
+        f.text(self._HBE_HINT_WAIT if self._mkb_rebind else self._HBE_HINT_IDLE,
                       tw * T / 2, (th - 3) * T + T / 2, (200, 180, 80) if self._mkb_rebind else None,
                       font=self.font_sm)
         bw = lay["btn_w"]
         col0 = (tw - (2 * bw + 1)) // 2
-        save = self._mm_button(f, "hbe:salvar", col0, th - 2, bw, "Salvar", tall=False)
-        close = self._mm_button(f, "hbe:fechar", col0 + bw + 1, th - 2, bw, "Fechar", tall=False)
+        save = f.button("hbe:salvar", col0, th - 2, bw, "Salvar", tall=False)
+        close = f.button("hbe:fechar", col0 + bw + 1, th - 2, bw, "Fechar", tall=False)
 
-        self._mm_end(f, "Atalhos do teclado")
+        f.end("Atalhos do teclado")
 
-        content = ui_atlas.scale_up(fc["raw"])
-        self._mm_draw_texts(content, fc["texts"])
+        content = ui_atlas.scale_up(fc.raw)
+        aw.draw_texts(content, fc.texts, self.font_md)
         view = content.subsurface((0, scroll * S, content.get_width(), vh * S))
-        self.screen.blit(view, (f["px"], f["py"] + vy0 * S))
+        self.screen.blit(view, (f.px, f.py + vy0 * S))
 
         if save or close:
             self._save_config()
