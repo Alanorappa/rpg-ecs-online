@@ -506,3 +506,33 @@ def prompt(screen, events, *, area: pygame.Rect, press: PressState, font, messag
                                                      bw * T * S, (ay1 - ay0) * S)
     f.end(title)
     return fired
+
+
+# ── Ícone de item (com reserva) ──────────────────────────────────────────────
+# Ícone real do catálogo (ui/icon_manager.py); item sem ícone ainda cai num
+# quadrado da cor da raridade com a inicial do nome. Cache de MÓDULO com
+# teto (nunca dict no corpo de classe).
+_ITEM_FALLBACK_CACHE: dict = {}
+_ITEM_FALLBACK_CACHE_MAX = 64
+
+
+def item_icon(item, font, size: "int | None" = None) -> "pygame.Surface | None":
+    if item is None:
+        return None
+    from ui.icon_manager import ICONS
+    size = size or slot_icon_px()
+    icon = ICONS.get(ICONS.item_key(item), size)
+    if icon is not None:
+        return icon
+    from content.item_table import RARITY_COLORS
+    key = (item.name[:1].upper(), getattr(item, "rarity", "common"), size, id(font))
+    surf = _ITEM_FALLBACK_CACHE.get(key)
+    if surf is None:
+        surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        surf.fill((*RARITY_COLORS.get(key[1], (180, 180, 180))[:3], 255))
+        letter = font.render(key[0], False, (20, 16, 8))
+        surf.blit(letter, letter.get_rect(center=(size // 2, size // 2)))
+        if len(_ITEM_FALLBACK_CACHE) >= _ITEM_FALLBACK_CACHE_MAX:
+            _ITEM_FALLBACK_CACHE.clear()
+        _ITEM_FALLBACK_CACHE[key] = surf
+    return surf

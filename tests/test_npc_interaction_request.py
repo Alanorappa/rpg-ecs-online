@@ -111,10 +111,10 @@ class TestNPCInteractionRequest(unittest.TestCase):
         NPC com quest disponível (não iniciada) não pode mais quebrar."""
         self.blacksmith._open_menu(self.npc)
         try:
-            self.blacksmith._draw_action_menu(0, 0)
+            self.blacksmith.render()
         except AttributeError as e:
-            self.fail(f"_draw_action_menu não deveria levantar AttributeError: {e}")
-        keys = list(self.blacksmith._menu_rects.keys())
+            self.fail(f"o menu de ação não deveria levantar AttributeError: {e}")
+        keys = [k[3:] for k in self.blacksmith._hit_rects if k.startswith("bs:")]
         self.assertTrue(any(k == f"quest:{QID}" for k in keys),
                         f"quest disponível deveria aparecer no menu, opções: {keys}")
 

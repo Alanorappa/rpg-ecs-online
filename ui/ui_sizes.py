@@ -38,7 +38,6 @@ class UI:
 
     DEBUG_W, DEBUG_H             = 820, 620   # modal de debug (F12)
     HABILIDADES_W, HABILIDADES_H = 720, 560   # painel de Habilidades (tecla H)
-    CRAFTING_W, CRAFTING_H       = 700, 510   # modal de Forja/Reciclagem (ferreiro)
     TRAINER_W, TRAINER_H         = 640, 480   # modal de treinamento de skills (trainer NPC)
     RANKING_W, RANKING_H         = 720, 560   # modal de Ranking Geral (tecla K)
     RANKING_SIDEBAR_W            = 180        # coluna esquerda de categorias
@@ -73,12 +72,6 @@ class UI:
 
     # ── Crafting (Forja/Reciclagem) — geometria interna ────────────────────
     # Arquivo: crafting_system.py
-    CRAFTING_LEFT_W    = 290   # largura do painel ESQUERDO (a tela de reciclagem ou forja em si)
-    CRAFTING_RIGHT_W   = 392   # largura do painel DIREITO (grade da mochila pra arrastar item/material)
-    CRAFTING_DIVIDER   = 18    # espessura da linha divisória entre os painéis esquerdo e direito
-    CRAFTING_PAD       = 14    # respiro entre a borda do painel e o conteúdo
-    CRAFTING_SLOT_SZ   = 60    # tamanho de cada slot da grade de mochila (painel direito)
-    CRAFTING_SLOT_GAP  = 6     # espaço entre slots vizinhos da grade de mochila
 
     # ── Trade (player↔player) — geometria interna ──────────────────────────
     # Arquivo: client/trade_handlers.py
@@ -92,10 +85,7 @@ class UI:
     CHAT_TAB_H     = 22   # altura da linha de abas
     CHAT_INPUT_H   = 22   # altura do campo de digitação (oculto na aba Combate)
     CHAT_LINE_H    = 16   # altura de cada linha de texto na área de mensagens
-    CHAT_SCROLL_W  = 8    # largura da barra de rolagem — igual    CRAFTING_BAG_COLS  = 5     # quantos slots cabem por linha na grade (contagem, não pixel)
-    CRAFTING_ITEM_SLOT = 64    # tamanho do slot "item a reciclar" / "resultado da receita" (painel esquerdo)
-    CRAFTING_MAT_SZ    = 46    # tamanho de cada slot de material exigido pela receita (painel esquerdo)
-
+    CHAT_SCROLL_W  = 8    # largura da barra de rolagem do chat
     # ── Treinador de skills — geometria interna ────────────────────────────
     # Arquivo: trainer_system.py
     TRAINER_PAD     = 16   # respiro entre a borda do painel e o conteúdo
@@ -233,8 +223,6 @@ class UI:
     HABILIDADES_OFFSET_Y  = 0
     HOTBAR_EDITOR_OFFSET_X = 0
     HOTBAR_EDITOR_OFFSET_Y = 0
-    CRAFTING_OFFSET_X     = 0
-    CRAFTING_OFFSET_Y     = 0
     TRAINER_OFFSET_X      = 0
     TRAINER_OFFSET_Y      = 0
     RANKING_OFFSET_X      = 0
