@@ -98,24 +98,6 @@ def make(size: int) -> pygame.font.Font:
     return CachedFont(p, max(6, round(size * scale)))
 
 
-# ── Fonte de leitura (teste, 20/10/2026) ───────────────────────────────────
-# Texto corrido de janela do atlas (hoje só o diálogo de quest — teste
-# pedido pelo usuário: a Determination é pesada demais pra parágrafo).
-# Pixelify Sans (SIL OFL 1.1, licença em assets/fonts/PixelifySans_OFL.txt)
-# tem grade nativa de 13px: só múltiplos inteiros de 13 ficam nítidos
-# (16/19/20 saem com traço irregular) — por isso a escala de UI é
-# arredondada pro inteiro mais próximo, nunca aplicada fracionada.
-_READING_FONT_FILE = "assets/fonts/PixelifySans.ttf"
-READING_FONT_PX = 13
-
-
-def make_reading(ui_scale: float = 1.0) -> pygame.font.Font:
-    p = resource_path(_READING_FONT_FILE)
-    if not os.path.isfile(p):
-        return make(round(26 * ui_scale))
-    return CachedFont(p, READING_FONT_PX * max(1, round(ui_scale)))
-
-
 # ── Fonte pixel-perfect (teste, 11/07/2026) ────────────────────────────────
 # Convive com a Determination acima — usuário pediu pra testar em paralelo
 # pra labels pequenos (nome de NPC/mob acima da cabeça), não substitui a

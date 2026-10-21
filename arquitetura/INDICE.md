@@ -314,4 +314,4 @@
 - [20/10/2026] (feature) Menu de pausa inteiro no atlas de UI + larguras de botão a partir do texto — tags: ui, atlas, menu — HISTORICO_FEATURES.md §66
 - [20/10/2026] (feature) Modal "Atalhos do teclado" no atlas de UI + campo de texto + catálogo do atlas (ATLAS_UI.md) — tags: ui, atlas, atalhos, hotbar — HISTORICO_FEATURES.md §67
 - [20/10/2026] (feature) Diálogo de quest no atlas de UI + módulo comum de janela ui/atlas_window.py — tags: ui, atlas, quest, dialogo — HISTORICO_FEATURES.md §68
-- [20/10/2026] (feature) Diálogo de quest: rolagem só quando precisa + teste de fonte regular (Pixelify Sans) — tags: ui, atlas, quest, fonte — HISTORICO_FEATURES.md §68
+- [20/10/2026] (feature) Diálogo de quest: rolagem só quando precisa; teste de fonte regular (Pixelify Sans) revertido — tags: ui, atlas, quest, fonte — HISTORICO_FEATURES.md §68
