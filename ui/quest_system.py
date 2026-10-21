@@ -461,6 +461,8 @@ class QuestDialogSystem(UIScaleMixin, System):
         # (injetada por game.py — GameEngine._mm_safe_area) e rects de
         # tela dos elementos clicáveis (só pra teste/depuração).
         self._press = aw.PressState()
+        self._rf = None          # fonte de leitura do modal (ver _reading_font)
+        self._rf_scale = None
         self._frame_events: list = []
         self.safe_area_fn = None
         self._hit_rects: dict = {}
@@ -760,6 +762,16 @@ class QuestDialogSystem(UIScaleMixin, System):
     INK_HOVER  = (165,  55,  30)
     TITLE_BAR  = (240, 228, 200)
 
+    def _reading_font(self):
+        """Fonte de leitura (ui/fonts.py::make_reading — teste do usuário:
+        texto regular em vez da Determination pesada), recriada só quando
+        a escala de UI muda."""
+        scale = getattr(self, "ui_scale", 1.0)
+        if self._rf is None or self._rf_scale != scale:
+            from ui.fonts import make_reading
+            self._rf, self._rf_scale = make_reading(scale), scale
+        return self._rf
+
     def _lh(self, font) -> int:
         """Altura de linha da fonte em px RAW (fonte acompanha a escala de
         UI do jogador, o atlas não)."""
@@ -768,7 +780,7 @@ class QuestDialogSystem(UIScaleMixin, System):
     def _window_tiles_w(self, footer_labels: list) -> int:
         wrap_raw = self._u(UI.QUEST_DIALOG_W - 2 * self.PAD - 32) / S
         tw = math.ceil((wrap_raw + 2 * self._PADX) / T) + 1
-        bw = aw.tiles_for(self._font_body, footer_labels or ["Fechar"], 3)
+        bw = aw.tiles_for(self._rf, footer_labels or ["Fechar"], 3)
         tw = max(self._MIN_TW, tw, 2 * bw + 3)
         max_tw = self._area().width // (T * S)
         return max(4, min(tw, max_tw))
@@ -785,6 +797,7 @@ class QuestDialogSystem(UIScaleMixin, System):
             return
         from engine.components import QuestGiver as _QG, NPC as _NPC
 
+        self._rf = self._reading_font()
         if self._item_source:
             # Sem NPC real por trás (aberto via item na bag) — título usa o
             # nome do item; estado sempre "detail" (open_for_item).
@@ -829,7 +842,7 @@ class QuestDialogSystem(UIScaleMixin, System):
         max_scroll = max(0, content_h - view_h)
 
         f = aw.Frame(self.hud_surf, events, tw, th, area=self._area(), press=self._press,
-                     font=self._font_body, raw=ui_atlas.quest_window_raw(tw, th),
+                     font=self._rf, raw=ui_atlas.quest_window_raw(tw, th),
                      offset=(self._u(UI.QUEST_DIALOG_OFFSET_X), self._u(UI.QUEST_DIALOG_OFFSET_Y)))
         action = None
 
@@ -839,10 +852,10 @@ class QuestDialogSystem(UIScaleMixin, System):
             action = ("close",)
         self._hit("q:close", f, (tw - 1) * T, 0, tw * T, T)
 
-        scroll = f.scrollbar(self._scroll, tw - 1, 1, th - 3, max_scroll, always=True)
+        scroll = f.scrollbar(self._scroll, tw - 1, 1, th - 3, max_scroll)
 
         # Botões do rodapé (1 = centralizado; 2 = nas pontas, como no mockup)
-        bw = aw.tiles_for(self._font_body, [lbl for _, lbl, _ in footer], 3)
+        bw = aw.tiles_for(self._rf, [lbl for _, lbl, _ in footer], 3)
         if len(footer) == 1:
             cols = [(tw - bw) // 2]
         else:
@@ -871,7 +884,7 @@ class QuestDialogSystem(UIScaleMixin, System):
                 if fc.press(f"q:row:{qid}", 0, y0, content_w, y1)[1]:
                     action = ("row", qid)
                 fc.text(label, self._PADX, y0 + 2, self.INK_HOVER if hov else self.INK,
-                        font=self._font_body, anchor="topleft")
+                        font=self._rf, anchor="topleft")
                 self._hit(f"q:row:{qid}", f, 0, view_y0 + y0 - scroll, content_w, view_y0 + y1 - scroll)
             elif kind == "slot":
                 _, sel_kind, key, obj, x, y = it
@@ -890,7 +903,7 @@ class QuestDialogSystem(UIScaleMixin, System):
 
         f.end()
         content = ui_atlas.scale_up(fc.raw)
-        aw.draw_texts(content, fc.texts, self._font_body)
+        aw.draw_texts(content, fc.texts, self._rf)
         self._draw_reward_icons(content, icons)
         top = min(scroll, max(0, content.get_height() // S - view_h))
         view = content.subsurface((0, top * S, content.get_width(),
@@ -933,9 +946,9 @@ class QuestDialogSystem(UIScaleMixin, System):
         avail = self._get_available_quests(self._dialog_npc_id)
         comp  = self._get_completable_quests(self._dialog_npc_id, npc_name)
         items, y = [], 0
-        items.append(("text", "Escolha uma missão:", self._PADX, y, self.INK_SOFT, self._font_sm))
-        y += self._lh(self._font_sm) + 4
-        row_h = self._lh(self._font_body) + 4
+        items.append(("text", "Escolha uma missão:", self._PADX, y, self.INK_SOFT, self._rf))
+        y += self._lh(self._rf) + 4
+        row_h = self._lh(self._rf) + 4
         for qid, is_turnin in [(q, True) for q in comp] + [(q, False) for q in avail]:
             qdef = QUESTS.get(qid)
             if qdef is None:
@@ -955,17 +968,17 @@ class QuestDialogSystem(UIScaleMixin, System):
         from engine.quest_logic import format_quest_text as _fmt_qd
         _char_qd = self.world.get_component(self.player_entity, _CharQD)
         items, y = [], 0
-        y = self._text_items(items, y, qdef.title, self.INK_TITLE, self._font_lg, wrap_px) + 4
+        y = self._text_items(items, y, qdef.title, self.INK_TITLE, self._rf, wrap_px) + 4
         desc = _fmt_qd(qdef.description, _char_qd.name if _char_qd else "")
-        y = self._text_items(items, y, desc, self.INK, self._font_body, wrap_px) + 6
-        y = self._text_items(items, y, "Objetivos:", self.INK_SOFT, self._font_sm, wrap_px)
+        y = self._text_items(items, y, desc, self.INK, self._rf, wrap_px) + 6
+        y = self._text_items(items, y, "Objetivos:", self.INK_SOFT, self._rf, wrap_px)
         for obj in qdef.objectives:
             y = self._text_items(items, y, QuestSystem._obj_label(obj, 0, show_progress=False),
-                                 self.INK_SOFT, self._font_sm, wrap_px, indent=8)
+                                 self.INK_SOFT, self._rf, wrap_px, indent=8)
         rew = self._reward_text(qdef)
         if rew:
             y = self._text_items(items, y + 6, "Recompensa: " + rew, self.INK_GOLD,
-                                 self._font_sm, wrap_px)
+                                 self._rf, wrap_px)
         return items, y
 
     def _content_turnin(self, qdef, wrap_px: int) -> tuple:
@@ -973,15 +986,15 @@ class QuestDialogSystem(UIScaleMixin, System):
         from engine.quest_logic import format_quest_text as _fmt_qt
         _char_qt = self.world.get_component(self.player_entity, _CharQT)
         items, y = [], 0
-        y = self._text_items(items, y, "Missão Completa!", self.INK_GOLD, self._font_lg, wrap_px)
-        y = self._text_items(items, y, qdef.title, self.INK_TITLE, self._font_body, wrap_px) + 6
+        y = self._text_items(items, y, "Missão Completa!", self.INK_GOLD, self._rf, wrap_px)
+        y = self._text_items(items, y, qdef.title, self.INK_TITLE, self._rf, wrap_px) + 6
         completion = getattr(qdef, "completion", "") or "Bom trabalho. Aqui está sua recompensa."
         completion = _fmt_qt(completion, _char_qt.name if _char_qt else "")
-        y = self._text_items(items, y, completion, self.INK, self._font_body, wrap_px) + 8
+        y = self._text_items(items, y, completion, self.INK, self._rf, wrap_px) + 8
         rew = self._reward_text(qdef)
         if rew:
             y = self._text_items(items, y, "Recompensa: " + rew, self.INK_GOLD,
-                                 self._font_sm, wrap_px) + 4
+                                 self._rf, wrap_px) + 4
 
         # Itens de recompensa (23/07/2026) — fixos (`items`, sempre
         # concedidos) + skill + pool de escolha (`choice`, jogador escolhe
@@ -994,7 +1007,7 @@ class QuestDialogSystem(UIScaleMixin, System):
         choice = [("choice", k, it) for k, it in self._reward_item_objects(qdef.reward.choice)]
         if choice:
             y = self._text_items(items, y + 2, "Escolha uma recompensa:", self.INK_SOFT,
-                                 self._font_sm, wrap_px) + 2
+                                 self._rf, wrap_px) + 2
             y = self._slot_row(items, y, choice)
         return items, y
 
@@ -1030,7 +1043,7 @@ class QuestDialogSystem(UIScaleMixin, System):
             if selected:
                 pygame.draw.rect(content, (255, 215, 60), (x * S, y * S, T * S, T * S), 2)
             if stack > 1:
-                st = self._font_sm.render(str(stack), False, (255, 255, 255))
+                st = self._rf.render(str(stack), False, (255, 255, 255))
                 content.blit(st, (px + inner - st.get_width(), py + inner - st.get_height()))
 
     def _set_reward_tooltip(self, sel_kind: str, obj) -> None:

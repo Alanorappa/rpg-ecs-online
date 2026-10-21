@@ -65,8 +65,8 @@ Ponta esquerda / meio (repetível) / ponta direita nas 3 colunas de cada bloco.
 | Puxador | (12,6) · (13,6) | `SCROLL_GRIP` | Posição da rolagem; arrastável. Posicionado em pixel livre. |
 
 Barra de rolagem montada e interativa: `atlas_window.Frame.scrollbar` (estado em
-`ScrollState`) — `always=True` desenha parada mesmo sem nada pra rolar (diálogo de
-quest, como no mockup).
+`ScrollState`) — só aparece quando há o que rolar (decisão do usuário); `always=True`
+existe pra desenhá-la parada mesmo sem rolagem, se algum dia uma tela pedir.
 
 ## Ícones
 

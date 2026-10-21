@@ -5596,3 +5596,17 @@ dispara, texto longo rola e fica na tela),
 (aceitar/recusar pelo item) — clique completo via
 `tests.helpers.click_quest_dialog`; `tests/test_ui_atlas.py` (menu e
 atalhos no módulo novo).
+
+**Ajuste pós-teste (20/10/2026, pedido do usuário)**: (1) barra de
+rolagem do diálogo só aparece quando o texto não cabe (antes ficava
+sempre visível, como no mockup); (2) texto "regular" em vez do negrito
+— a Determination é pesada por natureza, sem versão regular. Comparadas
+fontes do sistema e fontes pixel livres; usuário quis fonte pixel e
+escolheu **Pixelify Sans** (SIL OFL 1.1, `assets/fonts/PixelifySans.ttf`
++ licença `PixelifySans_OFL.txt`). Grade nativa de 13px: 16/19/20 saem
+com traço irregular, então `ui/fonts.py::make_reading(ui_scale)` usa
+`13 × round(ui_scale)` (mín. 13). TESTE só no diálogo de quest
+(decisão do usuário): `QuestDialogSystem._reading_font()` (recriada só
+quando a escala muda) substitui as 3 fontes dentro do modal; marcador
+"!/?" no mundo e tooltip continuam na Determination. Mesmo tamanho pra
+título e corpo (o título se distingue pela cor).
