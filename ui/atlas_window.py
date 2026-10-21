@@ -19,6 +19,7 @@ from ui import ui_atlas
 from ui.ui_helpers import fill_surf
 
 T, S = ui_atlas.TILE, ui_atlas.SCALE
+SLOT = ui_atlas.SLOT_SIZE   # lado do slot de item em px RAW (ícone 32 + borda)
 
 TEXT_PAD    = 6      # px RAW de folga de cada lado do texto (bordas do botão/campo)
 TITLE_BAR_Y = T / 2  # centro (RAW) do título numa janela COM barra de título (linha 0)
@@ -312,10 +313,10 @@ class Frame:
     def slot(self, slot_id: str, x: float, y: float, icon=None, count: int = 0,
              dark: bool = False, selected: bool = False, dim: bool = False,
              enabled: bool = True, count_font=None) -> tuple:
-        """Slot de item (1 tile) em px RAW livre. Ícone (Surface de TELA, já
-        no tamanho `slot_icon_px()`) vai pras sobreposições. Devolve
-        (hover, disparou) — clique no soltar."""
-        ui_atlas.blit_tile_px(self.raw, ui_atlas.SLOT_DARK if dark else ui_atlas.SLOT, round(x), round(y))
+        """Slot de item (SLOT x SLOT px RAW) em px RAW livre. Ícone (Surface
+        de TELA, já no tamanho `slot_icon_px()`) vai pras sobreposições.
+        Devolve (hover, disparou) — clique no soltar."""
+        self.raw.blit(ui_atlas.slot_raw(dark), (round(x), round(y)))
         if icon is not None:
             ic = icon
             if dim:
@@ -323,28 +324,29 @@ class Frame:
                 ic.fill((90, 90, 90, 255), special_flags=pygame.BLEND_RGBA_MULT)
             self.overlays.append((ic, x + 1, y + 1))
         if selected:
-            ring = pygame.Surface((T * S, T * S), pygame.SRCALPHA)
+            ring = pygame.Surface((SLOT * S, SLOT * S), pygame.SRCALPHA)
             pygame.draw.rect(ring, (255, 215, 60), ring.get_rect(), 2)
             self.overlays.append((ring, x, y))
         if count > 1:
             f = count_font or self.font
             t = f.render(str(count), False, (255, 255, 255))
-            px = (x + T - 1) * S - t.get_width()
-            py = (y + T - 1) * S - t.get_height()
+            px = (x + SLOT - 2) * S - t.get_width()
+            py = (y + SLOT - 1) * S - t.get_height()
             self.overlays.append((t, px / S, py / S))
-        hov = self.hover(x, y, x + T, y + T)
-        fired = self.press(slot_id, x, y, x + T, y + T)[1] if enabled else False
+        hov = self.hover(x, y, x + SLOT, y + SLOT)
+        fired = self.press(slot_id, x, y, x + SLOT, y + SLOT)[1] if enabled else False
         return hov, fired
 
-    def grid(self, grid_id: str, tx: int, ty: int, cols: int, rows: int, cells: list,
+    def grid(self, grid_id: str, x0: float, y0: float, cols: int, rows: int, cells: list,
              dark: bool = True, gap: int = 0, selected: int = -1, count_font=None) -> tuple:
-        """Grade cols x rows de slots a partir do tile (tx, ty). `cells[i]` =
-        (ícone, quantidade) ou None (vazio). Devolve (índice sob o mouse,
-        índice clicado) — -1 quando nenhum."""
+        """Grade cols x rows de slots a partir do px RAW (x0, y0) — tamanho
+        total em grid_px(). `cells[i]` = (ícone, quantidade) ou None
+        (vazio). Devolve (índice sob o mouse, índice clicado) — -1 quando
+        nenhum."""
         hov_i, hit_i = -1, -1
         for i in range(cols * rows):
             c, r = i % cols, i // cols
-            x, y = (tx + c) * T + c * gap, (ty + r) * T + r * gap
+            x, y = x0 + c * (SLOT + gap), y0 + r * (SLOT + gap)
             cell = cells[i] if i < len(cells) else None
             icon, count = cell if cell else (None, 0)
             hov, fired = self.slot(f"{grid_id}:{i}", x, y, icon, count, dark=dark,
@@ -397,7 +399,12 @@ class Frame:
 
 def slot_icon_px() -> int:
     """Tamanho em px de TELA do ícone dentro de um slot (1px de borda RAW)."""
-    return (T - 2) * S
+    return (SLOT - 2) * S
+
+
+def grid_px(n: int, gap: int = 0) -> int:
+    """Largura (ou altura) RAW de `n` slots lado a lado com `gap` entre eles."""
+    return n * SLOT + max(0, n - 1) * gap
 
 
 # ── Modal de quantidade (loja, troca, correio...) ────────────────────────────
@@ -433,32 +440,48 @@ def quantity_window(screen, events, state: dict, *, area: pygame.Rect, press: Pr
                     font, small_font, title: str, info: str, confirm_label: str,
                     confirm_enabled: bool = True, hits: "dict | None" = None) -> "str | None":
     """Janela escura pequena de quantidade: título, linha de informação
-    (preço/total), seletor ◀ quantidade ▶ (roda do mouse também muda),
-    Cancelar / Confirmar. Devolve "ok", "cancel" ou None. Teclado (dígitos,
-    ENTER, ESC) fica com o dono via quantity_key."""
+    (preço/total), ◀ [campo de texto com a quantidade] ▶ (roda do mouse
+    também muda; o campo mostra que dá pra digitar), Cancelar / Confirmar.
+    Tudo centralizado na janela. Devolve "ok", "cancel" ou None. Teclado
+    (dígitos, ENTER, ESC) fica com o dono via quantity_key."""
     bw = tiles_for(font, ["Cancelar", confirm_label], 3)
-    tw = max(tiles_for(font, [title], 1) + 2, tiles_for(small_font, [info], 1) + 2, 2 * bw + 3, 9)
+    fw = tiles_for(font, ["999999"], 3)     # campo da quantidade
+    btn_group = 2 * bw + 1
+    tw = max(tiles_for(font, [title], 1) + 2, tiles_for(small_font, [info], 1) + 2,
+             btn_group + 2, fw + 4, 9)
     th = 7
     f = Frame(screen, events, tw, th, area=area, press=press, font=font, style="dark")
     f.text(info, tw * T / 2, 2.5 * T, TEXT_COL, small_font)
-    col_l, col_r = tw // 2 - 3, tw // 2 + 2
-    step = f.selector("qty", 3, col_l, col_r, str(state["qty"]))
+    # ◀ campo ▶ centralizado (início pode cair em meio tile).
+    col_l = (tw - (fw + 2)) / 2
+    col_r = col_l + 1 + fw
+    step = 0
+    for col, d, idle, pressed_t in ((col_l, -1, ui_atlas.ARROW_LEFT, ui_atlas.ARROW_LEFT_PRESSED),
+                                    (col_r, +1, ui_atlas.ARROW_RIGHT, ui_atlas.ARROW_RIGHT_PRESSED)):
+        pressed, fired = f.press(f"qty:{d}", col * T, 3 * T, (col + 1) * T, 4 * T)
+        ui_atlas.blit_tile(f.raw, pressed_t if pressed else idle, col, 3)
+        if fired:
+            step = d
+    cursor = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
+    f.text_field("qty:field", col_l + 1, 3, fw, state["text"] + cursor, active=True)
     if f.hover(0, 0, tw * T, th * T) and f.wheel:
         step += f.wheel
     if step:
         state["qty"] = max(1, min(state["max_qty"], state["qty"] + step))
         state["text"] = str(state["qty"])
     result = None
-    if f.button("qty:cancel", 1, 4, bw, "Cancelar"):
+    bx = (tw - btn_group) / 2
+    if f.button("qty:cancel", bx, 4, bw, "Cancelar"):
         result = "cancel"
-    if f.button("qty:ok", tw - 1 - bw, 4, bw, confirm_label, enabled=confirm_enabled):
+    if f.button("qty:ok", bx + bw + 1, 4, bw, confirm_label, enabled=confirm_enabled):
         result = "ok"
     if hits is not None:
         ay0, ay1 = ui_atlas.button_art_y(True)
-        for hid, col in (("qty:cancel", 1), ("qty:ok", tw - 1 - bw)):
-            hits[hid] = pygame.Rect(f.px + col * T * S, f.py + (4 * T + ay0) * S, bw * T * S, (ay1 - ay0) * S)
-        hits["qty:-"] = pygame.Rect(f.px + col_l * T * S, f.py + 3 * T * S, T * S, T * S)
-        hits["qty:+"] = pygame.Rect(f.px + col_r * T * S, f.py + 3 * T * S, T * S, T * S)
+        for hid, col in (("qty:cancel", bx), ("qty:ok", bx + bw + 1)):
+            hits[hid] = pygame.Rect(round(f.px + col * T * S), f.py + (4 * T + ay0) * S,
+                                    bw * T * S, (ay1 - ay0) * S)
+        hits["qty:-"] = pygame.Rect(round(f.px + col_l * T * S), f.py + 3 * T * S, T * S, T * S)
+        hits["qty:+"] = pygame.Rect(round(f.px + col_r * T * S), f.py + 3 * T * S, T * S, T * S)
     f.end(title)
     return result
 
@@ -469,16 +492,17 @@ def prompt(screen, events, *, area: pygame.Rect, press: PressState, font, messag
            buttons: list, title: str = "", small_font=None, max_text_tiles: int = 24,
            hits: "dict | None" = None, hit_prefix: str = "prompt") -> "int | None":
     """Janela escura pequena com `message` (quebra de linha automática) e
-    botões "altos" (1 = centralizado; 2 = nas pontas; mais = distribuídos).
-    Devolve o índice do botão disparado (no SOLTAR) ou None. `hits`
-    (opcional) recebe "{hit_prefix}:{i}" → rect de TELA (testes)."""
+    botões "altos" centralizados como grupo (1 tile entre eles). Devolve o
+    índice do botão disparado (no SOLTAR) ou None. `hits` (opcional)
+    recebe "{hit_prefix}:{i}" → rect de TELA (testes)."""
     mfont = small_font or font
     bw = tiles_for(font, buttons, 3)
     msg_tiles = min(max_text_tiles, tiles_for(mfont, [message], 1))
     lines = wrap_text(message, (msg_tiles * T - 2 * TEXT_PAD) * S, mfont)
     title_tiles = tiles_for(font, [title], 1) if title else 0
     n = len(buttons)
-    tw = max(msg_tiles + 2, title_tiles + 2, n * bw + (n + 1))
+    group = n * bw + (n - 1)
+    tw = max(msg_tiles + 2, title_tiles + 2, group + 2)
     lh = math.ceil(mfont.get_linesize() / S)
     text_top = 2 * T if title else T + 4
     text_rows = math.ceil((text_top + len(lines) * lh + 6) / T)
@@ -488,13 +512,8 @@ def prompt(screen, events, *, area: pygame.Rect, press: PressState, font, messag
     for line in lines:
         f.text(line, tw * T / 2, y, TEXT_COL, mfont, anchor="midtop")
         y += lh
-    if n == 1:
-        cols = [(tw - bw) // 2]
-    elif n == 2:
-        cols = [1, tw - 1 - bw]
-    else:
-        gap = (tw - n * bw) / (n + 1)
-        cols = [round(gap + i * (bw + gap)) for i in range(n)]
+    x0 = (tw - group) / 2
+    cols = [x0 + i * (bw + 1) for i in range(n)]
     by = th - 3
     ay0, ay1 = ui_atlas.button_art_y(True)
     fired = None
@@ -502,7 +521,7 @@ def prompt(screen, events, *, area: pygame.Rect, press: PressState, font, messag
         if f.button(f"{hit_prefix}:{i}", col, by, bw, label):
             fired = i
         if hits is not None:
-            hits[f"{hit_prefix}:{i}"] = pygame.Rect(f.px + col * T * S, f.py + (by * T + ay0) * S,
+            hits[f"{hit_prefix}:{i}"] = pygame.Rect(round(f.px + col * T * S), f.py + (by * T + ay0) * S,
                                                      bw * T * S, (ay1 - ay0) * S)
     f.end(title)
     return fired

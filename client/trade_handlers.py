@@ -15,6 +15,7 @@ client/network_handlers.py) e envia os 8 tipos de mensagem C→S. Item
 ofertado só sai da Inventory de verdade quando o servidor confirma via
 TRADE_STATE — nunca otimista (mesmo racional do EQUIP_REJECTED).
 """
+import math
 import pygame
 
 from engine.components import Inventory, RemoteControlled, Wallet
@@ -322,14 +323,15 @@ class TradeHandlers:
         tui.clear_invite()
         SOUNDS.play_ui("button_click")
 
-    # Janela de troca (atlas): mochila 4x5 à esquerda; "sua oferta" (campo
-    # de ouro + 5 slots) no meio; "oferta do outro" (ouro + 5 slots, só
-    # leitura) à direita; Negociar / Cancelar embaixo. Layout de colunas
-    # pedido pelo usuário (ver PROBLEMAS_ARQUITETURA.md) mantido.
-    _BAG_COLS = 4
-    _BAG_ROWS = 5
-    _OFFER_W = 4      # largura (tiles) de cada coluna de oferta (campo de ouro)
-    _ROW0 = 3         # 1ª linha de slots
+    # Janela de troca (atlas): mochila 5x4 à esquerda; à direita "sua
+    # oferta" (rótulo + campo de ouro, 5 slots em linha) e embaixo "oferta
+    # do outro" (só leitura); Negociar / Cancelar centralizados embaixo.
+    # Slots de ícone 32x32 (aw.SLOT) — medidas em px RAW.
+    _BAG_COLS = 5
+    _BAG_ROWS = 4
+    _OFFER_W = 4      # largura (tiles) do campo de ouro de cada oferta
+    _N_OFFER = 5      # slots por oferta
+    _BAG_X, _BAG_Y = 8, 32
 
     def _draw_item_tooltip(self, item, hint: str = "") -> None:
         lines = item_tooltip_lines(item)
@@ -340,13 +342,18 @@ class TradeHandlers:
 
     def _draw_trade_window(self, tui, events, modal_open: bool) -> None:
         T, S = aw.T, aw.S
-        my_col0 = 1 + self._BAG_COLS + 1
-        their_col0 = my_col0 + self._OFFER_W + 1
+        SL = aw.SLOT
+        bag_w = aw.grid_px(self._BAG_COLS)
+        div_x = self._BAG_X + bag_w + 8
+        ox0 = div_x + 8                                   # coluna das ofertas (px RAW)
+        offer_w = aw.grid_px(self._N_OFFER)
         bw = aw.tiles_for(self.font_md, ["Negociar", "Cancelar"], 3)
         title = f"Troca com {tui.other_name}"
-        tw = max(their_col0 + self._OFFER_W + 1, 2 * bw + 3,
+        tw = max(math.ceil((ox0 + offer_w + 8) / T), 2 * bw + 3,
                  aw.tiles_for(self.font_md, [title], 1) + 3)
-        th = self._ROW0 + self._BAG_ROWS + 3
+        th = 13
+        # (rótulo y, campo de ouro ty, slots y) de cada oferta
+        offers_y = ((40, 2, 50), (100, 5.75, 110))
         f = aw.Frame(self.screen, events, tw, th, area=self._mm_safe_area(),
                      press=None if modal_open else self._trade_press, font=self.font_md,
                      raw=ui_atlas.titled_dark_window_raw(tw, th), overlay=False)
@@ -360,10 +367,11 @@ class TradeHandlers:
 
         hdr = (190, 170, 120)
         wal = self.world.get_component(self.player_entity, Wallet)
-        f.text(f"Seu ouro: {wal.gold if wal else 0}", T, 1.5 * T, hdr, self.font_sm, anchor="midleft")
-        f.text("Sua oferta", (my_col0 + self._OFFER_W / 2) * T, 1.5 * T, hdr, self.font_sm)
-        f.text(tui.other_name, (their_col0 + self._OFFER_W / 2) * T, 1.5 * T, hdr, self.font_sm)
-        f.divider_v((their_col0 - 0.5) * T, T, (self._ROW0 + self._BAG_ROWS) * T)
+        f.text(f"Saldo: {wal.gold if wal else 0}g", self._BAG_X, 24, hdr, self.font_sm, anchor="midleft")
+        f.text("Sua oferta", ox0, offers_y[0][0], hdr, self.font_sm, anchor="midleft")
+        f.text(tui.other_name, ox0, offers_y[1][0], hdr, self.font_sm, anchor="midleft")
+        f.divider_v(div_x, T, (th - 3) * T)
+        f.divider_h((offers_y[0][2] + SL + offers_y[1][0] - 8) // 2, ox0, (tw - 1) * T)
 
         # ── Mochila (clique direito oferta; Shift+direito = quantidade) ──
         from engine.components import Inventory as _InvDraw
@@ -372,11 +380,12 @@ class TradeHandlers:
         cells = [None if it is None else (ICONS.get(ICONS.item_key(it), ip),
                                           it.stack if getattr(it, "max_stack", 1) > 1 else 0)
                  for it in items]
-        hov_i, _ = f.grid("trade:bag", 1, self._ROW0, self._BAG_COLS, self._BAG_ROWS, cells,
+        hov_i, _ = f.grid("trade:bag", self._BAG_X, self._BAG_Y, self._BAG_COLS, self._BAG_ROWS, cells,
                           count_font=self.font_xs)
         for i in range(len(items)):
             c, r = i % self._BAG_COLS, i // self._BAG_COLS
-            self._trade_hit(f"bag:{i}", f, (1 + c) * T, (self._ROW0 + r) * T, (2 + c) * T, (self._ROW0 + r + 1) * T)
+            x, y = self._BAG_X + c * SL, self._BAG_Y + r * SL
+            self._trade_hit(f"bag:{i}", f, x, y, x + SL, y + SL)
         item = items[hov_i] if 0 <= hov_i < len(items) else None
         if item is not None:
             stackable = getattr(item, "max_stack", 1) > 1 and item.stack > 1
@@ -393,8 +402,10 @@ class TradeHandlers:
         gold_text = (self._trade_gold_text + "|") if focused else str(tui.my_gold)
         ay0, ay1 = ui_atlas.FIELD_ART_Y
         inset = ui_atlas.FIELD_ART_INSET_X
-        over_gold = f.hover(my_col0 * T + inset, 2 * T + ay0, (my_col0 + self._OFFER_W) * T - inset, 2 * T + ay1)
-        if f.text_field("trade:gold", my_col0, 2, self._OFFER_W, gold_text, active=focused):
+        gcol = (ox0 + offer_w) / T - self._OFFER_W            # campo de ouro à direita do rótulo
+        my_gty, their_gty = offers_y[0][1], offers_y[1][1]
+        over_gold = f.field_hover(gcol, my_gty, self._OFFER_W)
+        if f.text_field("trade:gold", gcol, my_gty, self._OFFER_W, gold_text, active=focused):
             if not focused:
                 self._trade_gold_focus = True
                 self._trade_gold_text = str(tui.my_gold) if tui.my_gold else ""
@@ -403,41 +414,42 @@ class TradeHandlers:
             # antes — sem isso, digitar e clicar direto em "Negociar"
             # descartava o texto (bug real: troca saía sem o ouro).
             self._confirm_trade_gold()
-        self._trade_hit("trade:gold", f, my_col0 * T + inset, 2 * T + ay0,
-                        (my_col0 + self._OFFER_W) * T - inset, 2 * T + ay1)
-        ui_atlas.blit_text_field(f.raw, their_col0, 2, self._OFFER_W)
-        f.text(str(tui.their_gold), (their_col0 + self._OFFER_W / 2) * T, 2 * T + (ay0 + ay1) / 2,
+        self._trade_hit("trade:gold", f, gcol * T + inset, my_gty * T + ay0,
+                        (gcol + self._OFFER_W) * T - inset, my_gty * T + ay1)
+        ui_atlas.blit_text_field(f.raw, gcol, their_gty, self._OFFER_W)
+        f.text(str(tui.their_gold), (gcol + self._OFFER_W / 2) * T, their_gty * T + (ay0 + ay1) / 2,
                (200, 190, 170))
 
-        for col0, offer, mine in ((my_col0, tui.my_offer, True), (their_col0, tui.their_offer, False)):
-            sx = (col0 + self._OFFER_W / 2) * T - T / 2
-            for i in range(self._BAG_ROWS):
+        for (lab_y, _gty, sy), offer, mine in zip(offers_y, (tui.my_offer, tui.their_offer), (True, False)):
+            for i in range(self._N_OFFER):
                 it = offer[i] if i < len(offer) else None
-                sy = (self._ROW0 + i) * T
+                sx = ox0 + i * SL
                 icon = ICONS.get(ICONS.item_key(it), ip) if it else None
                 count = it.stack if it and getattr(it, "max_stack", 1) > 1 else 0
                 hov, _ = f.slot(f"offer:{int(mine)}:{i}", sx, sy, icon, count, dark=True,
                                 count_font=self.font_xs)
                 if mine:
-                    self._trade_hit(f"my:{i}", f, sx, sy, sx + T, sy + T)
+                    self._trade_hit(f"my:{i}", f, sx, sy, sx + SL, sy + SL)
                 if hov and it is not None:
                     self._draw_item_tooltip(it, "Clique direito p/ retirar" if mine else "")
                     if mine and f.rreleased and not modal_open:
                         self._withdraw_trade_item(i)
             if (tui.my_confirmed if mine else tui.their_confirmed):
-                ov = pygame.Surface((self._OFFER_W * T * S, (self._BAG_ROWS + 1) * T * S), pygame.SRCALPHA)
+                ov = pygame.Surface(((offer_w + 4) * S, (sy + SL + 2 - (lab_y - 8)) * S), pygame.SRCALPHA)
                 ov.fill((60, 220, 90, 70))
-                f.overlays.append((ov, col0 * T, 2 * T))
+                f.overlays.append((ov, ox0 - 2, lab_y - 8))
 
-        # ── Negociar / Cancelar ──
-        if f.button("trade:confirm", 1, th - 2, bw, "Negociar"):
+        # ── Negociar / Cancelar (centralizados) ──
+        bx = (tw - (2 * bw + 1)) / 2
+        if f.button("trade:confirm", bx, th - 2, bw, "Negociar"):
             self._send_trade_confirm()
             SOUNDS.play_ui("button_click")
-        if f.button("trade:cancel", tw - 1 - bw, th - 2, bw, "Cancelar"):
+        if f.button("trade:cancel", bx + bw + 1, th - 2, bw, "Cancelar"):
             self._close_trade()
         ty0, ty1 = ui_atlas.button_art_y(True)
-        self._trade_hit("trade:confirm", f, T, (th - 2) * T + ty0, (1 + bw) * T, (th - 2) * T + ty1)
-        self._trade_hit("trade:cancel", f, (tw - 1 - bw) * T, (th - 2) * T + ty0, (tw - 1) * T, (th - 2) * T + ty1)
+        self._trade_hit("trade:confirm", f, bx * T, (th - 2) * T + ty0, (bx + bw) * T, (th - 2) * T + ty1)
+        self._trade_hit("trade:cancel", f, (bx + bw + 1) * T, (th - 2) * T + ty0, (bx + 2 * bw + 1) * T,
+                        (th - 2) * T + ty1)
         f.end()
 
     def _draw_trade_qty_modal(self, events) -> None:

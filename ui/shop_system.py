@@ -66,10 +66,8 @@ class ShopSystem(UIScaleMixin, System):
     - Esquerda: itens à venda (clique direito = comprar; Shift = quantidade).
     - Direita: mochila do jogador em grade (clique direito = vender).
     - Visual: atlas de UI (ui/atlas_window.py), ações no SOLTAR do mouse.
-    - Botão [↩ Desfazer] fica sempre renderizado desabilitado (histórico de
-      transação nunca é populado — servidor é autoritativo). Já era assim
-      antes desta limpeza (07/08/2026, Fase 2); mantido intacto — remoção
-      da UI é decisão de produto, não decidida aqui. Ver PROBLEMAS_ARQUITETURA.md.
+    - Botão Desfazer: desfaz a última compra/venda enquanto a janela
+      estiver aberta (servidor autoritativo — SHOP_UNDO/SHOP_CLOSE).
     """
 
     _FONT_BASES = {"_font_xs": 15, "_font_sm": 22, "_font_md": 30, "_font_lg": 38}
@@ -132,6 +130,7 @@ class ShopSystem(UIScaleMixin, System):
 
     def open_for(self, merchant_eid: int) -> None:
         """Abre a loja para o merchant_eid especificado, resetando estado interno."""
+        self._reset_undo()
         self.open_merchant_id   = merchant_eid
         self._pending_merchant_id = -1
         self._shop_scroll_st    = aw.ScrollState()
@@ -159,6 +158,7 @@ class ShopSystem(UIScaleMixin, System):
         from engine.components import QuestLog as _QL_shop
         ql = self.world.get_component(self.player_entity, _QL_shop)
         if quest_logic.is_npc_unlocked(self.world, eid, ql):
+            self._reset_undo()
             self.open_merchant_id     = eid
             self._pending_merchant_id = -1
             self._shop_scroll_st = aw.ScrollState()
@@ -333,6 +333,7 @@ class ShopSystem(UIScaleMixin, System):
             "item_value":   getattr(item, "value", 0),
             "stack_sold":   1,
             "current_gold": wallet.gold,
+            "npc_eid":      self.open_merchant_id,
         })
         item.stack -= 1
         if item.stack <= 0:
@@ -340,11 +341,41 @@ class ShopSystem(UIScaleMixin, System):
         if self._bag_scroll > 0 and self._bag_scroll >= len(inv.items):
             self._bag_scroll = max(0, len(inv.items) - 1)
 
+    # ── Desfazer (21/10/2026): dura enquanto a janela estiver aberta. O
+    # servidor guarda e valida as transações (WorldServer.process_shop_undo);
+    # aqui só a contagem pra habilitar o botão, espelhada dos resultados.
+
+    def note_transaction(self, kind: str) -> None:
+        """BUY_RESULT/SELL_RESULT de sucesso com a janela aberta."""
+        if self.is_open:
+            self.transaction_history.append(kind)
+            del self.transaction_history[:-self.MAX_HISTORY]
+
+    def on_undo_result(self, undo_left: int) -> None:
+        self.transaction_history = self.transaction_history[:max(0, undo_left)] if self.is_open else []
+
+    def _undo(self) -> None:
+        if not self._net or not self.transaction_history:
+            return
+        from shared.messages import MsgType as _MTU
+        self._net.send(_MTU.SHOP_UNDO, {"npc_eid": self.open_merchant_id})
+
+    def _reset_undo(self) -> None:
+        """Janela abriu/fechou: o histórico do Desfazer some (aqui e no servidor)."""
+        self.transaction_history = []
+        if self._net:
+            from shared.messages import MsgType as _MTC
+            self._net.send(_MTC.SHOP_CLOSE, {})
+
     def _close(self) -> None:
+        was_open = self.is_open
         self.open_merchant_id     = -1
         self._pending_merchant_id = -1
         self._shop_scroll_st      = aw.ScrollState()
         self._bag_scroll          = 0
+        self._qty_modal           = None
+        if was_open:
+            self._reset_undo()
 
     # ------------------------------------------------------------------
     # Helpers de posição/tile
@@ -403,14 +434,18 @@ class ShopSystem(UIScaleMixin, System):
     # ------------------------------------------------------------------
     # Render — painel de loja (atlas de UI)
     # ------------------------------------------------------------------
-    # Janela escura com barra de título (nome da loja) e X. Esquerda: lista
-    # à venda (slot + nome + preço, rolável). Divisória. Direita: mochila
-    # em grade (mesma do inventário). Embaixo: ouro do jogador. Clique
-    # DIREITO compra/vende (Shift+direito = quantidade); age no soltar.
+    # Janela escura com barra de título (nome da loja) e X. Esquerda:
+    # mochila em grade (mesma do inventário). Divisória. Direita: lista à
+    # venda (slot + nome + preço, rolável) com a barra de rolagem encostada
+    # na borda direita da janela (padrão de todo modal). Embaixo: Desfazer
+    # e saldo. Clique DIREITO compra/vende (Shift+direito = quantidade);
+    # age no soltar. Medidas em px RAW (slot de ícone 32x32 — aw.SLOT).
 
-    _LIST_ROWS  = 8      # linhas visíveis da lista à venda
-    _ROW_H      = 18     # px RAW por linha (slot de 16 + folga)
+    _LIST_ROWS  = 4                 # linhas visíveis da lista à venda
+    _ROW_H      = aw.SLOT + 2       # px RAW por linha
     _BAG_COLS   = 5
+    _PAD        = 6                 # folga da borda da janela
+    _TOP        = 32                # topo da mochila/lista (abaixo do cabeçalho)
 
     def _area(self) -> pygame.Rect:
         if self.safe_area_fn is not None:
@@ -427,23 +462,24 @@ class ShopSystem(UIScaleMixin, System):
     def _layout(self, stock_previews, stock, inv) -> dict:
         T, S = aw.T, aw.S
         fsm = self._font_sm
-        name_w = max([fsm.size(p.name)[0] for p in stock_previews] + [fsm.size("Mochila 20/20")[0]]) / S
+        name_w = max([fsm.size(p.name)[0] for p in stock_previews] + [fsm.size("À venda (99)")[0]]) / S
         price_w = max([fsm.size(f"{e['price']}g")[0] for e in stock] + [1]) / S
-        list_w = 4 + T + 4 + name_w + 8 + price_w + 4          # px RAW
-        list_cols = max(8, math.ceil(list_w / T))
         bag_rows = math.ceil((inv.max_slots if inv else 20) / self._BAG_COLS)
-        # 0 título | 1 cabeçalho | 2..: lista/mochila | divisória | ouro | borda
-        body_rows = max(math.ceil(self._LIST_ROWS * self._ROW_H / T), bag_rows)
-        sb_col = 1 + list_cols                      # barra de rolagem da lista
-        div_col = sb_col + 1
-        bag_col0 = div_col + 1
-        tw = bag_col0 + self._BAG_COLS + 1
-        th = 2 + body_rows + 3
-        title_w = aw.tiles_for(self._font_md, [self._shop_title], 1) + 3
-        tw = max(tw, title_w)
-        return {"tw": tw, "th": th, "list_cols": list_cols, "sb_col": sb_col, "div_col": div_col,
-                "bag_col0": tw - 1 - self._BAG_COLS, "bag_rows": bag_rows, "body_rows": body_rows,
-                "price_x": (1 + list_cols) * T - 4}
+        bag_x0 = self._PAD + 2
+        bag_w = aw.grid_px(self._BAG_COLS)
+        list_x0 = bag_x0 + bag_w + 16
+        list_w = math.ceil(aw.SLOT + 6 + name_w + 10 + price_w + 4)      # px RAW
+        # coluna da barra de rolagem = última coluna da janela (encostada
+        # na borda direita); a lista termina logo antes dela.
+        tw = max(math.ceil((list_x0 + list_w) / T) + 1,
+                 aw.tiles_for(self._font_md, [self._shop_title], 1) + 3)
+        list_w = (tw - 1) * T - list_x0
+        body_h = max(self._LIST_ROWS * self._ROW_H, aw.grid_px(bag_rows))
+        foot_y = self._TOP + body_h + 6                                 # divisória do rodapé
+        th = math.ceil((foot_y + T + 8) / T)
+        return {"tw": tw, "th": th, "bag_x0": bag_x0, "bag_w": bag_w, "bag_rows": bag_rows,
+                "list_x0": list_x0, "list_w": list_w, "body_h": body_h, "foot_y": foot_y,
+                "div_x": bag_x0 + bag_w + 8}
 
     def render(self, cam_x: float = 0, cam_y: float = 0) -> None:
         events, self._frame_events = self._frame_events, []
@@ -484,38 +520,38 @@ class ShopSystem(UIScaleMixin, System):
         self._hit("shop:close", f, (tw - 1) * T, 0, tw * T, T)
 
         hdr = (190, 170, 120)
-        f.text(f"À venda ({len(stock)})", T, 1.5 * T, hdr, self._font_sm, anchor="midleft")
-        f.text(f"Mochila {len(bag)}/{inv.max_slots if inv else 0}", lay["bag_col0"] * T, 1.5 * T,
+        top, lx0, list_w = self._TOP, lay["list_x0"], lay["list_w"]
+        f.text(f"Mochila {len(bag)}/{inv.max_slots if inv else 0}", lay["bag_x0"], 24,
                hdr, self._font_sm, anchor="midleft")
-        f.divider_v(lay["div_col"] * T + T // 2, T, (th - 3) * T)
-        f.divider_h((th - 3) * T, T, (tw - 1) * T)
+        f.text(f"À venda ({len(stock)})", lx0, 24, hdr, self._font_sm, anchor="midleft")
+        f.divider_v(lay["div_x"], T, lay["foot_y"])
+        f.divider_h(lay["foot_y"], T, (tw - 1) * T)
 
-        # ── Lista à venda (rolável) ───────────────────────────────────────
-        view_y0, view_h = 2 * T, self._LIST_ROWS * self._ROW_H
+        # ── Lista à venda (rolável; barra encostada na borda direita) ─────
+        view_y0, view_h = top, self._LIST_ROWS * self._ROW_H
         content_h = max(1, len(stock) * self._ROW_H)
-        sb_rows = lay["body_rows"]
-        off = f.scrollbar(self._shop_scroll_st, lay["sb_col"], 2, 2 + sb_rows - 1,
+        off = f.scrollbar(self._shop_scroll_st, tw - 1, view_y0 // T, (view_y0 + view_h) // T - 1,
                           max(0, content_h - view_h), step=self._ROW_H)
-        list_w = lay["list_cols"] * T
-        in_view = view_y0 <= f.ry < view_y0 + view_h and T <= f.rx < T + list_w
+        in_view = view_y0 <= f.ry < view_y0 + view_h and lx0 <= f.rx < lx0 + list_w
         fc = f.child(pygame.Surface((list_w, content_h), pygame.SRCALPHA),
                      f.ry - view_y0 + off if in_view else -10_000)
-        fc.rx = f.rx - T
+        fc.rx = f.rx - lx0
         inv_full = inv is not None and len(inv.items) >= inv.max_slots
+        mid = aw.SLOT / 2
         for i, (entry, prev) in enumerate(zip(stock, previews)):
             y = i * self._ROW_H + 1
             ok = (wallet is not None and wallet.gold >= entry["price"]) and not inv_full
             rar = self._RARITY_COLORS.get(prev.rarity, (200, 200, 200))
-            hov, _ = fc.slot(f"shop:buy:{i}", 2, y, ICONS.get(ICONS.item_key(prev), ip),
+            hov, _ = fc.slot(f"shop:buy:{i}", 0, y, ICONS.get(ICONS.item_key(prev), ip),
                              dark=True, dim=not ok)
             row_hov = fc.hover(0, y - 1, list_w, y - 1 + self._ROW_H)
-            fc.text(prev.name, 2 + T + 4, y + T / 2, rar if ok else (110, 90, 90),
+            fc.text(prev.name, aw.SLOT + 6, y + mid, rar if ok else (110, 90, 90),
                     self._font_sm, anchor="midleft")
-            fc.text(f"{entry['price']}g", list_w - 4, y + T / 2,
+            fc.text(f"{entry['price']}g", list_w - 4, y + mid,
                     (255, 215, 0) if ok else (130, 70, 70), self._font_sm, anchor="midright")
             ry = view_y0 + y - off
-            if view_y0 <= ry and ry + T <= view_y0 + view_h:
-                self._hit(f"shop:buy:{i}", f, T, ry - 1, T + list_w, ry - 1 + self._ROW_H)
+            if view_y0 <= ry and ry + aw.SLOT <= view_y0 + view_h:
+                self._hit(f"shop:buy:{i}", f, lx0, ry - 1, lx0 + list_w, ry - 1 + self._ROW_H)
             if row_hov or hov:
                 lines = item_tooltip_lines(prev, viewer_cls)
                 if wallet is None or wallet.gold < entry["price"]:
@@ -539,12 +575,13 @@ class ShopSystem(UIScaleMixin, System):
             cells.append(None if item is None else
                          (ICONS.get(ICONS.item_key(item), ip),
                           item.stack if getattr(item, "max_stack", 1) > 1 else 0))
-        hov_i, _ = f.grid("shop:bag", lay["bag_col0"], 2, self._BAG_COLS, lay["bag_rows"], cells,
+        bx0 = lay["bag_x0"]
+        hov_i, _ = f.grid("shop:bag", bx0, top, self._BAG_COLS, lay["bag_rows"], cells,
                           count_font=self._font_xs)
         for i in range(len(bag)):
             c, r = i % self._BAG_COLS, i // self._BAG_COLS
-            self._hit(f"shop:sell:{i}", f, (lay["bag_col0"] + c) * T, (2 + r) * T,
-                      (lay["bag_col0"] + c + 1) * T, (3 + r) * T)
+            x, y = bx0 + c * aw.SLOT, top + r * aw.SLOT
+            self._hit(f"shop:sell:{i}", f, x, y, x + aw.SLOT, y + aw.SLOT)
         item = bag[hov_i] if 0 <= hov_i < len(bag) else None
         if item is not None:
             sp = self._sell_price(item)
@@ -559,13 +596,16 @@ class ShopSystem(UIScaleMixin, System):
             if can_act and f.rreleased:
                 self._sell(hov_i)
 
-        # ── Rodapé: Desfazer (nunca funcionou — histórico não é populado)
-        #    + ouro ──────────────────────────────────────────────────────
+        # ── Rodapé: Desfazer (última compra/venda desta janela) + saldo ───
         bw = aw.tiles_for(self._font_sm, ["Desfazer"], 3)
-        f.button("shop:undo", 1, th - 2, bw, "Desfazer", tall=False,
-                 enabled=bool(self.transaction_history))
+        foot_ty = (lay["foot_y"] + 6) / T
+        if f.button("shop:undo", 0.5, foot_ty, bw, "Desfazer", tall=False,
+                    enabled=bool(self.transaction_history) and can_act):
+            self._undo()
+        ay0, ay1 = ui_atlas.button_art_y(False)
+        self._hit("shop:undo", f, 0.5 * T, foot_ty * T + ay0, (0.5 + bw) * T, foot_ty * T + ay1)
         if wallet:
-            f.text(f"Seu ouro: {wallet.gold}g", (tw - 1) * T - 4, (th - 2) * T + T / 2,
+            f.text(f"Saldo: {wallet.gold}g", (tw - 1) * T - 4, foot_ty * T + T / 2,
                    (255, 215, 0), self._font_md, anchor="midright")
 
         f.end()
@@ -574,7 +614,7 @@ class ShopSystem(UIScaleMixin, System):
         aw.draw_overlays(content, fc.overlays)
         view = content.subsurface((0, off * S, content.get_width(),
                                    min(view_h, content_h - off) * S))
-        self.hud_surf.blit(view, (f.px + T * S, f.py + view_y0 * S))
+        self.hud_surf.blit(view, (f.px + lx0 * S, f.py + view_y0 * S))
         self._panel_rect = pygame.Rect(f.px, f.py, f.pw, f.ph)
 
         if self._qty_modal is not None:

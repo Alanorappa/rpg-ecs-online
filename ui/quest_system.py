@@ -875,15 +875,16 @@ class QuestDialogSystem(UIScaleMixin, System):
                 self._hit(f"q:row:{qid}", f, 0, view_y0 + y0 - scroll, content_w, view_y0 + y1 - scroll)
             elif kind == "slot":
                 _, sel_kind, key, obj, x, y = it
-                ui_atlas.blit_tile_px(fc.raw, ui_atlas.SLOT, x, y)
-                hov = x <= fc.rx < x + T and y <= fc.ry < y + T
+                fc.raw.blit(ui_atlas.slot_raw(), (x, y))
+                SL = aw.SLOT
+                hov = x <= fc.rx < x + SL and y <= fc.ry < y + SL
                 selectable = sel_kind == "choice"
                 selected = selectable and self._turnin_chosen_item == key
                 dim = selectable and self._turnin_chosen_item is not None and not selected
-                if selectable and fc.press(f"q:choice:{key}", x, y, x + T, y + T)[1]:
+                if selectable and fc.press(f"q:choice:{key}", x, y, x + SL, y + SL)[1]:
                     action = ("choice", key)
-                self._hit(f"q:slot:{sel_kind}:{key}", f, x, view_y0 + y - scroll, x + T,
-                          view_y0 + y + T - scroll)
+                self._hit(f"q:slot:{sel_kind}:{key}", f, x, view_y0 + y - scroll, x + SL,
+                          view_y0 + y + SL - scroll)
                 icons.append((sel_kind, obj, x, y, dim, selected))
                 if hov:
                     self._set_reward_tooltip(sel_kind, obj)
@@ -1004,8 +1005,8 @@ class QuestDialogSystem(UIScaleMixin, System):
         x = self._PADX
         for sel_kind, key, obj in entries:
             items.append(("slot", sel_kind, key, obj, x, y))
-            x += T + self._SLOT_GAP
-        return y + T + 4
+            x += aw.SLOT + self._SLOT_GAP
+        return y + aw.SLOT + 4
 
     # ── Recompensas: ícones e tooltip ────────────────────────────────────────
 
@@ -1014,7 +1015,7 @@ class QuestDialogSystem(UIScaleMixin, System):
         tela, nunca ampliado em bloco). Escolha: selecionado ganha
         contorno dourado; os outros ficam esmaecidos depois de escolher."""
         from ui.icon_manager import ICONS
-        inner = (T - 2) * S
+        inner = aw.slot_icon_px()
         for sel_kind, obj, x, y, dim, selected in icons:
             px, py = (x + 1) * S, (y + 1) * S
             if sel_kind == "skill":
@@ -1028,7 +1029,7 @@ class QuestDialogSystem(UIScaleMixin, System):
             if dim:
                 content.blit(fill_surf((inner, inner), (0, 0, 0, 150)), (px, py))
             if selected:
-                pygame.draw.rect(content, (255, 215, 60), (x * S, y * S, T * S, T * S), 2)
+                pygame.draw.rect(content, (255, 215, 60), (x * S, y * S, aw.SLOT * S, aw.SLOT * S), 2)
             if stack > 1:
                 st = self._font_sm.render(str(stack), False, (255, 255, 255))
                 content.blit(st, (px + inner - st.get_width(), py + inner - st.get_height()))

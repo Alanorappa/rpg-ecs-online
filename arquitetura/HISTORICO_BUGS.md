@@ -6645,7 +6645,7 @@ nível), então 8 não volta a estourar o frame WebSocket. Teste:
 (precisa do Postgres — não rodado nesta sessão). Precisa de deploy do
 servidor pra valer em produção.
 
-## 96. "Deletar" do ferreiro apaga item só no cliente (ABERTO, 21/10/2026)
+## 96. "Deletar" do ferreiro apaga item só no cliente (RESOLVIDO, 21/10/2026)
 
 Achado ao converter o ferreiro pro atlas de UI (HISTORICO_FEATURES.md
 §72): clique direito num item que não é equipamento, dentro de
@@ -6657,3 +6657,10 @@ CLIENTE"; PROBLEMAS_ARQUITETURA.md §275): o servidor nunca fica sabendo
 e o item volta no próximo resync. Comportamento mantido na troca de
 visual (não decidido sozinho); aguardando decisão do usuário entre
 corrigir (mesmo caminho da tecla Delete do inventário) ou remover o menu.
+
+**Correção (21/10/2026, decisão do usuário: "pode fazer com a tecla
+delete")**: ponto único `SaveSyncHandlers._on_inventory_deleted_item()`
+(INV_SYNC + save sem fog) usado pela tecla Delete do inventário (game.py,
+antes inline) e pelo menu Deletar do ferreiro (injetado em
+`BlacksmithSystem.on_inventory_changed` por game.py — System nunca chama
+o GameEngine direto).

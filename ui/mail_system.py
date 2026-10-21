@@ -23,6 +23,7 @@ mesmo.
 """
 from __future__ import annotations
 import copy
+import math
 import pygame
 
 from ui.fonts import make as _font
@@ -436,10 +437,12 @@ class MailSystem(UIScaleMixin, System):
     # ler uma carta abre dentro da aba Entrada (Voltar retorna). Cliques
     # agem no SOLTAR (atlas_window); campos de texto do atlas.
 
-    _TW, _TH = 22, 15
+    _TW, _TH = 26, 15
     _BAG_COLS, _BAG_ROWS = 4, 5
     _ROW0 = 3                # 1ª linha de conteúdo (título 0, abas 1, folga 2)
     _MAIL_ROW_H = 2          # tiles por carta na lista da Entrada
+    _BAG_X = 8               # px RAW da bolsa (slots de ícone 32x32 — aw.SLOT)
+    _SLOT_STEP = aw.SLOT + 2 # anexos/pacote: slot + folga
 
     def _area(self) -> pygame.Rect:
         if self.safe_area_fn is not None:
@@ -514,16 +517,17 @@ class MailSystem(UIScaleMixin, System):
     def _draw_inbox(self, ui, f) -> None:
         T, S = aw.T, aw.S
         tw, th = self._TW, self._TH
-        list_cols = tw - 3
         view_y0, view_h = self._ROW0 * T, (th - self._ROW0 - 1) * T
         row_h = self._MAIL_ROW_H * T
         content_h = max(1, len(ui.inbox) * row_h)
-        off = f.scrollbar(self._scroll, tw - 2, self._ROW0, th - 2, max(0, content_h - view_h))
-        lw = list_cols * T
-        in_view = view_y0 <= f.ry < view_y0 + view_h and T <= f.rx < T + lw
+        # barra de rolagem na última coluna, encostada na borda direita
+        off = f.scrollbar(self._scroll, tw - 1, self._ROW0, th - 2, max(0, content_h - view_h))
+        lx0 = T
+        lw = (tw - 1) * T - lx0
+        in_view = view_y0 <= f.ry < view_y0 + view_h and lx0 <= f.rx < lx0 + lw
         fc = f.child(pygame.Surface((lw, content_h), pygame.SRCALPHA),
                      f.ry - view_y0 + off if in_view else -10_000)
-        fc.rx = f.rx - T
+        fc.rx = f.rx - lx0
         opened = None
         if not ui.inbox:
             f.text("Nenhuma correspondência.", T + 4, view_y0 + T / 2, aw.DISABLED_COL, self._font_sm,
@@ -570,21 +574,22 @@ class MailSystem(UIScaleMixin, System):
         shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
 
         # Bolsa (clique direito anexa; Shift+direito = quantidade)
-        f.text("Sua bolsa", T, (self._ROW0 - 0.5) * T, (190, 170, 120), self._font_sm, anchor="midleft")
+        bx0, by0_bag, SL = self._BAG_X, self._ROW0 * T, aw.SLOT
+        f.text("Sua bolsa", bx0, (self._ROW0 - 0.5) * T, (190, 170, 120), self._font_sm, anchor="midleft")
         cells = []
         for i, it in enumerate(items):
             cells.append(None if it is None else
                          (ICONS.get(ICONS.item_key(it), ip), it.stack if getattr(it, "max_stack", 1) > 1 else 0))
-        bag0 = self._ROW0
-        hov_i, _ = f.grid("mail:bag", 1, bag0, self._BAG_COLS, self._BAG_ROWS, cells,
+        hov_i, _ = f.grid("mail:bag", bx0, by0_bag, self._BAG_COLS, self._BAG_ROWS, cells,
                           count_font=self._font_xs)
         for i in range(len(items)):
             c, r = i % self._BAG_COLS, i // self._BAG_COLS
-            self._mail_hit(f"mail:bag:{i}", f, (1 + c) * T, (bag0 + r) * T, (2 + c) * T, (bag0 + r + 1) * T)
+            x, y = bx0 + c * SL, by0_bag + r * SL
+            self._mail_hit(f"mail:bag:{i}", f, x, y, x + SL, y + SL)
             if i in staged:   # já anexado: escurece
                 dim = pygame.Surface((ip, ip), pygame.SRCALPHA)
                 dim.fill((0, 0, 0, 160))
-                f.overlays.append((dim, (1 + c) * T + 1, (bag0 + r) * T + 1))
+                f.overlays.append((dim, x + 1, y + 1))
         it = items[hov_i] if 0 <= hov_i < len(items) else None
         if it is not None and hov_i not in staged:
             rar = self._RARITY_COLORS.get(it.rarity, (200, 200, 200))
@@ -599,7 +604,7 @@ class MailSystem(UIScaleMixin, System):
                     ui.compose_items.append((hov_i, it.stack))
 
         # Formulário
-        fx0 = 1 + self._BAG_COLS + 1
+        fx0 = math.ceil((bx0 + aw.grid_px(self._BAG_COLS) + 8) / T)
         fw = tw - 1 - fx0 - 1
         cur = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
         fields = (("to", self._ROW0, fw, ui.compose_to, "Para:"),
@@ -636,11 +641,11 @@ class MailSystem(UIScaleMixin, System):
                 if 0 <= idx < len(items) and items[idx] is not None:
                     item_obj = copy.copy(items[idx])
                     item_obj.stack = qty
-            sx = fx0 * T + i * (T + 2)
+            sx = fx0 * T + i * self._SLOT_STEP
             icon = ICONS.get(ICONS.item_key(item_obj), ip) if item_obj else None
             count = item_obj.stack if item_obj and getattr(item_obj, "max_stack", 1) > 1 else 0
             hov, _ = f.slot(f"mail:att:{i}", sx, sy, icon, count, dark=True, count_font=self._font_xs)
-            self._mail_hit(f"mail:att:{i}", f, sx, sy, sx + T, sy + T)
+            self._mail_hit(f"mail:att:{i}", f, sx, sy, sx + SL, sy + SL)
             if hov and item_obj is not None:
                 lines = item_tooltip_lines(item_obj, None)
                 lines.append(("Clique direito p/ remover", (150, 150, 150)))
@@ -649,8 +654,8 @@ class MailSystem(UIScaleMixin, System):
                 if f.rreleased and not modal:
                     ui.compose_items.pop(i)
 
-        # Ouro
-        grow = by0 + bh + 2
+        # Ouro (logo abaixo dos anexos)
+        grow = math.ceil((sy + SL + 2) / T)
         gfocused = ui.compose_focus == "gold"
         if f.text_field("mail:gold", fx0, grow, 7, ui.compose_gold_text + (cur if gfocused else ""),
                         active=gfocused, placeholder="Moedas de ouro:", align="left", font=self._font_sm):
@@ -681,26 +686,27 @@ class MailSystem(UIScaleMixin, System):
         f.text(f"De: {d['sender_name']}", T, self._ROW0 * T + T / 2, aw.TEXT_COL, self._font_sm, anchor="midleft")
         f.text(f"Assunto: {d['subject']}", T, (self._ROW0 + 1) * T + T / 2, (190, 170, 120),
                self._font_sm, anchor="midleft")
-        by0, bh = self._ROW0 + 2, 5
+        by0, bh = self._ROW0 + 2, 4
         ui_atlas.blit_frame(f.raw, 1, by0, tw - 2, bh)
         f.text_block(d["body"] or " ", T + 8, by0 * T + 8, (tw - 2) * T - 16, aw.TEXT_COL, self._font_sm)
 
         # Pacote: item reclamado SOME do slot (pedido do usuário 25/09/2026)
-        prow = by0 + bh
-        f.text("Pacote:", T, prow * T + T / 2, (190, 170, 120), self._font_sm, anchor="midleft")
+        SL = aw.SLOT
+        py0 = (by0 + bh) * T + 2
+        f.text("Pacote:", T, py0 + SL / 2, (190, 170, 120), self._font_sm, anchor="midleft")
         px0 = 5 * T
         claim = None
         for it in d["items"]:
             idx = it["item_index"]
             if not 0 <= idx < 6:
                 continue
-            sx = px0 + idx * (T + 2)
+            sx = px0 + idx * self._SLOT_STEP
             item = None if it["claimed"] else it["item"]
             icon = ICONS.get(ICONS.item_key(item), ip) if item else None
             count = item.stack if item and getattr(item, "max_stack", 1) > 1 else 0
-            hov, fired = f.slot(f"mail:claim:{idx}", sx, prow * T, icon, count, dark=True,
+            hov, fired = f.slot(f"mail:claim:{idx}", sx, py0, icon, count, dark=True,
                                 count_font=self._font_xs, enabled=item is not None)
-            self._mail_hit(f"mail:claim:{idx}", f, sx, prow * T, sx + T, (prow + 1) * T)
+            self._mail_hit(f"mail:claim:{idx}", f, sx, py0, sx + SL, py0 + SL)
             if hov and item is not None:
                 lines = item_tooltip_lines(item, None)
                 lines.append(("Clique p/ reclamar", (150, 150, 150)))
@@ -713,19 +719,22 @@ class MailSystem(UIScaleMixin, System):
             label = (f"{d['gold']}g (reclamado)" if d["gold_claimed"]
                      else f"Reclamar {d['gold']}g")
             gw = f.tiles_for([label], 3, self._font_sm)
-            if f.button("mail:gold", 1, prow + 1, gw, label, tall=False, enabled=not d["gold_claimed"]):
+            grow = (py0 + SL + 2) / T
+            if f.button("mail:gold", 1, grow, gw, label, tall=False, enabled=not d["gold_claimed"]):
                 claim = ("gold",)
-            if not d["gold_claimed"] and f.right_click(T, (prow + 1) * T, (1 + gw) * T, (prow + 2) * T):
+            if not d["gold_claimed"] and f.right_click(T, grow * T, (1 + gw) * T, (grow + 1) * T):
                 claim = ("gold",)
             by0b, by1b = ui_atlas.button_art_y(False)
-            self._mail_hit("mail:gold", f, T, (prow + 1) * T + by0b, (1 + gw) * T, (prow + 1) * T + by1b)
+            self._mail_hit("mail:gold", f, T, grow * T + by0b, (1 + gw) * T, grow * T + by1b)
 
         bw = f.tiles_for(["Deletar", "Voltar"], 3)
-        delete = f.button("mail:delete", 1, th - 2, bw, "Deletar")
-        back = f.button("mail:back", tw - 1 - bw, th - 2, bw, "Voltar")
+        bx = (tw - (2 * bw + 1)) / 2           # botões centralizados como grupo
+        delete = f.button("mail:delete", bx, th - 2, bw, "Deletar")
+        back = f.button("mail:back", bx + bw + 1, th - 2, bw, "Voltar")
         ay0, ay1 = ui_atlas.button_art_y(True)
-        self._mail_hit("mail:delete", f, T, (th - 2) * T + ay0, (1 + bw) * T, (th - 2) * T + ay1)
-        self._mail_hit("mail:back", f, (tw - 1 - bw) * T, (th - 2) * T + ay0, (tw - 1) * T, (th - 2) * T + ay1)
+        self._mail_hit("mail:delete", f, bx * T, (th - 2) * T + ay0, (bx + bw) * T, (th - 2) * T + ay1)
+        self._mail_hit("mail:back", f, (bx + bw + 1) * T, (th - 2) * T + ay0, (bx + 2 * bw + 1) * T,
+                       (th - 2) * T + ay1)
 
         from shared.messages import MsgType
         if claim and self._net:

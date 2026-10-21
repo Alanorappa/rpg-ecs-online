@@ -1252,6 +1252,17 @@ class Inventory:
     max_slots: int = 20
 
 
+@dataclass
+class ShopUndoLog:
+    """Server-only: compras/vendas desfazíveis da janela de loja ABERTA
+    (botão Desfazer — dura enquanto a janela estiver aberta). Cada entrada:
+    {"kind": "buy"|"sell", "npc_eid": int, "gold": int, "item_id": str,
+    "qty": int, "item": Item (só venda — cópia do vendido, devolvida
+    igual)}. Preenchido por WorldServer.process_shop_buy/_sell, consumido
+    por process_shop_undo (LIFO), zerado por SHOP_CLOSE."""
+    entries: list = field(default_factory=list)
+
+
 class Skill:
     """Habilidade ativa com cooldown ou baseada em cargas."""
     def __init__(self, name: str, description: str, cooldown: float):

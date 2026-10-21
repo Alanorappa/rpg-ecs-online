@@ -3746,6 +3746,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                         inv_len_before=inv_len_before, inv_len_after=len(inv.items),
                         inv_item_ids_after=[getattr(i, "item_id", None) for i in inv.items])
 
+        self._shop_undo_push(eid, {"kind": "buy", "npc_eid": npc_eid, "gold": total_cost,
+                                   "item_id": item_data.get("item_id", ""), "qty": qty})
         return {
             "success":  True,
             "item":     item_data,
@@ -3848,7 +3850,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
 
     def process_shop_sell(self, session_id: str, item_name: str,
                           client_value: int, stack_sold: int = 1,
-                          item_id: str = "") -> dict:
+                          item_id: str = "", npc_eid: int = -1) -> dict:
         """Processa venda ao mercador — autoritativo no servidor.
 
         Calcula sell_price a partir do catálogo (loot_tables → merchant_data).
@@ -3925,12 +3927,17 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # antigo).
         remaining = stack_sold
         to_remove = []
+        sold_copy = None   # cópia do vendido — Desfazer devolve o mesmo item
         for i, it in enumerate(inv.items):
             if it is None or remaining <= 0:
                 continue
             matches = (it.item_id == item_id) if item_id else (it.name == item_name)
             if not matches:
                 continue
+            if sold_copy is None:
+                import copy as _copy_sell
+                sold_copy = _copy_sell.deepcopy(it)
+                sold_copy.stack = stack_sold
             take = min(remaining, it.stack)
             it.stack -= take
             remaining -= take
@@ -3942,12 +3949,96 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         # Crédito só depois da remoção confirmada.
         wallet.gold += sell_price
 
+        self._shop_undo_push(eid, {"kind": "sell", "npc_eid": npc_eid, "gold": sell_price,
+                                   "item_id": getattr(sold_copy, "item_id", item_id),
+                                   "qty": stack_sold, "item": sold_copy})
         return {
             "success":    True,
             "item_name":  item_name,
             "sell_price": sell_price,
             "new_gold":   wallet.gold,
         }
+
+    # ── Desfazer da loja (21/10/2026, pedido do usuário) ─────────────────
+    # Dura enquanto a janela estiver aberta: o servidor guarda as
+    # transações (ShopUndoLog, por player), desfaz a ÚLTIMA (LIFO) com as
+    # mesmas checagens autoritativas de sempre (posse real, ouro, espaço) e
+    # esquece tudo no SHOP_CLOSE. Desfazer devolve o valor EXATO da
+    # transação (compra: preço pago; venda: o que recebeu) — nunca um preço
+    # recalculado.
+    _SHOP_UNDO_MAX = 20
+
+    def _shop_undo_push(self, eid: int, entry: dict) -> None:
+        from engine.components import ShopUndoLog
+        log_c = self.world.get_component(eid, ShopUndoLog)
+        if log_c is None:
+            log_c = ShopUndoLog()
+            self.world.add_component(eid, log_c)
+        # Transação com OUTRO mercador = outra janela: histórico anterior não vale mais.
+        if log_c.entries and log_c.entries[-1]["npc_eid"] != entry["npc_eid"]:
+            log_c.entries.clear()
+        log_c.entries.append(entry)
+        del log_c.entries[:-self._SHOP_UNDO_MAX]
+
+    def clear_shop_undo(self, session_id: str) -> None:
+        from engine.components import ShopUndoLog
+        eid = self._player_eids.get(session_id)
+        log_c = self.world.get_component(eid, ShopUndoLog) if eid is not None else None
+        if log_c is not None:
+            log_c.entries.clear()
+
+    def process_shop_undo(self, session_id: str, npc_eid: int = -1) -> dict:
+        """Desfaz a última compra/venda da janela de loja aberta.
+        Retorna {success, kind, new_gold, removed?: [{item_id, stack}],
+        item?: item_data, undo_left, reason?, discarded?}. `discarded` = a
+        entrada não pode mais ser desfeita (item já usado/sumiu) e saiu do
+        histórico — o próximo Desfazer pega a anterior."""
+        from engine.components import ShopUndoLog, Wallet, Inventory
+        eid = self._player_eids.get(session_id)
+        if eid is None:
+            return {"success": False, "reason": "not_logged_in"}
+        log_c = self.world.get_component(eid, ShopUndoLog)
+        if log_c is None or not log_c.entries or log_c.entries[-1]["npc_eid"] != npc_eid:
+            return {"success": False, "reason": "nothing_to_undo",
+                    "undo_left": len(log_c.entries) if log_c else 0}
+        wallet = self.world.get_component(eid, Wallet)
+        inv = self.world.get_component(eid, Inventory)
+        if wallet is None or inv is None:
+            return {"success": False, "reason": "no_inventory", "undo_left": len(log_c.entries)}
+        e = log_c.entries[-1]
+        if e["kind"] == "buy":
+            owned = sum(it.stack for it in inv.items if it is not None and it.item_id == e["item_id"])
+            if owned < e["qty"]:
+                log_c.entries.pop()
+                return {"success": False, "reason": "item_not_owned", "discarded": True,
+                        "undo_left": len(log_c.entries)}
+            remaining = e["qty"]
+            for i in range(len(inv.items) - 1, -1, -1):   # tira das pilhas mais novas primeiro
+                it = inv.items[i]
+                if it is None or it.item_id != e["item_id"] or remaining <= 0:
+                    continue
+                take = min(remaining, it.stack)
+                it.stack -= take
+                remaining -= take
+                if it.stack <= 0:
+                    inv.items.pop(i)
+            wallet.gold += e["gold"]
+            log_c.entries.pop()
+            return {"success": True, "kind": "buy", "new_gold": wallet.gold,
+                    "removed": [{"item_id": e["item_id"], "stack": e["qty"]}],
+                    "undo_left": len(log_c.entries)}
+        # venda: devolve a cópia do item vendido, cobra o que foi recebido
+        if wallet.gold < e["gold"]:
+            return {"success": False, "reason": "insufficient_gold", "undo_left": len(log_c.entries)}
+        import copy as _copy_undo
+        item = _copy_undo.deepcopy(e["item"])
+        if item is None or not self._stack_or_add_item(inv, item):
+            return {"success": False, "reason": "inventory_full", "undo_left": len(log_c.entries)}
+        wallet.gold -= e["gold"]
+        log_c.entries.pop()
+        return {"success": True, "kind": "sell", "new_gold": wallet.gold,
+                "item": self._item_data_from_obj(e["item"]),
+                "undo_left": len(log_c.entries)}
 
     def craft_item(self, session_id: str, recipe_id: str, npc_eid: int = -1) -> dict:
         """Processa forja em ferreiro — autoritativo no servidor. Débito A4

@@ -127,11 +127,15 @@ class _Fx(InventoryHandlers):
 
 
 def _bag_cell(fx, i):
-    tw = fx._inv_layout(fx._inv_stat_rows(fx.world.get_component(fx.player_entity, CombatStats),
-                                          fx.world.get_component(fx.player_entity, CharacterStats)))["tw"]
-    col0 = tw - 1 - fx._INV_BAG_COLS
+    lay = fx._inv_layout(fx._inv_stat_rows(fx.world.get_component(fx.player_entity, CombatStats),
+                                           fx.world.get_component(fx.player_entity, CharacterStats)))
     c, r = i % fx._INV_BAG_COLS, i // fx._INV_BAG_COLS
-    return ((col0 + c) * T + 8, (fx._INV_BAG_ROW0 + r) * T + 8)
+    return (lay["bag_x0"] + c * aw.SLOT + 8, fx._INV_TOP + r * aw.SLOT + 8)
+
+
+def _eq_cell(fx, slot):
+    c, r = fx._INV_EQ_POS[slot]
+    return (fx._inv_eq_x()[c] + 8, fx._INV_TOP + r * (aw.SLOT + fx._INV_GAP) + 8)
 
 
 def test_clique_esquerdo_seleciona_e_direito_equipa_no_soltar():
@@ -155,15 +159,13 @@ def test_direito_em_consumivel_usa():
 def test_clique_no_slot_equipado_desequipa():
     fx = _Fx()
     fx.equip.slots["head"] = _make_item("training_sword")   # qualquer item serve aqui
-    c, r = fx._INV_EQ_POS["head"]
-    fx.click((c * T + 8, r * T + 8))
+    fx.click(_eq_cell(fx, "head"))
     assert fx.calls == [("unequip", "head")]
 
 
 def test_slot_vazio_mostra_nome_do_slot_no_tooltip():
     fx = _Fx()
-    c, r = fx._INV_EQ_POS["boots"]
-    fx.hover((c * T + 8, r * T + 8))
+    fx.hover(_eq_cell(fx, "boots"))
     assert fx._pending_tooltip[2] == "Botas"
 
 
@@ -174,6 +176,19 @@ def test_x_fecha():
     tw = fx._inv_panel_rect.w // (T * S)
     fx.click(((tw - 1) * T + 8, 8))
     assert fx._show_inventory is False
+
+
+def test_cabecalho_nome_classe_nivel():
+    fx = _Fx()
+    fx.world.get_component(fx.player_entity, CharacterStats).level = 32
+    texts = []
+    orig = aw.Frame.text
+    aw.Frame.text = lambda self, t, *a, **k: (texts.append(t), orig(self, t, *a, **k))
+    try:
+        fx.draw()
+    finally:
+        aw.Frame.text = orig
+    assert "Teste, Guerreiro Nível 32" in texts
 
 
 def test_janela_na_area_segura_com_fonte_grande():

@@ -99,10 +99,14 @@ _TITLED_DARK = {
     "bl": (0, 7), "bottom": (8, 3), "br": (11, 3),
 }
 
-# Slot de item (1 tile) — ícone desenhado por cima. Claro = equipamento /
-# recompensa; escuro (marrom) = célula de grade (bolsa).
+# Slot de item — ícone desenhado por cima. Claro = equipamento /
+# recompensa; escuro (marrom) = célula de grade (bolsa). O tile do atlas
+# tem 16px, mas o slot no jogo mostra o ícone em 32x32 RAW (decisão do
+# usuário): SLOT_SIZE = 32 de ícone + 1px de borda de cada lado, montado
+# por slot_raw() repetindo a linha/coluna do meio do tile (nunca esticado).
 SLOT = (9, 5)
 SLOT_DARK = (10, 5)
+SLOT_SIZE = 34
 
 # Linha divisória fina (1px) — mesma cor do contorno da moldura vazada.
 DIVIDER_COL = (86, 84, 82)
@@ -260,6 +264,29 @@ def titled_dark_window_raw(tw: int, th: int) -> "pygame.Surface":
             else:
                 t = d["bottom"] if last else d["center"]
             blit_tile(surf, t, i, j)
+    if len(_panel_cache) >= _PANEL_CACHE_MAX:
+        _panel_cache.clear()
+    _panel_cache[key] = surf
+    return surf
+
+
+def slot_raw(dark: bool = False, size: int = SLOT_SIZE) -> "pygame.Surface":
+    """Slot de `size` x `size` px RAW a partir do tile de 16: os 4 cantos
+    (8x8) do tile nos cantos e a linha/coluna do meio repetidas no resto
+    — mesma ideia de carimbar o tile de meio, só que de 1px. Cacheado."""
+    key = ("slot", dark, size)
+    cached = _panel_cache.get(key)
+    if cached is not None:
+        return cached
+    c, r = SLOT_DARK if dark else SLOT
+    tile = _load().subsurface((c * TILE, r * TILE, TILE, TILE))
+    h = TILE // 2
+    src = lambda v: v if v < h else (v - (size - TILE) if v >= size - h else h)
+    surf = pygame.Surface((size, size), pygame.SRCALPHA)
+    for y in range(size):
+        sy = src(y)
+        for x in range(size):
+            surf.set_at((x, y), tile.get_at((src(x), sy)))
     if len(_panel_cache) >= _PANEL_CACHE_MAX:
         _panel_cache.clear()
     _panel_cache[key] = surf

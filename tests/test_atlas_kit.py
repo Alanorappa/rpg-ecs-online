@@ -91,9 +91,9 @@ def test_abas_devolvem_indice_clicado_e_ignoram_a_ativa():
 
 def test_grade_devolve_indice_sob_o_mouse_e_clicado():
     cells = [None] * 20
-    build = lambda f: f.grid("g", 8, 2, 5, 4, cells)
-    # célula (col 2, linha 1) = índice 7
-    down, up = _click(build, ((8 + 2) * T + 8, (2 + 1) * T + 8))
+    build = lambda f: f.grid("g", 8 * T, 2 * T, 5, 4, cells)
+    # célula (col 2, linha 1) = índice 7 — slots de aw.SLOT px RAW
+    down, up = _click(build, (8 * T + 2 * aw.SLOT + 8, 2 * T + aw.SLOT + 8))
     assert down == (7, -1) and up == (7, 7)
 
 
@@ -123,3 +123,22 @@ def test_campo_de_senha_mostra_asteriscos():
 def test_x_da_barra_de_titulo_dispara_no_soltar():
     build = lambda f: f.close_button("x", 13)
     assert _click(build, (13 * T + 8, 8)) == (False, True)
+
+
+def test_slot_tem_icone_32_com_borda():
+    from ui import ui_atlas
+    assert ui_atlas.slot_raw().get_size() == (aw.SLOT, aw.SLOT)
+    assert aw.slot_icon_px() == 32 * aw.S
+
+
+def test_modal_de_quantidade_centralizado():
+    hits = {}
+    st = aw.quantity_state(10)
+    screen = pygame.Surface((1280, 720))
+    area = pygame.Rect(0, 0, 1280, 720)
+    aw.quantity_window(screen, [], st, area=area, press=aw.PressState(), font=_font(24),
+                       small_font=_font(18), title="Poção", info="10g", confirm_label="Comprar 1",
+                       hits=hits)
+    cx = area.centerx
+    assert abs((hits["qty:-"].left + hits["qty:+"].right) / 2 - cx) <= 2
+    assert abs((hits["qty:cancel"].left + hits["qty:ok"].right) / 2 - cx) <= 2

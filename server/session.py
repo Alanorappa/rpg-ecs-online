@@ -959,10 +959,23 @@ class SessionManager:
         item_id      = str(payload.get("item_id", ""))
         item_value   = int(payload.get("item_value", 0))
         stack_sold   = max(1, int(payload.get("stack_sold", 1)))
+        npc_eid      = int(payload.get("npc_eid", -1))
         result = self.world_server.process_shop_sell(
             session.session_id, item_name, item_value, stack_sold,
-            item_id=item_id)
+            item_id=item_id, npc_eid=npc_eid)
         await session.send(MsgType.SELL_RESULT, result)
+
+    async def _handle_shop_undo(self, session: Session, payload: dict, ts: int) -> None:
+        """Desfaz a última compra/venda da janela de loja aberta (21/10/2026)."""
+        if not session.authenticated:
+            return
+        result = self.world_server.process_shop_undo(
+            session.session_id, int(payload.get("npc_eid", -1)))
+        await session.send(MsgType.SHOP_UNDO_RESULT, result)
+
+    async def _handle_shop_close(self, session: Session, payload: dict, ts: int) -> None:
+        if session.authenticated:
+            self.world_server.clear_shop_undo(session.session_id)
 
     async def _handle_buy_request(self, session: Session, payload: dict, ts: int) -> None:
         """Processa compra em loja — valida e aplica server-side.
@@ -2881,6 +2894,8 @@ class SessionManager:
         MsgType.TOGGLE_ITEM_LIGHT: _handle_toggle_item_light,
         MsgType.BUY_REQUEST:     _handle_buy_request,
         MsgType.SELL_REQUEST:      _handle_sell_request,
+        MsgType.SHOP_UNDO:         _handle_shop_undo,
+        MsgType.SHOP_CLOSE:        _handle_shop_close,
         MsgType.CRAFT_REQUEST:      _handle_craft_request,
         MsgType.RECYCLE_REQUEST:    _handle_recycle_request,
         MsgType.TRAIN_SKILL_REQUEST: _handle_train_skill_request,

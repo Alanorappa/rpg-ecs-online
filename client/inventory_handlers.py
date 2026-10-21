@@ -298,13 +298,26 @@ class InventoryHandlers:
     # Nome do slot só no tooltip (decisão do usuário). Cliques agem no
     # SOLTAR (esquerdo E direito) — ui/atlas_window.py.
 
-    _INV_EQ_POS = {   # slot → (col, linha) em tiles (mockup)
-        "head": (1, 2), "shoulders": (1, 3), "chest": (1, 4), "wrists": (1, 5),
-        "neck": (6, 2), "ring": (6, 3), "gloves": (6, 4), "boots": (6, 5),
-        "mainhand": (3, 5), "offhand": (4, 5),
+    # Medidas em px RAW (slot de ícone 32x32 — aw.SLOT). Equipamento:
+    # coluna esq. | boneco (armas embaixo dele) | coluna dir.
+    _INV_PAD     = 6                          # folga da borda da janela
+    _INV_TOP     = 36                         # topo dos slots (abaixo do cabeçalho)
+    _INV_GAP     = 2                          # entre slots de equipamento
+    _INV_EQ_POS = {   # slot → (coluna, linha) — mockup
+        "head": ("l", 0), "shoulders": ("l", 1), "chest": ("l", 2), "wrists": ("l", 3),
+        "neck": ("r", 0), "ring": ("r", 1), "gloves": ("r", 2), "boots": ("r", 3),
+        "mainhand": ("w0", 3), "offhand": ("w1", 3),
     }
-    _INV_BAG_COL0, _INV_BAG_ROW0, _INV_BAG_COLS = 8, 2, 5
-    _INV_STAT_ROW0 = 7   # 1ª linha de estatísticas (abaixo da divisória da linha 6)
+    _INV_BAG_COLS = 5
+
+    @classmethod
+    def _inv_eq_x(cls) -> dict:
+        s, p = aw.SLOT, cls._INV_PAD
+        lx = p
+        w0 = lx + s + 6
+        w1 = w0 + s + cls._INV_GAP
+        rx = w1 + s + 6
+        return {"l": lx, "w0": w0, "w1": w1, "r": rx}
 
     def _inv_stat_rows(self, combat_stats, char_stats) -> list:
         """[(rótulo, total, bônus_de_item, fmt)] em 2 colunas (esq., dir.) por
@@ -344,8 +357,9 @@ class InventoryHandlers:
         return rows
 
     def _inv_layout(self, stat_rows) -> dict:
-        """Tamanho da janela em tiles: mínimo do mockup (14x12), cresce com
-        o texto das estatísticas (fonte acompanha a escala de UI)."""
+        """Medidas da janela: equipamento + mochila (slots de aw.SLOT) em
+        cima, estatísticas embaixo — cresce com o texto (fonte acompanha a
+        escala de UI). Tudo em px RAW, janela arredondada pra tiles."""
         T, S = aw.T, aw.S
         fsm = self.font_sm
         lab_w = max(fsm.size(r[i][0] + ":")[0] for r in stat_rows for i in (0, 1)) / S
@@ -354,11 +368,36 @@ class InventoryHandlers:
         itm_w = max(max(fsm.size("+" + r[i][3](r[i][2]))[0], fsm.size("Itens")[0])
                     for r in stat_rows for i in (0, 1)) / S
         col_w = lab_w + 6 + val_w + 8 + itm_w
-        tw = max(14, math.ceil((2 * col_w + 16 + 2 * T) / T))
+        eq_x = self._inv_eq_x()
+        eq_right = eq_x["r"] + aw.SLOT
+        bag_w = aw.grid_px(self._INV_BAG_COLS)
+        eq_bottom = self._INV_TOP + 4 * aw.SLOT + 3 * self._INV_GAP
         lh = math.ceil(fsm.get_linesize() / S)
+        n_stats = 2 * len(stat_rows)
+        # Estatísticas numa 3ª coluna à direita da mochila (a janela não
+        # cabe na altura da área segura com elas embaixo); se a largura não
+        # couber (fonte grande), voltam pra baixo em 2 colunas.
+        area = self._mm_safe_area()
+        bag_x0 = eq_right + 16
+        stats_x0 = bag_x0 + bag_w + 16
+        side_w = stats_x0 + col_w + self._INV_PAD + 2
+        if side_w * S <= area.w:
+            tw = math.ceil(side_w / T)
+            stats_h = (n_stats + 1) * lh
+            th = math.ceil((max(eq_bottom, self._INV_TOP + stats_h) + 8) / T)
+            return {"tw": tw, "th": th, "lab_w": lab_w, "val_w": val_w, "col_w": col_w, "lh": lh,
+                    "eq_x": eq_x, "bag_x0": bag_x0, "side": True, "stats_x0": stats_x0,
+                    "div_xs": ((eq_right + bag_x0) // 2, (bag_x0 + bag_w + stats_x0) // 2),
+                    "div_y": th * T - 6}
+        top_w = eq_right + 16 + bag_w + self._INV_PAD
+        tw = max(math.ceil((top_w + 2) / T), math.ceil((2 * col_w + 16 + 2 * T) / T))
+        div_y = eq_bottom + 8
         stats_h = (len(stat_rows) + 1) * lh + 8
-        th = max(12, self._INV_STAT_ROW0 + math.ceil(stats_h / T) + 1)
-        return {"tw": tw, "th": th, "lab_w": lab_w, "val_w": val_w, "col_w": col_w, "lh": lh}
+        th = math.ceil((div_y + 6 + stats_h + 4) / T)
+        bag_x0 = tw * T - 2 - self._INV_PAD - bag_w
+        return {"tw": tw, "th": th, "lab_w": lab_w, "val_w": val_w, "col_w": col_w, "lh": lh,
+                "eq_x": eq_x, "bag_x0": bag_x0, "side": False, "div_y": div_y,
+                "div_xs": ((eq_right + bag_x0) // 2,)}
 
     def _draw_inventory_panel(self):
         inv          = self.world.get_component(self.player_entity, Inventory)
@@ -373,7 +412,7 @@ class InventoryHandlers:
         stat_rows = self._inv_stat_rows(combat_stats, char)
         lay = self._inv_layout(stat_rows)
         tw, th = lay["tw"], lay["th"]
-        bag_col0 = tw - 1 - self._INV_BAG_COLS   # encostada na coluna cromada (mockup)
+        eq_x, bag_x0, top = lay["eq_x"], lay["bag_x0"], self._INV_TOP
         f = aw.Frame(self.screen, events, tw, th, area=self._mm_safe_area(), press=self._inv_press,
                      font=self.font_md, raw=ui_atlas.titled_dark_window_raw(tw, th), overlay=False)
         mx, my = pygame.mouse.get_pos()
@@ -386,12 +425,19 @@ class InventoryHandlers:
             self._show_inventory = False
             self._selected_inv_idx = -1
 
+        # ---- Cabeçalho: "Nome, Classe Nível N" sobre o boneco ----
+        mid_x = (eq_x["w0"] + eq_x["w1"] + aw.SLOT) / 2
+        if char:
+            f.text(f"{char.name}, {char.class_id.capitalize()} Nível {char.level}",
+                   mid_x, 25, (240, 225, 185), self.font_sm)
+
         # ---- Equipamento (em volta do boneco) ----
+        step = aw.SLOT + self._INV_GAP
         for slot_name, (c, r) in self._INV_EQ_POS.items():
             item = equip.slots.get(slot_name)
             locked = slot_name == "offhand" and equip.is_offhand_locked()
             icon = ICONS.get(ICONS.item_key(item), ip) if item else None
-            hov, fired = f.slot(f"inv:eq:{slot_name}", c * T, r * T, icon, dim=locked)
+            hov, fired = f.slot(f"inv:eq:{slot_name}", eq_x[c], top + r * step, icon, dim=locked)
             if hov:
                 label = Equipment.SLOT_LABELS[slot_name]
                 if item:
@@ -405,19 +451,23 @@ class InventoryHandlers:
                 if item and (fired or right_up):
                     self._unequip_slot(slot_name)
         frame = self._inv_preview_frame(char)
-        if frame is not None:   # boneco: 32x32 visível no centro do frame de 64
-            f.overlays.append((frame, 4 * T - frame.get_width() / S / 2,
-                               3.5 * T - frame.get_height() / S / 2))
+        if frame is not None:   # boneco no centro do espaço acima das armas
+            cy = top + (3 * step - self._INV_GAP) / 2
+            f.overlays.append((frame, mid_x - frame.get_width() / S / 2,
+                               cy - frame.get_height() / S / 2))
 
-        f.divider_v(7 * T, T, 6 * T)
-        f.divider_h(6 * T, T, (tw - 1) * T)
+        for dx in lay["div_xs"]:
+            f.divider_v(dx, T, lay["div_y"])
+        if not lay["side"]:
+            f.divider_h(lay["div_y"], T, (tw - 1) * T)
 
         # ---- Mochila ----
-        f.text(f"Mochila {len(inv.items)}/{inv.max_slots}", bag_col0 * T, 1.5 * T,
+        bag_w = aw.grid_px(self._INV_BAG_COLS)
+        f.text(f"Mochila {len(inv.items)}/{inv.max_slots}", bag_x0, 25,
                (190, 170, 120), self.font_sm, anchor="midleft")
         wallet = self.world.get_component(self.player_entity, Wallet)
         if wallet:
-            f.text(f"{wallet.gold} ouro", (bag_col0 + self._INV_BAG_COLS) * T, 1.5 * T,
+            f.text(f"{wallet.gold} ouro", bag_x0 + bag_w, 25,
                    (255, 215, 0), self.font_sm, anchor="midright")
         pls = self.world.get_component(self.player_entity, PlayerLightSource)
         cells = []
@@ -431,7 +481,7 @@ class InventoryHandlers:
                   else ICONS.get(ICONS.item_key(item), ip))
             cells.append((ic, item.stack if getattr(item, "max_stack", 1) > 1 else 0))
         rows = math.ceil(inv.max_slots / self._INV_BAG_COLS)
-        hov_i, hit_i = f.grid("inv:bag", bag_col0, self._INV_BAG_ROW0, self._INV_BAG_COLS, rows,
+        hov_i, hit_i = f.grid("inv:bag", bag_x0, top, self._INV_BAG_COLS, rows,
                               cells, selected=self._selected_inv_idx, count_font=self.font_xs)
         if hov_i >= inv.max_slots:
             hov_i = -1
@@ -459,16 +509,23 @@ class InventoryHandlers:
         if right_up and item is not None:
             self._inventory_right_click(item, hov_i, inv)
 
-        # ---- Estatísticas (2 colunas: rótulo | Base | Itens) ----
+        # ---- Estatísticas (rótulo | Base | Itens): 1 coluna à direita da
+        #      mochila, ou 2 colunas embaixo (ver _inv_layout) ----
         lh = lay["lh"]
-        y = self._INV_STAT_ROW0 * T + 4
         hdr, val_col, item_col, none_col = (160, 140, 100), (255, 220, 120), (120, 200, 120), (90, 80, 60)
-        cols_x = (T + 4, T + 4 + lay["col_w"] + 16)
+        if lay["side"]:
+            y = top - lh
+            cols_x = (lay["stats_x0"],)
+            stat_lines = [(e,) for i in (0, 1) for e in (r[i] for r in stat_rows)]
+        else:
+            y = lay["div_y"] + 6
+            cols_x = (T + 4, T + 4 + lay["col_w"] + 16)
+            stat_lines = stat_rows
         for cx in cols_x:
             f.text("Base", cx + lay["lab_w"] + 6, y, hdr, self.font_xs, anchor="topleft")
             f.text("Itens", cx + lay["lab_w"] + 6 + lay["val_w"] + 8, y, hdr, self.font_xs, anchor="topleft")
         y += lh
-        for row in stat_rows:
+        for row in stat_lines:
             for (label, total, bonus, fmt), cx in zip(row, cols_x):
                 f.text(label + ":", cx, y, hdr, self.font_sm, anchor="topleft")
                 f.text(fmt(total - bonus), cx + lay["lab_w"] + 6, y, val_col, self.font_sm, anchor="topleft")
@@ -483,14 +540,15 @@ class InventoryHandlers:
 
     def _inv_preview_frame(self, char):
         """Boneco animado (idle, de frente) — mesmo mecanismo do jogo
-        (engine/character_animation.py), frame 64x64 ampliado por SCALE."""
+        (engine/character_animation.py), frame ampliado 2x no espaço RAW
+        (acompanha o slot de ícone 32x32) e depois por SCALE."""
         if char is None:
             return None
         from engine.character_animation import get_character_frame
         frame = get_character_frame(char.class_id, "idle", "down", pygame.time.get_ticks())
         if frame is None:
             return None
-        size = frame.get_width() * aw.S
+        size = frame.get_width() * 2 * aw.S
         return pygame.transform.scale(frame, (size, size))
 
     def _inventory_right_click(self, item, idx: int, inv) -> None:

@@ -329,6 +329,17 @@ class SaveSyncHandlers:
         from shared.messages import MsgType as _MT_ues
         self._net.send(_MT_ues.UNEQUIP_ITEM, {"slot": slot})
 
+    def _on_inventory_deleted_item(self) -> None:
+        """Item apagado da mochila LOCAL (tecla Delete do inventário, menu
+        Deletar do ferreiro): avisa o Inventory AO VIVO do servidor
+        (INV_SYNC) e persiste — sem isso o item volta no próximo resync
+        (PROBLEMAS_ARQUITETURA.md §275). Sem relação com exploração de
+        mapa — include_fog=False."""
+        if not getattr(self, "_net", None):
+            return
+        self._on_loot_action("item")
+        self._send_save_state(include_fog=False)
+
     def _on_recarregar_changed(self) -> None:
         """Recarregar mudou bag (flechas consumidas) e aljava (arrow_count) —
         sincroniza o Inventory do servidor (Recarregar futuro/inventário cheio)

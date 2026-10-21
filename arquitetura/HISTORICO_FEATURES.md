@@ -5765,3 +5765,47 @@ CLAUDE.md) — corrigido pra dict de módulo com teto antes do commit.
 `test_mail_system_compose.py` (reescrito pros cliques no soltar, mesmas
 garantias), `test_crafting_atlas_ui.py`, `test_trainer_atlas_ui.py`,
 `test_atlas_kit.py`.
+
+## 73. Slots 32x32, ajustes de layout e Desfazer da loja (21/10/2026)
+
+Retorno do usuário sobre o lote de §72 (prints anotados):
+- **Slots/ícones em 32x32** em todo modal com slot de item (inventário,
+  loja, loot, troca, correio, ferreiro, treinador, recompensa de quest):
+  `ui_atlas.SLOT_SIZE = 34` (ícone 32 RAW + 1px de borda), montado por
+  `ui_atlas.slot_raw()` repetindo a linha/coluna do meio do tile de 16
+  (cantos 8x8 intactos — nunca esticado). Ícone mostrado no tamanho
+  nativo (32px → x2 de SCALE). `Frame.grid` passou a receber posição em
+  px RAW; `atlas_window.grid_px(n, gap)` dá o tamanho. Janelas
+  redimensionadas; boneco do inventário ampliado 2x junto.
+- **Inventário**: cabeçalho "Nome, Classe Nível N" acima do boneco.
+  Com slots de 32 a janela não cabia na altura da área segura (720p) com
+  as estatísticas embaixo — elas foram pra uma 3ª coluna à direita da
+  mochila; se a largura não couber (fonte grande), voltam pra baixo.
+- **Loja**: "Seu ouro:" → "Saldo:" (troca e treinador também). Mochila
+  à esquerda, lista à venda à direita (barra de rolagem encostada na
+  borda direita).
+- **Modal de quantidade**: elementos centralizados; a quantidade fica no
+  campo de texto do atlas (mostra que dá pra digitar). `prompt` e os
+  pares de botões (correio, troca) também centralizados como grupo.
+- **Barras de rolagem**: sempre na última coluna da janela, encostadas
+  na borda direita; loot só mostra a barra (e só reserva a coluna)
+  quando os itens não cabem; slots do loot encostados à esquerda.
+- **Desfazer da loja** (pedido do usuário: "o quanto antes", compra e
+  venda, dura enquanto a janela estiver aberta): servidor autoritativo.
+  `ShopUndoLog` (componente server-only) guarda as transações da janela
+  aberta (máx. 20); `WorldServer.process_shop_undo` desfaz a ÚLTIMA com
+  o valor EXATO dela (compra: devolve o preço pago e tira o item — se o
+  item já foi usado/sumiu, a entrada sai do histórico e o próximo
+  Desfazer pega a anterior; venda: devolve uma cópia do item vendido e
+  cobra o que foi recebido — sem ouro/espaço, falha e mantém o
+  histórico). `SHOP_CLOSE` (ao abrir/fechar a janela) e transação com
+  outro mercador zeram o histórico. Mensagens novas `SHOP_UNDO`/
+  `SHOP_UNDO_RESULT`/`SHOP_CLOSE`; `SELL_REQUEST` ganhou `npc_eid`.
+- **"Deletar" do ferreiro** corrigido (HISTORICO_BUGS.md §96).
+
+**Teste**: `tests/test_shop_undo.py` (servidor: compra, venda, LIFO com
+item consumido, sem ouro, fechar/outro mercador),
+`test_shop_atlas_ui.py` (botão Desfazer, SHOP_CLOSE, Saldo),
+`test_atlas_kit.py` (slot 34, grade em px, modal centralizado),
+`test_inventory_atlas_ui.py` (cabeçalho), demais suítes de janela
+ajustadas. Validação em jogo pendente com o usuário.

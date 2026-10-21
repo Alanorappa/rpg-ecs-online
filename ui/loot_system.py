@@ -83,7 +83,8 @@ class LootSystem(UIScaleMixin, System):
     # Modal no atlas de UI (21/10/2026): janela escura com barra de título
     # e X, lista rolável (slot + nome) — ui/atlas_window.py.
     MAX_ROWS  = 5        # linhas visíveis (rola se houver mais)
-    ROW_H     = 18       # px RAW por linha (slot de 16 + folga)
+    ROW_H     = aw.SLOT + 2   # px RAW por linha (slot de ícone 32x32 + folga)
+    LIST_X    = 3        # slots encostados à esquerda (2px depois da borda)
 
     # Fonte única em content/item_table.py (achado 06 do benchmark
     # arquitetural, PROBLEMAS_ARQUITETURA.md §12/§13).
@@ -586,11 +587,14 @@ class LootSystem(UIScaleMixin, System):
 
         labels = [_label(r) for r in rows] or ["(vazio)"]
         text_w = max(self.font_sm.size(l)[0] for l in labels) / S
-        list_w = 2 + T + 4 + text_w + 4                       # px RAW
-        list_cols = max(6, math.ceil(list_w / T))
-        tw = 1 + list_cols + 1 + 1                            # borda | lista | rolagem | borda
+        text_x = self.LIST_X + aw.SLOT + 6
+        need_scroll = len(rows) > self.MAX_ROWS
+        # Barra de rolagem só quando os itens não cabem — na última coluna,
+        # encostada na borda direita; sem ela a lista vai até a borda.
+        tw = max(6, math.ceil((text_x + text_w + 8) / T) + (1 if need_scroll else 0))
         view_rows = max(1, min(len(rows), self.MAX_ROWS))
-        th = 2 + math.ceil(view_rows * self.ROW_H / T) + 1
+        view_y0 = T + 1
+        th = math.ceil((view_y0 + view_rows * self.ROW_H + 3) / T)
         sw, sh = self.hud_surf.get_size()
         pw, ph = tw * T * S, th * T * S
         ax, ay = self._anchor
@@ -604,15 +608,15 @@ class LootSystem(UIScaleMixin, System):
         close = f.close_button("loot:close", tw - 1)
         self._hit_rects["loot:close"] = pygame.Rect(f.px + (tw - 1) * T * S, f.py, T * S, T * S)
 
-        view_y0, view_h = int(1.5 * T), view_rows * self.ROW_H
+        view_h = view_rows * self.ROW_H
         content_h = max(1, len(rows) * self.ROW_H)
-        off = f.scrollbar(self._scroll, tw - 2, 1, th - 2, max(0, content_h - view_h), step=self.ROW_H)
-        lw = list_cols * T
-        in_view = view_y0 <= f.ry < view_y0 + view_h and T <= f.rx < T + lw
+        off = f.scrollbar(self._scroll, tw - 1, 1, th - 1, max(0, content_h - view_h), step=self.ROW_H)
+        lw = (tw - 1) * T if need_scroll else tw * T - 2
+        in_view = view_y0 <= f.ry < view_y0 + view_h and 0 <= f.rx < lw
         fc = f.child(pygame.Surface((lw, content_h), pygame.SRCALPHA),
                      f.ry - view_y0 + off if in_view else -10_000)
-        fc.rx = f.rx - T
         ip = aw.slot_icon_px()
+        mid = aw.SLOT / 2
         take = equip = None
         for vi, row in enumerate(rows):
             y = vi * self.ROW_H + 1
@@ -623,11 +627,11 @@ class LootSystem(UIScaleMixin, System):
                 it = corpse.loot[row[1]]
                 icon = ICONS.get(ICONS.item_key(it), ip)
                 color = self.RARITY_COLORS.get(it.rarity, (200, 200, 200))
-            fc.slot(f"loot:{vi}", 2, y, icon, dark=True)
-            fc.text(labels[vi], 2 + T + 4, y + T / 2, color, self.font_sm, anchor="midleft")
+            fc.slot(f"loot:{vi}", self.LIST_X, y, icon, dark=True)
+            fc.text(labels[vi], text_x, y + mid, color, self.font_sm, anchor="midleft")
             ry = view_y0 + y - 1 - off
-            if view_y0 <= ry + 1 and ry + 1 + T <= view_y0 + view_h:
-                self._hit_rects[f"loot:{vi}"] = pygame.Rect(f.px + T * S, f.py + ry * S, lw * S, self.ROW_H * S)
+            if view_y0 <= ry + 1 and ry + 1 + aw.SLOT <= view_y0 + view_h:
+                self._hit_rects[f"loot:{vi}"] = pygame.Rect(f.px, f.py + ry * S, lw * S, self.ROW_H * S)
             if fc.hover(0, y - 1, lw, y - 1 + self.ROW_H):
                 if fc.press(f"loot:row:{vi}", 0, y - 1, lw, y - 1 + self.ROW_H)[1]:
                     take = vi
@@ -644,7 +648,7 @@ class LootSystem(UIScaleMixin, System):
                     self.pending_tooltip = (mx, my, it.name, lines, color, it,
                                             eq.slots.get(it.slot) if eq else None)
         if not rows:
-            fc.text("(vazio)", 4, T / 2, (120, 100, 80), self.font_sm, anchor="midleft")
+            fc.text("(vazio)", self.LIST_X + 4, mid, (120, 100, 80), self.font_sm, anchor="midleft")
 
         f.end()
         content = ui_atlas.scale_up(fc.raw)
@@ -652,7 +656,7 @@ class LootSystem(UIScaleMixin, System):
         aw.draw_overlays(content, fc.overlays)
         view = content.subsurface((0, off * S, content.get_width(),
                                    max(0, min(view_h, content_h - off)) * S))
-        self.hud_surf.blit(view, (f.px + T * S, f.py + view_y0 * S))
+        self.hud_surf.blit(view, (f.px, f.py + view_y0 * S))
 
         if close:
             self._close_modal()
@@ -665,14 +669,14 @@ class LootSystem(UIScaleMixin, System):
         """Moeda desenhada (sem ícone no atlas): círculo dourado com "G".
         Cache de MÓDULO com teto (`_COIN_ICON_CACHE`), nunca dict no corpo
         da classe."""
-        key = (size, id(self.font_xs))
+        key = (size, id(self.font_md))
         surf = _COIN_ICON_CACHE.get(key)
         if surf is None:
             surf = pygame.Surface((size, size), pygame.SRCALPHA)
             c, r = (size // 2, size // 2), size // 2 - 2
             pygame.draw.circle(surf, (180, 140, 0), c, r)
             pygame.draw.circle(surf, (255, 215, 0), c, max(1, r - 3))
-            g = self.font_xs.render("G", False, (120, 90, 0))
+            g = self.font_md.render("G", False, (120, 90, 0))
             surf.blit(g, g.get_rect(center=c))
             if len(_COIN_ICON_CACHE) >= _COIN_ICON_CACHE_MAX:
                 _COIN_ICON_CACHE.clear()   # troca de escala de UI recria fontes

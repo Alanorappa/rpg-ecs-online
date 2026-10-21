@@ -616,6 +616,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         from ui.trainer_system import TrainerSystem
         self._trainer_system = TrainerSystem(self.world, self.player_entity, self.screen)
         self._crafting_system.safe_area_fn = self._mm_safe_area
+        self._crafting_system.on_inventory_changed = self._on_inventory_deleted_item
         self._trainer_system.safe_area_fn = self._mm_safe_area
         # Empurra a escala de UI atual pra todos os sistemas de painel que
         # vivem fora de GameEngine — eles não têm acesso a self._u()/
@@ -2019,29 +2020,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         if inv and 0 <= self._selected_inv_idx < len(inv.items):
                             inv.items.pop(self._selected_inv_idx)
                             self._selected_inv_idx = -1
-                            if getattr(self, "_net", None):
-                                # 11/10/2026, bug real relatado pelo usuário:
-                                # deletar nunca "pegava" de verdade — faltava
-                                # avisar o Inventory AO VIVO do servidor
-                                # (_on_loot_action("item") -> INV_SYNC ->
-                                # WorldServer.sync_player_inventory). Sem isso,
-                                # só o espelho LOCAL perdia o item; o servidor
-                                # (autoritativo) nunca soube, e qualquer
-                                # re-sincronização (relog, entrar/sair de
-                                # instância) trazia o item de volta. Mesmo
-                                # padrão já usado por qualquer outra mudança de
-                                # inventário (ex: _on_recarregar_changed).
-                                self._on_loot_action("item")
-                                # include_fog=False (15/09/2026, #141/#142/#143) —
-                                # descartar item não tem relação com exploração.
-                                # Achado analisando um 4º log de playtest: este
-                                # call site fica dentro do laço de eventos de
-                                # teclado, NUNCA coberto por nenhum _prof_record
-                                # (entre "events" e o loop de systems) — por
-                                # isso o [SPIKE] de ~111ms não mostrava quase
-                                # nada no breakdown (só o que rodou DEPOIS,
-                                # não o próprio custo desta chamada).
-                                self._send_save_state(include_fog=False)
+                            # 11/10/2026, bug real: deletar só no espelho
+                            # LOCAL voltava no resync — ponto único que avisa
+                            # o servidor (INV_SYNC + save sem fog), também
+                            # usado pelo "Deletar" do ferreiro.
+                            self._on_inventory_deleted_item()
                     elif event.key == self._menu_keys.get("talentos", pygame.K_t):
                         already_open = self._show_talents
                         self._close_all_modals()

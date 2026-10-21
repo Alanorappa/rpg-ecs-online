@@ -1991,7 +1991,11 @@ padrão a quebrar, não só os bugs individuais.
   sistema — nunca de volta pra `ui/ui_sizes.py`. Limpar constante
   antiga por regex: casar só a linha que COMEÇA com o nome (nome
   citado dentro de comentário já colou 2 linhas uma vez, ver
-  HISTORICO_FEATURES.md §72).
+  HISTORICO_FEATURES.md §72). **Slot de item = `aw.SLOT` (34 px RAW,
+  ícone 32x32 nativo)** — posições de slot/grade em px RAW, nunca "1
+  tile"; barra de rolagem na última coluna (encostada na borda direita,
+  só quando precisa); botões/controles centralizados como grupo (ver
+  HISTORICO_FEATURES.md §73).
   **Toda janela do atlas fica dentro da área segura padrão**
   (`atlas_window.safe_area` / `MenuHandlers._mm_safe_area`: margem de
   10% da altura no topo e acima da barra de ações, 10% da largura nas
@@ -2002,7 +2006,7 @@ padrão a quebrar, não só os bugs individuais.
   `arquitetura/ATLAS_UI.md`** (o que cada tile é e pra que serve — ex:
   campo de texto (9,4)–(11,4) pra qualquer valor que o jogador define);
   peça nova/uso novo → atualizar o catálogo no mesmo commit. Ver
-  HISTORICO_FEATURES.md §65–§72.
+  HISTORICO_FEATURES.md §65–§73.
 - **Ícone ANIMADO acima da cabeça de uma entidade, no MUNDO** (marcador
   de quest, ou categoria futura parecida) → `ui/world_icon_animator.py::
   get_frame(name, size, now_ms)` — spritesheet horizontal em

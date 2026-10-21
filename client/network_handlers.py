@@ -3038,6 +3038,8 @@ class NetworkHandlers:
             price = payload.get("price", 0)
             name  = item_data.get("name", "item")
             _LOG_BR.add(f"Comprado: {name} por {price}g", (255, 215, 0))
+            if getattr(self, "_shop_system", None) is not None:
+                self._shop_system.note_transaction("buy")
             # Salva imediatamente — inventário e gold foram alterados server-side
             self._send_save_state(include_fog=False)  # sem relacao com exploracao de mapa, ver #141/#142
         else:
@@ -3062,6 +3064,8 @@ class NetworkHandlers:
             _LOG_SR.add(
                 f"Vendido: {payload.get('item_name','item')} por {payload.get('sell_price',0)}g",
                 (180, 220, 100))
+            if getattr(self, "_shop_system", None) is not None:
+                self._shop_system.note_transaction("sell")
             self._send_save_state(include_fog=False)  # sem relacao com exploracao de mapa, ver #141/#142
         else:
             # Falha rara (sessão inválida etc.) — reverte gold local se servidor informou
@@ -3071,6 +3075,31 @@ class NetworkHandlers:
                 wal_sr.gold = srv_gold
             from ui.floating_text import WARN as _WARN_SR
             _WARN_SR.add(payload.get("reason", "Venda recusada"))
+
+    def _handle_msg_shop_undo_result(self, payload: dict) -> None:
+        """Desfazer da loja (21/10/2026) — servidor já desfez na cópia
+        dele; aqui espelha na local: compra desfeita tira o item e devolve
+        o ouro, venda desfeita devolve o item e cobra o ouro."""
+        from engine.components import Wallet as _WalSU
+        from ui.floating_text import WARN as _WARN_SU
+        from ui.combat_log import LOG as _LOG_SU
+        self._shop_system.on_undo_result(int(payload.get("undo_left", 0)))
+        if not payload.get("success"):
+            _WARN_SU.add({
+                "item_not_owned":    "Item não está mais na mochila",
+                "insufficient_gold": "Ouro insuficiente para desfazer",
+                "inventory_full":    "Mochila cheia",
+            }.get(payload.get("reason", ""), "Nada para desfazer"))
+            return
+        wal = self.world.get_component(self.player_entity, _WalSU)
+        if wal is not None:
+            wal.gold = payload.get("new_gold", wal.gold)
+        if payload.get("kind") == "buy":
+            self._remove_items_from_inventory(payload.get("removed") or [])
+            _LOG_SU.add("Compra desfeita", (180, 220, 100))
+        elif payload.get("item"):
+            self._grant_items_to_inventory([payload["item"]], log_verb="Venda desfeita")
+        self._send_save_state(include_fog=False)  # sem relacao com exploracao de mapa, ver #141/#142
 
     # ── Correio (25/09/2026) ──────────────────────────────────────────
     # Entrega de item/gold chega por INVENTORY_UPDATE/STATS_UPDATE (canais
@@ -3641,6 +3670,7 @@ NetworkHandlers._NET_DISPATCH_NAMES = {
     MsgType.SKILL_GRANTED: "_handle_msg_skill_granted",
     MsgType.BUY_RESULT: "_handle_msg_buy_result",
     MsgType.SELL_RESULT: "_handle_msg_sell_result",
+    MsgType.SHOP_UNDO_RESULT: "_handle_msg_shop_undo_result",
     MsgType.RANKING_RESULT: "_handle_msg_ranking_result",
     MsgType.MAIL_INBOX_LIST: "_handle_msg_mail_inbox_list",
     MsgType.MAIL_ITEM_DETAIL: "_handle_msg_mail_item_detail",

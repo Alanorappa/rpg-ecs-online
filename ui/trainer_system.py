@@ -11,6 +11,7 @@ Fluxo:
   3. Modal de treinamento: lista de skills com requisito de nível e custo
 """
 from __future__ import annotations
+import math
 import pygame
 from ui.systems import System
 from engine.components import (Position, Renderable, TileMovement,
@@ -373,8 +374,9 @@ class TrainerSystem(UIScaleMixin, System):
     # Aprender); lista rolável; ouro e nível do jogador embaixo. Cliques no
     # SOLTAR (atlas_window).
 
-    _ROW_TILES = 2
-    _VIEW_ROWS = 5           # habilidades visíveis antes de rolar
+    _ROW_H     = aw.SLOT + 4  # px RAW por habilidade (slot de ícone 32x32 + folga)
+    _VIEW_ROWS = 4           # habilidades visíveis antes de rolar
+    _LIST_X    = 3           # slots encostados à esquerda (2px depois da borda)
 
     def _area(self) -> pygame.Rect:
         if self.safe_area_fn is not None:
@@ -436,13 +438,14 @@ class TrainerSystem(UIScaleMixin, System):
         bw     = aw.tiles_for(self._font_sm, ["Aprender", "Aprendido"], 4)
         sw_area = self._area().width // (T * S)
         tw = max(min(sw_area, 30), aw.tiles_for(self._font_md, [title], 1) + 3)
-        th = 2 + self._VIEW_ROWS * self._ROW_TILES + 2
-        list_cols = tw - 3                                  # borda | lista | rolagem | borda
-        lw = list_cols * T
-        btn_col = list_cols - bw                            # coluna (dentro da lista) do botão
-        cost_x = btn_col * T - 6
+        row_h = self._ROW_H
+        view_y0, view_h = 2 * T, self._VIEW_ROWS * row_h
+        th = math.ceil((view_y0 + view_h + 26) / T)
+        lw = (tw - 1) * T                                   # lista | rolagem (última coluna)
+        btn_x = lw - 4 - bw * T                             # botão (px RAW, dentro da lista)
+        cost_x = btn_x - 6
         lvl_x = cost_x - cost_w - 10
-        text_x = 4 + T + 8
+        text_x = self._LIST_X + aw.SLOT + 8
         text_w = (lvl_x - lvl_w - 10 - text_x) * S
 
         f = aw.Frame(self.hud_surf, events, tw, th, area=self._area(), press=self._press,
@@ -455,19 +458,16 @@ class TrainerSystem(UIScaleMixin, System):
         self._panel_rect = pygame.Rect(f.px, f.py, f.pw, f.ph)
 
         hdr = (160, 140, 100)
-        f.text("Habilidade", T + text_x, 1.5 * T, hdr, self._font_sm, anchor="midleft")
-        f.text("Nível", T + lvl_x, 1.5 * T, hdr, self._font_sm, anchor="midright")
-        f.text("Custo", T + cost_x, 1.5 * T, hdr, self._font_sm, anchor="midright")
+        f.text("Habilidade", text_x, 1.5 * T, hdr, self._font_sm, anchor="midleft")
+        f.text("Nível", lvl_x, 1.5 * T, hdr, self._font_sm, anchor="midright")
+        f.text("Custo", cost_x, 1.5 * T, hdr, self._font_sm, anchor="midright")
 
-        view_y0, view_h = 2 * T, self._VIEW_ROWS * self._ROW_TILES * T
-        row_h = self._ROW_TILES * T
         content_h = max(1, len(order) * row_h)
-        off = f.scrollbar(self._scroll, tw - 2, 2, 2 + self._VIEW_ROWS * self._ROW_TILES - 1,
-                          max(0, content_h - view_h))
-        in_view = view_y0 <= f.ry < view_y0 + view_h and T <= f.rx < T + lw
+        off = f.scrollbar(self._scroll, tw - 1, view_y0 // T, (view_y0 + view_h) // T - 1,
+                          max(0, content_h - view_h), step=row_h)
+        in_view = view_y0 <= f.ry < view_y0 + view_h and 0 <= f.rx < lw
         fc = f.child(pygame.Surface((lw, content_h), pygame.SRCALPHA),
                      f.ry - view_y0 + off if in_view else -10_000)
-        fc.rx = f.rx - T
         learn = None
         ay0, ay1 = ui_atlas.button_art_y(False)
         for i, skill_id in enumerate(order):
@@ -482,17 +482,17 @@ class TrainerSystem(UIScaleMixin, System):
             if i:
                 fc.divider_h(y, 0, lw)
             icon = ICONS.get(f"skill_{skill_id}", aw.slot_icon_px())
-            fc.slot(f"tr:icon:{i}", 4, y + T / 2, icon, dim=learned)
-            fc.text(name, text_x, y + T / 2 + 1, aw.DISABLED_COL if learned else aw.TEXT_COL,
+            fc.slot(f"tr:icon:{i}", self._LIST_X, y + 2, icon, dim=learned)
+            fc.text(name, text_x, y + 12, aw.DISABLED_COL if learned else aw.TEXT_COL,
                     self._font_md, anchor="midleft")
-            fc.text(self._truncate(desc, self._font_xs, int(text_w)), text_x, y + 1.4 * T,
+            fc.text(self._truncate(desc, self._font_xs, int(text_w)), text_x, y + 27,
                     (150, 140, 120), self._font_xs, anchor="midleft")
-            fc.text(f"Nível {req}", lvl_x, y + T, _COL_GREEN if level >= req else _COL_RED,
+            fc.text(f"Nível {req}", lvl_x, y + row_h / 2, _COL_GREEN if level >= req else _COL_RED,
                     self._font_sm, anchor="midright")
-            fc.text(f"{cost}g", cost_x, y + T, _COL_GOLD, self._font_sm, anchor="midright")
+            fc.text(f"{cost}g", cost_x, y + row_h / 2, _COL_GOLD, self._font_sm, anchor="midright")
             # Botão "baixo" em pixel livre (centrado na linha da skill)
-            bx0 = btn_col * T
-            bpy = int(y + T / 2)
+            bx0 = btn_x
+            bpy = int(y + (row_h - T) / 2)
             pressed, fired = fc.press(f"tr:learn:{i}", bx0, bpy + ay0, bx0 + bw * T, bpy + ay1) \
                 if enabled else (False, False)
             self._blit_button_px(fc.raw, bx0, bpy, bw, pressed)
@@ -503,18 +503,18 @@ class TrainerSystem(UIScaleMixin, System):
             ry = view_y0 + y - off
             if view_y0 <= ry and ry + row_h <= view_y0 + view_h:
                 self._hit_rects[f"tr:learn:{i}"] = pygame.Rect(
-                    f.px + (T + bx0) * S, f.py + (view_y0 + bpy + ay0 - off) * S, bw * T * S, (ay1 - ay0) * S)
+                    f.px + bx0 * S, f.py + (view_y0 + bpy + ay0 - off) * S, bw * T * S, (ay1 - ay0) * S)
 
         if wallet:
-            f.text(f"Seu ouro: {wallet.gold}g", T, (th - 1.5) * T, _COL_GOLD, self._font_sm, anchor="midleft")
-        f.text(f"Seu nível: {level}", (tw - 1) * T - 4, (th - 1.5) * T, aw.TEXT_COL, self._font_sm,
+            f.text(f"Saldo: {wallet.gold}g", T, (th - 1) * T, _COL_GOLD, self._font_sm, anchor="midleft")
+        f.text(f"Seu nível: {level}", (tw - 1) * T - 4, (th - 1) * T, aw.TEXT_COL, self._font_sm,
                anchor="midright")
         f.end()
         content = ui_atlas.scale_up(fc.raw)
         aw.draw_texts(content, fc.texts, self._font_sm)
         aw.draw_overlays(content, fc.overlays)
         view = content.subsurface((0, off * S, content.get_width(), max(0, min(view_h, content_h - off)) * S))
-        self.hud_surf.blit(view, (f.px + T * S, f.py + view_y0 * S))
+        self.hud_surf.blit(view, (f.px, f.py + view_y0 * S))
         if learn is not None:
             self._do_learn(learn)
 

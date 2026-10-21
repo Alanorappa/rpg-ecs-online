@@ -58,6 +58,7 @@ def _shop(gold=10_000):
     sh._net = _Net()
     sh.open_for(merchant)
     sh._open_cooldown = 0
+    sh._net.sent.clear()   # SHOP_CLOSE de reset do Desfazer ao abrir
     return sh
 
 
@@ -128,3 +129,33 @@ def test_janela_na_area_segura():
     _frame(sh)
     SW, SH = _W, _H
     assert aw.safe_area(SW, SH, SH).contains(sh._panel_rect)
+
+
+def test_desfazer_manda_pro_servidor_e_fechar_esquece():
+    from shared.messages import MsgType
+    sh = _shop()
+    _frame(sh)
+    assert not sh.transaction_history          # nada pra desfazer: botão desabilitado
+    _click(sh, "shop:undo")
+    assert sh._net.sent == []
+    sh.note_transaction("buy")
+    _click(sh, "shop:undo")
+    assert sh._net.sent == [(MsgType.SHOP_UNDO, {"npc_eid": sh.open_merchant_id})]
+    sh.on_undo_result(0)
+    assert sh.transaction_history == []
+    sh.note_transaction("sell")
+    sh._net.sent.clear()
+    _click(sh, "shop:close")
+    assert sh.transaction_history == [] and sh._net.sent == [(MsgType.SHOP_CLOSE, {})]
+
+
+def test_saldo_no_rodape():
+    sh = _shop(gold=60)
+    texts = []
+    orig = aw.Frame.text
+    aw.Frame.text = lambda self, t, *a, **k: (texts.append(t), orig(self, t, *a, **k))
+    try:
+        _frame(sh)
+    finally:
+        aw.Frame.text = orig
+    assert "Saldo: 60g" in texts

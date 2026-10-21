@@ -321,3 +321,5 @@
 - [21/10/2026] (feature) Kit de peças das janelas do atlas: slot/grade, abas, checkbox, janela com título e X, texto com quebra, divisória, senha — tags: ui, atlas, kit — HISTORICO_FEATURES.md §71
 - [21/10/2026] (feature) Lote de janelas de item no atlas: inventário, loja, troca, convites, loot, correio, ferreiro, treinador — tags: ui, atlas, inventario, loja, troca, loot, correio, ferreiro, treinador — HISTORICO_FEATURES.md §72
 - [21/10/2026] (bug) "Deletar" do ferreiro apaga item só no cliente (aberto) — tags: ferreiro, inventario, inv_sync — HISTORICO_BUGS.md §96
+- [21/10/2026] (feature) Slots 32x32, layouts centralizados, rolagem na borda direita e Desfazer da loja — tags: ui, atlas, slot, loja, desfazer, inventario, loot — HISTORICO_FEATURES.md §73
+- [21/10/2026] (bug) "Deletar" do ferreiro agora avisa o servidor (resolvido) — tags: ferreiro, inventario, inv_sync — HISTORICO_BUGS.md §96

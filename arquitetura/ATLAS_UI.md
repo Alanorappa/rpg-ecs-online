@@ -39,8 +39,8 @@ segura, botão no soltar, campo, seletor, barra de rolagem): `ui/atlas_window.py
 |---|---|---|---|
 | Moldura vazada | (6,4)–(8,6) | `_FRAME`, `blit_frame` | Agrupar linhas (seções da lista de atalhos, linhas da seleção de personagem) e marcar o item ESCOLHIDO (card de classe na criação de personagem — só o escolhido tem moldura). Cantos e bordas; miolo transparente; contorno ~8px pra dentro do tile. Mín. 2×2. |
 | Campo de texto | (9,4) esq., (10,4) meio, (11,4) dir. | `blit_text_field`, `FIELD_ART_Y` | **Qualquer campo onde o jogador digita ou define um valor** (tecla de atalho, nome...). 1 linha; meio repetível. Arte em y 2..13 do tile. |
-| Slot claro | (9,5) | `SLOT` | Slot de equipamento / recompensa. Ícone em resolução de TELA (`aw.slot_icon_px()`) dentro de 1px de borda. `Frame.slot(...)`. |
-| Slot marrom | (10,5) | `SLOT_DARK` | Célula de grade de itens (bolsa, loja, troca). `Frame.grid(...)`. |
+| Slot claro | (9,5) | `SLOT` | Slot de equipamento / recompensa. No jogo tem `SLOT_SIZE`=34 px RAW (ícone 32x32 + 1px de borda), montado por `ui_atlas.slot_raw()` (cantos do tile + linha/coluna do meio repetidas). `Frame.slot(...)`. |
+| Slot marrom | (10,5) | `SLOT_DARK` | Célula de grade de itens (bolsa, loja, troca). `Frame.grid(id, x_px, y_px, ...)`; tamanho total em `aw.grid_px(n, gap)`. |
 | Linha divisória | — (1px, cor da moldura (86,84,82)) | `DIVIDER_COL`, `Frame.divider_h/v` | Separar áreas de uma janela (inventário do mockup: equipamento | bolsa). |
 | Checkbox | (12,9) desmarcado · (13,9) marcado | `CHECKBOX_OFF/ON`, `Frame.checkbox` | Opção liga/desliga com rótulo à direita (clicável junto). |
 | Aba | ativa (0..2, 12) · inativa (3..5, 12) | `blit_tab`, `Frame.tabs` | Trocar o conteúdo da janela. 1 linha, aberta embaixo; ponta esq./meio repetível/ponta dir.; largura pelo texto. Fica DENTRO do painel, encostada na borda de cima (decisão do usuário). Ativa = cor do miolo do painel escuro. |
@@ -95,3 +95,9 @@ Ver `arquitetura/HISTORICO_FEATURES.md` §65 (atlas + tela de som), §66 (menu d
 | `Frame.rreleased` / `right_click(...)` | Clique DIREITO no soltar (equipar, comprar, vender, ofertar...). |
 | `Frame(press=None)` | Janela só de FUNDO (por baixo de um modal) — nunca compartilhar o PressState do modal. |
 | `text_field(placeholder=, align=)`, `field_hover` | Campo com texto-guia cinza e alinhado à esquerda; detectar clique fora pra desfocar. |
+
+**Regras de layout (21/10/2026, retorno do usuário):** barra de rolagem
+sempre na ÚLTIMA coluna da janela (encostada na borda direita) e só
+quando o conteúdo não cabe; botões e controles centralizados como grupo
+(1 tile entre botões); quantidade editável sempre no campo de texto
+(9,4)–(11,4) entre as setas.
