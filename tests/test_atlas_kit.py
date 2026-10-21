@@ -125,6 +125,21 @@ def test_x_da_barra_de_titulo_dispara_no_soltar():
     assert _click(build, (13 * T + 8, 8)) == (False, True)
 
 
+def test_botao_nunca_deixa_texto_perto_das_bordas():
+    """Regra do usuário (21/10/2026): texto do botão a pelo menos BTN_PAD
+    das pontas — o botão mede com a fonte do Frame e cresce se `w` for
+    pequeno (bug real: "Desfazer" medido com a fonte menor)."""
+    font = _font(30)
+    f = _frame()
+    f.font = font
+    f.button("b", 1, 1, 1, "Desfazer", tall=False)          # w pequeno de propósito
+    text, x, y, color, tfont, anchor = f.texts[-1]
+    w = aw.button_tiles(font, ["Desfazer"], 2)
+    assert x == (1 + w / 2) * T                              # centro do botão alargado
+    text_w = font.size("Desfazer")[0] / aw.S
+    assert (w * T - text_w) / 2 >= aw.BTN_PAD
+
+
 def test_item_sem_icone_vira_retangulo_da_cor_da_qualidade():
     from content.item_table import ITEMS, RARITY_COLORS
     from ui.icon_manager import ICONS

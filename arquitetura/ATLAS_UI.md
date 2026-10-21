@@ -107,3 +107,7 @@ aba (0..5,12) na linha 1 de qualquer janela de NPC
 (`ui/npc_interaction.py::service_tabs`); na janela de pergaminho,
 `quest_window_raw(tw, th, tab_rows=1)` põe uma linha escura pras abas
 entre o título e o pergaminho.
+
+**Botões (regra do usuário, 21/10/2026):** texto a pelo menos `BTN_PAD`
+(10 px RAW) de cada ponta; largura sempre por `aw.button_tiles(fonte,
+rótulos)` com a MESMA fonte do Frame que desenha o botão.

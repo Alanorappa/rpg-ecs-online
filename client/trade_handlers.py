@@ -274,7 +274,7 @@ class TradeHandlers:
         botões empilhados."""
         T, S = aw.T, aw.S
         labels = self._PLAYER_POPUP_BUTTONS
-        bw = aw.tiles_for(self.font_sm, list(labels), 4)
+        bw = aw.button_tiles(self.font_sm, list(labels), 4)
         tw = max(bw + 2, aw.tiles_for(self.font_sm, [tui.popup_target_name], 1) + 2)
         th = 2 + len(labels) + 1
         px, py = tui.popup_screen_pos
@@ -347,7 +347,7 @@ class TradeHandlers:
         div_x = self._BAG_X + bag_w + 8
         ox0 = div_x + 8                                   # coluna das ofertas (px RAW)
         offer_w = aw.grid_px(self._N_OFFER)
-        bw = aw.tiles_for(self.font_md, ["Negociar", "Cancelar"], 3)
+        bw = aw.button_tiles(self.font_md, ["Negociar", "Cancelar"], 3)
         title = f"Troca com {tui.other_name}"
         tw = max(math.ceil((ox0 + offer_w + 8) / T), 2 * bw + 3,
                  aw.tiles_for(self.font_md, [title], 1) + 3)

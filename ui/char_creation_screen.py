@@ -267,8 +267,8 @@ def _cre_layout(font_md, font_sm, font_xs, name_max_len: int) -> dict:
     content_h = _CRE_PREVIEW_TOP + 32 + 4 + lh_sm + 4 + n_lines * lh_xs + _CRE_CARD_PAD
     card_h = max(6, math.ceil(content_h / T))
     field_w = aw.tiles_for(font_md, ["M" * name_max_len], 5)
-    reroll_w = aw.tiles_for(font_md, ["Sortear"], 3)
-    btn_w = aw.tiles_for(font_md, ["Voltar", "Confirmar", "Criando..."], 3)
+    reroll_w = aw.button_tiles(font_md, ["Sortear"], 3)
+    btn_w = aw.button_tiles(font_md, ["Voltar", "Confirmar", "Criando..."], 3)
     title_w = aw.tiles_for(font_md, ["Criar Personagem"], 1) + 2
     tw = max(len(_CLASSES) * card_w + 2, field_w + 1 + reroll_w + 2, 2 * btn_w + 3, title_w)
     card_w = (tw - 2) // len(_CLASSES)
@@ -576,13 +576,13 @@ def _sel_layout(chars: list, font_md, font_sm) -> dict:
     da tela, o atlas não)."""
     T, S = aw.T, aw.S
     n_slots = max(_SEL_MIN_SLOTS, len(chars))
-    play_w = aw.tiles_for(font_md, ["Jogar"], 3)
-    del_w  = aw.tiles_for(font_md, ["Excluir"], 3)
+    play_w = aw.button_tiles(font_md, ["Jogar"], 3)
+    del_w  = aw.button_tiles(font_md, ["Excluir"], 3)
     text_w = max([font_md.size(c.get("name", ""))[0] for c in chars]
                  + [font_sm.size(_sel_info_text(c))[0] for c in chars]
                  + [font_md.size("Vazio")[0]]) / S
     frame_w = max(16, math.ceil((_SEL_TEXT_X + text_w + 8) / T) + play_w + del_w + 1)
-    bottom_w = aw.tiles_for(font_md, ["Criar Personagem", "Sair"], 3)
+    bottom_w = aw.button_tiles(font_md, ["Criar Personagem", "Sair"], 3)
     title_w = aw.tiles_for(font_md, ["Selecionar Personagem"], 1) + 2
     tw = max(frame_w + 1, bottom_w + 2, title_w)
     frame_w = tw - 1
@@ -679,7 +679,7 @@ def _draw_confirm_delete(screen, events, name: str, press, font_md, font_sm,
     Devolve "yes", "no" ou None. `hits`: ver _draw_selection."""
     sw, sh = screen.get_size()
     msg = f'"{name}" será removido permanentemente.'
-    bw = aw.tiles_for(font_md, ["Excluir", "Cancelar"], 3)
+    bw = aw.button_tiles(font_md, ["Excluir", "Cancelar"], 3)
     tw = max(aw.tiles_for(font_sm, [msg], 1) + 2,
              aw.tiles_for(font_md, ["Excluir personagem?"], 1) + 2, 2 * bw + 3)
     th = 6

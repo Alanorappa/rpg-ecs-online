@@ -2207,12 +2207,15 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # deste bloco rodar neste frame — cada sistema só fica de fora
             # do silenciamento se ele MESMO já é o que está aberto (senão
             # nunca fecharia/reagiria a cliques dentro do próprio modal).
-            _any_npc_modal_open = (self._crafting_system.is_open
-                                   or self._trainer_system.is_open
-                                   or self._shop_system.is_open
-                                   or self._quest_dialog.is_open
-                                   or self._trade_is_open
-                                   or self._mail_system.is_open)
+            # 21/10/2026, bug real relatado pelo usuário: o snapshot só
+            # olhava modais de NPC — com o INVENTÁRIO (ou qualquer outra
+            # janela) aberto, clicar com o direito num item que estivesse
+            # por cima de um NPC no mundo também chegava aqui: o personagem
+            # andava até o NPC ou a janela dele (ex: correio) abria. Agora é
+            # o mesmo ponto único que já bloqueia o resto do mundo
+            # (_any_modal_open, client/modal_stack_handlers.py): com
+            # QUALQUER janela aberta, clique não interage com o mundo.
+            _any_npc_modal_open = self._any_modal_open()
 
             def _strip_open_click(evs, _already_open: bool):
                 if not _any_npc_modal_open or _already_open:

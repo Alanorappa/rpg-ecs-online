@@ -667,7 +667,7 @@ class MailSystem(UIScaleMixin, System):
         if f.clicked and ui.compose_focus and not over_any:
             self._unfocus(ui)
 
-        bw = f.tiles_for(["Enviar"], 3)
+        bw = f.button_tiles(["Enviar"])
         if f.button("mail:send", tw - 1 - bw, th - 2, bw, "Enviar"):
             self._send_compose(ui)
         ay0, ay1 = ui_atlas.button_art_y(True)
@@ -718,7 +718,7 @@ class MailSystem(UIScaleMixin, System):
         if d["gold"] > 0:
             label = (f"{d['gold']}g (reclamado)" if d["gold_claimed"]
                      else f"Reclamar {d['gold']}g")
-            gw = f.tiles_for([label], 3, self._font_sm)
+            gw = f.button_tiles([label])
             grow = (py0 + SL + 2) / T
             if f.button("mail:gold", 1, grow, gw, label, tall=False, enabled=not d["gold_claimed"]):
                 claim = ("gold",)
@@ -727,7 +727,7 @@ class MailSystem(UIScaleMixin, System):
             by0b, by1b = ui_atlas.button_art_y(False)
             self._mail_hit("mail:gold", f, T, grow * T + by0b, (1 + gw) * T, grow * T + by1b)
 
-        bw = f.tiles_for(["Deletar", "Voltar"], 3)
+        bw = f.button_tiles(["Deletar", "Voltar"])
         bx = (tw - (2 * bw + 1)) / 2           # botões centralizados como grupo
         delete = f.button("mail:delete", bx, th - 2, bw, "Deletar")
         back = f.button("mail:back", bx + bw + 1, th - 2, bw, "Voltar")

@@ -17077,3 +17077,30 @@ distingue os 2 casos). Suíte completa de seleção/nameplate/client_ui
 
 ## 293. (movido) §292 confirmado em playtest real: texto nascia em cima do sprite na lista de seleção (19/10/2026) — ver HISTORICO_BUGS.md §93
 
+## 294. Clique em janela aberta vazava pro mundo via sistemas de NPC — 2 listas paralelas de "modal aberto" (RESOLVIDO, 21/10/2026)
+
+**Sintoma (relatado pelo usuário em validação):** com o inventário
+aberto, clique direito num item pra equipar também fez o personagem
+andar; outra vez, o mesmo clique caiu em cima de uma caixa de correio no
+mundo e abriu o correio.
+
+**Causa:** existiam 2 respostas diferentes pra "tem janela aberta?". O
+filtro dos sistemas ECS (`game.py`, `systems_events`) já usava o ponto
+único `_topmost_open_modal()`/`_any_modal_open()`
+(`client/modal_stack_handlers.py`) e bloqueava qualquer clique. Os 5
+sistemas de NPC (ferreiro/treinador/loja/correio/diálogo de quest), que
+recebem os eventos CRUS pra detectar clique direito num NPC, usavam um
+snapshot próprio (`_any_npc_modal_open`) que só listava as janelas DE
+NPC + troca. Inventário, talentos, mapa, estatísticas etc. não estavam
+nela, então o clique direito dado DENTRO do inventário chegava ao NPC
+que estivesse embaixo do cursor no mundo (`walk_to_npc` = personagem
+anda; adjacente = janela abre).
+
+**Correção:** `_any_npc_modal_open = self._any_modal_open()` — o mesmo
+registro de prioridade do ESC e do filtro ECS. Com QUALQUER janela
+aberta, clique não interage com o mundo; o sistema da própria janela
+aberta continua recebendo (exceção `_already_open` já existente).
+
+**Lição/regra:** pergunta "tem janela aberta?" tem UMA resposta
+(`_modal_registry`). Janela nova entra no registro; nunca uma lista
+paralela num call site. Validação em jogo pendente com o usuário.

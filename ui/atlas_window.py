@@ -21,7 +21,9 @@ from ui.ui_helpers import fill_surf
 T, S = ui_atlas.TILE, ui_atlas.SCALE
 SLOT = ui_atlas.SLOT_SIZE   # lado do slot de item em px RAW (ícone 32 + borda)
 
-TEXT_PAD    = 6      # px RAW de folga de cada lado do texto (bordas do botão/campo)
+TEXT_PAD    = 6      # px RAW de folga de cada lado do texto (bordas do campo/janela)
+BTN_PAD     = 10     # px RAW mínimos entre o texto e cada ponta de um BOTÃO (regra do usuário:
+                     # texto nunca perto das bordas) — ver button_tiles / Frame.button
 TITLE_BAR_Y = T / 2  # centro (RAW) do título numa janela COM barra de título (linha 0)
 SAFE_MARGIN = 0.10   # área segura: 10% da altura (topo / acima da barra de ações), 10% da largura
 TITLE_Y     = T      # centro (RAW) do título da janela
@@ -71,6 +73,15 @@ def tiles_for(font, texts, min_tiles: int) -> int:
     número fixo de tiles."""
     widest = max(font.size(t)[0] for t in texts) / S
     return max(min_tiles, math.ceil((widest + 2 * TEXT_PAD) / T))
+
+
+def button_tiles(font, labels, min_tiles: int = 3) -> int:
+    """Largura em tiles de um BOTÃO que cabe o maior rótulo com BTN_PAD de
+    cada lado. `font` = a MESMA fonte com que o botão desenha o texto (a do
+    Frame) — medir com outra fonte foi o bug real do "Desfazer" da loja.
+    Botões de um mesmo grupo usam a largura do MAIOR rótulo."""
+    widest = max(font.size(t)[0] for t in labels) / S
+    return max(min_tiles, math.ceil((widest + 2 * BTN_PAD) / T))
 
 
 def draw_texts(surf: pygame.Surface, texts: list, default_font, ox: int = 0, oy: int = 0) -> None:
@@ -152,6 +163,10 @@ class Frame:
     def tiles_for(self, texts, min_tiles: int, font=None) -> int:
         return tiles_for(font or self.font, texts, min_tiles)
 
+    def button_tiles(self, labels, min_tiles: int = 3) -> int:
+        """Largura de botão pros rótulos, com a fonte DESTE Frame."""
+        return button_tiles(self.font, labels, min_tiles)
+
     def press(self, btn_id: str, x0, y0, x1, y1) -> tuple:
         """(desenhar_pressionado, disparou) da área RAW (x0,y0)-(x1,y1)."""
         hov = x0 <= self.rx < x1 and y0 <= self.ry < y1
@@ -170,7 +185,12 @@ class Frame:
                tall: bool = True, enabled: bool = True) -> bool:
         """Botão do atlas (w tiles) com texto. True = disparou.
         `enabled=False`: mesmo sprite, texto cinza, nunca dispara (o atlas
-        não tem versão desabilitada — decisão do usuário)."""
+        não tem versão desabilitada — decisão do usuário).
+        Regra: o texto nunca fica a menos de BTN_PAD das pontas — se `w`
+        não couber o rótulo (medido com a fonte do Frame, a mesma do
+        desenho), o botão cresce pra direita. Calcule `w` com
+        button_tiles(f.font, ...) pra layout não depender desse ajuste."""
+        w = max(w, button_tiles(self.font, [label], 2))
         ay0, ay1 = ui_atlas.button_art_y(tall)
         x0, x1 = tx * T, (tx + w) * T
         y0, y1 = ty * T + ay0, ty * T + ay1
@@ -444,7 +464,7 @@ def quantity_window(screen, events, state: dict, *, area: pygame.Rect, press: Pr
     também muda; o campo mostra que dá pra digitar), Cancelar / Confirmar.
     Tudo centralizado na janela. Devolve "ok", "cancel" ou None. Teclado
     (dígitos, ENTER, ESC) fica com o dono via quantity_key."""
-    bw = tiles_for(font, ["Cancelar", confirm_label], 3)
+    bw = button_tiles(font, ["Cancelar", confirm_label], 3)
     fw = tiles_for(font, ["999999"], 3)     # campo da quantidade
     btn_group = 2 * bw + 1
     tw = max(tiles_for(font, [title], 1) + 2, tiles_for(small_font, [info], 1) + 2,
@@ -496,7 +516,7 @@ def prompt(screen, events, *, area: pygame.Rect, press: PressState, font, messag
     índice do botão disparado (no SOLTAR) ou None. `hits` (opcional)
     recebe "{hit_prefix}:{i}" → rect de TELA (testes)."""
     mfont = small_font or font
-    bw = tiles_for(font, buttons, 3)
+    bw = button_tiles(font, buttons, 3)
     msg_tiles = min(max_text_tiles, tiles_for(mfont, [message], 1))
     lines = wrap_text(message, (msg_tiles * T - 2 * TEXT_PAD) * S, mfont)
     title_tiles = tiles_for(font, [title], 1) if title else 0

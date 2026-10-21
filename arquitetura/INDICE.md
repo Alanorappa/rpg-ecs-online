@@ -324,3 +324,5 @@
 - [21/10/2026] (feature) Slots 32x32, layouts centralizados, rolagem na borda direita e Desfazer da loja — tags: ui, atlas, slot, loja, desfazer, inventario, loot — HISTORICO_FEATURES.md §73
 - [21/10/2026] (bug) "Deletar" do ferreiro agora avisa o servidor (resolvido) — tags: ferreiro, inventario, inv_sync — HISTORICO_BUGS.md §96
 - [21/10/2026] (feature) Abas de serviço do NPC (Missões/Negociar/Reciclar/Forjar/Treinar), sem menu intermediário; loja com mochila à direita — tags: ui, atlas, npc, abas, loja, ferreiro, treinador, quest — HISTORICO_FEATURES.md §74
+- [21/10/2026] (arch) Clique em janela aberta vazava pro mundo (NPC embaixo do cursor) — 2 listas de "modal aberto", unificadas no registro — tags: input, modal, npc, inventario, clique — PROBLEMAS_ARQUITETURA.md §294
+- [21/10/2026] (bug) Texto do botão Desfazer encostado nas bordas; regra BTN_PAD/button_tiles no kit — tags: ui, atlas, botao — HISTORICO_BUGS.md §97

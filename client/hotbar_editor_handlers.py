@@ -78,7 +78,7 @@ class HotbarEditorHandlers:
         # no topo e acima da barra de ações). Lista que não cabe rola.
         max_th = self._mm_safe_area().height // (T * S)
         view_rows = max(3, min(content_rows, max_th - 5))
-        btn_w = self._mm_tiles_for(["Salvar", "Fechar"], 3)
+        btn_w = aw.button_tiles(self.font_md, ["Salvar", "Fechar"], 3)
         return {"tw": tw, "th": view_rows + 5, "L": L, "K": K, "view_rows": view_rows,
                 "content_rows": content_rows, "view_y0": 2 * T, "btn_w": btn_w}
 

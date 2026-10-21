@@ -359,7 +359,7 @@ class TrainerSystem(UIScaleMixin, System):
 
         lvl_w  = self._font_sm.size("Nível 99")[0] / S
         cost_w = self._font_sm.size("99999g")[0] / S
-        bw     = aw.tiles_for(self._font_sm, ["Aprender", "Aprendido"], 4)
+        bw     = aw.button_tiles(self._font_sm, ["Aprender", "Aprendido"], 4)
         sw_area = self._area().width // (T * S)
         tw = max(min(sw_area, 30), aw.tiles_for(self._font_md, [title], 1) + 3)
         row_h = self._ROW_H

@@ -74,7 +74,7 @@ class MenuHandlers:
 
     def _main_layout(self) -> tuple:
         """(tw, th, btn_w) — botão de 1 tile de borda a cada lado."""
-        btn_w = self._mm_tiles_for([l for l, _ in self._MAIN_BTNS], 5)
+        btn_w = aw.button_tiles(self.font_md, [l for l, _ in self._MAIN_BTNS], 5)
         return btn_w + 2, self._MAIN_ROW0 + len(self._MAIN_BTNS) + 1, btn_w
 
     def _draw_main_menu(self, events: list) -> "str | None":
@@ -96,7 +96,7 @@ class MenuHandlers:
 
     def _quit_layout(self) -> tuple:
         """(tw, btn_w, col_sim, col_nao) — 2 botões com 1 tile de vão."""
-        btn_w = self._mm_tiles_for(["Sim", "Não"], 3)
+        btn_w = aw.button_tiles(self.font_md, ["Sim", "Não"], 3)
         tw = max(self._mm_tiles_for([self._QUIT_MSG], 1) + 2, 2 * btn_w + 3)
         col_sim = (tw - (2 * btn_w + 1)) // 2
         return tw, btn_w, col_sim, col_sim + btn_w + 1
@@ -156,7 +156,7 @@ class MenuHandlers:
 
     def _mm_back_button(self, f: aw.Frame, btn_id: str, tw: int, ty: int) -> bool:
         """Botão "Voltar" (alto) centralizado na janela de tw tiles."""
-        w = self._mm_tiles_for(["Voltar"], 3)
+        w = aw.button_tiles(self.font_md, ["Voltar"], 3)
         return f.button(btn_id, (tw - w) // 2, ty, w, "Voltar")
 
     # ── Submenu Interface (escala da UI) ───────────────────────────────────

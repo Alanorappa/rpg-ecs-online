@@ -769,7 +769,7 @@ class QuestDialogSystem(UIScaleMixin, System):
     def _window_tiles_w(self, footer_labels: list) -> int:
         wrap_raw = self._u(UI.QUEST_DIALOG_W - 2 * self.PAD - 32) / S
         tw = math.ceil((wrap_raw + 2 * self._PADX) / T) + 1
-        bw = aw.tiles_for(self._font_body, footer_labels or ["Fechar"], 3)
+        bw = aw.button_tiles(self._font_body, footer_labels or ["Fechar"], 3)
         tw = max(self._MIN_TW, tw, 2 * bw + 3)
         max_tw = self._area().width // (T * S)
         return max(4, min(tw, max_tw))
@@ -853,7 +853,7 @@ class QuestDialogSystem(UIScaleMixin, System):
         scroll = f.scrollbar(self._scroll, tw - 1, 1 + tr, th - 3, max_scroll)
 
         # Botões do rodapé centralizados como grupo (1 tile entre eles)
-        bw = aw.tiles_for(self._font_body, [lbl for _, lbl, _ in footer], 3)
+        bw = aw.button_tiles(self._font_body, [lbl for _, lbl, _ in footer], 3)
         x0 = (tw - (len(footer) * bw + len(footer) - 1)) / 2
         cols = [x0 + i * (bw + 1) for i in range(len(footer))]
         by = th - ui_atlas.QUEST_FOOTER_ROWS

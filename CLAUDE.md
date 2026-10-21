@@ -2001,7 +2001,14 @@ padrão a quebrar, não só os bugs individuais.
   ícone 32x32 nativo)** — posições de slot/grade em px RAW, nunca "1
   tile"; barra de rolagem na última coluna (encostada na borda direita,
   só quando precisa); botões/controles centralizados como grupo (ver
-  HISTORICO_FEATURES.md §73).
+  HISTORICO_FEATURES.md §73). **Largura de botão SEMPRE via
+  `aw.button_tiles(fonte_do_frame, rótulos)`** (texto a ≥ `BTN_PAD`
+  das pontas; `Frame.button` cresce sozinho se o `w` for pequeno) —
+  nunca `tiles_for` nem a fonte de outro elemento (HISTORICO_BUGS.md §97).
+  **"Tem janela aberta?" = `_any_modal_open()`/`_modal_registry`**
+  (client/modal_stack_handlers.py) — com qualquer janela aberta nenhum
+  clique interage com o mundo; nunca uma lista paralela de modais num
+  call site (PROBLEMAS_ARQUITETURA.md §294).
   **Toda janela do atlas fica dentro da área segura padrão**
   (`atlas_window.safe_area` / `MenuHandlers._mm_safe_area`: margem de
   10% da altura no topo e acima da barra de ações, 10% da largura nas

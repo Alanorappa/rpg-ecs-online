@@ -625,7 +625,7 @@ class ShopSystem(UIScaleMixin, System):
                 self._sell(hov_i)
 
         # ── Rodapé: Desfazer (última compra/venda desta janela) + saldo ───
-        bw = aw.tiles_for(self._font_sm, ["Desfazer"], 3)
+        bw = f.button_tiles(["Desfazer"])
         foot_ty = (lay["foot_y"] + 6) / T
         if f.button("shop:undo", 0.5, foot_ty, bw, "Desfazer", tall=False,
                     enabled=bool(self.transaction_history) and can_act):

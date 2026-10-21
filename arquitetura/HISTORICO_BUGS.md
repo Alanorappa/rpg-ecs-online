@@ -6664,3 +6664,16 @@ delete")**: ponto único `SaveSyncHandlers._on_inventory_deleted_item()`
 antes inline) e pelo menu Deletar do ferreiro (injetado em
 `BlacksmithSystem.on_inventory_changed` por game.py — System nunca chama
 o GameEngine direto).
+
+## 97. Texto do botão "Desfazer" da loja encostado nas bordas (21/10/2026)
+
+Largura do botão medida com a fonte PEQUENA (`_font_sm`) mas o texto
+desenhado com a fonte da janela (`_font_md`, a do Frame) — sobrava quase
+nada de folga. Pedido do usuário: regra pra que o texto de botão nunca
+fique perto das bordas. Fix no kit (`ui/atlas_window.py`): `BTN_PAD`
+(10 px RAW) + `button_tiles(font, labels)`; `Frame.button` mede o
+rótulo com a PRÓPRIA fonte e cresce se o `w` pedido for pequeno; todas
+as janelas do atlas passaram a calcular largura de botão com
+`button_tiles` (loja, ferreiro, correio, troca, quest, treinador, menu
+de pausa, atalhos, seleção/criação de personagem, modal de quantidade,
+avisos). Teste: `tests/test_atlas_kit.py::test_botao_nunca_deixa_texto_perto_das_bordas`.

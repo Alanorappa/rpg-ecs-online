@@ -532,7 +532,7 @@ class BlacksmithSystem(UIScaleMixin, System):
 
     def _action_button(self, f, lay, label: str, enabled: bool) -> bool:
         T = aw.T
-        bw = f.tiles_for([label], 4)
+        bw = f.button_tiles([label], 4)
         col = (lay["px"] + (lay["pw"] - bw * T) / 2) / T     # centralizado no painel
         fired = f.button(f"bs:{label}", col, lay["th"] - 2, bw, label, enabled=enabled)
         ay0, ay1 = ui_atlas.button_art_y(True)
@@ -681,7 +681,7 @@ class BlacksmithSystem(UIScaleMixin, System):
             self._ctx_bag_idx = -1
             return
         item = inv.items[idx]
-        bw = aw.tiles_for(self._font_sm, ["Deletar"], 4)
+        bw = aw.button_tiles(self._font_sm, ["Deletar"], 4)
         tw = max(bw + 2, aw.tiles_for(self._font_sm, [item.name], 1) + 2)
         th = 4
         cx, cy = self._ctx_pos
