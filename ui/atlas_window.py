@@ -179,10 +179,12 @@ class Frame:
         return fired
 
     def text_field(self, field_id: str, tx: int, ty: int, w: int, text: str,
-                   active: bool = False, mask: bool = False) -> bool:
+                   active: bool = False, mask: bool = False, placeholder: str = "",
+                   align: str = "center", font=None) -> bool:
         """Campo de texto do atlas (w tiles, 1 linha). `active` = aguardando
-        entrada (texto destacado). `mask` = senha (mostra "*"). True =
-        clicado (no soltar)."""
+        entrada (texto destacado). `mask` = senha (mostra "*").
+        `placeholder` = texto-guia cinza enquanto vazio. `align` =
+        "center" | "left". True = clicado (no soltar)."""
         if mask:
             text = "*" * len(text)
         inset = ui_atlas.FIELD_ART_INSET_X
@@ -191,8 +193,20 @@ class Frame:
         y0, y1 = ty * T + ay0, ty * T + ay1
         _, fired = self.press(field_id, x0, y0, x1, y1)
         ui_atlas.blit_text_field(self.raw, tx, ty, w)
-        self.text(text, (x0 + x1) / 2, (y0 + y1) / 2, ACTIVE_COL if active else TEXT_COL)
+        shown, color = text, (ACTIVE_COL if active else TEXT_COL)
+        if not text.strip("|") and placeholder:
+            shown, color = placeholder + ("|" if text.endswith("|") else ""), DISABLED_COL
+        if align == "left":
+            self.text(shown, x0 + 4, (y0 + y1) / 2, color, font, anchor="midleft")
+        else:
+            self.text(shown, (x0 + x1) / 2, (y0 + y1) / 2, color, font)
         return fired
+
+    def field_hover(self, tx: int, ty: int, w: int) -> bool:
+        """Mouse sobre a arte de um campo de texto (pra desfocar ao clicar fora)."""
+        inset = ui_atlas.FIELD_ART_INSET_X
+        ay0, ay1 = ui_atlas.FIELD_ART_Y
+        return self.hover(tx * T + inset, ty * T + ay0, (tx + w) * T - inset, ty * T + ay1)
 
     def selector(self, sel_id: str, ty: int, col_l: int, col_r: int, text: str) -> int:
         """Linha ◀ texto ▶. -1/+1 quando uma seta dispara (no soltar)."""

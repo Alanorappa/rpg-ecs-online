@@ -61,9 +61,6 @@ class UI:
 
     # Correio (25/09/2026, NPC "Caixa de Correio") — 3 telas separadas
     # (ver ui/mail_system.py), cada uma com seu próprio painel.
-    MAIL_INBOX_W,   MAIL_INBOX_H   = 480, 560   # lista de correspondências recebidas
-    MAIL_COMPOSE_W, MAIL_COMPOSE_H = 640, 640   # compor nova correspondência
-    MAIL_DETAIL_W,  MAIL_DETAIL_H  = 520, 500   # abrir 1 correspondência (texto + anexos)
 
     # Menu de pausa (ESC) e submenus: tamanho em TILES do atlas, definido
     # em client/menu_handlers.py (_MAIN_TW/_SND_TW/...) — não mais aqui.
@@ -88,13 +85,6 @@ class UI:
 
     # ── Correio — geometria interna ─────────────────────────────────────
     # Arquivo: ui/mail_system.py
-    MAIL_PAD        = 14   # respiro entre a borda do painel e o conteúdo
-    MAIL_ROW_H      = 40   # altura de cada linha da lista do inbox
-    MAIL_MAX_ROWS   = 10   # quantas linhas do inbox cabem sem rolar
-    MAIL_SLOT_SZ    = 48   # tamanho de cada slot de anexo (6 na composição/detalhe)
-    MAIL_SLOT_GAP   = 8    # espaço entre slots vizinhos de anexo
-    MAIL_FIELD_H    = 28   # altura de cada campo de texto (Para/Assunto/gold)
-    MAIL_BODY_H     = 160  # altura da caixa de texto multi-linha
 
     # ── Chat (Local/Mundial/Combate) — geometria interna ───────────────────
     # Arquivo: client/chat_handlers.py

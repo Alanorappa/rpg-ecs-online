@@ -9,7 +9,8 @@ clique direito reclama) ou compõe uma nova (até 6 slots de item + gold,
 Mesmo padrão de `ui/shop_system.py` (clique direito no NPC + walk_to_npc/
 suppress_chase se não-adjacente) e de `client/trade_handlers.py` (campo de
 texto via TEXTINPUT, slot de item clicável) — nenhum mecanismo novo, só
-composição do que já existe. Estado em `ui/ui_components.py::MailUIState`
+composição do que já existe. Visual: atlas de UI (ui/atlas_window.py), 1
+janela com abas Entrada/Escrever, cliques no SOLTAR. Estado em `ui/ui_components.py::MailUIState`
 (componente ECS no player), nunca dict solto.
 
 Staging da composição (6 slots + gold) é 100% LOCAL — diferente do trade
@@ -25,8 +26,9 @@ import copy
 import pygame
 
 from ui.fonts import make as _font
+from ui import atlas_window as aw
+from ui import ui_atlas
 from ui.ui_scale_mixin import UIScaleMixin
-from ui.ui_sizes import UI
 
 from engine.components import (Position, Renderable, TileMovement, PlayerAutoMove,
                                Inventory, Mailbox, NPC, NPCInteractionRequest)
@@ -35,7 +37,7 @@ from engine.tileset import TILE_SIZE
 from engine.utils import chebyshev, get_camera_offset
 from ui.combat_log import LOG
 from ui.icon_manager import ICONS
-from ui.ui_helpers import item_tooltip_lines, fill_surf, wrap_text, draw_stack_count
+from ui.ui_helpers import item_tooltip_lines
 from ui.npc_interaction import walk_to_npc, suppress_chase
 from content.item_table import RARITY_COLORS as _SHARED_RARITY_COLORS
 from engine.quest_events import fire as quest_fire
@@ -47,7 +49,7 @@ class MailSystem(UIScaleMixin, System):
     """Sistema do NPC "Caixa de Correio" — 3 telas (inbox/compose/detail),
     ver MailUIState.screen."""
 
-    _FONT_BASES = {"_font_sm": 20, "_font_md": 26, "_font_lg": 32}
+    _FONT_BASES = {"_font_xs": 15, "_font_sm": 20, "_font_md": 26, "_font_lg": 32}
     _RARITY_COLORS = _SHARED_RARITY_COLORS
 
     # Tolerância de clique EXTRA além do tamanho visual da caixa
@@ -73,11 +75,18 @@ class MailSystem(UIScaleMixin, System):
         self._net = None
         self.pending_tooltip = None
         self._open_cooldown: float = 0.0
-        self._inbox_scroll: int = 0
-        self._bag_scroll:   int = 0
         # Modal de quantidade (Shift+clique direito num item empilhável na
-        # bolsa) — mesmo padrão/campos de ShopSystem._qty_modal.
+        # bolsa) — peça do kit, mesma da loja/troca.
         self._compose_qty_modal: "dict | None" = None
+        # Atlas: botão afundado, rolagem da Entrada, eventos do frame,
+        # área segura (injetada por game.py), rects clicáveis (testes),
+        # cache do marcador de carta nova (por instância).
+        self._press = aw.PressState()
+        self._scroll = aw.ScrollState()
+        self._frame_events: list = []
+        self.safe_area_fn = None
+        self._hit_rects: dict = {}
+        self._new_mail_marker_cache = None
 
     # ------------------------------------------------------------------
     # Estado (via MailUIState — nunca dict solto, ver engine/components.py
@@ -143,7 +152,7 @@ class MailSystem(UIScaleMixin, System):
         ui.screen = "inbox"
         self._pending_mailbox_id = -1
         self._open_cooldown = 0.3
-        self._inbox_scroll = 0
+        self._scroll = aw.ScrollState()
         from shared.messages import MsgType
         self._net.send(MsgType.MAIL_OPEN_INBOX, {})
         _npc = self.world.get_component(mailbox_eid, NPC)
@@ -251,7 +260,7 @@ class MailSystem(UIScaleMixin, System):
         return chebyshev(t1[0], t1[1], t2[0], t2[1])
 
     # ------------------------------------------------------------------
-    # Eventos de UI — despacha pra tela ativa
+    # Eventos de UI — teclado aqui; mouse no desenho (atlas, age no SOLTAR)
     # ------------------------------------------------------------------
 
     def handle_events(self, events: list) -> None:
@@ -260,10 +269,11 @@ class MailSystem(UIScaleMixin, System):
             return
         for event in events:
             if self._compose_qty_modal is not None:
-                # Modal de quantidade (Shift+clique direito num item
-                # empilhável) preempta o resto — mesmo padrão de
-                # ShopSystem._qty_modal/_handle_qty_modal_event.
-                self._handle_compose_qty_modal_event(event)
+                res = aw.quantity_key(self._compose_qty_modal, event)
+                if res == "ok":
+                    self._confirm_compose_qty_modal(ui, self._compose_qty_modal)
+                elif res == "cancel":
+                    self._close_compose_qty_modal()
                 continue
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 if ui.sub_screen_open:
@@ -276,21 +286,7 @@ class MailSystem(UIScaleMixin, System):
                 continue
             if event.type == pygame.KEYDOWN:
                 self._handle_key(ui, event)
-                continue
-            if event.type == pygame.MOUSEWHEEL and ui.screen == "inbox":
-                self._inbox_scroll = max(0, self._inbox_scroll - event.y)
-                continue
-            if event.type == pygame.MOUSEWHEEL and ui.screen == "compose":
-                self._bag_scroll = max(0, self._bag_scroll - event.y)
-                continue
-            if event.type != pygame.MOUSEBUTTONDOWN:
-                continue
-            if ui.screen == "inbox":
-                self._handle_inbox_click(ui, event)
-            elif ui.screen == "compose":
-                self._handle_compose_click(ui, event)
-            elif ui.screen == "detail":
-                self._handle_detail_click(ui, event)
+        self._frame_events = list(events)
 
     # ── Digitação (Para/Assunto/Texto via TEXTINPUT — ver client/
     # chat_handlers.py pro racional de por que NÃO usar event.unicode do
@@ -345,99 +341,6 @@ class MailSystem(UIScaleMixin, System):
             gold = 0
         return str(gold) if gold > 0 else ""
 
-    # ------------------------------------------------------------------
-    # Layouts (compartilhados clique/desenho, mesmo princípio de
-    # ShopSystem/_trade_layout — nunca duas contas de geometria separadas)
-    # ------------------------------------------------------------------
-
-    def _inbox_layout(self) -> dict:
-        self._set_panel_scale(UI.MAIL_INBOX_W, UI.MAIL_INBOX_H)
-        x0, y0 = self._safe_panel_origin(UI.MAIL_INBOX_W, UI.MAIL_INBOX_H)
-        W, H   = self._u(UI.MAIL_INBOX_W), self._u(UI.MAIL_INBOX_H)
-        pad    = self._u(UI.MAIL_PAD)
-        row_h  = self._u(UI.MAIL_ROW_H)
-        return {
-            "panel": pygame.Rect(x0, y0, W, H),
-            "close": pygame.Rect(x0 + W - self._u(40), y0 + self._u(6), self._u(34), self._u(34)),
-            "body_y": y0 + self._u(50),
-            "row_h": row_h, "pad": pad, "x0": x0, "y0": y0, "W": W, "H": H,
-            "send_btn": pygame.Rect(x0 + pad, y0 + H - self._u(50), W - pad * 2, self._u(38)),
-        }
-
-    def _compose_layout(self) -> dict:
-        self._set_panel_scale(UI.MAIL_COMPOSE_W, UI.MAIL_COMPOSE_H)
-        x0, y0 = self._safe_panel_origin(UI.MAIL_COMPOSE_W, UI.MAIL_COMPOSE_H)
-        W, H   = self._u(UI.MAIL_COMPOSE_W), self._u(UI.MAIL_COMPOSE_H)
-        pad    = self._u(UI.MAIL_PAD)
-        bag_w  = self._u(190)
-        form_x = x0 + bag_w + pad * 2
-        form_w = W - bag_w - pad * 3
-        row_h  = self._u(30)
-        body_r = pygame.Rect(form_x, y0 + self._u(124), form_w, self._u(UI.MAIL_BODY_H))
-        slots_y = body_r.bottom + self._u(14)
-        slot_sz = self._u(UI.MAIL_SLOT_SZ)
-        gap     = self._u(UI.MAIL_SLOT_GAP)
-        slots   = [pygame.Rect(form_x + i * (slot_sz + gap), slots_y, slot_sz, slot_sz) for i in range(6)]
-        gold_r  = pygame.Rect(form_x, slots_y + slot_sz + self._u(14), self._u(160), self._u(UI.MAIL_FIELD_H))
-        return {
-            "panel": pygame.Rect(x0, y0, W, H),
-            "close": pygame.Rect(x0 + W - self._u(40), y0 + self._u(6), self._u(34), self._u(34)),
-            "bag":   pygame.Rect(x0 + pad, y0 + self._u(64), bag_w - pad, H - self._u(64) - pad - self._u(46)),
-            "bag_row_h": row_h,
-            "to":      pygame.Rect(form_x, y0 + self._u(44), form_w, self._u(UI.MAIL_FIELD_H)),
-            "subject": pygame.Rect(form_x, y0 + self._u(84), form_w, self._u(UI.MAIL_FIELD_H)),
-            "body":    body_r,
-            "slots":   slots,
-            "gold":    gold_r,
-            "send":    pygame.Rect(form_x, y0 + H - self._u(48), form_w, self._u(38)),
-            "x0": x0, "y0": y0, "W": W, "H": H, "pad": pad, "form_x": form_x, "form_w": form_w,
-        }
-
-    def _detail_layout(self) -> dict:
-        self._set_panel_scale(UI.MAIL_DETAIL_W, UI.MAIL_DETAIL_H)
-        x0, y0 = self._safe_panel_origin(UI.MAIL_DETAIL_W, UI.MAIL_DETAIL_H)
-        W, H   = self._u(UI.MAIL_DETAIL_W), self._u(UI.MAIL_DETAIL_H)
-        pad    = self._u(UI.MAIL_PAD)
-        body_r = pygame.Rect(x0 + pad, y0 + self._u(90), W - pad * 2, self._u(220))
-        slots_y = body_r.bottom + self._u(14)
-        slot_sz = self._u(UI.MAIL_SLOT_SZ)
-        gap     = self._u(UI.MAIL_SLOT_GAP)
-        slots   = [pygame.Rect(x0 + pad + i * (slot_sz + gap), slots_y, slot_sz, slot_sz) for i in range(6)]
-        return {
-            "panel":  pygame.Rect(x0, y0, W, H),
-            "body":   body_r,
-            "slots":  slots,
-            "gold":   pygame.Rect(x0 + pad, slots_y + slot_sz + self._u(10), self._u(160), self._u(32)),
-            "delete": pygame.Rect(x0 + pad, y0 + H - self._u(46), self._u(150), self._u(34)),
-            "close2": pygame.Rect(x0 + W - pad - self._u(150), y0 + H - self._u(46), self._u(150), self._u(34)),
-            "x0": x0, "y0": y0, "W": W, "H": H, "pad": pad,
-        }
-
-    # ------------------------------------------------------------------
-    # Clique — inbox
-    # ------------------------------------------------------------------
-
-    def _handle_inbox_click(self, ui, event) -> None:
-        L = self._inbox_layout()
-        mx, my = event.pos
-        if event.button == 1 and L["close"].collidepoint(mx, my):
-            self._close()
-            return
-        if event.button == 1 and L["send_btn"].collidepoint(mx, my):
-            self._open_compose(ui)
-            return
-        if event.button == 1:
-            for i, mail in enumerate(ui.inbox):
-                vis_i = i - self._inbox_scroll
-                if not (0 <= vis_i < UI.MAIL_MAX_ROWS):
-                    continue
-                r = pygame.Rect(L["x0"] + L["pad"], L["body_y"] + vis_i * L["row_h"],
-                                L["W"] - L["pad"] * 2, L["row_h"] - self._u(4))
-                if r.collidepoint(mx, my):
-                    from shared.messages import MsgType
-                    self._net.send(MsgType.MAIL_OPEN_ITEM, {"mail_id": mail["mail_id"]})
-                    return
-
     def _open_compose(self, ui) -> None:
         ui.compose_to      = ""
         ui.compose_subject = ""
@@ -445,207 +348,34 @@ class MailSystem(UIScaleMixin, System):
         ui.compose_items   = []
         ui.compose_gold_text = ""
         ui.compose_focus   = ""
-        self._bag_scroll   = 0
         self._compose_qty_modal = None
         ui.screen = "compose"
 
-    # ------------------------------------------------------------------
-    # Clique — compor
-    # ------------------------------------------------------------------
-
-    def _handle_compose_click(self, ui, event) -> None:
-        L = self._compose_layout()
-        mx, my = event.pos
-
-        if event.button == 1 and L["close"].collidepoint(mx, my):
-            self._close()
-            return
-        if event.button == 1 and L["to"].collidepoint(mx, my):
-            ui.compose_focus = "to"
+    def _focus(self, ui, field: str) -> None:
+        ui.compose_focus = field
+        if field in ("to", "subject", "body"):
             pygame.key.start_text_input()
-            return
-        if event.button == 1 and L["subject"].collidepoint(mx, my):
-            ui.compose_focus = "subject"
-            pygame.key.start_text_input()
-            return
-        if event.button == 1 and L["body"].collidepoint(mx, my):
-            ui.compose_focus = "body"
-            pygame.key.start_text_input()
-            return
-        if event.button == 1 and L["gold"].collidepoint(mx, my):
-            ui.compose_focus = "gold"
-            return
-        if event.button == 1 and L["send"].collidepoint(mx, my):
-            self._send_compose(ui)
-            return
 
-        if event.button == 1 and ui.compose_focus:
-            # Clique fora de qualquer campo de texto desfoca (mesma UX do
-            # campo de gold do trade).
+    def _unfocus(self, ui) -> None:
+        if ui.compose_focus:
             ui.compose_focus = ""
             pygame.key.stop_text_input()
 
-        if event.button == 3:
-            # Clique direito num slot já staged devolve o item pra bolsa
-            # (pedido do usuário 25/09/2026 — antes era clique esquerdo,
-            # inconsistente com "clique direito reclama/anexa" usado no
-            # resto do correio).
-            for i, r in enumerate(L["slots"]):
-                if r.collidepoint(mx, my) and i < len(ui.compose_items):
-                    ui.compose_items.pop(i)
-                    return
-
-            inv = self.world.get_component(self.player_entity, Inventory)
-            if inv is None:
-                return
-            staged_indices = {idx for idx, _q in ui.compose_items}
-            row_h = L["bag_row_h"]
-            mods  = pygame.key.get_mods()
-            shift = bool(mods & pygame.KMOD_SHIFT)
-            for i, item in enumerate(inv.items):
-                vis_i = i - self._bag_scroll
-                r = pygame.Rect(L["bag"].x, L["bag"].y + vis_i * row_h, L["bag"].width, row_h - self._u(2))
-                if r.collidepoint(mx, my):
-                    if i in staged_indices or len(ui.compose_items) >= 6:
-                        return
-                    # Shift+clique direito num item empilhável abre o modal
-                    # de quantidade — mesmo padrão de ShopSystem/trade
-                    # (Shift+clique direito = escolher quanto).
-                    if shift and getattr(item, "max_stack", 1) > 1 and item.stack > 1:
-                        self._open_compose_qty_modal(i, item)
-                        return
-                    ui.compose_items.append((i, item.stack))
-                    return
-
-    # ── Modal de quantidade (Shift+clique direito num item empilhável) ──
-    # Mesmo padrão de ui/shop_system.py::_open_qty_modal/_close_qty_modal/
-    # _handle_qty_modal_event/_render_qty_modal — aqui não existe preço
-    # (não é compra), só "quantos dessa pilha vão pra este envio".
+    # ── Modal de quantidade (Shift+clique direito num item empilhável) —
+    # peça do kit (atlas_window.quantity_window), mesma da loja/troca;
+    # aqui sem preço: "quantos dessa pilha vão pra este envio". ──────────
 
     def _open_compose_qty_modal(self, inv_index: int, item) -> None:
-        self._compose_qty_modal = {
-            "inv_index": inv_index,
-            "item_name": item.name,
-            "max_qty":   item.stack,
-            "qty":       1,
-            "text":      "1",
-            "dragging":  False,
-        }
+        self._compose_qty_modal = {**aw.quantity_state(item.stack),
+                                   "inv_index": inv_index, "item_name": item.name}
 
     def _close_compose_qty_modal(self) -> None:
         self._compose_qty_modal = None
-
-    def _compose_qty_modal_rect(self) -> pygame.Rect:
-        self._set_panel_scale(UI.SHOP_QTY_MODAL_W, UI.SHOP_QTY_MODAL_H)
-        SW, SH = self.hud_surf.get_size()
-        mw, mh = self._u(UI.SHOP_QTY_MODAL_W), self._u(UI.SHOP_QTY_MODAL_H)
-        mx0 = (SW - mw) // 2 + UI.SHOP_QTY_MODAL_OFFSET_X
-        my0 = (SH - mh) // 2 + UI.SHOP_QTY_MODAL_OFFSET_Y
-        return pygame.Rect(mx0, my0, mw, mh)
-
-    def _handle_compose_qty_modal_event(self, event) -> None:
-        m = self._compose_qty_modal
-        ui = self._ui()
-
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE:
-                self._close_compose_qty_modal()
-            elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                self._confirm_compose_qty_modal(ui, m)
-            elif event.key == pygame.K_BACKSPACE:
-                m["text"] = m["text"][:-1] or "0"
-                try:
-                    m["qty"] = max(1, min(int(m["text"]), m["max_qty"]))
-                except ValueError:
-                    m["qty"] = 1
-            elif event.unicode.isdigit():
-                new_text = (m["text"] if m["text"] != "0" else "") + event.unicode
-                if len(new_text) <= 6:
-                    m["text"] = new_text
-                    try:
-                        m["qty"] = max(1, min(int(new_text), m["max_qty"]))
-                    except ValueError:
-                        pass
-            return
-
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            mx, my = event.pos
-            mrect  = self._compose_qty_modal_rect()
-            sl_x  = mrect.x + self._u(20)
-            sl_y  = mrect.y + self._u(130)
-            sl_w  = mrect.width - self._u(40)
-            sl_r  = pygame.Rect(sl_x, sl_y - self._u(10), sl_w, self._u(20))
-            if sl_r.collidepoint(mx, my):
-                ratio    = max(0.0, min(1.0, (mx - sl_x) / sl_w))
-                m["qty"] = max(1, round(ratio * m["max_qty"]))
-                m["text"] = str(m["qty"])
-                m["dragging"] = True
-                return
-            btn_cancel = pygame.Rect(mrect.x + self._u(20), mrect.bottom - self._u(54), self._u(190), self._u(38))
-            btn_ok     = pygame.Rect(mrect.right - self._u(210), mrect.bottom - self._u(54), self._u(190), self._u(38))
-            if btn_cancel.collidepoint(mx, my):
-                self._close_compose_qty_modal()
-                return
-            if btn_ok.collidepoint(mx, my):
-                self._confirm_compose_qty_modal(ui, m)
-                return
-            if not mrect.collidepoint(mx, my):
-                self._close_compose_qty_modal()
-
-        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-            m["dragging"] = False
-
-        elif event.type == pygame.MOUSEMOTION and m.get("dragging"):
-            mrect = self._compose_qty_modal_rect()
-            sl_x, sl_w = mrect.x + self._u(20), mrect.width - self._u(40)
-            ratio = max(0.0, min(1.0, (event.pos[0] - sl_x) / sl_w))
-            m["qty"]  = max(1, round(ratio * m["max_qty"]))
-            m["text"] = str(m["qty"])
 
     def _confirm_compose_qty_modal(self, ui, m: dict) -> None:
         if len(ui.compose_items) < 6:
             ui.compose_items.append((m["inv_index"], m["qty"]))
         self._close_compose_qty_modal()
-
-    def _render_compose_qty_modal(self) -> None:
-        m = self._compose_qty_modal
-        mrect = self._compose_qty_modal_rect()
-        SW, SH = self.hud_surf.get_size()
-
-        self.hud_surf.blit(fill_surf((SW, SH), (0, 0, 0, 130)), (0, 0))
-        self.hud_surf.blit(fill_surf((mrect.width, mrect.height), (18, 14, 8, 245)), mrect.topleft)
-        pygame.draw.rect(self.hud_surf, (120, 160, 220), mrect, 2, border_radius=6)
-
-        title_s = self._font_md.render(m["item_name"], False, (200, 220, 250))
-        self.hud_surf.blit(title_s, (mrect.centerx - title_s.get_width() // 2, mrect.y + self._u(12)))
-
-        sl_x  = mrect.x + self._u(20)
-        sl_y  = mrect.y + self._u(130)
-        sl_w  = mrect.width - self._u(40)
-        ratio = (m["qty"] - 1) / max(1, m["max_qty"] - 1) if m["max_qty"] > 1 else 0.0
-        handle_x = sl_x + int(ratio * sl_w)
-
-        pygame.draw.rect(self.hud_surf, (50, 40, 25), (sl_x, sl_y - self._u(3), sl_w, self._u(6)), border_radius=3)
-        pygame.draw.rect(self.hud_surf, (100, 140, 220), (sl_x, sl_y - self._u(3), int(ratio * sl_w), self._u(6)), border_radius=3)
-        pygame.draw.circle(self.hud_surf, (140, 170, 220), (handle_x, sl_y), self._u(10))
-        pygame.draw.circle(self.hud_surf, (200, 220, 250), (handle_x, sl_y), self._u(10), 2)
-
-        self.hud_surf.blit(self._font_sm.render("1", False, (130, 145, 165)), (sl_x, sl_y + self._u(14)))
-        max_s = self._font_sm.render(str(m["max_qty"]), False, (130, 145, 165))
-        self.hud_surf.blit(max_s, (sl_x + sl_w - max_s.get_width(), sl_y + self._u(14)))
-
-        qty_s = self._font_lg.render(str(m["qty"]), False, (255, 255, 255))
-        self.hud_surf.blit(qty_s, (mrect.centerx - qty_s.get_width() // 2, mrect.y + self._u(76)))
-
-        btn_cancel = pygame.Rect(mrect.x + self._u(20), mrect.bottom - self._u(54), self._u(190), self._u(38))
-        btn_ok     = pygame.Rect(mrect.right - self._u(210), mrect.bottom - self._u(54), self._u(190), self._u(38))
-        mmx, mmy   = pygame.mouse.get_pos()
-        for btn, label in ((btn_cancel, "Cancelar"), (btn_ok, f"Anexar {m['qty']}")):
-            hov = btn.collidepoint(mmx, mmy)
-            pygame.draw.rect(self.hud_surf, (35, 55, 85) if hov else (24, 38, 60), btn, border_radius=4)
-            pygame.draw.rect(self.hud_surf, (120, 160, 220), btn, 1, border_radius=4)
-            lbl = self._font_sm.render(label, False, (200, 220, 250))
-            self.hud_surf.blit(lbl, (btn.centerx - lbl.get_width() // 2, btn.centery - lbl.get_height() // 2))
 
     def _send_compose(self, ui) -> None:
         if not self._net:
@@ -672,46 +402,6 @@ class MailSystem(UIScaleMixin, System):
         })
 
     # ------------------------------------------------------------------
-    # Clique — abrir correspondência
-    # ------------------------------------------------------------------
-
-    def _handle_detail_click(self, ui, event) -> None:
-        if ui.detail is None:
-            return
-        L = self._detail_layout()
-        mx, my = event.pos
-
-        if event.button == 1 and L["delete"].collidepoint(mx, my):
-            from shared.messages import MsgType
-            self._net.send(MsgType.MAIL_DELETE, {"mail_id": ui.detail["mail_id"]})
-            ui.detail = None
-            ui.screen = "inbox"
-            return
-        if event.button == 1 and L["close2"].collidepoint(mx, my):
-            self._back_to_inbox()
-            return
-        if (event.button in (1, 3) and not ui.detail["gold_claimed"] and ui.detail["gold"] > 0
-                and L["gold"].collidepoint(mx, my)):
-            # Qualquer um dos 2 botões reclama (pedido do usuário
-            # 25/09/2026 — antes só o esquerdo, inconsistente com item,
-            # que já aceitava só o direito).
-            from shared.messages import MsgType
-            self._net.send(MsgType.MAIL_CLAIM_GOLD, {"mail_id": ui.detail["mail_id"]})
-            return
-        if event.button in (1, 3):
-            for it in ui.detail["items"]:
-                if it["claimed"] or it["item"] is None:
-                    continue
-                if not (0 <= it["item_index"] < len(L["slots"])):
-                    continue
-                r = L["slots"][it["item_index"]]
-                if r.collidepoint(mx, my):
-                    from shared.messages import MsgType
-                    self._net.send(MsgType.MAIL_CLAIM_ITEM,
-                                   {"mail_id": ui.detail["mail_id"], "item_index": it["item_index"]})
-                    return
-
-    # ------------------------------------------------------------------
     # Render — indicador no mundo (correspondência nova)
     # ------------------------------------------------------------------
 
@@ -724,11 +414,10 @@ class MailSystem(UIScaleMixin, System):
         for eid, pos, rend, _ in self.world.get_entities_with(Position, Renderable, Mailbox):
             WORLD_LABELS.add_icon(pos.x, pos.y - rend.height / 2, icon, stack_key=eid)
 
-    _new_mail_marker_cache = None
-
     def _new_mail_marker_surf(self):
         """Círculo + glifo (mesmo padrão de fallback de
-        ui/quest_system.py::_fallback_marker_surf) — sem asset dedicado."""
+        ui/quest_system.py::_fallback_marker_surf) — sem asset dedicado.
+        Cache POR INSTÂNCIA (nunca atributo de classe)."""
         if self._new_mail_marker_cache is None:
             size = 18
             surf = pygame.Surface((size, size), pygame.SRCALPHA)
@@ -740,267 +429,314 @@ class MailSystem(UIScaleMixin, System):
         return self._new_mail_marker_cache
 
     # ------------------------------------------------------------------
-    # Render — painéis
+    # Render — janela do correio (atlas de UI, 21/10/2026)
     # ------------------------------------------------------------------
+    # 1 janela "Correio" com barra de título e X e as abas [Entrada]
+    # [Escrever] (dentro do painel, na borda de cima — decisão do usuário);
+    # ler uma carta abre dentro da aba Entrada (Voltar retorna). Cliques
+    # agem no SOLTAR (atlas_window); campos de texto do atlas.
+
+    _TW, _TH = 22, 15
+    _BAG_COLS, _BAG_ROWS = 4, 5
+    _ROW0 = 3                # 1ª linha de conteúdo (título 0, abas 1, folga 2)
+    _MAIL_ROW_H = 2          # tiles por carta na lista da Entrada
+
+    def _area(self) -> pygame.Rect:
+        if self.safe_area_fn is not None:
+            return self.safe_area_fn()
+        SW, SH = self.hud_surf.get_size()
+        return aw.safe_area(SW, SH, SH)
+
+    def _mail_hit(self, hid: str, f, x0, y0, x1, y1) -> None:
+        self._hit_rects[hid] = pygame.Rect(f.px + round(x0 * aw.S), f.py + round(y0 * aw.S),
+                                           round((x1 - x0) * aw.S), round((y1 - y0) * aw.S))
 
     def render(self, cam_x: float = 0, cam_y: float = 0) -> None:
+        events, self._frame_events = self._frame_events, []
         self.pending_tooltip = None
+        self._hit_rects = {}
         ui = self._ui()
         if ui is None or not ui.is_open:
             return
-        if ui.screen == "inbox":
-            self._render_inbox(ui)
-        elif ui.screen == "compose":
-            self._render_compose(ui)
-            if self._compose_qty_modal is not None:
-                self.pending_tooltip = None  # modal suprime tooltip dos itens abaixo
-                self._render_compose_qty_modal()
-        elif ui.screen == "detail":
-            self._render_detail(ui)
-
-    def _draw_panel_frame(self, rect: pygame.Rect, title: str) -> None:
-        SW, SH = self.hud_surf.get_size()
-        self.hud_surf.blit(fill_surf((SW, SH), (0, 0, 0, 160)), (0, 0))
-        self.hud_surf.blit(fill_surf((rect.width, rect.height), (10, 14, 22, 235)), rect.topleft)
-        pygame.draw.rect(self.hud_surf, (70, 100, 150), rect, 2, border_radius=4)
-        title_s = self._font_lg.render(f"  {title}", False, (170, 200, 255))
-        self.hud_surf.blit(title_s, (rect.x + self._u(8), rect.y + self._u(8)))
-
-    def _draw_close_button(self, r: pygame.Rect) -> None:
-        mx, my = pygame.mouse.get_pos()
-        hov = r.collidepoint(mx, my)
-        pygame.draw.rect(self.hud_surf, (180, 60, 60) if hov else (100, 35, 35), r, border_radius=3)
-        xs = self._font_md.render("X", False, (255, 255, 255))
-        self.hud_surf.blit(xs, (r.centerx - xs.get_width() // 2, r.centery - xs.get_height() // 2))
-
-    def _draw_text_field(self, r: pygame.Rect, text: str, focused: bool, placeholder: str = "") -> None:
-        pygame.draw.rect(self.hud_surf, (20, 26, 38), r, border_radius=3)
-        pygame.draw.rect(self.hud_surf, (140, 170, 220) if focused else (60, 75, 100), r, 1, border_radius=3)
-        shown = text if (text or not placeholder) else placeholder
-        color = (230, 235, 245) if (text or not placeholder) else (90, 100, 120)
-        lbl = self._font_sm.render(shown + ("|" if focused and (pygame.time.get_ticks() // 500) % 2 == 0 else ""),
-                                   False, color)
-        self.hud_surf.blit(lbl, (r.x + self._u(6), r.centery - lbl.get_height() // 2))
-
-    def _draw_item_slot(self, r: pygame.Rect, item, hovered: bool, hint: str = "") -> None:
-        bg_c   = (30, 40, 55) if hovered else (18, 24, 34)
-        bord_c = (140, 170, 220) if hovered else (55, 70, 95)
-        pygame.draw.rect(self.hud_surf, bg_c, r, border_radius=3)
-        pygame.draw.rect(self.hud_surf, bord_c, r, 1, border_radius=3)
-        if item is None:
+        if ui.screen == "detail" and ui.detail is None:
+            self._back_to_inbox()
+        T = aw.T
+        modal = self._compose_qty_modal is not None
+        tw, th = self._TW, self._TH
+        f = aw.Frame(self.hud_surf, [] if modal else events, tw, th, area=self._area(),
+                     press=None if modal else self._press, font=self._font_md,
+                     raw=ui_atlas.titled_dark_window_raw(tw, th))
+        f.text("Correio", (tw - 1) * T / 2, aw.TITLE_BAR_Y, (240, 228, 200))
+        if f.close_button("mail:close", tw - 1):
+            self._close()
             return
-        rar_col = self._RARITY_COLORS.get(getattr(item, "rarity", "common"), (100, 100, 100))
-        icon_surf = ICONS.get(ICONS.item_key(item), r.width - self._u(4))
-        if icon_surf:
-            self.hud_surf.blit(icon_surf, (r.x + self._u(2), r.y + self._u(2)))
-        else:
-            pygame.draw.rect(self.hud_surf, rar_col, r.inflate(-self._u(6), -self._u(6)), 1, border_radius=2)
-        draw_stack_count(self.hud_surf, item, r, self._font_sm)
-        if hovered:
-            lines = item_tooltip_lines(item, None)
-            if hint:
-                lines.append((hint, (150, 150, 150)))
-            self.pending_tooltip = (pygame.mouse.get_pos()[0], pygame.mouse.get_pos()[1],
-                                    item.name, lines, rar_col, item, None)
+        self._mail_hit("mail:close", f, (tw - 1) * T, 0, tw * T, T)
 
-    # ── Inbox ────────────────────────────────────────────────────────
+        on_compose = ui.screen == "compose"
+        tab = f.tabs("mail:tabs", 1, 1, [f"Entrada ({len(ui.inbox)})", "Escrever"], 1 if on_compose else 0,
+                     font=self._font_sm)
+        w0 = f.tiles_for([f"Entrada ({len(ui.inbox)})"], 3, self._font_sm)
+        w1 = f.tiles_for(["Escrever"], 3, self._font_sm)
+        self._mail_hit("mail:tab:0", f, T, T, (1 + w0) * T, 2 * T)
+        self._mail_hit("mail:tab:1", f, (1 + w0) * T, T, (1 + w0 + w1) * T, 2 * T)
 
-    def _render_inbox(self, ui) -> None:
-        L = self._inbox_layout()
-        self._draw_panel_frame(L["panel"], f"CAIXA DE ENTRADA  ({len(ui.inbox)})")
-        self._draw_close_button(L["close"])
-        mx, my = pygame.mouse.get_pos()
+        if ui.screen == "inbox":
+            self._draw_inbox(ui, f)
+        elif ui.screen == "compose":
+            self._draw_compose(ui, f)
+        elif ui.screen == "detail":
+            self._draw_detail(ui, f)
+        content = getattr(f, "_mail_content", None)
+        f.end()
+        if content is not None:
+            content()   # lista rolável desenhada por cima do painel ampliado
+        self._panel_rect = pygame.Rect(f.px, f.py, f.pw, f.ph)
 
-        max_scroll = max(0, len(ui.inbox) - UI.MAIL_MAX_ROWS)
-        self._inbox_scroll = min(self._inbox_scroll, max_scroll)
+        if tab == 0 and ui.screen != "inbox":
+            self._back_to_inbox()
+        elif tab == 1 and ui.screen != "compose":
+            self._open_compose(ui)
 
+        if modal:
+            self.pending_tooltip = None   # modal suprime tooltip dos itens abaixo
+            m = self._compose_qty_modal
+            res = aw.quantity_window(self.hud_surf, events, m, area=self._area(), press=self._press,
+                                     font=self._font_md, small_font=self._font_sm,
+                                     title=m["item_name"], info=f"Você tem {m['max_qty']}",
+                                     confirm_label=f"Anexar {m['qty']}", hits=self._hit_rects)
+            if res == "ok":
+                self._confirm_compose_qty_modal(ui, m)
+            elif res == "cancel":
+                self._close_compose_qty_modal()
+
+    # ── Entrada ──────────────────────────────────────────────────────
+
+    def _draw_inbox(self, ui, f) -> None:
+        T, S = aw.T, aw.S
+        tw, th = self._TW, self._TH
+        list_cols = tw - 3
+        view_y0, view_h = self._ROW0 * T, (th - self._ROW0 - 1) * T
+        row_h = self._MAIL_ROW_H * T
+        content_h = max(1, len(ui.inbox) * row_h)
+        off = f.scrollbar(self._scroll, tw - 2, self._ROW0, th - 2, max(0, content_h - view_h))
+        lw = list_cols * T
+        in_view = view_y0 <= f.ry < view_y0 + view_h and T <= f.rx < T + lw
+        fc = f.child(pygame.Surface((lw, content_h), pygame.SRCALPHA),
+                     f.ry - view_y0 + off if in_view else -10_000)
+        fc.rx = f.rx - T
+        opened = None
         if not ui.inbox:
-            empty_s = self._font_sm.render("Nenhuma correspondencia.", False, (120, 130, 150))
-            self.hud_surf.blit(empty_s, (L["x0"] + L["pad"], L["body_y"]))
-
+            f.text("Nenhuma correspondência.", T + 4, view_y0 + T / 2, aw.DISABLED_COL, self._font_sm,
+                   anchor="midleft")
         for i, mail in enumerate(ui.inbox):
-            vis_i = i - self._inbox_scroll
-            if not (0 <= vis_i < UI.MAIL_MAX_ROWS):
-                continue
-            r = pygame.Rect(L["x0"] + L["pad"], L["body_y"] + vis_i * L["row_h"],
-                            L["W"] - L["pad"] * 2, L["row_h"] - self._u(4))
-            hov = r.collidepoint(mx, my)
-            pygame.draw.rect(self.hud_surf, (24, 32, 46) if hov else (16, 21, 30), r, border_radius=3)
-            pygame.draw.rect(self.hud_surf, (90, 115, 160) if hov else (45, 55, 75), r, 1, border_radius=3)
-            icon_c = (255, 210, 90) if mail.get("has_attachment") else (140, 150, 170)
-            self.hud_surf.blit(self._font_sm.render("*" if mail.get("has_attachment") else "-", False, icon_c),
-                               (r.x + self._u(6), r.y + self._u(4)))
-            name_s = self._font_sm.render(mail.get("sender_name", ""), False, (200, 215, 235))
-            self.hud_surf.blit(name_s, (r.x + self._u(22), r.y + self._u(2)))
-            subj_s = self._font_sm.render(mail.get("subject", ""), False, (130, 145, 165))
-            self.hud_surf.blit(subj_s, (r.x + self._u(22), r.y + self._u(18)))
+            y = i * row_h
+            if i:
+                fc.divider_h(y, 0, lw)
+            hov = fc.hover(0, y, lw, y + row_h)
+            mark = "*" if mail.get("has_attachment") else "-"
+            fc.text(mark, 6, y + T / 2, (255, 210, 90) if mail.get("has_attachment") else aw.DISABLED_COL,
+                    self._font_sm, anchor="midleft")
+            fc.text(mail.get("sender_name", ""), 18, y + T / 2,
+                    aw.ACTIVE_COL if hov else aw.TEXT_COL, self._font_sm, anchor="midleft")
+            fc.text(mail.get("subject", ""), 18, y + 1.4 * T, (150, 140, 120), self._font_xs, anchor="midleft")
+            if fc.press(f"mail:open:{i}", 0, y, lw, y + row_h)[1]:
+                opened = mail
+            ry = view_y0 + y - off
+            if view_y0 <= ry and ry + row_h <= view_y0 + view_h:
+                self._mail_hit(f"mail:open:{i}", f, T, ry, T + lw, ry + row_h)
 
-        # Botão "Enviar Correspondência"
-        btn = L["send_btn"]
-        hov = btn.collidepoint(mx, my)
-        pygame.draw.rect(self.hud_surf, (35, 55, 85) if hov else (24, 38, 60), btn, border_radius=4)
-        pygame.draw.rect(self.hud_surf, (120, 160, 220), btn, 1, border_radius=4)
-        lbl = self._font_md.render("Enviar Correspondencia", False, (200, 220, 250))
-        self.hud_surf.blit(lbl, (btn.centerx - lbl.get_width() // 2, btn.centery - lbl.get_height() // 2))
+        def _draw():
+            content = ui_atlas.scale_up(fc.raw)
+            aw.draw_texts(content, fc.texts, self._font_sm)
+            view = content.subsurface((0, off * S, content.get_width(),
+                                       max(0, min(view_h, content_h - off)) * S))
+            self.hud_surf.blit(view, (f.px + T * S, f.py + view_y0 * S))
+        f._mail_content = _draw
+        if opened is not None and self._net:
+            from shared.messages import MsgType
+            self._net.send(MsgType.MAIL_OPEN_ITEM, {"mail_id": opened["mail_id"]})
 
-    # ── Compor ───────────────────────────────────────────────────────
+    # ── Escrever ─────────────────────────────────────────────────────
 
-    def _render_compose(self, ui) -> None:
-        L = self._compose_layout()
-        self._draw_panel_frame(L["panel"], "NOVA CORRESPONDENCIA")
-        self._draw_close_button(L["close"])
+    def _draw_compose(self, ui, f) -> None:
+        T, S = aw.T, aw.S
+        tw, th = self._TW, self._TH
         mx, my = pygame.mouse.get_pos()
-
-        # Bolsa
-        bag_lbl = self._font_md.render("Sua Bolsa", False, (170, 190, 220))
-        self.hud_surf.blit(bag_lbl, (L["bag"].x, L["y0"] + self._u(44)))
+        modal = self._compose_qty_modal is not None
+        ip = aw.slot_icon_px()
         inv = self.world.get_component(self.player_entity, Inventory)
-        bag_items = inv.items if inv else []
-        staged_indices = {idx for idx, _q in ui.compose_items}
-        row_h = L["bag_row_h"]
-        max_bag_scroll = max(0, len(bag_items) - (L["bag"].height // row_h))
-        self._bag_scroll = min(self._bag_scroll, max_bag_scroll)
-        for i, item in enumerate(bag_items):
-            vis_i = i - self._bag_scroll
-            r = pygame.Rect(L["bag"].x, L["bag"].y + vis_i * row_h, L["bag"].width, row_h - self._u(2))
-            if r.bottom < L["bag"].y or r.top > L["bag"].bottom:
-                continue
-            hov = r.collidepoint(mx, my)
-            dim = i in staged_indices
-            bg_c = (18, 24, 34) if dim else ((28, 38, 55) if hov else (18, 24, 34))
-            pygame.draw.rect(self.hud_surf, bg_c, r, border_radius=3)
-            rar_col = self._RARITY_COLORS.get(item.rarity, (100, 100, 100))
-            name_col = (60, 65, 75) if dim else rar_col
-            stack = getattr(item, "stack", 1)
+        items = inv.items if inv else []
+        staged = {idx for idx, _q in ui.compose_items}
+        shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
 
-            icon_s  = row_h - self._u(6)
-            ic_r    = pygame.Rect(r.x + self._u(3), r.y + (row_h - self._u(2) - icon_s) // 2, icon_s, icon_s)
-            icon_surf = ICONS.get(ICONS.item_key(item), icon_s)
-            if icon_surf:
-                self.hud_surf.blit(icon_surf, ic_r)
-            else:
-                pygame.draw.rect(self.hud_surf, rar_col, ic_r, 1, border_radius=2)
-            if stack > 1:
-                draw_stack_count(self.hud_surf, item, ic_r, self._font_sm)
-
-            label = item.name if stack <= 1 else f"{item.name} x{stack}"
-            self.hud_surf.blit(self._font_sm.render(label, False, name_col),
-                               (ic_r.right + self._u(6), r.y + self._u(4)))
-            if hov and not dim:
-                lines = item_tooltip_lines(item, None)
-                if getattr(item, "max_stack", 1) > 1 and stack > 1:
-                    lines.append(("Clique dir. anexa tudo | Shift+dir. = qtd.", (150, 150, 150)))
+        # Bolsa (clique direito anexa; Shift+direito = quantidade)
+        f.text("Sua bolsa", T, (self._ROW0 - 0.5) * T, (190, 170, 120), self._font_sm, anchor="midleft")
+        cells = []
+        for i, it in enumerate(items):
+            cells.append(None if it is None else
+                         (ICONS.get(ICONS.item_key(it), ip), it.stack if getattr(it, "max_stack", 1) > 1 else 0))
+        bag0 = self._ROW0
+        hov_i, _ = f.grid("mail:bag", 1, bag0, self._BAG_COLS, self._BAG_ROWS, cells,
+                          count_font=self._font_xs)
+        for i in range(len(items)):
+            c, r = i % self._BAG_COLS, i // self._BAG_COLS
+            self._mail_hit(f"mail:bag:{i}", f, (1 + c) * T, (bag0 + r) * T, (2 + c) * T, (bag0 + r + 1) * T)
+            if i in staged:   # já anexado: escurece
+                dim = pygame.Surface((ip, ip), pygame.SRCALPHA)
+                dim.fill((0, 0, 0, 160))
+                f.overlays.append((dim, (1 + c) * T + 1, (bag0 + r) * T + 1))
+        it = items[hov_i] if 0 <= hov_i < len(items) else None
+        if it is not None and hov_i not in staged:
+            rar = self._RARITY_COLORS.get(it.rarity, (200, 200, 200))
+            lines = item_tooltip_lines(it, None)
+            lines.append(("Clique dir. anexa tudo | Shift+dir. = qtd." if getattr(it, "max_stack", 1) > 1
+                          and it.stack > 1 else "Clique direito p/ anexar", (150, 150, 150)))
+            self.pending_tooltip = (mx, my, it.name, lines, rar, it, None)
+            if f.rreleased and not modal and len(ui.compose_items) < 6:
+                if shift and getattr(it, "max_stack", 1) > 1 and it.stack > 1:
+                    self._open_compose_qty_modal(hov_i, it)
                 else:
-                    lines.append(("Clique direito p/ anexar", (150, 150, 150)))
-                self.pending_tooltip = (mx, my, item.name, lines, rar_col, item, None)
+                    ui.compose_items.append((hov_i, it.stack))
 
-        # Campos
-        self._draw_text_field(L["to"], ui.compose_to, ui.compose_focus == "to", "Para:")
-        subj_placeholder = self._subject_placeholder(ui) or "Assunto:"
-        self._draw_text_field(L["subject"], ui.compose_subject, ui.compose_focus == "subject", subj_placeholder)
-        # Corpo (multi-linha)
-        pygame.draw.rect(self.hud_surf, (20, 26, 38), L["body"], border_radius=3)
-        pygame.draw.rect(self.hud_surf, (140, 170, 220) if ui.compose_focus == "body" else (60, 75, 100),
-                         L["body"], 1, border_radius=3)
-        # Quebra simples por largura (texto livre não precisa de wrap
-        # perfeito por parágrafo aqui — mesma tolerância de campo de chat).
-        y = L["body"].y + self._u(6)
-        for raw_line in ui.compose_body.split("\n"):
-            for wrapped in (wrap_text(raw_line, self._font_sm, L["body"].width - self._u(12)) or [""]):
-                if y > L["body"].bottom - self._u(18):
-                    break
-                self.hud_surf.blit(self._font_sm.render(wrapped, False, (220, 225, 235)),
-                                   (L["body"].x + self._u(6), y))
-                y += self._u(18)
+        # Formulário
+        fx0 = 1 + self._BAG_COLS + 1
+        fw = tw - 1 - fx0 - 1
+        cur = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
+        fields = (("to", self._ROW0, fw, ui.compose_to, "Para:"),
+                  ("subject", self._ROW0 + 1, fw, ui.compose_subject,
+                   self._subject_placeholder(ui) or "Assunto:"))
+        over_any = False
+        for key, row, w, value, ph in fields:
+            focused = ui.compose_focus == key
+            if f.text_field(f"mail:{key}", fx0, row, w, value + (cur if focused else ""), active=focused,
+                            placeholder=ph, align="left", font=self._font_sm):
+                self._focus(ui, key)
+            over_any |= f.field_hover(fx0, row, w)
+            self._mail_hit(f"mail:{key}", f, fx0 * T, row * T, (fx0 + w) * T, (row + 1) * T)
 
-        # Slots de item — mostra a QUANTIDADE ESCOLHIDA (2ª rodada de bug
-        # real relatado pelo usuário 25/09/2026: escolher 2 no modal de
-        # quantidade continuava mostrando a pilha CHEIA da bolsa, 4, no
-        # slot — o envio em si já ia certo, só a exibição estava errada).
-        # Cópia RASA só pra desenho, nunca muta o item de verdade da
-        # bolsa (`inv.items[idx]` continua intocado até "Enviar" de
-        # verdade confirmar no servidor).
-        for i, r in enumerate(L["slots"]):
+        # Corpo (multi-linha): moldura do atlas, texto com quebra
+        by0, bh = self._ROW0 + 2, 4
+        ui_atlas.blit_frame(f.raw, fx0, by0, fw, bh)
+        body_focused = ui.compose_focus == "body"
+        f.text_block((ui.compose_body + (cur if body_focused else "")) or " ",
+                     fx0 * T + 8, by0 * T + 8, fw * T - 16, aw.TEXT_COL, self._font_sm)
+        body_hov = f.hover(fx0 * T, by0 * T, (fx0 + fw) * T, (by0 + bh) * T)
+        if f.press("mail:body", fx0 * T, by0 * T, (fx0 + fw) * T, (by0 + bh) * T)[1]:
+            self._focus(ui, "body")
+        over_any |= body_hov
+        self._mail_hit("mail:body", f, fx0 * T, by0 * T, (fx0 + fw) * T, (by0 + bh) * T)
+
+        # Anexos (6 slots — mostra a QUANTIDADE ESCOLHIDA, cópia rasa só
+        # pra desenho, nunca muta o item da bolsa; clique direito remove)
+        sy = (by0 + bh) * T + 4
+        for i in range(6):
             item_obj = None
             if i < len(ui.compose_items):
                 idx, qty = ui.compose_items[i]
-                if inv and 0 <= idx < len(inv.items):
-                    item_obj = copy.copy(inv.items[idx])
+                if 0 <= idx < len(items) and items[idx] is not None:
+                    item_obj = copy.copy(items[idx])
                     item_obj.stack = qty
-            self._draw_item_slot(r, item_obj, r.collidepoint(mx, my), "Clique direito p/ remover" if item_obj else "")
+            sx = fx0 * T + i * (T + 2)
+            icon = ICONS.get(ICONS.item_key(item_obj), ip) if item_obj else None
+            count = item_obj.stack if item_obj and getattr(item_obj, "max_stack", 1) > 1 else 0
+            hov, _ = f.slot(f"mail:att:{i}", sx, sy, icon, count, dark=True, count_font=self._font_xs)
+            self._mail_hit(f"mail:att:{i}", f, sx, sy, sx + T, sy + T)
+            if hov and item_obj is not None:
+                lines = item_tooltip_lines(item_obj, None)
+                lines.append(("Clique direito p/ remover", (150, 150, 150)))
+                self.pending_tooltip = (mx, my, item_obj.name, lines,
+                                        self._RARITY_COLORS.get(item_obj.rarity, (200, 200, 200)), item_obj, None)
+                if f.rreleased and not modal:
+                    ui.compose_items.pop(i)
 
-        # Gold
-        self._draw_text_field(L["gold"], ui.compose_gold_text, ui.compose_focus == "gold", "Moedas de ouro:")
+        # Ouro
+        grow = by0 + bh + 2
+        gfocused = ui.compose_focus == "gold"
+        if f.text_field("mail:gold", fx0, grow, 7, ui.compose_gold_text + (cur if gfocused else ""),
+                        active=gfocused, placeholder="Moedas de ouro:", align="left", font=self._font_sm):
+            self._focus(ui, "gold")
+        over_any |= f.field_hover(fx0, grow, 7)
+        self._mail_hit("mail:gold", f, fx0 * T, grow * T, (fx0 + 7) * T, (grow + 1) * T)
 
-        # Enviar
-        btn = L["send"]
-        hov = btn.collidepoint(mx, my)
-        pygame.draw.rect(self.hud_surf, (35, 55, 85) if hov else (24, 38, 60), btn, border_radius=4)
-        pygame.draw.rect(self.hud_surf, (120, 160, 220), btn, 1, border_radius=4)
-        lbl = self._font_md.render("Enviar", False, (200, 220, 250))
-        self.hud_surf.blit(lbl, (btn.centerx - lbl.get_width() // 2, btn.centery - lbl.get_height() // 2))
+        # Clique fora de qualquer campo desfoca (mesma UX do ouro do trade)
+        if f.clicked and ui.compose_focus and not over_any:
+            self._unfocus(ui)
 
-    # ── Abrir correspondência ────────────────────────────────────────
+        bw = f.tiles_for(["Enviar"], 3)
+        if f.button("mail:send", tw - 1 - bw, th - 2, bw, "Enviar"):
+            self._send_compose(ui)
+        ay0, ay1 = ui_atlas.button_art_y(True)
+        self._mail_hit("mail:send", f, (tw - 1 - bw) * T, (th - 2) * T + ay0, (tw - 1) * T, (th - 2) * T + ay1)
 
-    def _render_detail(self, ui) -> None:
-        if ui.detail is None:
-            self._back_to_inbox()
-            return
-        L = self._detail_layout()
-        self._draw_panel_frame(L["panel"], "CORRESPONDENCIA")
+    # ── Ler correspondência ──────────────────────────────────────────
+
+    def _draw_detail(self, ui, f) -> None:
+        T = aw.T
+        tw, th = self._TW, self._TH
         mx, my = pygame.mouse.get_pos()
+        d = ui.detail
+        if d is None:
+            return
+        ip = aw.slot_icon_px()
+        f.text(f"De: {d['sender_name']}", T, self._ROW0 * T + T / 2, aw.TEXT_COL, self._font_sm, anchor="midleft")
+        f.text(f"Assunto: {d['subject']}", T, (self._ROW0 + 1) * T + T / 2, (190, 170, 120),
+               self._font_sm, anchor="midleft")
+        by0, bh = self._ROW0 + 2, 5
+        ui_atlas.blit_frame(f.raw, 1, by0, tw - 2, bh)
+        f.text_block(d["body"] or " ", T + 8, by0 * T + 8, (tw - 2) * T - 16, aw.TEXT_COL, self._font_sm)
 
-        de_s = self._font_sm.render(f"De: {ui.detail['sender_name']}", False, (170, 190, 220))
-        self.hud_surf.blit(de_s, (L["x0"] + L["pad"], L["y0"] + self._u(44)))
-        as_s = self._font_sm.render(f"Assunto: {ui.detail['subject']}", False, (150, 165, 190))
-        self.hud_surf.blit(as_s, (L["x0"] + L["pad"], L["y0"] + self._u(64)))
-
-        pygame.draw.rect(self.hud_surf, (16, 21, 30), L["body"], border_radius=3)
-        pygame.draw.rect(self.hud_surf, (55, 70, 95), L["body"], 1, border_radius=3)
-        y = L["body"].y + self._u(6)
-        for raw_line in ui.detail["body"].split("\n"):
-            for wrapped in (wrap_text(raw_line, self._font_sm, L["body"].width - self._u(12)) or [""]):
-                if y > L["body"].bottom - self._u(18):
-                    break
-                self.hud_surf.blit(self._font_sm.render(wrapped, False, (210, 215, 225)),
-                                   (L["body"].x + self._u(6), y))
-                y += self._u(18)
-
-        pac_s = self._font_sm.render("Pacote:", False, (170, 190, 220))
-        self.hud_surf.blit(pac_s, (L["x0"] + L["pad"], L["body"].bottom + self._u(2)))
-
-        for it in ui.detail["items"]:
+        # Pacote: item reclamado SOME do slot (pedido do usuário 25/09/2026)
+        prow = by0 + bh
+        f.text("Pacote:", T, prow * T + T / 2, (190, 170, 120), self._font_sm, anchor="midleft")
+        px0 = 5 * T
+        claim = None
+        for it in d["items"]:
             idx = it["item_index"]
-            if not (0 <= idx < len(L["slots"])):
+            if not 0 <= idx < 6:
                 continue
-            r = L["slots"][idx]
-            # Item reclamado SOME do slot (pedido do usuário 25/09/2026 —
-            # antes só escurecia, mas o item continuava visível/tentador
-            # de clicar de novo). O slot vazio ainda mostra o contorno
-            # (mesmo _draw_item_slot com item=None), só não desenha mais
-            # o ícone nem responde a hover/clique.
-            item_to_draw = None if it["claimed"] else it["item"]
-            self._draw_item_slot(r, item_to_draw, r.collidepoint(mx, my) and not it["claimed"],
-                                 "Clique p/ reclamar")
+            sx = px0 + idx * (T + 2)
+            item = None if it["claimed"] else it["item"]
+            icon = ICONS.get(ICONS.item_key(item), ip) if item else None
+            count = item.stack if item and getattr(item, "max_stack", 1) > 1 else 0
+            hov, fired = f.slot(f"mail:claim:{idx}", sx, prow * T, icon, count, dark=True,
+                                count_font=self._font_xs, enabled=item is not None)
+            self._mail_hit(f"mail:claim:{idx}", f, sx, prow * T, sx + T, (prow + 1) * T)
+            if hov and item is not None:
+                lines = item_tooltip_lines(item, None)
+                lines.append(("Clique p/ reclamar", (150, 150, 150)))
+                self.pending_tooltip = (mx, my, item.name, lines,
+                                        self._RARITY_COLORS.get(item.rarity, (200, 200, 200)), item, None)
+                if fired or f.rreleased:   # qualquer um dos 2 botões reclama
+                    claim = ("item", idx)
 
-        if ui.detail["gold"] > 0:
-            r = L["gold"]
-            claimed = ui.detail["gold_claimed"]
-            hov = r.collidepoint(mx, my) and not claimed
-            bg_c = (40, 34, 12) if hov else (26, 22, 10)
-            pygame.draw.rect(self.hud_surf, bg_c, r, border_radius=3)
-            pygame.draw.rect(self.hud_surf, (180, 150, 60), r, 1, border_radius=3)
-            label = f"{ui.detail['gold']}g" + (" (reclamado)" if claimed else " - clique p/ reclamar")
-            col = (110, 100, 70) if claimed else (255, 215, 0)
-            lbl = self._font_sm.render(label, False, col)
-            self.hud_surf.blit(lbl, (r.x + self._u(6), r.centery - lbl.get_height() // 2))
+        if d["gold"] > 0:
+            label = (f"{d['gold']}g (reclamado)" if d["gold_claimed"]
+                     else f"Reclamar {d['gold']}g")
+            gw = f.tiles_for([label], 3, self._font_sm)
+            if f.button("mail:gold", 1, prow + 1, gw, label, tall=False, enabled=not d["gold_claimed"]):
+                claim = ("gold",)
+            if not d["gold_claimed"] and f.right_click(T, (prow + 1) * T, (1 + gw) * T, (prow + 2) * T):
+                claim = ("gold",)
+            by0b, by1b = ui_atlas.button_art_y(False)
+            self._mail_hit("mail:gold", f, T, (prow + 1) * T + by0b, (1 + gw) * T, (prow + 1) * T + by1b)
 
-        for btn, label, col in ((L["delete"], "Deletar", (220, 100, 100)),
-                                (L["close2"], "Fechar", (180, 190, 210))):
-            hov = btn.collidepoint(mx, my)
-            pygame.draw.rect(self.hud_surf, (40, 25, 25) if hov else (28, 18, 18), btn, border_radius=4) \
-                if label == "Deletar" else \
-                pygame.draw.rect(self.hud_surf, (30, 38, 50) if hov else (22, 28, 38), btn, border_radius=4)
-            pygame.draw.rect(self.hud_surf, col, btn, 1, border_radius=4)
-            lbl = self._font_sm.render(label, False, col)
-            self.hud_surf.blit(lbl, (btn.centerx - lbl.get_width() // 2, btn.centery - lbl.get_height() // 2))
+        bw = f.tiles_for(["Deletar", "Voltar"], 3)
+        delete = f.button("mail:delete", 1, th - 2, bw, "Deletar")
+        back = f.button("mail:back", tw - 1 - bw, th - 2, bw, "Voltar")
+        ay0, ay1 = ui_atlas.button_art_y(True)
+        self._mail_hit("mail:delete", f, T, (th - 2) * T + ay0, (1 + bw) * T, (th - 2) * T + ay1)
+        self._mail_hit("mail:back", f, (tw - 1 - bw) * T, (th - 2) * T + ay0, (tw - 1) * T, (th - 2) * T + ay1)
+
+        from shared.messages import MsgType
+        if claim and self._net:
+            if claim[0] == "gold":
+                self._net.send(MsgType.MAIL_CLAIM_GOLD, {"mail_id": d["mail_id"]})
+            else:
+                self._net.send(MsgType.MAIL_CLAIM_ITEM, {"mail_id": d["mail_id"], "item_index": claim[1]})
+        if delete:
+            if self._net:
+                self._net.send(MsgType.MAIL_DELETE, {"mail_id": d["mail_id"]})
+            ui.detail = None
+            ui.screen = "inbox"
+        elif back:
+            self._back_to_inbox()
