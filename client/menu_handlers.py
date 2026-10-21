@@ -98,7 +98,7 @@ class MenuHandlers:
         """(tw, btn_w, col_sim, col_nao) — 2 botões com 1 tile de vão."""
         btn_w = aw.button_tiles(self.font_md, ["Sim", "Não"], 3)
         tw = max(self._mm_tiles_for([self._QUIT_MSG], 1) + 2, 2 * btn_w + 3)
-        col_sim = (tw - (2 * btn_w + 1)) // 2
+        col_sim = (tw - (2 * btn_w + 1)) / 2
         return tw, btn_w, col_sim, col_sim + btn_w + 1
 
     def _draw_quit_confirm(self, events: list) -> "str | None":
@@ -157,7 +157,7 @@ class MenuHandlers:
     def _mm_back_button(self, f: aw.Frame, btn_id: str, tw: int, ty: int) -> bool:
         """Botão "Voltar" (alto) centralizado na janela de tw tiles."""
         w = aw.button_tiles(self.font_md, ["Voltar"], 3)
-        return f.button(btn_id, (tw - w) // 2, ty, w, "Voltar")
+        return f.button(btn_id, (tw - w) / 2, ty, w, "Voltar")
 
     # ── Submenu Interface (escala da UI) ───────────────────────────────────
     _IFACE_STEPS = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
@@ -179,7 +179,7 @@ class MenuHandlers:
         cur = min(range(len(steps)), key=lambda i: abs(steps[i] - self._ui_scale))
         f.text(self._IFACE_LABEL, tw * T / 2,
                self._IFACE_ROW_LABEL * T + T / 2, aw.TITLE_COL)
-        col_l = (tw - (inner + 2)) // 2
+        col_l = (tw - (inner + 2)) / 2
         step = f.selector("iface:scale", self._IFACE_ROW_SEL, col_l, col_l + inner + 1,
                                  f"{steps[cur]:.2f}×")
         back = self._mm_back_button(f, "iface:voltar", tw, self._IFACE_BTN_ROW)

@@ -691,9 +691,10 @@ class BlacksmithSystem(UIScaleMixin, System):
         f = aw.Frame(self.hud_surf, events, tw, th, area=area, press=self._press, font=self._font_sm,
                      style="dark", overlay=False)
         f.text(item.name, tw * T / 2, T, _RARITY_COL.get(item.rarity, _COL_WHITE))
-        delete = f.button("bs:ctx:del", (tw - bw) // 2, 2, bw, "Deletar", tall=False)
+        bx = (tw - bw) / 2
+        delete = f.button("bs:ctx:del", bx, 2, bw, "Deletar", tall=False)
         ay0, ay1 = ui_atlas.button_art_y(False)
-        self._hit("bs:ctx:del", f, (tw - bw) // 2 * T, 2 * T + ay0, ((tw - bw) // 2 + bw) * T, 2 * T + ay1)
+        self._hit("bs:ctx:del", f, bx * T, 2 * T + ay0, (bx + bw) * T, 2 * T + ay1)
         outside = f.clicked and not f.hover(0, 0, tw * T, th * T)
         f.end()
         if delete:

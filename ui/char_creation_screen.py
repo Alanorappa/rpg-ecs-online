@@ -314,7 +314,7 @@ def _draw_creation(screen, events, st: dict, press, font_md, font_sm, font_xs,
 
     # ── Nome + Sortear (linha 2) ──────────────────────────────────────────
     fw, rw = lay["field_w"], lay["reroll_w"]
-    fcol = (tw - (fw + 1 + rw)) // 2
+    fcol = (tw - (fw + 1 + rw)) / 2
     if st["name_text"]:
         cursor = "|" if st["name_active"] and pygame.time.get_ticks() % 1000 < 500 else ""
         shown, color = st["name_text"] + cursor, None
@@ -651,7 +651,7 @@ def _draw_selection(screen, events, chars, can_create, press, scroll,
             pygame.draw.rect(fc.raw, col, (_SEL_PREVIEW_CX - 9, int(cy) - 9, 18, 18))
 
     bw = lay["bottom_w"]
-    bcol = (tw - bw) // 2
+    bcol = (tw - bw) / 2        # centralizado de verdade (meio tile quando ímpar)
     by = th - _SEL_BOTTOM_ROWS
     if f.button("sel:create", bcol, by, bw, "Criar Personagem", tall=False, enabled=can_create):
         action = ("create",)
@@ -687,14 +687,15 @@ def _draw_confirm_delete(screen, events, name: str, press, font_md, font_sm,
                  font=font_md, style="dark")
     f.text(msg, tw * aw.T / 2, 2.5 * aw.T, _SEL_INFO_COL, font=font_sm)
     answer = None
-    if f.button("del:yes", 1, 3, bw, "Excluir"):
+    bx = (tw - (2 * bw + 1)) / 2        # botões centralizados como grupo
+    if f.button("del:yes", bx, 3, bw, "Excluir"):
         answer = "yes"
-    if f.button("del:no", tw - 1 - bw, 3, bw, "Cancelar"):
+    if f.button("del:no", bx + bw + 1, 3, bw, "Cancelar"):
         answer = "no"
     if hits is not None:
         ay0, ay1 = ui_atlas.button_art_y(True)
-        for hid, col in (("del:yes", 1), ("del:no", tw - 1 - bw)):
-            hits[hid] = pygame.Rect(f.px + col * aw.T * aw.S, f.py + (3 * aw.T + ay0) * aw.S,
+        for hid, col in (("del:yes", bx), ("del:no", bx + bw + 1)):
+            hits[hid] = pygame.Rect(round(f.px + col * aw.T * aw.S), f.py + (3 * aw.T + ay0) * aw.S,
                                     bw * aw.T * aw.S, (ay1 - ay0) * aw.S)
     f.end("Excluir personagem?")
     return answer

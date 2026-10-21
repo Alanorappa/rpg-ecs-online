@@ -6677,3 +6677,15 @@ as janelas do atlas passaram a calcular largura de botão com
 `button_tiles` (loja, ferreiro, correio, troca, quest, treinador, menu
 de pausa, atalhos, seleção/criação de personagem, modal de quantidade,
 avisos). Teste: `tests/test_atlas_kit.py::test_botao_nunca_deixa_texto_perto_das_bordas`.
+
+## 98. Botões "centralizados" meio tile à esquerda (21/10/2026)
+
+Relatado pelo usuário na seleção de personagem ("Criar Personagem"/
+"Sair" fora do centro). Posição calculada com divisão INTEIRA
+(`(tw - bw) // 2`) — quando a sobra de tiles é ímpar, o botão perdia
+meio tile pra esquerda. Corrigido pra `/ 2` (o atlas aceita meio tile)
+em todo lugar que centraliza: seleção de personagem (botões de baixo e
+campo de nome da criação), menu de pausa (Sim/Não, Voltar, seletor),
+editor de atalhos, menu de player da troca, menu Deletar do ferreiro. O
+aviso de excluir personagem também passou a agrupar os 2 botões no
+centro (antes nas pontas).

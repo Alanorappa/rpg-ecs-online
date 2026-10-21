@@ -111,3 +111,6 @@ entre o título e o pergaminho.
 **Botões (regra do usuário, 21/10/2026):** texto a pelo menos `BTN_PAD`
 (10 px RAW) de cada ponta; largura sempre por `aw.button_tiles(fonte,
 rótulos)` com a MESMA fonte do Frame que desenha o botão.
+
+**Centralizar:** coluna = `(tw - largura) / 2` — NUNCA `// 2` (divisão
+inteira desloca meio tile quando a sobra é ímpar; HISTORICO_BUGS.md §98).

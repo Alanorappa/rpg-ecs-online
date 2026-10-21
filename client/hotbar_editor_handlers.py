@@ -153,7 +153,7 @@ class HotbarEditorHandlers:
                       tw * T / 2, (th - 3) * T + T / 2, (200, 180, 80) if self._mkb_rebind else None,
                       font=self.font_sm)
         bw = lay["btn_w"]
-        col0 = (tw - (2 * bw + 1)) // 2
+        col0 = (tw - (2 * bw + 1)) / 2
         save = f.button("hbe:salvar", col0, th - 2, bw, "Salvar", tall=False)
         close = f.button("hbe:fechar", col0 + bw + 1, th - 2, bw, "Fechar", tall=False)
 

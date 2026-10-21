@@ -283,7 +283,7 @@ class TradeHandlers:
                      font=self.font_sm, style="dark", overlay=False)
         f.text(tui.popup_target_name, tw * T / 2, T, (220, 210, 190))
         target_eid = tui.popup_target_eid
-        col = (tw - bw) // 2
+        col = (tw - bw) / 2
         ay0, ay1 = ui_atlas.button_art_y(False)
         fired = None
         for i, label in enumerate(labels):

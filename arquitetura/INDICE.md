@@ -326,3 +326,4 @@
 - [21/10/2026] (feature) Abas de serviço do NPC (Missões/Negociar/Reciclar/Forjar/Treinar), sem menu intermediário; loja com mochila à direita — tags: ui, atlas, npc, abas, loja, ferreiro, treinador, quest — HISTORICO_FEATURES.md §74
 - [21/10/2026] (arch) Clique em janela aberta vazava pro mundo (NPC embaixo do cursor) — 2 listas de "modal aberto", unificadas no registro — tags: input, modal, npc, inventario, clique — PROBLEMAS_ARQUITETURA.md §294
 - [21/10/2026] (bug) Texto do botão Desfazer encostado nas bordas; regra BTN_PAD/button_tiles no kit — tags: ui, atlas, botao — HISTORICO_BUGS.md §97
+- [21/10/2026] (bug) Botões centralizados com // 2 ficavam meio tile à esquerda — tags: ui, atlas, botao, centralizar — HISTORICO_BUGS.md §98
