@@ -1967,6 +1967,19 @@ padrão a quebrar, não só os bugs individuais.
   endpoint HTTP novo. Validação de formato (ex: usuário 3–20 chars) é
   espelhada ali porque é a MESMA regra do WS, nunca uma nova.
 
+- **Janela/elemento de UI com o visual do atlas do usuário** (painel,
+  botão, ícone, seta, slider — qualquer tela que entre na troca de
+  visual) → `ui/ui_atlas.py`. O atlas `assets/ui/ui_elements.png` é uma
+  GRADE DE TILES 16x16: monta-se carimbando tiles inteiros (cantos,
+  bordas e miolo REPETIDOS) — NUNCA recortar por caixa de contorno
+  (pega pedaço de elemento vizinho) nem esticar/9-slice. Compor em
+  espaço RAW e ampliar 1x no fim com `ui_atlas.scale_up` (SCALE fixo de
+  `ui/hud_bars.py`, igual nameplate — NUNCA a escala de UI do jogador).
+  A posição de cada tile numa janela vem do mockup do usuário
+  (`assets/content/exemplo.png`), extraída por comparação pixel a
+  pixel tile a tile — nunca de olho. Botão age no SOLTAR do mouse (age
+  no clique = janela fecha antes do estado pressionado aparecer). Ver
+  HISTORICO_FEATURES.md §65.
 - **Ícone ANIMADO acima da cabeça de uma entidade, no MUNDO** (marcador
   de quest, ou categoria futura parecida) → `ui/world_icon_animator.py::
   get_frame(name, size, now_ms)` — spritesheet horizontal em

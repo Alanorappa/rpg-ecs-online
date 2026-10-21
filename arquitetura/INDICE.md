@@ -310,3 +310,4 @@
 - [19/10/2026] (feature) Build do cliente e git passam a excluir material de origem de assets/content — tags: build, git — HISTORICO_FEATURES.md §63
 - [19/10/2026] (feature) Imagens de UI (login/loading/launcher) movidas pra assets/ui/ — tags: ui, launcher — HISTORICO_FEATURES.md §64
 - [19/10/2026] (bug) Personagem travava na pose de cast depois de cancelar (mago e arqueiro) — tags: animacao, mago, arqueiro — HISTORICO_BUGS.md §94
+- [20/10/2026] (feature) Atlas de UI por tiles 16x16 (ui/ui_atlas.py) — 1ª tela: configuração de som — tags: ui, atlas, som, menu — HISTORICO_FEATURES.md §65

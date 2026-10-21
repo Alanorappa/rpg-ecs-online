@@ -303,6 +303,10 @@ rpg_ecs_online/
 │   ├── combat_log.py               ← CombatLog/LOG — histórico da aba "Combate" do chat
 │   ├── chat_bubble.py               ← balão de fala acima da cabeça
 │   ├── ui_components.py/ui_helpers.py/ui_sizes.py/ui_scale_mixin.py/ui_compare.py
+│   ├── ui_atlas.py                  ← (20/10/2026) ponto único pra montar janelas/
+│   │   elementos com o atlas assets/ui/ui_elements.png (grade de tiles
+│   │   16x16, carimbados/repetidos, nunca esticados; SCALE fixo de
+│   │   hud_bars) — ver HISTORICO_FEATURES.md §65
 │   ├── fonts.py, sound_manager.py, icon_manager.py, tile_sprite_manager.py, fov.py
 │   ├── asset_cache.py               ← (28/09/2026, §215) cache ÚNICO de
 │   │   imagem/som por caminho de arquivo (get_image/get_sound) — todo

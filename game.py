@@ -468,6 +468,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._pending_quit      = False
         self._pending_logout    = False  # "Deslogar" — volta pra seleção de personagem (main.py)
         self._sound_drag        = ""
+        self._sound_arrow_hold: "tuple | None" = None  # (key, dir, próximo_ms) — seta do slider de som segurada
+        self._sound_back_pressed = False  # botão Voltar da tela de som afundado (age no soltar)
         self._show_hotbar_editor = False
         self._hbe_drag_from: tuple | None = None  # ("panel", skill_id) | ("slot", idx)
         self._hbe_rebind_slot: int | None = None
@@ -1575,6 +1577,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._show_pause         = False
         self._pause_submenu      = ""
         self._sound_drag         = ""
+        self._sound_arrow_hold   = None
+        self._sound_back_pressed = False
         self._show_hotbar_editor = False
         self._hbe_drag_from      = None
         self._hbe_rebind_slot    = None

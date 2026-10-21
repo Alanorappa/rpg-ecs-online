@@ -5423,3 +5423,59 @@ na raiz dela). Validado: `tests/test_loading_screen.py` +
 `tests/test_client_ui.py` (256 testes) sem regressão; paths
 confirmados existentes em disco antes do commit.
 
+## 65. Atlas de UI por tiles 16x16 — 1ª tela: configuração de som (20/10/2026)
+
+**Pedido do usuário**: trocar o visual de 6 janelas (diálogo de quest,
+menu principal, configuração de som, seleção de personagem, inventário,
+criação de personagem) pelo atlas `assets/ui/ui_elements.png`, seguindo
+o mockup `assets/content/exemplo.png`, na MESMA escala dos nameplates.
+Rollout 1 tela por vez (decisão do usuário) — 1ª: configuração de som.
+
+**Como o atlas funciona (o que eu entendi errado na 1ª tentativa)**: é
+uma GRADE DE TILES 16x16 (256x256 = 16x16 tiles). Janelas são montadas
+como um mapa — cantos, bordas e miolo REPETIDOS, nunca esticados — e
+cada elemento (ícone, seta, botão, trilho) ocupa tiles inteiros
+alinhados à grade. A 1ª tentativa recortou peças por "caixa de
+contorno" (pegou pedaço de elemento vizinho — o trilho veio contaminado
+pelos quadrados de slot logo abaixo) e esticou o painel via 9-slice;
+resultado desalinhado, rejeitado pelo usuário em playtest. Correção:
+mapeamento extraído do mockup comparando cada tile 16x16 dele com os
+tiles do atlas pixel a pixel (igualdade exata + busca de padrão nos
+tiles com sombra semi-transparente) — nunca escolhido de olho.
+
+**Implementação**: `ui/ui_atlas.py` (novo, ponto único) — `blit_tile`/
+`blit_tile_px` (carimba tile), `wood_panel_raw(tw, th)` (painel de
+madeira; bordas com variante decorativa determinística por posição;
+miolo sempre o tile liso (1,10); cacheado), `blit_button` (3 colunas:
+pontas fixas + meio repetido, 2 linhas; idle nas colunas 6-8,
+pressionado nas 9-11, linhas 10-11; arte só na faixa y 10..24 do
+bloco), `scale_up` (SCALE fixo de `ui/hud_bars.py`, nearest-neighbor).
+Tudo composto em espaço RAW e ampliado 1x no fim — nunca a escala de UI
+do jogador.
+
+`client/menu_handlers.py::_draw_sound_submenu` reescrita: painel 9x11
+tiles; Música (linha 3) e Efeitos (linha 6), cada um com ícone (clicar
+= mudo/desmudo; 0% de volume também mostra o ícone desligado, mesmo com
+o som ligado — clicar no ícone em 0% não muda nada visível, decisão do
+usuário), setas (clique = ±1%; segurar = ±1 barrinha a cada 250ms, com
+o tile "pressionado" enquanto segura), trilho (13,4) com barrinhas
+(14,4) coladas a cada 3px, proporcionais ao volume (21 cabem no
+trilho; arrastar sobre o trilho ajusta direto — as setas não iniciam
+arraste, era o que fazia um clique pular pra 0%/100%) e percentual
+acima. Sem rótulos "Music"/"Effects" (o ícone identifica a linha, igual
+ao mockup). Botão "Voltar" age no SOLTAR (afunda enquanto segura;
+soltar fora cancela) — agindo no clique, a janela fechava no mesmo
+frame e o estado pressionado nunca aparecia. Estado novo em `game.py`:
+`_sound_arrow_hold`, `_sound_back_pressed` (resetados junto de
+`_sound_drag`). `_mm_panel`/`_mm_button` (outros submenus) ficam
+intocados até a próxima tela.
+
+**Teste**: `tests/test_ui_atlas.py` — painel copia tiles exatos sem
+esticar, botão repete o tile do meio, ícone muta, 0% = ícone desligado,
+arrastar proporcional, seta ±1% sem virar arraste, segurar = 1
+barrinha/250ms com relógio simulado, Voltar age no soltar e soltar fora
+cancela. Achado de infraestrutura de teste: `pygame.display.set_mode()`
+no nível do módulo vaza pro resto da sessão do pytest (quebrou
+`test_clique_na_sidebar_troca_categoria`) — o tamanho maior de janela é
+setado e desfeito por teste. Validado em jogo pelo usuário.
+

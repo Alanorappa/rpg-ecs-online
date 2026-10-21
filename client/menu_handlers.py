@@ -8,11 +8,14 @@ instanciada diretamente — ela é herdada por GameEngine, que fornece
 self.screen, self.font_md/font_sm, self._scale/_ui_scale e os demais
 atributos referenciados aqui.
 """
+import math
+
 import pygame
 from ui.ui_helpers import fill_surf
 
 from ui.sound_manager import SOUNDS
 from ui.ui_sizes import UI
+from ui import ui_atlas
 
 
 class MenuHandlers:
@@ -47,6 +50,7 @@ class MenuHandlers:
         pygame.draw.rect(self.screen, bdr,  rect, 1, border_radius=5)
         lbl = self.font_md.render(label, False, self._MM_BTN_TXT)
         self.screen.blit(lbl, lbl.get_rect(center=rect.center))
+
 
     # ── Menu principal ─────────────────────────────────────────────────────
     def _draw_pause_menu(self, events: list) -> "str | None":
@@ -277,93 +281,154 @@ class MenuHandlers:
         return None
 
     def _draw_sound_submenu(self, events: list) -> "str | None":
-        self._set_panel_scale(UI.MENU_SOUND_W, UI.MENU_SOUND_H)
-        PW, PH  = self._u(UI.MENU_SOUND_W), self._u(UI.MENU_SOUND_H)
+        """Montada com tiles 16x16 do atlas de UI (ui/ui_atlas.py), no
+        estilo do mockup do usuário (assets/content/exemplo.png). Em cada
+        linha de volume: ícone (clicar = mudo/desmudo), seta esq./dir.
+        (clique = ±1%; segurar = ±1 barrinha a cada _SND_HOLD_MS), trilho
+        com barrinhas proporcionais ao volume (arrastar sobre o trilho
+        ajusta direto) e o percentual acima. Escala fixa ui_atlas.SCALE
+        (igual nameplate), nunca a escala de UI do jogador."""
+        T, S = ui_atlas.TILE, ui_atlas.SCALE
+        raw = ui_atlas.wood_panel_raw(self._SND_TW, self._SND_TH).copy()
+        PW, PH = raw.get_width() * S, raw.get_height() * S
+        px = self.screen.get_width()  // 2 - PW // 2 + UI.MENU_SOUND_OFFSET_X
+        py = self.screen.get_height() // 2 - PH // 2 + UI.MENU_SOUND_OFFSET_Y
         self._mm_overlay()
-        px, py  = self._mm_panel(PW, PH, (UI.MENU_SOUND_OFFSET_X, UI.MENU_SOUND_OFFSET_Y))
 
-        title = self.font_md.render("Sound", False, self._MM_TITLE_COL)
-        self.screen.blit(title, (px + PW // 2 - title.get_width() // 2, py + self._u(14)))
-
-        mx, my   = pygame.mouse.get_pos()
-        clicked  = any(e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 for e in events)
-        released = any(e.type == pygame.MOUSEBUTTONUP   and e.button == 1 for e in events)
-        if released:
-            if self._sound_drag:
+        mx, my     = pygame.mouse.get_pos()
+        rx, ry     = (mx - px) / S, (my - py) / S   # mouse em espaço RAW
+        clicked    = any(e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 for e in events)
+        released   = any(e.type == pygame.MOUSEBUTTONUP   and e.button == 1 for e in events)
+        mouse_down = pygame.mouse.get_pressed()[0]
+        now        = pygame.time.get_ticks()
+        if released or not mouse_down:
+            if self._sound_drag or self._sound_arrow_hold:
                 self._save_config()
-            self._sound_drag = ""
+            self._sound_drag       = ""
+            self._sound_arrow_hold = None
 
-        # Layout: [ label | ████ slider ████ | toggle ]
-        SLX     = px + self._u(100)          # slider start x
-        SL_W    = self._u(190)               # slider track width
-        SL_H    = self._u(10)                # slider track height
-        TOG_X   = px + self._u(305)          # toggle start x
-        TOG_W, TOG_H = self._u(64), self._u(26)
+        bar_x0 = (self._SND_COL_ARROW_L + 1) * T
+        bar_w  = ui_atlas.SLIDER_FILL_BAR_W
+        n_max  = (self._SND_COL_ARROW_R - self._SND_COL_ARROW_L - 1) * T // bar_w
 
         rows = [
-            ("Music",   "music",  SOUNDS.music_volume,  SOUNDS.music_enabled),
-            ("Effects", "sfx",    SOUNDS.sfx_volume,    SOUNDS.sfx_enabled),
+            ("music", self._SND_ROW_MUSIC, ui_atlas.ICON_MUSIC_ON, ui_atlas.ICON_MUSIC_OFF),
+            ("sfx",   self._SND_ROW_SFX,   ui_atlas.ICON_SFX_ON,   ui_atlas.ICON_SFX_OFF),
         ]
+        pct_labels = []
+        for key, ty, icon_on, icon_off in rows:
+            enabled = SOUNDS.music_enabled if key == "music" else SOUNDS.sfx_enabled
+            in_row  = ty * T <= ry < (ty + 1) * T
 
-        for i, (label, key, vol, enabled) in enumerate(rows):
-            row_y = py + self._u(70) + i * self._u(60)
+            def over_col(col):
+                return in_row and col * T <= rx < (col + 1) * T
 
-            # Label
-            lbl = self.font_sm.render(label, False, (200, 185, 155))
-            self.screen.blit(lbl, (px + self._u(16), row_y + self._u(2)))
-
-            # Slider track
-            track = pygame.Rect(SLX, row_y, SL_W, SL_H)
-            pygame.draw.rect(self.screen, (50, 42, 28), track, border_radius=5)
-            fill_w = int(SL_W * vol)
-            if fill_w > 0:
-                fill_col = (200, 160, 60) if enabled else (100, 90, 60)
-                pygame.draw.rect(self.screen, fill_col,
-                                 pygame.Rect(SLX, row_y, fill_w, SL_H), border_radius=5)
-            pygame.draw.rect(self.screen, (90, 72, 44), track, 1, border_radius=5)
-
-            # Slider handle
-            hx = SLX + int(SL_W * vol)
-            pygame.draw.circle(self.screen, (220, 190, 110), (hx, row_y + SL_H // 2), self._u(7))
-
-            # Click / drag on slider
-            handle_area = pygame.Rect(SLX - self._u(8), row_y - self._u(8), SL_W + self._u(16), SL_H + self._u(16))
-            if clicked and handle_area.collidepoint(mx, my):
-                self._sound_drag = key
-            if self._sound_drag == key:
-                ratio = max(0.0, min(1.0, (mx - SLX) / SL_W))
-                if key == "music":
-                    SOUNDS.music_volume = ratio
-                    SOUNDS.apply_music_settings()
-                else:
-                    SOUNDS.sfx_volume = ratio
-
-            # Toggle
-            tog_rect = pygame.Rect(TOG_X, row_y - self._u(8), TOG_W, TOG_H)
-            tog_on_c = (50, 160, 80) if enabled else (60, 50, 40)
-            tog_bd_c = (80, 200, 100) if enabled else self._MM_BORDER
-            pygame.draw.rect(self.screen, tog_on_c,  tog_rect, border_radius=13)
-            pygame.draw.rect(self.screen, tog_bd_c,  tog_rect, 1, border_radius=13)
-            tog_txt = self.font_sm.render("ON" if enabled else "OFF", False,
-                                          (200, 255, 200) if enabled else (160, 140, 120))
-            self.screen.blit(tog_txt, tog_txt.get_rect(center=tog_rect.center))
-            if clicked and tog_rect.collidepoint(mx, my):
+            if clicked and over_col(self._SND_COL_ICON):
                 if key == "music":
                     SOUNDS.music_enabled = not SOUNDS.music_enabled
                     SOUNDS.apply_music_settings()
                 else:
                     SOUNDS.sfx_enabled = not SOUNDS.sfx_enabled
+                enabled = not enabled
                 self._save_config()
 
-            # Percent label
-            pct = self.font_sm.render(f"{int(vol * 100)}%", False, (160, 150, 120))
-            self.screen.blit(pct, (SLX + SL_W + self._u(4), row_y - self._u(1)))
+            # Setas: clique = ±1%; segurar = ±1 barrinha a cada _SND_HOLD_MS.
+            for col, step in ((self._SND_COL_ARROW_L, -1), (self._SND_COL_ARROW_R, +1)):
+                if clicked and over_col(col):
+                    self._snd_set_volume(key, round(self._snd_volume(key) * 100 + step) / 100)
+                    self._sound_arrow_hold = (key, step, now + self._SND_HOLD_MS)
+            hold = self._sound_arrow_hold
+            if hold and hold[0] == key and now >= hold[2]:
+                held_col = self._SND_COL_ARROW_L if hold[1] < 0 else self._SND_COL_ARROW_R
+                if over_col(held_col):
+                    cur = self._snd_volume(key) * n_max
+                    bars = (int(cur + 1e-6) + 1) if hold[1] > 0 else (math.ceil(cur - 1e-6) - 1)
+                    self._snd_set_volume(key, bars / n_max)
+                self._sound_arrow_hold = (key, hold[1], now + self._SND_HOLD_MS)
 
-        # Botão Voltar
-        back = pygame.Rect(px + PW // 2 - self._u(80), py + PH - self._u(44), self._u(160), self._u(34))
-        hov  = back.collidepoint(mx, my)
-        self._mm_button(back, "Back", hov)
-        if hov and clicked:
-            self._pause_submenu = ""
-            self._sound_drag    = ""
+            # Arrastar: só sobre o trilho (nunca sobre as setas, que são botões).
+            if clicked and in_row and bar_x0 <= rx < bar_x0 + n_max * bar_w:
+                self._sound_drag = key
+            if self._sound_drag == key:
+                self._snd_set_volume(key, (rx - bar_x0) / (n_max * bar_w))
+
+            hold = self._sound_arrow_hold
+            l_pressed = bool(hold and hold[0] == key and hold[1] < 0)
+            r_pressed = bool(hold and hold[0] == key and hold[1] > 0)
+            vol = self._snd_volume(key)
+            # 0% também é "sem som" — ícone de desligado, mesmo com o mute
+            # (enabled) ainda ligado.
+            audible = enabled and round(vol * 100) > 0
+            ui_atlas.blit_tile(raw, icon_on if audible else icon_off, self._SND_COL_ICON, ty)
+            ui_atlas.blit_tile(raw, ui_atlas.ARROW_LEFT_PRESSED if l_pressed else ui_atlas.ARROW_LEFT,
+                               self._SND_COL_ARROW_L, ty)
+            for col in range(self._SND_COL_ARROW_L + 1, self._SND_COL_ARROW_R):
+                ui_atlas.blit_tile(raw, ui_atlas.SLIDER_TRACK, col, ty)
+            ui_atlas.blit_tile(raw, ui_atlas.ARROW_RIGHT_PRESSED if r_pressed else ui_atlas.ARROW_RIGHT,
+                               self._SND_COL_ARROW_R, ty)
+
+            # Medidor segmentado: barrinhas coladas por cima do trilho,
+            # quantidade proporcional ao volume.
+            for k in range(round(vol * n_max)):
+                ui_atlas.blit_tile_px(raw, ui_atlas.SLIDER_FILL_BAR, bar_x0 + k * bar_w, ty * T)
+            pct_labels.append((f"{round(vol * 100)}%",
+                               bar_x0 + n_max * bar_w / 2, ty * T - self._SND_PCT_GAP))
+
+        # Botão Voltar — 3x2 tiles; a arte ocupa só a faixa BTN_ART_Y0..Y1
+        # dentro do bloco, então o hit-test usa essa faixa (não os 32px).
+        bx, by, bw = self._SND_BTN_COL, self._SND_BTN_ROW, self._SND_BTN_W
+        b_x0, b_x1 = bx * T, (bx + bw) * T
+        b_y0, b_y1 = by * T + ui_atlas.BTN_ART_Y0, by * T + ui_atlas.BTN_ART_Y1
+        # Botão age no SOLTAR (não no clicar) — senão a janela fecha no
+        # mesmo frame do clique e o estado "pressionado" nunca aparece.
+        # Soltar fora do botão cancela.
+        hov = b_x0 <= rx < b_x1 and b_y0 <= ry < b_y1
+        if clicked and hov:
+            self._sound_back_pressed = True
+        go_back = released and hov and self._sound_back_pressed
+        if released or not mouse_down:
+            self._sound_back_pressed = False
+        ui_atlas.blit_button(raw, bx, by, bw, pressed=self._sound_back_pressed and hov)
+
+        self.screen.blit(ui_atlas.scale_up(raw), (px, py))
+
+        title = self.font_md.render("Sound", False, self._MM_TITLE_COL)
+        self.screen.blit(title, title.get_rect(center=(px + PW // 2, py + T * S)))
+        for text, cx, cy in pct_labels:
+            surf = self.font_md.render(text, False, self._MM_BTN_TXT)
+            self.screen.blit(surf, surf.get_rect(center=(px + cx * S, py + cy * S)))
+        lbl = self.font_md.render("Voltar", False, self._MM_BTN_TXT)
+        self.screen.blit(lbl, lbl.get_rect(center=(px + (b_x0 + b_x1) * S // 2,
+                                                   py + (b_y0 + b_y1) * S // 2)))
+        if go_back:
+            self._pause_submenu      = ""
+            self._sound_drag         = ""
+            self._sound_arrow_hold   = None
+            self._sound_back_pressed = False
         return None
+
+    @staticmethod
+    def _snd_volume(key: str) -> float:
+        return SOUNDS.music_volume if key == "music" else SOUNDS.sfx_volume
+
+    @staticmethod
+    def _snd_set_volume(key: str, value: float) -> None:
+        value = max(0.0, min(1.0, value))
+        if key == "music":
+            SOUNDS.music_volume = value
+            SOUNDS.apply_music_settings()
+        else:
+            SOUNDS.sfx_volume = value
+
+    # Layout da janela de som em TILES (mesmas posições do mockup
+    # assets/content/exemplo.png). Trilho/barrinhas ocupam as colunas
+    # entre as duas setas.
+    _SND_TW, _SND_TH     = 9, 11
+    _SND_ROW_MUSIC       = 3
+    _SND_ROW_SFX         = 6
+    _SND_COL_ICON        = 1
+    _SND_COL_ARROW_L     = 2
+    _SND_COL_ARROW_R     = 7
+    _SND_BTN_COL, _SND_BTN_ROW, _SND_BTN_W = 3, 8, 3
+    _SND_PCT_GAP         = 6     # px RAW entre o centro do percentual e o topo da linha do slider
+    _SND_HOLD_MS         = 250   # segurar a seta: 1 barrinha a cada N ms

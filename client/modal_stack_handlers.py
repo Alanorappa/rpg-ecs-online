@@ -130,8 +130,10 @@ class ModalStackHandlers:
 
     def _close_pause(self) -> None:
         if self._pause_submenu:
-            self._pause_submenu = ""
-            self._sound_drag    = ""
+            self._pause_submenu    = ""
+            self._sound_drag       = ""
+            self._sound_arrow_hold = None
+            self._sound_back_pressed = False
         else:
             self._show_pause = False
 
