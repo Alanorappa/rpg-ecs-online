@@ -25,17 +25,54 @@ TILE = 16
 _ATLAS_PATH = "assets/ui/ui_elements.png"
 _atlas: "pygame.Surface | None" = None
 
-# Painel de madeira (4x4 tiles no atlas, origem (0,8)). Bordas têm uma
-# variante decorativa usada de vez em quando (mesmo padrão do exemplo);
-# miolo é sempre o tile liso (1,10).
-_WOOD = {
-    "tl": (0, 8),  "tr": (3, 8),  "bl": (0, 11), "br": (3, 11),
-    "top":    [(2, 8), (1, 8)],
-    "bottom": [(1, 11), (2, 11)],
-    "left":   [(0, 10), (0, 9)],
-    "right":  [(3, 10), (3, 9)],
-    "center": (1, 10),
+# Painéis: cantos, bordas (1ª opção = principal, 2ª = variante
+# decorativa usada de vez em quando, como no mockup) e miolo liso.
+# Madeira: 4x4 tiles a partir de (0,8). Escuro: 6x4 a partir de (6,0)
+# (mapeado da janela de seleção de personagem do mockup).
+_PANELS = {
+    "wood": {
+        "tl": (0, 8),  "tr": (3, 8),  "bl": (0, 11), "br": (3, 11),
+        "top":    [(2, 8), (1, 8)],
+        "bottom": [(1, 11), (2, 11)],
+        "left":   [(0, 10), (0, 9)],
+        "right":  [(3, 10), (3, 9)],
+        "center": (1, 10),
+    },
+    "dark": {
+        "tl": (6, 0),  "tr": (11, 0), "bl": (6, 3), "br": (11, 3),
+        "top":    [(7, 0), (7, 0)],
+        "bottom": [(8, 3), (7, 3)],
+        "left":   [(6, 1), (6, 1)],
+        "right":  [(11, 1), (11, 1)],
+        "center": (7, 1),
+    },
 }
+_WOOD = _PANELS["wood"]
+
+# Moldura vazada (contorno fino, miolo transparente) — linhas da lista
+# de seleção de personagem no mockup. Mín. 2x2 tiles.
+_FRAME = {
+    "tl": (6, 4), "top": (7, 4), "tr": (8, 4),
+    "left": (6, 5), "right": (8, 5),
+    "bl": (6, 6), "bottom": (7, 6), "br": (8, 6),
+}
+
+# Campo de texto (pílula escura semitransparente, 1 linha): ponta esq.,
+# meio repetível, ponta dir. — usar pra QUALQUER campo onde o jogador
+# digita/define um valor (nome, tecla de atalho...). Arte em y=2..13 do
+# tile e x a partir de 2px da ponta esq. até 2px antes do fim da dir.
+_FIELD_LEFT, _FIELD_MID, _FIELD_RIGHT = (9, 4), (10, 4), (11, 4)
+FIELD_ART_Y = (2, 14)
+FIELD_ART_INSET_X = 2
+
+# Barra de rolagem vertical (coluna da borda direita no mockup).
+SCROLL_UP           = (12, 0)
+SCROLL_UP_PRESSED   = (13, 0)
+SCROLL_DOWN         = (12, 1)
+SCROLL_DOWN_PRESSED = (13, 1)
+SCROLL_TRACK        = (12, 5)
+SCROLL_GRIP         = (12, 6)
+SCROLL_GRIP_PRESSED = (13, 6)
 
 # Elementos de 1 tile — (coluna, linha) no atlas.
 ICON_SFX_ON    = (12, 7)
@@ -104,32 +141,57 @@ _panel_cache: dict = {}
 _PANEL_CACHE_MAX = 32
 
 
-def wood_panel_raw(tw: int, th: int) -> "pygame.Surface":
-    """Painel de madeira de tw x th tiles, em espaço RAW (1x). Cacheado
-    por tamanho — o caller faz copy() se for desenhar por cima."""
-    key = ("wood", tw, th)
+def panel_raw(style: str, tw: int, th: int) -> "pygame.Surface":
+    """Painel (`style` = "wood" | "dark") de tw x th tiles, em espaço RAW
+    (1x). Cacheado por (estilo, tamanho) — o caller faz copy() se for
+    desenhar por cima."""
+    key = (style, tw, th)
     cached = _panel_cache.get(key)
     if cached is not None:
         return cached
+    p = _PANELS[style]
     surf = pygame.Surface((tw * TILE, th * TILE), pygame.SRCALPHA)
     for j in range(th):
         for i in range(tw):
             top, bottom = j == 0, j == th - 1
             left, right = i == 0, i == tw - 1
-            if top and left:       t = _WOOD["tl"]
-            elif top and right:    t = _WOOD["tr"]
-            elif bottom and left:  t = _WOOD["bl"]
-            elif bottom and right: t = _WOOD["br"]
-            elif top:              t = _variant(_WOOD["top"], i, j)
-            elif bottom:           t = _variant(_WOOD["bottom"], i, j)
-            elif left:             t = _variant(_WOOD["left"], i, j)
-            elif right:            t = _variant(_WOOD["right"], i, j)
-            else:                  t = _WOOD["center"]
+            if top and left:       t = p["tl"]
+            elif top and right:    t = p["tr"]
+            elif bottom and left:  t = p["bl"]
+            elif bottom and right: t = p["br"]
+            elif top:              t = _variant(p["top"], i, j)
+            elif bottom:           t = _variant(p["bottom"], i, j)
+            elif left:             t = _variant(p["left"], i, j)
+            elif right:            t = _variant(p["right"], i, j)
+            else:                  t = p["center"]
             blit_tile(surf, t, i, j)
     if len(_panel_cache) >= _PANEL_CACHE_MAX:
         _panel_cache.clear()
     _panel_cache[key] = surf
     return surf
+
+
+def wood_panel_raw(tw: int, th: int) -> "pygame.Surface":
+    return panel_raw("wood", tw, th)
+
+
+def blit_frame(dst: "pygame.Surface", tx: int, ty: int, tw: int, th: int) -> None:
+    """Moldura vazada de tw x th tiles (mín. 2x2) em (tx, ty) de `dst`."""
+    for j in range(th):
+        for i in range(tw):
+            top, bottom = j == 0, j == th - 1
+            left, right = i == 0, i == tw - 1
+            if top:
+                key = "tl" if left else ("tr" if right else "top")
+            elif bottom:
+                key = "bl" if left else ("br" if right else "bottom")
+            elif left:
+                key = "left"
+            elif right:
+                key = "right"
+            else:
+                continue
+            blit_tile(dst, _FRAME[key], tx + i, ty + j)
 
 
 def blit_button(dst: "pygame.Surface", tx: int, ty: int, width_tiles: int,
@@ -144,6 +206,14 @@ def blit_button(dst: "pygame.Surface", tx: int, ty: int, width_tiles: int,
         col = col0 if i == 0 else (col0 + 2 if i == w - 1 else col0 + 1)
         for k in range(rows):
             blit_tile(dst, (col, row0 + k), tx + i, ty + k)
+
+
+def blit_text_field(dst: "pygame.Surface", tx: int, ty: int, width_tiles: int) -> None:
+    """Campo de texto de `width_tiles` tiles (mín. 2) x 1 linha em (tx, ty)."""
+    w = max(2, width_tiles)
+    for i in range(w):
+        t = _FIELD_LEFT if i == 0 else (_FIELD_RIGHT if i == w - 1 else _FIELD_MID)
+        blit_tile(dst, t, tx + i, ty)
 
 
 def scale_up(raw: "pygame.Surface") -> "pygame.Surface":

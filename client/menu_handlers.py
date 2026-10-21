@@ -33,15 +33,31 @@ class MenuHandlers:
     def _mm_overlay(self):
         self.screen.blit(fill_surf((self.screen.get_width(), self.screen.get_height()), (0, 0, 0, 150)), (0, 0))
 
-    def _mm_begin(self, events: list, tw: int, th: int, offset=(0, 0)) -> dict:
-        """Escurece o fundo, cria o painel de madeira (tw x th tiles, RAW,
-        cópia pronta pra carimbar por cima) centralizado, e lê o mouse já
-        convertido pra espaço RAW do painel."""
+    # Área segura PADRÃO de toda janela do atlas (decisão do usuário,
+    # 20/10/2026): margem de 10% da altura da tela no topo e acima da
+    # barra de ações, e 10% da largura nas laterais. Janela é centralizada
+    # dentro dela; janela com lista longa limita a altura a ela e rola.
+    _MM_SAFE_MARGIN = 0.10
+
+    def _mm_safe_area(self) -> "pygame.Rect":
+        sw, sh = self.screen.get_width(), self.screen.get_height()
+        mx, my = round(sw * self._MM_SAFE_MARGIN), round(sh * self._MM_SAFE_MARGIN)
+        bottom = self._hotbar_top_y() - my
+        return pygame.Rect(mx, my, sw - 2 * mx, max(0, bottom - my))
+
+    def _mm_begin(self, events: list, tw: int, th: int, offset=(0, 0),
+                  style: str = "wood") -> dict:
+        """Escurece o fundo, cria o painel (`style` "wood"/"dark", tw x th
+        tiles, RAW, cópia pronta pra carimbar por cima) centralizado na
+        área segura (`_mm_safe_area`), e lê o mouse já convertido pra
+        espaço RAW do painel. Também usado pelo modal de atalhos
+        (client/hotbar_editor_handlers.py — mesmo GameEngine)."""
         S = ui_atlas.SCALE
-        raw = ui_atlas.wood_panel_raw(tw, th).copy()
+        raw = ui_atlas.panel_raw(style, tw, th).copy()
         pw, ph = raw.get_width() * S, raw.get_height() * S
-        px = self.screen.get_width()  // 2 - pw // 2 + offset[0]
-        py = self.screen.get_height() // 2 - ph // 2 + offset[1]
+        area = self._mm_safe_area()
+        px = area.centerx - pw // 2 + offset[0]
+        py = area.centery - ph // 2 + offset[1]
         self._mm_overlay()
         mx, my = pygame.mouse.get_pos()
         return {
@@ -50,7 +66,7 @@ class MenuHandlers:
             "clicked":  any(e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 for e in events),
             "released": any(e.type == pygame.MOUSEBUTTONUP   and e.button == 1 for e in events),
             "down":     pygame.mouse.get_pressed()[0],
-            "texts":    [],   # (texto, cx_raw, cy_raw, cor) — desenhados por cima no fim
+            "texts":    [],   # (texto, x_raw, y_raw, cor, fonte, âncora) — desenhados por cima no fim
         }
 
     def _mm_press(self, f: dict, btn_id: str, x0, y0, x1, y1) -> tuple:
@@ -74,7 +90,23 @@ class MenuHandlers:
         y0, y1 = ty * T + ay0, ty * T + ay1
         pressed, fired = self._mm_press(f, btn_id, x0, y0, x1, y1)
         ui_atlas.blit_button(f["raw"], tx, ty, w, pressed=pressed, tall=tall)
-        f["texts"].append((label, (x0 + x1) / 2, (y0 + y1) / 2, self._MM_BTN_TXT))
+        self._mm_text(f, label, (x0 + x1) / 2, (y0 + y1) / 2, self._MM_BTN_TXT)
+        return fired
+
+    def _mm_text_field(self, f: dict, field_id: str, tx: int, ty: int, w: int,
+                       text: str, active: bool = False) -> bool:
+        """Campo de texto do atlas (w tiles, 1 linha) com o valor dentro.
+        `active` = aguardando entrada (texto destacado). True = clicado
+        (dispara no soltar, como os botões)."""
+        T = ui_atlas.TILE
+        inset = ui_atlas.FIELD_ART_INSET_X
+        ay0, ay1 = ui_atlas.FIELD_ART_Y
+        x0, x1 = tx * T + inset, (tx + w) * T - inset
+        y0, y1 = ty * T + ay0, ty * T + ay1
+        _, fired = self._mm_press(f, field_id, x0, y0, x1, y1)
+        ui_atlas.blit_text_field(f["raw"], tx, ty, w)
+        self._mm_text(f, text, (x0 + x1) / 2, (y0 + y1) / 2,
+                      (255, 225, 82) if active else self._MM_TEXT_COL)
         return fired
 
     def _mm_selector(self, f: dict, sel_id: str, ty: int, col_l: int, col_r: int,
@@ -90,11 +122,20 @@ class MenuHandlers:
             ui_atlas.blit_tile(f["raw"], pressed_t if pressed else idle, col, ty)
             if fired:
                 step = d
-        f["texts"].append((text, (col_l + 1 + col_r) * T / 2, ty * T + T / 2, self._MM_TEXT_COL))
+        self._mm_text(f, text, (col_l + 1 + col_r) * T / 2, ty * T + T / 2)
         return step
 
-    def _mm_text(self, f: dict, text: str, cx_raw: float, cy_raw: float, color=None) -> None:
-        f["texts"].append((text, cx_raw, cy_raw, color or self._MM_TEXT_COL))
+    def _mm_text(self, f: dict, text: str, x_raw: float, y_raw: float, color=None,
+                 font=None, anchor: str = "center") -> None:
+        """Texto a desenhar por cima do painel no fim (`anchor` = atributo
+        de Rect do pygame: "center", "midleft"...)."""
+        f["texts"].append((text, x_raw, y_raw, color or self._MM_TEXT_COL, font, anchor))
+
+    def _mm_draw_texts(self, surf: "pygame.Surface", texts: list, ox: int = 0, oy: int = 0) -> None:
+        S = ui_atlas.SCALE
+        for text, x, y, color, font, anchor in texts:
+            t = (font or self.font_md).render(text, False, color)
+            surf.blit(t, t.get_rect(**{anchor: (ox + x * S, oy + y * S)}))
 
     def _mm_end(self, f: dict, title: str) -> None:
         """Amplia o painel pro tamanho de tela, desenha título e textos por
@@ -104,9 +145,7 @@ class MenuHandlers:
         self.screen.blit(ui_atlas.scale_up(f["raw"]), (px, py))
         surf = self.font_md.render(title, False, self._MM_TITLE_COL)
         self.screen.blit(surf, surf.get_rect(center=(px + f["pw"] // 2, py + self._MM_TITLE_Y * S)))
-        for text, cx, cy, color in f["texts"]:
-            surf = self.font_md.render(text, False, color)
-            self.screen.blit(surf, surf.get_rect(center=(px + cx * S, py + cy * S)))
+        self._mm_draw_texts(self.screen, f["texts"], px, py)
         if f["released"] or not f["down"]:
             self._mm_pressed = ""
 
@@ -130,8 +169,8 @@ class MenuHandlers:
     # 1.25). Mede com a MESMA fonte usada pra desenhar (font_md).
     _MM_TEXT_PAD = 6   # px RAW de folga de cada lado (bordas do botão)
 
-    def _mm_tiles_for(self, texts, min_tiles: int) -> int:
-        widest = max(self.font_md.size(t)[0] for t in texts) / ui_atlas.SCALE
+    def _mm_tiles_for(self, texts, min_tiles: int, font=None) -> int:
+        widest = max((font or self.font_md).size(t)[0] for t in texts) / ui_atlas.SCALE
         return max(min_tiles, math.ceil((widest + 2 * self._MM_TEXT_PAD) / ui_atlas.TILE))
 
     def _mm_selector_layout(self, values, min_inner: int = 5) -> tuple:

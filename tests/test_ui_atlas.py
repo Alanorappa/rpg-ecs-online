@@ -26,6 +26,7 @@ if pygame.display.get_surface() is None:
 
 from ui import ui_atlas
 from client.menu_handlers import MenuHandlers
+from client.hotbar_editor_handlers import HotbarEditorHandlers
 from ui.sound_manager import SOUNDS
 
 T, S = ui_atlas.TILE, ui_atlas.SCALE
@@ -105,11 +106,17 @@ class _MenuFixture(MenuHandlers):
     def _save_config(self):
         self._save_config_calls += 1
 
+    HOTBAR_TOP = 640   # topo simulado da barra de ações (tela 1280x720)
+
+    def _hotbar_top_y(self):
+        return self.HOTBAR_TOP
+
     def to_screen(self, rx, ry, tw=None, th=None):
         tw = tw or self._SND_TW
         th = th or self._SND_TH
-        px = (self.screen.get_width()  - tw * T * S) // 2
-        py = (self.screen.get_height() - th * T * S) // 2
+        area = self._mm_safe_area()
+        px = area.centerx - tw * T * S // 2
+        py = area.centery - th * T * S // 2
         return int(px + rx * S), int(py + ry * S)
 
 
@@ -437,3 +444,162 @@ def test_interface_setas_mudam_1_passo():
         _press_and_release(fx, fx._draw_pause_menu,
                            fx.to_screen(col_l * T + 8, fx._IFACE_ROW_SEL * T + 8, tw, th))
     assert fx.ui_scale_set == [1.5, 1.0]
+
+
+# ── client/hotbar_editor_handlers.py — modal "Atalhos do teclado" ─────────
+
+class _HbeFixture(MenuHandlers, HotbarEditorHandlers):
+    def __init__(self, font_size=22):
+        from engine.world import World
+        from engine.components import PlayerSkills, ConsumableBar
+        from ui.fonts import make as _font
+        self.screen = pygame.Surface((1280, 720))
+        self.font_xs = _font(14)
+        self.font_sm = _font(int(font_size * 0.8))
+        self.font_md = _font(font_size)
+        self.world = World()
+        self.player_entity = self.world.create_entity()
+        self.world.add_component(self.player_entity, PlayerSkills())
+        self.world.add_component(self.player_entity, ConsumableBar())
+        self._menu_keys = {"inventario": pygame.K_i}
+        self._show_hotbar_editor = True
+        self._mkb_rebind = None
+        self._mkb_scroll = 0
+        self._mm_pressed = ""
+        self._hbe_arrow_hold = None
+        self._hbe_grip_drag = None
+        self._save_calls = 0
+
+    def _save_config(self):
+        self._save_calls += 1
+
+    HOTBAR_TOP = 640   # topo simulado da barra de ações (tela 1280x720)
+
+    def _hotbar_top_y(self):
+        return self.HOTBAR_TOP
+
+    def layout(self):
+        from engine.components import PlayerSkills, ConsumableBar
+        ps = self.world.get_component(self.player_entity, PlayerSkills)
+        cb = self.world.get_component(self.player_entity, ConsumableBar)
+        return self._hbe_layout(self._hbe_sections(ps, cb))
+
+    def origin(self):
+        lay = self.layout()
+        area = self._mm_safe_area()
+        return (area.centerx - lay["tw"] * T * S // 2,
+                area.centery - lay["th"] * T * S // 2)
+
+    def to_screen(self, rx, ry):
+        px, py = self.origin()
+        return int(px + rx * S), int(py + ry * S)
+
+    def key_button_pos(self, content_row):
+        """Centro (tela) do campo da tecla na linha `content_row` do
+        conteúdo rolável (considera a rolagem atual)."""
+        lay = self.layout()
+        y0, y1 = ui_atlas.FIELD_ART_Y
+        rx = (lay["L"] + 2 + lay["K"] / 2) * T
+        ry = lay["view_y0"] + content_row * T + (y0 + y1) / 2 - self._mkb_scroll
+        return self.to_screen(rx, ry)
+
+
+def test_atalhos_clicar_na_tecla_e_apertar_nova_tecla_rebinda():
+    fx = _HbeFixture()
+    # conteúdo: linha 0 = título "Menus", 1 = topo da moldura, 2 = Inventário
+    with _bigger_display():
+        _press_and_release(fx, fx._draw_hotbar_editor, fx.key_button_pos(2))
+        assert fx._mkb_rebind == "menu:inventario"
+        fx._draw_hotbar_editor([pygame.event.Event(pygame.KEYDOWN, key=pygame.K_b)])
+    assert fx._menu_keys["inventario"] == pygame.K_b
+    assert fx._mkb_rebind is None
+
+
+def test_atalhos_seta_de_rolagem_rola_1_linha_e_segurar_repete():
+    fx = _HbeFixture()
+    lay = fx.layout()
+    down = fx.to_screen((lay["tw"] - 1) * T + 8, (2 + lay["view_rows"] - 1) * T + 8)
+    with _bigger_display(), _fake_mouse_and_clock() as clk:
+        fx._draw_hotbar_editor(_click_at(down))
+        assert fx._mkb_scroll == T
+        clk.now += fx._HBE_HOLD_MS
+        fx._draw_hotbar_editor([])
+        assert fx._mkb_scroll == 2 * T
+
+
+def test_atalhos_arrastar_puxador_ate_o_fim_rola_tudo():
+    fx = _HbeFixture()
+    lay = fx.layout()
+    max_scroll = (lay["content_rows"] - lay["view_rows"]) * T
+    sb_x = (lay["tw"] - 1) * T + 8
+    grip = fx.to_screen(sb_x, 3 * T + 8)
+    bottom = fx.to_screen(sb_x, (2 + lay["view_rows"]) * T)
+    with _bigger_display(), _fake_mouse_and_clock():
+        fx._draw_hotbar_editor(_click_at(grip))
+        assert fx._hbe_grip_drag is not None
+        pygame.mouse.set_pos(bottom)
+        fx._draw_hotbar_editor([])
+    assert fx._mkb_scroll == max_scroll
+
+
+def test_atalhos_roda_do_mouse_rola():
+    fx = _HbeFixture()
+    with _bigger_display():
+        pygame.mouse.set_pos(fx.to_screen(5 * T, 5 * T))
+        fx._draw_hotbar_editor([pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=-2)])
+    assert fx._mkb_scroll == 2 * T
+
+
+def test_atalhos_fechar_salva_e_fecha():
+    fx = _HbeFixture()
+    lay = fx.layout()
+    bw = lay["btn_w"]
+    col0 = (lay["tw"] - (2 * bw + 1)) // 2
+    y0, y1 = ui_atlas.button_art_y(False)
+    pos = fx.to_screen((col0 + bw + 1 + bw / 2) * T, (lay["th"] - 2) * T + (y0 + y1) / 2)
+    with _bigger_display():
+        _press_and_release(fx, fx._draw_hotbar_editor, pos)
+    assert fx._show_hotbar_editor is False
+    assert fx._save_calls >= 1
+
+
+def test_atalhos_fica_dentro_da_area_segura():
+    """Padrão de toda janela do atlas (decisão do usuário): margem de 10%
+    da altura no topo e acima da barra de ações, 10% da largura nas
+    laterais — a lista longa rola em vez de ultrapassar."""
+    for font_size in (22, 44):
+        fx = _HbeFixture(font_size=font_size)
+        lay = fx.layout()
+        px, py = fx.origin()
+        area = fx._mm_safe_area()
+        sh = fx.screen.get_height()
+        assert area.top == round(sh * 0.10)
+        assert area.bottom == fx.HOTBAR_TOP - round(sh * 0.10)
+        assert area.top <= py and py + lay["th"] * T * S <= area.bottom
+        assert lay["view_rows"] < lay["content_rows"], "lista deveria rolar nessa altura"
+
+
+def test_janelas_do_menu_de_pausa_ficam_dentro_da_area_segura():
+    fx = _MenuFixture()
+    area = fx._mm_safe_area()
+    sizes = [fx._main_layout()[:2], (fx._quit_layout()[0], fx._QUIT_TH),
+             (fx._res_layout()[0], fx._RES_TH), (fx._iface_layout()[0], fx._IFACE_TH),
+             (fx._SND_TW, fx._SND_TH)]
+    for tw, th in sizes:
+        x0, y0 = fx.to_screen(0, 0, tw, th)
+        assert area.left <= x0 and x0 + tw * T * S <= area.right
+        assert area.top <= y0 and y0 + th * T * S <= area.bottom, f"janela {tw}x{th} sai da área segura"
+
+
+def test_atalhos_textos_cabem_com_fonte_grande():
+    from engine.components import PlayerSkills, ConsumableBar
+    fx = _HbeFixture(font_size=44)
+    lay = fx.layout()
+    pad = fx._MM_TEXT_PAD * S
+    ps = fx.world.get_component(fx.player_entity, PlayerSkills)
+    cb = fx.world.get_component(fx.player_entity, ConsumableBar)
+    for _, rows in fx._hbe_sections(ps, cb):
+        for label, code, _ in rows:
+            assert fx.font_md.size(label)[0] <= lay["L"] * T * S
+            assert fx.font_md.size(fx._hbe_key_name(code))[0] <= lay["K"] * T * S - 2 * pad
+    assert fx.font_sm.size(fx._HBE_HINT_WAIT)[0] <= (lay["tw"] - 2) * T * S

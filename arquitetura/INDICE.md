@@ -312,3 +312,4 @@
 - [19/10/2026] (bug) Personagem travava na pose de cast depois de cancelar (mago e arqueiro) — tags: animacao, mago, arqueiro — HISTORICO_BUGS.md §94
 - [20/10/2026] (feature) Atlas de UI por tiles 16x16 (ui/ui_atlas.py) — 1ª tela: configuração de som — tags: ui, atlas, som, menu — HISTORICO_FEATURES.md §65
 - [20/10/2026] (feature) Menu de pausa inteiro no atlas de UI + larguras de botão a partir do texto — tags: ui, atlas, menu — HISTORICO_FEATURES.md §66
+- [20/10/2026] (feature) Modal "Atalhos do teclado" no atlas de UI + campo de texto + catálogo do atlas (ATLAS_UI.md) — tags: ui, atlas, atalhos, hotbar — HISTORICO_FEATURES.md §67

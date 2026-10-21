@@ -39,8 +39,6 @@ class UI:
     INVENTORY_W, INVENTORY_H     = 660, 580   # painel de Equipamentos/Inventário (tecla I)
     DEBUG_W, DEBUG_H             = 820, 620   # modal de debug (F12)
     HABILIDADES_W, HABILIDADES_H = 720, 560   # painel de Habilidades (tecla H)
-    HOTBAR_EDITOR_W              = 560        # editor de atalhos (tecla K)
-    HOTBAR_EDITOR_MAX_H          = 620        # teto de altura — acima disso, a lista de linhas rola (ver hotbar_editor_handlers.py)
     CRAFTING_W, CRAFTING_H       = 700, 510   # modal de Forja/Reciclagem (ferreiro)
     TRAINER_W, TRAINER_H         = 640, 480   # modal de treinamento de skills (trainer NPC)
     RANKING_W, RANKING_H         = 720, 560   # modal de Ranking Geral (tecla K)
@@ -91,10 +89,8 @@ class UI:
     INVENTORY_COLS      = 5     # quantos slots de mochila cabem por linha (não é pixel — é uma contagem)
     INVENTORY_GAP       = 4     # espaço entre slots vizinhos da grade da mochila
 
-    # ── Editor de Hotbar (tecla K) — geometria interna ─────────────────────
-    # Arquivo: client/hotbar_editor_handlers.py
-    HOTBAR_EDITOR_SLOT_SZ = 52   # (não usado atualmente — reservado)
-    HOTBAR_EDITOR_GAP     = 10   # (não usado atualmente — reservado)
+    # Editor de atalhos (tecla K): tamanho em TILES do atlas, calculado em
+    # client/hotbar_editor_handlers.py (_hbe_layout) — não mais aqui.
 
     # ── Crafting (Forja/Reciclagem) — geometria interna ────────────────────
     # Arquivo: crafting_system.py

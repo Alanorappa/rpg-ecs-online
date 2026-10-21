@@ -306,7 +306,8 @@ rpg_ecs_online/
 │   ├── ui_atlas.py                  ← (20/10/2026) ponto único pra montar janelas/
 │   │   elementos com o atlas assets/ui/ui_elements.png (grade de tiles
 │   │   16x16, carimbados/repetidos, nunca esticados; SCALE fixo de
-│   │   hud_bars) — ver HISTORICO_FEATURES.md §65
+│   │   hud_bars) — catálogo de peças em arquitetura/ATLAS_UI.md,
+│   │   histórico em HISTORICO_FEATURES.md §65–§67
 │   ├── fonts.py, sound_manager.py, icon_manager.py, tile_sprite_manager.py, fov.py
 │   ├── asset_cache.py               ← (28/09/2026, §215) cache ÚNICO de
 │   │   imagem/som por caminho de arquivo (get_image/get_sound) — todo

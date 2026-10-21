@@ -480,6 +480,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._menu_keys: dict = {}                # carregado do config — veja _load_menu_keys
         self._hbe_skill_scroll: int = 0
         self._hbe_expand_slots: bool = False
+        self._mkb_scroll: int = 0                       # rolagem do modal de atalhos (px RAW do atlas)
+        self._hbe_arrow_hold: "tuple | None" = None     # (dir, próximo_ms) — seta da rolagem segurada
+        self._hbe_grip_drag: "float | None" = None      # offset do puxador sendo arrastado
         self._show_habilidades: bool = False     # painel Habilidades (tecla H)
         self._show_skills: bool = False          # painel Skill Level (tecla L)
         self._show_ranking: bool = False         # modal de Ranking Geral (tecla K)
@@ -1585,6 +1588,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._hbe_tab            = 0
         self._mkb_rebind         = None
         self._mkb_scroll         = 0
+        self._hbe_arrow_hold     = None
+        self._hbe_grip_drag      = None
 
     # Game loop
     # ------------------------------------------------------------------

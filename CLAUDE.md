@@ -1983,7 +1983,16 @@ padrão a quebrar, não só os bugs individuais.
   tem texto — a fonte acompanha a escala de UI do jogador, o atlas não:
   medir com a MESMA fonte do desenho (`MenuHandlers._mm_tiles_for`).
   Menus do pausa: reusar os helpers `_mm_*` de `client/menu_handlers.py`.
-  Ver HISTORICO_FEATURES.md §65/§66.
+  **Toda janela do atlas fica dentro da área segura padrão**
+  (`MenuHandlers._mm_safe_area`: margem de 10% da altura no topo e
+  acima da barra de ações, 10% da largura nas laterais) — `_mm_begin`
+  já centraliza nela; janela com lista longa limita a altura a ela e
+  rola, nunca cobre a barra de ações nem encosta nas bordas.
+  **Antes de usar qualquer peça do atlas, consultar o catálogo
+  `arquitetura/ATLAS_UI.md`** (o que cada tile é e pra que serve — ex:
+  campo de texto (9,4)–(11,4) pra qualquer valor que o jogador define);
+  peça nova/uso novo → atualizar o catálogo no mesmo commit. Ver
+  HISTORICO_FEATURES.md §65/§66/§67.
 - **Ícone ANIMADO acima da cabeça de uma entidade, no MUNDO** (marcador
   de quest, ou categoria futura parecida) → `ui/world_icon_animator.py::
   get_frame(name, size, now_ms)` — spritesheet horizontal em

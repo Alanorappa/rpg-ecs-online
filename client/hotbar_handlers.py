@@ -70,6 +70,13 @@ class HotbarHandlers:
         cons_w   = _CB_HB.NUM_SLOTS * BASE_W + (_CB_HB.NUM_SLOTS - 1) * BASE_PAD
         self._set_panel_scale(hotbar_w + BASE_GAP + cons_w, BASE_W)
 
+    def _hotbar_top_y(self) -> int:
+        """Y (tela) do topo da linha hotbar+consumíveis — mesma conta de
+        `_draw_hotbar` (y0). Modais que não podem cobrir a barra de ações
+        (ex: atalhos do teclado) limitam a altura por aqui."""
+        self._set_hotbar_row_scale()
+        return self.screen.get_height() - self._HB_H - self._u(10)
+
     # Propriedades (não atributos fixos) — precisam reagir a self._ui_scale
     # em runtime, e hotbar/consumable_bar/habilidades leem essas 4 via
     # self._HB_*, então não dá pra virar atributo de classe fixo.
@@ -286,7 +293,7 @@ class HotbarHandlers:
             return
         total_w = n_occ * self._HB_W + (n_occ - 1) * self._HB_PAD
         x0      = self.screen.get_width()  // 2 - total_w // 2
-        y0      = self.screen.get_height() - self._HB_H - self._u(10)
+        y0      = self._hotbar_top_y()
 
         def _hb_slot_rect(j):
             sx = x0 + j * (self._HB_W + self._HB_PAD)

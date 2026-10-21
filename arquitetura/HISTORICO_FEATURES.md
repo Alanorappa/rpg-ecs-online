@@ -5503,3 +5503,45 @@ botão, seletor (maior valor POSSÍVEL, pra janela não mudar de tamanho
 ao trocar de opção) e janela crescem com o texto. Teste de regressão
 simula escala de UI 2.0 (`test_textos_cabem_nos_botoes_e_seletores_com_fonte_grande`).
 
+## 67. Modal "Atalhos do teclado" no atlas de UI + campo de texto + catálogo do atlas (20/10/2026)
+
+Continuação de §65/§66. `client/hotbar_editor_handlers.py` reescrito no
+estilo da janela de seleção de personagem do mockup (mapeada tile a
+tile): painel ESCURO (decisão do usuário), 1 moldura vazada por seção —
+Menus, Barra de Habilidades, Barra de Consumíveis (decisão do usuário;
+1 moldura de 3 tiles por linha, como no mockup, deixaria 21 atalhos
+longos demais), tecla de cada linha num **campo de texto** (tiles
+(9,4)–(11,4) — o usuário definiu esse elemento como "campo de digitar
+texto"), barra de rolagem na coluna da borda direita (setas clicáveis
+com repetição a cada 250ms segurando, puxador arrastável, clique no
+trilho pula o puxador, roda do mouse). Conteúdo montado inteiro num
+Surface e recortado pela janela de rolagem. Cabeçalho "Ação/Tecla"
+removido (as seções já dizem o que é cada coluna).
+
+**Altura / área segura**: a 1ª versão cobria a barra de ações; a 2ª
+encostava nela e nas bordas. Usuário pediu um PADRÃO de distanciamento
+pra todas as janelas (marcação vermelha no print: ~11% da altura no
+topo, ~65px acima da barra em 1080p). Decisão: `_mm_safe_area()` em
+`client/menu_handlers.py` — margem de 10% da altura da tela no topo e
+acima da barra de ações, 10% da largura nas laterais; `_mm_begin`
+centraliza TODA janela do atlas nela (menu de pausa incluso), e o modal
+de atalhos limita a altura a ela (lista rola). Largura continua pelo
+conteúdo (decisão do usuário). Topo da barra via `_hotbar_top_y()` novo
+em `client/hotbar_handlers.py` (mesma conta que `_draw_hotbar` usa pro
+topo da linha de slots, que passou a chamar a função em vez de repetir
+a conta). `_mm_begin` ganhou `style` ("wood"/"dark"); `_mm_text_field`
+novo.
+
+`ui/ui_atlas.py`: `panel_raw(estilo, tw, th)` (madeira + escuro),
+`blit_frame`, `blit_text_field`, constantes da barra de rolagem.
+Catálogo de TODAS as peças do atlas criado em `arquitetura/ATLAS_UI.md`
+(pedido do usuário) — o que cada tile é e pra que serve; peças ainda
+não usadas (barra de título/pergaminho, slots, paginação) marcadas como
+pendentes de mapeamento. `UI.HOTBAR_EDITOR_W/MAX_H/SLOT_SZ/GAP` removidos.
+
+**Teste**: `tests/test_ui_atlas.py` — clicar na tecla + KEYDOWN rebinda,
+seta rola 1 linha e segurar repete, arrastar o puxador até o fim rola
+tudo, roda do mouse, Fechar salva e fecha, modal e todas as janelas do
+menu de pausa dentro da área segura (fonte normal e grande), textos
+cabem com fonte grande.
+
