@@ -315,3 +315,5 @@
 - [20/10/2026] (feature) Modal "Atalhos do teclado" no atlas de UI + campo de texto + catálogo do atlas (ATLAS_UI.md) — tags: ui, atlas, atalhos, hotbar — HISTORICO_FEATURES.md §67
 - [20/10/2026] (feature) Diálogo de quest no atlas de UI + módulo comum de janela ui/atlas_window.py — tags: ui, atlas, quest, dialogo — HISTORICO_FEATURES.md §68
 - [20/10/2026] (feature) Diálogo de quest: rolagem só quando precisa; teste de fonte regular (Pixelify Sans) revertido — tags: ui, atlas, quest, fonte — HISTORICO_FEATURES.md §68
+- [20/10/2026] (feature) Seleção de personagem no atlas de UI (molduras, rolagem, confirmação de exclusão) — tags: ui, atlas, personagem, selecao — HISTORICO_FEATURES.md §69
+- [20/10/2026] (bug) Limite de personagens por conta era 3 (servidor+cliente), passou pra 8 numa constante única — tags: personagem, limite, auth — HISTORICO_BUGS.md §95

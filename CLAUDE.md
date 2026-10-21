@@ -1135,22 +1135,14 @@ padrão a quebrar, não só os bugs individuais.
     partir do tamanho REAL dele (`icon_bottom = icon_top + preview_sz`,
     cada elemento seguinte usa o fundo do anterior + gap) — cresce o
     `CARD_H` do card se o preview crescer, nunca sobrepõe.
-  - **Seleção** (`_draw_selection`, lista vertical, painel de altura
-    FIXA que não cabe o preview em tamanho grande sem cortar) — texto
-    usa `_LIST_TEXT_OFFSET` (150px FIXO desde §293 — valor ANTERIOR,
-    64+14=78, era menor que a largura real do sprite de 128px e o
-    texto nascia por cima do desenho, bug real relatado com print) —
-    nunca o tamanho real do preview, pra nunca se mover quando o
-    preview muda de tamanho; o sprite em si é coletado durante o loop
-    (`_pending_previews`) e desenhado num 2º PASSE, depois de TODAS as
-    linhas/botões — sem isso, a linha seguinte (desenhada depois,
-    ordem natural do loop) cobriria a parte de baixo do sprite
-    "espiando" por cima da linha anterior. **Sempre que
-    `_CLASS_PREVIEW_BASE_SIZE` mudar de novo, conferir que
-    `_LIST_TEXT_OFFSET` (seleção) ainda é maior que a largura real do
-    sprite** — os 2 números não são derivados um do outro, é fácil
-    esquecer de recalibrar um ao mudar o outro (foi exatamente o que
-    aconteceu em §293).
+  - **Seleção** (`_draw_selection`, atlas de UI, molduras de altura
+    FIXA de 3 tiles) — texto numa coluna fixa em px RAW
+    (`_SEL_TEXT_X`), nunca derivada do tamanho real do preview; o
+    sprite é desenhado por ÚLTIMO no conteúdo da lista (por cima das
+    molduras vizinhas, recortado só pela área visível). **Sempre que
+    `_CLASS_PREVIEW_BASE_SIZE` mudar, conferir que o personagem
+    visível ainda cabe à esquerda de `_SEL_TEXT_X`** — os 2 números
+    não são derivados um do outro (ver HISTORICO_FEATURES.md §69).
   Ver PROBLEMAS_ARQUITETURA.md §291/§292.
 - **Entry point server-side novo que executa handler compartilhado em nome
   de um player** (skill/spell/projectile/channeling) →
@@ -1996,7 +1988,7 @@ padrão a quebrar, não só os bugs individuais.
   `arquitetura/ATLAS_UI.md`** (o que cada tile é e pra que serve — ex:
   campo de texto (9,4)–(11,4) pra qualquer valor que o jogador define);
   peça nova/uso novo → atualizar o catálogo no mesmo commit. Ver
-  HISTORICO_FEATURES.md §65/§66/§67/§68.
+  HISTORICO_FEATURES.md §65–§69.
 - **Ícone ANIMADO acima da cabeça de uma entidade, no MUNDO** (marcador
   de quest, ou categoria futura parecida) → `ui/world_icon_animator.py::
   get_frame(name, size, now_ms)` — spritesheet horizontal em

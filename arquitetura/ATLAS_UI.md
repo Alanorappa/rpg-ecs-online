@@ -29,7 +29,7 @@ segura, botão no soltar, campo, seletor, barra de rolagem): `ui/atlas_window.py
 | Elemento | Tiles | Constante | Uso |
 |---|---|---|---|
 | Painel de madeira | (0,8)–(3,11) | `_PANELS["wood"]` | Menus (pausa, som, resolução...). Cantos (0,8)/(3,8)/(0,11)/(3,11); bordas topo (2,8) [variante (1,8)], base (1,11) [(2,11)], esq. (0,10) [(0,9)], dir. (3,10) [(3,9)]; miolo liso (1,10). |
-| Painel escuro | (6,0)–(11,3) | `_PANELS["dark"]` | Janelas de lista (atalhos, seleção de personagem, inventário). Cantos (6,0)/(11,0)/(6,3)/(11,3); topo (7,0); base (8,3) [variante (7,3)]; esq. (6,1); dir. (11,1); miolo (7,1). |
+| Painel escuro | (6,0)–(11,3) | `_PANELS["dark"]` (+ `dark_list_window_raw`: coluna da direita cromada (5,1) pra barra de rolagem, seleção de personagem) | Janelas de lista (atalhos, seleção de personagem, inventário). Cantos (6,0)/(11,0)/(6,3)/(11,3); topo (7,0); base (8,3) [variante (7,3)]; esq. (6,1); dir. (11,1); miolo (7,1). |
 | Janela de pergaminho | (0,0)–(5,7) + rodapé escuro | `_QUEST`, `quest_window_raw` | Diálogo de quest (mockup, janela 1). Linha 0 = barra de título: (0,0) esq., (2,0) puxador na 2ª coluna, (1,0) repetido, X `QUEST_CLOSE` (5,0) na última. Pergaminho nas colunas 0..tw-2: cantos (1,1)/(4,1)/(1,6)/(4,6); topo (2,1) [variante (3,1)]; base (3,6) [(2,6)]; esq. (1,2..5) e depois (1,3) repetido; dir. (4,2..5) e depois (4,3); miolo liso (2,4) com manchas (2,2)/(3,2)/(2,3)/(3,4)/(2,5) espalhadas. Coluna da direita = cromado (5,1) com a barra de rolagem por cima. Rodapé (2 linhas, botões "altos"): (6,1)/(6,3) esq., (7,1)/(8,3) meio, (5,1)/(11,3) dir. |
 
 ## Molduras e campos
@@ -78,5 +78,5 @@ existe pra desenhá-la parada mesmo sem rolagem, se algum dia uma tela pedir.
 ## Histórico
 
 Ver `arquitetura/HISTORICO_FEATURES.md` §65 (atlas + tela de som), §66 (menu de pausa),
-§67 (modal de atalhos do teclado + campo de texto) e §68 (diálogo de quest + módulo
-`ui/atlas_window.py`).
+§67 (modal de atalhos do teclado + campo de texto), §68 (diálogo de quest + módulo
+`ui/atlas_window.py`) e §69 (seleção de personagem).

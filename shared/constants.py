@@ -77,6 +77,7 @@ MAX_PLAYERS_PER_WORLD = 500
 SNAPSHOT_HISTORY      = 10       # quantos ticks de estado o servidor guarda p/ lag comp
 
 # ── Autenticação ──────────────────────────────────────────────────────────────
+MAX_CHARACTERS_PER_ACCOUNT = 8   # servidor barra a criação (server/auth.py) e a tela de seleção usa o mesmo
 SESSION_TOKEN_BYTES = 32
 SESSION_TTL_S       = 86_400     # 24h
 

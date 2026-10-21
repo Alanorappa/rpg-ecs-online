@@ -163,11 +163,13 @@ class TestCreateCharacterValidation(unittest.IsolatedAsyncioTestCase):
         reason = await auth._create_character(self.acc_b, "fulano", "mago")
         self.assertEqual(reason, "name_taken")
 
-    async def test_limite_de_3_personagens_por_conta(self):
-        self.assertEqual(await auth._create_character(self.acc_a, "Alfa", "guerreiro"), "ok")
-        self.assertEqual(await auth._create_character(self.acc_a, "Beta", "guerreiro"), "ok")
-        self.assertEqual(await auth._create_character(self.acc_a, "Gama", "guerreiro"), "ok")
-        reason = await auth._create_character(self.acc_a, "Delta", "guerreiro")
+    async def test_limite_de_personagens_por_conta(self):
+        from shared.constants import MAX_CHARACTERS_PER_ACCOUNT
+        self.assertEqual(MAX_CHARACTERS_PER_ACCOUNT, 8)
+        names = ["Alfa", "Beta", "Gama", "Delta", "Epsilon", "Zeta", "Eta", "Teta"]
+        for n in names:
+            self.assertEqual(await auth._create_character(self.acc_a, n, "guerreiro"), "ok")
+        reason = await auth._create_character(self.acc_a, "Iota", "guerreiro")
         self.assertEqual(reason, "limit_reached")
 
     async def test_nomes_iguais_concorrentes_so_1_sucede(self):

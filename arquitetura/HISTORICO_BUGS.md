@@ -6626,3 +6626,21 @@ disparado) e confirmam que o cancelamento limpa `anim_attack_state`/
 `test_tiro_multiplo_reticle_cache`/`test_channeling_system_get_first`/
 `test_portal`) sem regressão. Reprodução em jogo (iniciar cast e mover
 o personagem) ainda depende de playtest manual do usuário.
+
+## 95. Limite de personagens por conta era 3, deveria ser 8 (20/10/2026)
+
+Relatado pelo usuário ao revisar a tela de seleção: "o limite de
+personagens deveria ser de 8 personagens e não 3". O 3 estava fixo em 3
+lugares independentes: `server/auth.py::_create_character` (`count >=
+3`, o que barra de verdade), a lista de personagens do login
+(`server/auth.py::authenticate`, `LIMIT 3` — mesmo com 8 criados, só 3
+chegariam ao cliente) e o cliente (`MAX_ONLINE_CHARS = 3` em
+`ui/char_creation_screen.py`); a versão offline antiga usava 8
+(`engine/save_system.py::MAX_SLOTS`). Fix: constante única
+`shared/constants.py::MAX_CHARACTERS_PER_ACCOUNT = 8`, lida pelos 3
+pontos. O peso que motivou o comentário do `LIMIT` (fog de cada
+personagem, §19/07/2026) já não vai nessa lista (só id/nome/classe/
+nível), então 8 não volta a estourar o frame WebSocket. Teste:
+`tests/test_character_names.py::test_limite_de_personagens_por_conta`
+(precisa do Postgres — não rodado nesta sessão). Precisa de deploy do
+servidor pra valer em produção.

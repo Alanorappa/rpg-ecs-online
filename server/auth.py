@@ -284,9 +284,10 @@ async def authenticate(username: str, password: str) -> "dict | None":
     # de 1 MB — o frame WebSocket inteiro (limite 1048576 bytes) era
     # rejeitado com "message too big", derrubando a conexão logo após
     # autenticar, antes até da tela de escolha de personagem aparecer.
+    from shared.constants import MAX_CHARACTERS_PER_ACCOUNT
     chars = await pool.fetch(
         "SELECT id, name, class_id, level FROM characters "
-        "WHERE account_id=$1 ORDER BY id LIMIT 3", row["id"])
+        "WHERE account_id=$1 ORDER BY id LIMIT $2", row["id"], MAX_CHARACTERS_PER_ACCOUNT)
     return {
         "account_id":  row["id"],
         "characters":  [dict(c) for c in chars],
@@ -363,8 +364,8 @@ async def _create_character(account_id: int, name: str,
         return "invalid_name_format"
     pool = await _get_pool()
     # Corrida aceita e documentada, não corrigida: 2 CREATE_CHARACTER
-    # simultâneos da MESMA conta podem ambos ver count<3 e ambos inserir,
-    # resultando em 4 personagens em vez do limite de 3 — cenário exige um
+    # simultâneos da MESMA conta podem ambos ver count<limite e ambos
+    # inserir, passando o limite por 1 — cenário exige um
     # duplo-clique na MESMA fração de segundo da MESMA conta, sem impacto
     # de segurança/corretude de dado (só um soft-limit cosmético passando
     # por 1), não vale a complexidade de uma transação SERIALIZABLE com
@@ -372,8 +373,9 @@ async def _create_character(account_id: int, name: str,
     # nameplate/chat global) é a que tem proteção real, via índice único.
     count = await pool.fetchval(
         "SELECT COUNT(*) FROM characters WHERE account_id=$1", account_id)
-    if count >= 3:
-        return "limit_reached"  # limite de 3 personagens por conta
+    from shared.constants import MAX_CHARACTERS_PER_ACCOUNT
+    if count >= MAX_CHARACTERS_PER_ACCOUNT:
+        return "limit_reached"
     taken = await pool.fetchrow(
         "SELECT 1 FROM characters WHERE LOWER(name)=LOWER($1) LIMIT 1", name)
     if taken:

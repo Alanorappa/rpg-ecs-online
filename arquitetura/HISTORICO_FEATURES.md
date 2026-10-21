@@ -5607,3 +5607,43 @@ usuário escolheu testar Pixelify Sans (grade nativa 13px) só no
 diálogo de quest, viu no jogo e mandou desfazer ("ficou péssimo").
 Diálogo voltou pra Determination; fonte e licença removidas de
 `assets/fonts/`. Se o tema voltar: não repetir a Pixelify Sans.
+
+## 69. Seleção de personagem no atlas de UI (20/10/2026)
+
+Continuação de §65–§68. `ui/char_creation_screen.py::run_online`
+redesenhada com a janela escura do mockup (canto superior direito de
+`assets/content/exemplo.png`, mapeada tile a tile): título, 1 moldura
+vazada de 3 linhas por personagem (preview animado + nome + classe/nível,
+Jogar/Excluir à direita em botões "baixos"), coluna da direita cromada
+(5,1) pra barra de rolagem (`ui_atlas.dark_list_window_raw`), Criar
+Personagem/Sair empilhados embaixo. Decisões do usuário: sempre 3
+molduras como no mockup, as sobrando mostram "Vazio"; com mais de 3
+personagens a lista rola (barra só aparece quando precisa); Criar
+Personagem no limite = texto cinza, sem ação; confirmação "Excluir
+personagem?" também no atlas (janela escura pequena, Excluir/Cancelar).
+Botões agem no soltar (`ui/atlas_window.py`). Janela centralizada na
+área segura (tela sem barra de ações: margem de 10%).
+
+Preview: mesmo `_get_class_preview_frame` (128px, frame 64×64 a 2×),
+desenhado por ÚLTIMO no conteúdo (por cima das molduras vizinhas, mesma
+decisão de §292) e recortado só pela área visível da lista — substitui
+`_LIST_TEXT_OFFSET`/`_pending_previews` (texto agora fica numa coluna
+fixa em px RAW, `_SEL_TEXT_X`).
+
+Bug achado pelo teste novo, corrigido antes de chegar ao jogo: com a
+confirmação aberta, a lista de fundo (desenhada antes) via o mouse
+solto e zerava o botão afundado COMPARTILHADO antes da confirmação
+disparar — Excluir/Cancelar nunca funcionariam. Fix: a lista de fundo
+usa um `PressState` descartável enquanto a confirmação está aberta.
+
+Removidos: `run()` (versão OFFLINE da seleção, lia saves locais — sem
+nenhum chamador, só `run_online` é usado por `main.py`), retângulos de
+geometria antigos (`_slot_rect`, `_play_btn_rect`, ...),
+`_draw_confirm_overlay`, `_BASE_CHAR_W/H/SLOT_H/SLOT_PAD`. Tela de
+CRIAÇÃO (`_run_creation`) continua no visual antigo — próxima tela.
+
+**Teste**: `tests/test_char_select_ui.py` — Jogar/Excluir disparam no
+soltar com o índice certo, apertar sem soltar não dispara, Criar/Sair,
+Criar desabilitado no limite, 3 molduras mínimas e rolagem com 8,
+janela na área segura com fonte grande, confirmação Excluir/Cancelar,
+confirmação aberta bloqueia a lista.

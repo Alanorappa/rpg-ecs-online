@@ -196,6 +196,23 @@ def wood_panel_raw(tw: int, th: int) -> "pygame.Surface":
     return panel_raw("wood", tw, th)
 
 
+def dark_list_window_raw(tw: int, th: int) -> "pygame.Surface":
+    """Painel escuro com a coluna da direita cromada (5,1) nas linhas
+    1..th-2 — onde vai a barra de rolagem (janela de seleção de
+    personagem do mockup). RAW, cacheado."""
+    key = ("dark_list", tw, th)
+    cached = _panel_cache.get(key)
+    if cached is not None:
+        return cached
+    surf = panel_raw("dark", tw, th).copy()
+    for j in range(1, th - 1):
+        blit_tile(surf, _QUEST["chrome_right"], tw - 1, j)
+    if len(_panel_cache) >= _PANEL_CACHE_MAX:
+        _panel_cache.clear()
+    _panel_cache[key] = surf
+    return surf
+
+
 def quest_window_raw(tw: int, th: int) -> "pygame.Surface":
     """Janela de pergaminho de tw x th tiles (mín. 4x6), RAW, cacheada:
     linha 0 = barra de título (X na última coluna); linhas 1..th-3 =

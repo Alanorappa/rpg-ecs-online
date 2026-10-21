@@ -2,15 +2,16 @@
 """
 Tela de seleção e criação de personagens (estilo WoW).
 
-Funções públicas:
-  run(screen) -> (slot: int, char_data: dict | None)
-    - slot     : slot a ser carregado/criado
-    - char_data: None = carregar save existente; dict = personagem novo
+Função pública: run_online(screen, char_list, net) -> bool (ver docstring).
+Seleção no visual do atlas de UI (ui/atlas_window.py); criação ainda no
+visual antigo.
 """
 from __future__ import annotations
+import math
 import pygame
+from ui import atlas_window as aw
+from ui import ui_atlas
 from ui.fonts import make as _font
-from engine.save_system import list_saves, next_free_slot, MAX_SLOTS
 
 # ── Paleta ───────────────────────────────────────────────────────────────────
 _BG        = (8, 8, 14)
@@ -52,117 +53,12 @@ _CLASSES = [
 ]
 
 # ── Layout base (referência 720p) ─────────────────────────────────────────────
-_BASE_CHAR_W  = 680
-_BASE_CHAR_H  = 520
-_BASE_SLOT_H  = 84
-_BASE_SLOT_PAD = 10
 _BASE_BTN_W, _BASE_BTN_H = 200, 42
 
 
 def _sc(screen: pygame.Surface) -> float:
     """Fator de escala baseado na altura da janela."""
     return screen.get_height() / 720.0
-
-
-def run(screen: pygame.Surface) -> tuple[int, "dict | None"]:
-    """
-    Exibe a seleção de personagens.
-    Retorna (slot, None) para carregar save existente, ou (slot, dict) para novo.
-    """
-    clock = pygame.time.Clock()
-    confirm_delete = -1
-
-    while True:
-        saves      = list_saves()
-        occupied   = {s["slot"] for s in saves}
-        can_create = len(occupied) < MAX_SLOTS
-
-        sc = _sc(screen)
-        sw, sh = screen.get_size()
-
-        font_lg = _font(int(34 * sc))
-        font_md = _font(int(24 * sc))
-        font_sm = _font(int(19 * sc))
-        font_xs = _font(int(15 * sc))
-
-        char_w   = int(_BASE_CHAR_W  * sc)
-        char_h   = int(_BASE_CHAR_H  * sc)
-        slot_h   = int(_BASE_SLOT_H  * sc)
-        slot_pad = int(_BASE_SLOT_PAD * sc)
-
-        px = sw // 2 - char_w // 2
-        py = sh // 2 - char_h // 2
-
-        clock.tick(60)
-        mx, my = pygame.mouse.get_pos()
-
-        # ── Eventos ──────────────────────────────────────────────────────────
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                raise SystemExit
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    if confirm_delete >= 0:
-                        confirm_delete = -1
-                    else:
-                        pygame.quit()
-                        raise SystemExit
-
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if confirm_delete >= 0:
-                    yes_r, no_r = _confirm_btn_rects(sw, sh, sc)
-                    if yes_r.collidepoint(event.pos):
-                        from engine.save_system import delete_save
-                        delete_save(confirm_delete)
-                        confirm_delete = -1
-                    elif no_r.collidepoint(event.pos):
-                        confirm_delete = -1
-                    continue
-
-                for i, s in enumerate(saves):
-                    r = _slot_rect(px, py, i, char_w, slot_h, slot_pad)
-                    if not r.collidepoint(mx, my):
-                        continue
-                    del_r = _delete_btn_rect(r, slot_h, sc)
-                    if del_r.collidepoint(mx, my):
-                        confirm_delete = s["slot"]
-                        break
-                    play_r = _play_btn_rect(r, slot_h, sc)
-                    if play_r.collidepoint(mx, my):
-                        return s["slot"], None
-
-                if can_create:
-                    create_r = _create_btn_rect(px, py, char_w, char_h, slot_h, slot_pad, sc)
-                    if create_r.collidepoint(mx, my):
-                        result = _run_creation(screen, clock, sc)
-                        if result is not None:
-                            slot = next_free_slot()
-                            return slot, result
-
-                quit_r = _quit_btn_rect(px, py, char_w, char_h, sc)
-                if quit_r.collidepoint(mx, my):
-                    pygame.quit()
-                    raise SystemExit
-
-        # ── Confirmação de exclusão ───────────────────────────────────────────
-        if confirm_delete >= 0:
-            _draw_selection(screen, saves, occupied, can_create,
-                            px, py, mx, my, confirm_delete,
-                            font_lg, font_md, font_sm, font_xs,
-                            char_w, char_h, slot_h, slot_pad, sc)
-            _draw_confirm_overlay(screen, confirm_delete, saves,
-                                  px, py, mx, my, font_md, font_sm, sc)
-
-            pygame.display.flip()
-            continue
-
-        # ── Render principal ─────────────────────────────────────────────────
-        _draw_selection(screen, saves, occupied, can_create,
-                        px, py, mx, my, -1,
-                        font_lg, font_md, font_sm, font_xs,
-                        char_w, char_h, slot_h, slot_pad, sc)
-        pygame.display.flip()
 
 
 def _drain_char_select_batch(msgs: list, pending_action: str, game_buffer: list,
@@ -214,18 +110,22 @@ def run_online(screen: pygame.Surface,
                char_list: "list[dict]",
                net) -> bool:
     """
-    Versão online da tela de seleção/criação de personagens.
+    Tela de seleção/criação de personagens (online).
 
-    Usa a mesma UI do run() offline, mas com dados do servidor.
     char_list : lista de dicts de personagem recebida no AUTH_OK.
     net       : NetworkClient conectado e autenticado.
 
     Retorna True  → LOGIN_OK + WORLD_STATE foram re-enfileirados em net.inbox,
                     GameEngine pode iniciar.
     Retorna False → usuário voltou ao login (sair).
+
+    Visual: atlas de UI (ui/atlas_window.py) — janela escura do mockup com
+    1 moldura por personagem, Jogar/Excluir em cada uma, Criar
+    Personagem/Sair embaixo; botões agem no SOLTAR do mouse.
     """
     import time
     from shared.messages import MsgType as _MT
+    from shared.constants import MAX_CHARACTERS_PER_ACCOUNT
 
     clock = pygame.time.Clock()
     sc    = screen.get_height() / 720.0
@@ -235,15 +135,6 @@ def run_online(screen: pygame.Surface,
     font_md = _font(int(24 * sc))
     font_sm = _font(int(19 * sc))
     font_xs = _font(int(15 * sc))
-
-    char_w   = int(_BASE_CHAR_W  * sc)
-    char_h   = int(_BASE_CHAR_H  * sc)
-    slot_h   = int(_BASE_SLOT_H  * sc)
-    slot_pad = int(_BASE_SLOT_PAD * sc)
-    px = sw // 2 - char_w // 2
-    py = sh // 2 - char_h // 2
-
-    MAX_ONLINE_CHARS = 3
 
     chars           = list(char_list)   # cópia local, muda ao criar/excluir
     confirm_del_id  = -1               # char_id aguardando confirmação de exclusão
@@ -255,20 +146,11 @@ def run_online(screen: pygame.Surface,
     pending_action  = ""
     pending_start   = 0.0
     game_buffer: list = []             # mensagens LOGIN_OK + WORLD_STATE para GameEngine
-
-    def _to_save(c: dict, idx: int) -> dict:
-        """Adapta dict do servidor para o formato de _draw_selection."""
-        return {
-            "slot":     idx,
-            "name":     c.get("name",     "Aventureiro"),
-            "class_id": c.get("class_id", "guerreiro"),
-            "level":    c.get("level",    1),
-            "saved_at": None,
-        }
+    press  = aw.PressState()
+    scroll = aw.ScrollState()
 
     while True:
         clock.tick(60)
-        mx, my = pygame.mouse.get_pos()
 
         # ── Poll de rede ──────────────────────────────────────────────────────
         # Ver docstring de _drain_char_select_batch (bug real relatado pelo
@@ -293,8 +175,9 @@ def run_online(screen: pygame.Surface,
             pending_action = ""
             game_buffer.clear()
 
-        # ── Eventos ───────────────────────────────────────────────────────────
-        for event in pygame.event.get():
+        # ── Eventos de teclado/janela ────────────────────────────────────────
+        events = pygame.event.get()
+        for event in events:
             if event.type == pygame.QUIT:
                 return False
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
@@ -306,67 +189,7 @@ def run_online(screen: pygame.Surface,
                 else:
                     return False
 
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if pending_action:
-                    continue
-
-                # Confirmação de exclusão
-                if confirm_del_id >= 0:
-                    yes_r, no_r = _confirm_btn_rects(sw, sh, sc)
-                    if yes_r.collidepoint(event.pos):
-                        net.send(_MT.DELETE_CHARACTER, {"char_id": confirm_del_id})
-                        # Remoção otimista: já remove da lista local
-                        chars = [c for c in chars if c.get("id") != confirm_del_id]
-                        confirm_del_id  = -1
-                        confirm_del_idx = -1
-                    elif no_r.collidepoint(event.pos):
-                        confirm_del_id  = -1
-                        confirm_del_idx = -1
-                    continue
-
-                saves = [_to_save(c, i) for i, c in enumerate(chars)]
-
-                # Clique nos slots existentes
-                for i, s in enumerate(saves):
-                    r = _slot_rect(px, py, i, char_w, slot_h, slot_pad)
-                    if not r.collidepoint(mx, my):
-                        continue
-                    del_r = _delete_btn_rect(r, slot_h, sc)
-                    if del_r.collidepoint(mx, my):
-                        confirm_del_id  = chars[i].get("id", -1)
-                        confirm_del_idx = i
-                        break
-                    play_r = _play_btn_rect(r, slot_h, sc)
-                    if play_r.collidepoint(mx, my):
-                        net.send(_MT.SELECT_CHARACTER, {"char_id": chars[i].get("id", -1)})
-                        pending_action = "selecting"
-                        pending_start  = time.time()
-                        game_buffer.clear()
-                        break
-
-                # Botão criar personagem
-                if len(chars) < MAX_ONLINE_CHARS:
-                    create_r = _create_btn_rect(px, py, char_w, char_h, slot_h, slot_pad, sc)
-                    if create_r.collidepoint(mx, my):
-                        result = _run_creation(screen, clock, sc, net=net)
-                        if result is not None:
-                            # _run_creation já mandou CREATE_CHARACTER e esperou
-                            # CHARACTER_CREATED internamente (erro tipo "nome já
-                            # usado" mantém a tela de criação aberta com aviso —
-                            # não passa disso pra cá) — result é o char pronto.
-                            chars.append(result)
-                            status = ""
-
-                # Botão sair
-                quit_r = _quit_btn_rect(px, py, char_w, char_h, sc)
-                if quit_r.collidepoint(mx, my):
-                    return False
-
-        # ── Render ────────────────────────────────────────────────────────────
-        saves = [_to_save(c, i) for i, c in enumerate(chars)]
-        can_create = len(chars) < MAX_ONLINE_CHARS
-        occupied   = set(range(len(chars)))
-
+        # ── Render + cliques (botões do atlas agem no soltar) ────────────────
         if pending_action == "selecting":
             screen.fill(_BG)
             lbl = font_md.render("Entrando no mundo...", False, _TITLE_COL)
@@ -377,25 +200,55 @@ def run_online(screen: pygame.Surface,
             pygame.display.flip()
             continue
 
-        if confirm_del_id >= 0:
-            _draw_selection(screen, saves, occupied, can_create,
-                            px, py, mx, my, confirm_del_id,
-                            font_lg, font_md, font_sm, font_xs,
-                            char_w, char_h, slot_h, slot_pad, sc)
+        can_create = len(chars) < MAX_CHARACTERS_PER_ACCOUNT
+        confirming = confirm_del_id >= 0
+        # Confirmação aberta: a lista de fundo é só desenho — sem eventos e
+        # com um estado de botão DESCARTÁVEL (o dela, ao ver o mouse solto,
+        # zeraria o botão afundado da confirmação antes dela disparar).
+        action, panel_rect = _draw_selection(
+            screen, [] if confirming else events, chars, can_create,
+            aw.PressState() if confirming else press, scroll,
+            font_md, font_sm, font_xs, sc)
+
+        if confirming:
             del_name = chars[confirm_del_idx]["name"] if 0 <= confirm_del_idx < len(chars) else "?"
-            _draw_confirm_overlay(
-                screen, confirm_del_id,
-                [{"slot": confirm_del_id, "name": del_name}],
-                px, py, mx, my, font_md, font_sm, sc)
-        else:
-            _draw_selection(screen, saves, occupied, can_create,
-                            px, py, mx, my, -1,
-                            font_lg, font_md, font_sm, font_xs,
-                            char_w, char_h, slot_h, slot_pad, sc)
+            answer = _draw_confirm_delete(screen, events, del_name, press, font_md, font_sm)
+            if answer == "yes":
+                net.send(_MT.DELETE_CHARACTER, {"char_id": confirm_del_id})
+                # Remoção otimista: já remove da lista local
+                chars = [c for c in chars if c.get("id") != confirm_del_id]
+                confirm_del_id  = -1
+                confirm_del_idx = -1
+            elif answer == "no":
+                confirm_del_id  = -1
+                confirm_del_idx = -1
+        elif action is not None:
+            kind = action[0]
+            if kind == "play":
+                i = action[1]
+                net.send(_MT.SELECT_CHARACTER, {"char_id": chars[i].get("id", -1)})
+                pending_action = "selecting"
+                pending_start  = time.time()
+                game_buffer.clear()
+            elif kind == "delete":
+                confirm_del_idx = action[1]
+                confirm_del_id  = chars[action[1]].get("id", -1)
+            elif kind == "create":
+                result = _run_creation(screen, clock, sc, net=net)
+                if result is not None:
+                    # _run_creation já mandou CREATE_CHARACTER e esperou
+                    # CHARACTER_CREATED internamente (erro tipo "nome já
+                    # usado" mantém a tela de criação aberta com aviso —
+                    # não passa disso pra cá) — result é o char pronto.
+                    chars.append(result)
+                    status = ""
+                press.pressed = ""
+            elif kind == "quit":
+                return False
 
         if status:
             e = font_sm.render(status, False, _DEL_TXT)
-            screen.blit(e, e.get_rect(centerx=sw // 2, y=py - e.get_height() - int(6 * sc)))
+            screen.blit(e, e.get_rect(centerx=sw // 2, bottom=panel_rect.top - int(6 * sc)))
 
         pygame.display.flip()
 
@@ -682,180 +535,155 @@ def _get_class_preview_frame(class_id: str, sc: float) -> "pygame.Surface | None
     return frame
 
 
-# ── Render da seleção ────────────────────────────────────────────────────────
+# ── Render da seleção (atlas de UI) ──────────────────────────────────────────
+# Janela escura do mockup (assets/content/exemplo.png, canto superior
+# direito), mapeada tile a tile: título nas 2 primeiras linhas, 1 moldura
+# de 3 linhas por personagem (Jogar/Excluir à direita, botões "baixos"),
+# coluna da direita cromada pra barra de rolagem (só aparece quando há
+# mais personagens do que cabe), Criar Personagem/Sair empilhados embaixo.
+# Mínimo de 3 molduras (como no mockup): as que sobram mostram "Vazio".
 
-def _draw_selection(screen, saves, occupied, can_create,
-                    px, py, mx, my, confirm_delete,
-                    font_lg, font_md, font_sm, font_xs,
-                    char_w, char_h, slot_h, slot_pad, sc):
-    screen.fill(_BG)
-    panel = pygame.Rect(px, py, char_w, char_h)
-    pygame.draw.rect(screen, _PANEL_BG, panel, border_radius=8)
-    pygame.draw.rect(screen, _BORDER,   panel, 2, border_radius=8)
+_SEL_MIN_SLOTS   = 3   # molduras sempre visíveis (mockup)
+_SEL_VIEW_SLOTS  = 3   # molduras que cabem antes de rolar
+_SEL_SLOT_ROWS   = 3   # linhas (tiles) por moldura
+_SEL_TOP_ROWS    = 2   # título
+_SEL_BOTTOM_ROWS = 3   # 2 botões empilhados + borda
+_SEL_TEXT_X      = 3 * aw.T + 8   # px RAW: texto do personagem, à direita do preview
+_SEL_PREVIEW_CX  = 2 * aw.T       # px RAW: centro do preview na moldura
 
-    title = font_lg.render("Selecionar Personagem", False, _TITLE_COL)
-    screen.blit(title, (px + char_w // 2 - title.get_width() // 2, py + int(16 * sc)))
-
-    # Previews ficam pendurados pra um 2º passe (19/10/2026, §292) — sprite
-    # de 128px é maior que a linha (slot_h=84), então "espia" por cima da
-    # linha (acima/abaixo do fundo cinza) em vez de cortar/espremer dentro
-    # dela. Desenhado por ÚLTIMO (depois de TODAS as linhas+botões) pra
-    # nunca ficar coberto pela linha SEGUINTE, que senão cortaria a parte
-    # de baixo do sprite da linha anterior. `_LIST_TEXT_OFFSET` é só o
-    # espaço reservado pro texto ao lado — NUNCA o tamanho real do sprite,
-    # que pode ser bem maior sem empurrar o texto (mesmo texto fica no
-    # mesmo lugar não importa o tamanho do preview). 150px (19/10/2026,
-    # pedido do usuário com print anotado — valor anterior, 64+14=78,
-    # era menor que a largura real do sprite de 128px e o texto nascia
-    # SOBRE o desenho).
-    _LIST_TEXT_OFFSET = int(150 * sc)
-    _pending_previews: list = []
-
-    for i, s in enumerate(saves):
-        r   = _slot_rect(px, py, i, char_w, slot_h, slot_pad)
-        hov = r.collidepoint(mx, my)
-        bg  = _SEL_BG if hov else _PANEL_BG
-        pygame.draw.rect(screen, bg,      r, border_radius=5)
-        pygame.draw.rect(screen, _BORDER, r, 1, border_radius=5)
-
-        icon_x = r.x + int(14 * sc)
-        frame = _get_class_preview_frame(s["class_id"], sc)
-        if frame is not None:
-            icon_sz = frame.get_width()
-            _pending_previews.append((frame, icon_x, r.y + slot_h // 2 - icon_sz // 2))
-        else:
-            icon_sz = int(36 * sc)
-            col  = _CLASS_COLORS.get(s["class_id"], (150, 150, 150))
-            icon = pygame.Rect(icon_x, r.y + slot_h // 2 - icon_sz // 2, icon_sz, icon_sz)
-            pygame.draw.rect(screen, col, icon, border_radius=4)
-        text_x = icon_x + _LIST_TEXT_OFFSET
-
-        name_s = font_md.render(s["name"], False, _TITLE_COL)
-        screen.blit(name_s, (text_x, r.y + int(12 * sc)))
-
-        cls_label = s["class_id"].capitalize()
-        info_s = font_sm.render(f"{cls_label}  —  Nivel {s['level']}", False, _TEXT_COL)
-        screen.blit(info_s, (text_x, r.y + int(12 * sc) + name_s.get_height() + int(2 * sc)))
-
-        if s["saved_at"]:
-            date_str = s["saved_at"].replace("T", "  ")
-            date_s = font_xs.render(date_str, False, _SUB_COL)
-            screen.blit(date_s, (text_x, r.y + slot_h - date_s.get_height() - int(8 * sc)))
-
-        play_r = _play_btn_rect(r, slot_h, sc)
-        hov_p  = play_r.collidepoint(mx, my)
-        pygame.draw.rect(screen, _BTN_HOV if hov_p else _BTN_BG, play_r, border_radius=4)
-        pygame.draw.rect(screen, _SEL_BDR, play_r, 2, border_radius=4)
-        play_s = font_sm.render("Jogar", False, _BTN_TXT)
-        screen.blit(play_s, play_s.get_rect(center=play_r.center))
-
-        del_r = _delete_btn_rect(r, slot_h, sc)
-        hov_d = del_r.collidepoint(mx, my)
-        pygame.draw.rect(screen, _DEL_HOV if hov_d else _DEL_BG, del_r, border_radius=4)
-        pygame.draw.rect(screen, _DEL_TXT, del_r, 1, border_radius=4)
-        del_s = font_xs.render("Excluir", False, _DEL_TXT)
-        screen.blit(del_s, del_s.get_rect(center=del_r.center))
-
-    create_r = _create_btn_rect(px, py, char_w, char_h, slot_h, slot_pad, sc)
-    if can_create:
-        hov_c = create_r.collidepoint(mx, my)
-        pygame.draw.rect(screen, _NEW_HOV if hov_c else _NEW_BG, create_r, border_radius=5)
-        pygame.draw.rect(screen, _NEW_BDR, create_r, 2, border_radius=5)
-        c_s = font_md.render("+ Criar Personagem", False, _NEW_TXT)
-        screen.blit(c_s, c_s.get_rect(center=create_r.center))
-    else:
-        pygame.draw.rect(screen, _PANEL_BG, create_r, border_radius=5)
-        pygame.draw.rect(screen, _LOCK_COL, create_r, 1, border_radius=5)
-        c_s = font_sm.render("Slots cheios (max 8)", False, _LOCK_TXT)
-        screen.blit(c_s, c_s.get_rect(center=create_r.center))
-
-    quit_r = _quit_btn_rect(px, py, char_w, char_h, sc)
-    hov_q  = quit_r.collidepoint(mx, my)
-    pygame.draw.rect(screen, _BTN_HOV if hov_q else _BTN_BG, quit_r, border_radius=5)
-    pygame.draw.rect(screen, _BORDER, quit_r, 2, border_radius=5)
-    q_s = font_md.render("Sair", False, _BTN_TXT)
-    screen.blit(q_s, q_s.get_rect(center=quit_r.center))
-
-    # 2º passe (ver comentário na coleta, acima) — por cima de TUDO.
-    for frame, fx, fy in _pending_previews:
-        screen.blit(frame, (fx, fy))
+_SEL_NAME_COL  = (230, 210, 160)
+_SEL_INFO_COL  = (185, 170, 140)
+_SEL_EMPTY_COL = (120, 112, 100)
 
 
-def _draw_confirm_overlay(screen, slot, saves, px, py, mx, my, font_md, font_sm, sc):
+def _sel_info_text(c: dict) -> str:
+    return f"{c.get('class_id', 'guerreiro').capitalize()}  —  Nível {c.get('level', 1)}"
+
+
+def _sel_layout(chars: list, font_md, font_sm) -> dict:
+    """Tamanhos em tiles a partir do TEXTO medido (fonte acompanha a escala
+    da tela, o atlas não)."""
+    T, S = aw.T, aw.S
+    n_slots = max(_SEL_MIN_SLOTS, len(chars))
+    play_w = aw.tiles_for(font_md, ["Jogar"], 3)
+    del_w  = aw.tiles_for(font_md, ["Excluir"], 3)
+    text_w = max([font_md.size(c.get("name", ""))[0] for c in chars]
+                 + [font_sm.size(_sel_info_text(c))[0] for c in chars]
+                 + [font_md.size("Vazio")[0]]) / S
+    frame_w = max(16, math.ceil((_SEL_TEXT_X + text_w + 8) / T) + play_w + del_w + 1)
+    bottom_w = aw.tiles_for(font_md, ["Criar Personagem", "Sair"], 3)
+    title_w = aw.tiles_for(font_md, ["Selecionar Personagem"], 1) + 2
+    tw = max(frame_w + 1, bottom_w + 2, title_w)
+    frame_w = tw - 1
+    view = min(n_slots, _SEL_VIEW_SLOTS)
+    th = _SEL_TOP_ROWS + view * _SEL_SLOT_ROWS + _SEL_BOTTOM_ROWS
+    return {"tw": tw, "th": th, "frame_w": frame_w, "n_slots": n_slots, "view": view,
+            "play_w": play_w, "del_w": del_w, "bottom_w": bottom_w}
+
+
+def _draw_selection(screen, events, chars, can_create, press, scroll,
+                    font_md, font_sm, font_xs, sc, hits: "dict | None" = None) -> tuple:
+    """Desenha a seleção e devolve (ação, rect_da_janela). Ação: ("play", i),
+    ("delete", i), ("create",), ("quit",) ou None. `hits` (opcional) recebe
+    o rect de TELA de cada botão — pros testes acharem onde clicar."""
+    T, S = aw.T, aw.S
     sw, sh = screen.get_size()
-    overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
-    overlay.fill((0, 0, 0, 160))
-    screen.blit(overlay, (0, 0))
+    screen.fill(_BG)
+    lay = _sel_layout(chars, font_md, font_sm)
+    tw, th, fw = lay["tw"], lay["th"], lay["frame_w"]
+    f = aw.Frame(screen, events, tw, th, area=aw.safe_area(sw, sh, sh), press=press,
+                 font=font_md, raw=ui_atlas.dark_list_window_raw(tw, th), overlay=False)
+    action = None
+    ay0, ay1 = ui_atlas.button_art_y(False)
 
-    DW = int(400 * sc)
-    DH = int(160 * sc)
-    dx = sw // 2 - DW // 2
-    dy = sh // 2 - DH // 2
-    d_panel = pygame.Rect(dx, dy, DW, DH)
-    pygame.draw.rect(screen, (30, 10, 10), d_panel, border_radius=8)
-    pygame.draw.rect(screen, _DEL_TXT,    d_panel, 2, border_radius=8)
+    def _hit(hid, col, w, row_px):
+        if hits is not None:
+            hits[hid] = pygame.Rect(f.px + col * T * S, f.py + int((row_px + ay0) * S),
+                                    w * T * S, (ay1 - ay0) * S)
 
-    save_info = next((s for s in saves if s["slot"] == slot), None)
-    name_str  = save_info["name"] if save_info else "?"
-    line1 = font_md.render("Excluir personagem?", False, (255, 200, 200))
-    line2 = font_sm.render(f'"{name_str}" sera removido permanentemente.', False, _TEXT_COL)
-    screen.blit(line1, (dx + DW // 2 - line1.get_width() // 2, dy + int(20 * sc)))
-    screen.blit(line2, (dx + DW // 2 - line2.get_width() // 2, dy + int(20 * sc) + line1.get_height() + int(8 * sc)))
+    view_y0 = _SEL_TOP_ROWS * T
+    view_h  = lay["view"] * _SEL_SLOT_ROWS * T
+    content_h = lay["n_slots"] * _SEL_SLOT_ROWS * T
+    off = f.scrollbar(scroll, tw - 1, _SEL_TOP_ROWS, _SEL_TOP_ROWS + lay["view"] * _SEL_SLOT_ROWS - 1,
+                      content_h - view_h)
 
-    yes_r, no_r = _confirm_btn_rects(sw, sh, sc)
-    for r, label, bg, hov_bg, col in [
-        (yes_r, "Excluir",  _DEL_BG,  _DEL_HOV,  _DEL_TXT),
-        (no_r,  "Cancelar", _BTN_BG,  _BTN_HOV,  _BTN_TXT),
-    ]:
-        hov = r.collidepoint(mx, my)
-        pygame.draw.rect(screen, hov_bg if hov else bg, r, border_radius=5)
-        pygame.draw.rect(screen, col, r, 2, border_radius=5)
-        s = font_md.render(label, False, col)
-        screen.blit(s, s.get_rect(center=r.center))
+    in_view = view_y0 <= f.ry < view_y0 + view_h and 0 <= f.rx < fw * T
+    fc = f.child(pygame.Surface((fw * T, content_h), pygame.SRCALPHA),
+                 f.ry - view_y0 + off if in_view else -10_000)
+    previews = []
+    for i in range(lay["n_slots"]):
+        r0 = i * _SEL_SLOT_ROWS
+        ui_atlas.blit_frame(fc.raw, 0, r0, fw, _SEL_SLOT_ROWS)
+        cy = (r0 + _SEL_SLOT_ROWS / 2) * T
+        if i >= len(chars):
+            fc.text("Vazio", _SEL_TEXT_X, cy, _SEL_EMPTY_COL, anchor="midleft")
+            continue
+        c = chars[i]
+        fc.text(c.get("name", "Aventureiro"), _SEL_TEXT_X, cy - 1, _SEL_NAME_COL, anchor="bottomleft")
+        fc.text(_sel_info_text(c), _SEL_TEXT_X, cy + 1, _SEL_INFO_COL, font=font_sm, anchor="topleft")
+        del_col = fw - 1 - lay["del_w"]
+        play_col = del_col - lay["play_w"]
+        if fc.button(f"sel:play:{i}", play_col, r0 + 1, lay["play_w"], "Jogar", tall=False):
+            action = ("play", i)
+        if fc.button(f"sel:del:{i}", del_col, r0 + 1, lay["del_w"], "Excluir", tall=False):
+            action = ("delete", i)
+        row_px = view_y0 + (r0 + 1) * T - off
+        if view_y0 <= row_px and row_px + T <= view_y0 + view_h:
+            _hit(f"sel:play:{i}", play_col, lay["play_w"], row_px)
+            _hit(f"sel:del:{i}", del_col, lay["del_w"], row_px)
+        frame = _get_class_preview_frame(c.get("class_id", "guerreiro"), 1.0)
+        if frame is not None:
+            previews.append((frame, _SEL_PREVIEW_CX * S - frame.get_width() // 2,
+                             int(cy * S) - frame.get_height() // 2))
+        else:
+            col = _CLASS_COLORS.get(c.get("class_id"), (150, 150, 150))
+            pygame.draw.rect(fc.raw, col, (_SEL_PREVIEW_CX - 9, int(cy) - 9, 18, 18))
+
+    bw = lay["bottom_w"]
+    bcol = (tw - bw) // 2
+    by = th - _SEL_BOTTOM_ROWS
+    if f.button("sel:create", bcol, by, bw, "Criar Personagem", tall=False, enabled=can_create):
+        action = ("create",)
+    if f.button("sel:quit", bcol, by + 1, bw, "Sair", tall=False):
+        action = ("quit",)
+    _hit("sel:create", bcol, bw, by * T)
+    _hit("sel:quit", bcol, bw, (by + 1) * T)
+
+    f.end("Selecionar Personagem")
+    content = ui_atlas.scale_up(fc.raw)
+    aw.draw_texts(content, fc.texts, font_md)
+    # Preview por ÚLTIMO (sprite 128px "espia" por cima da moldura vizinha
+    # em vez de ser cortado — mesma decisão de §292), recortado só pela
+    # área visível da lista.
+    for frame, px, py in previews:
+        content.blit(frame, (px, py))
+    view = content.subsurface((0, off * S, content.get_width(), view_h * S))
+    screen.blit(view, (f.px, f.py + view_y0 * S))
+    return action, pygame.Rect(f.px, f.py, f.pw, f.ph)
 
 
-# ── Helpers de geometria ─────────────────────────────────────────────────────
-
-def _slot_rect(px, py, idx, char_w, slot_h, slot_pad) -> pygame.Rect:
-    pad = int(20 * (slot_h / 84))   # escala o recuo lateral com slot_h
-    x = px + pad
-    y = py + slot_h + idx * (slot_h + slot_pad)
-    return pygame.Rect(x, y, char_w - pad * 2, slot_h)
-
-
-def _play_btn_rect(slot_r: pygame.Rect, slot_h: int, sc: float) -> pygame.Rect:
-    bw = int(80 * sc)
-    bh = int(30 * sc)
-    return pygame.Rect(slot_r.right - bw - int(110 * sc), slot_r.y + slot_h // 2 - bh // 2, bw, bh)
-
-
-def _delete_btn_rect(slot_r: pygame.Rect, slot_h: int, sc: float) -> pygame.Rect:
-    bw = int(72 * sc)
-    bh = int(26 * sc)
-    return pygame.Rect(slot_r.right - bw - int(14 * sc), slot_r.y + slot_h // 2 - bh // 2, bw, bh)
-
-
-def _create_btn_rect(px, py, char_w, char_h, slot_h, slot_pad, sc) -> pygame.Rect:
-    bw = int(260 * sc)
-    bh = int(42  * sc)
-    y  = py + char_h - bh - int(60 * sc)
-    return pygame.Rect(px + char_w // 2 - bw // 2, y, bw, bh)
-
-
-def _quit_btn_rect(px, py, char_w, char_h, sc) -> pygame.Rect:
-    bw = int(120 * sc)
-    bh = int(36  * sc)
-    return pygame.Rect(px + char_w // 2 - bw // 2, py + char_h - bh - int(14 * sc), bw, bh)
-
-
-def _confirm_btn_rects(sw, sh, sc) -> tuple:
-    DW = int(400 * sc)
-    DH = int(160 * sc)
-    dx = sw // 2 - DW // 2
-    dy = sh // 2 - DH // 2
-    bw = int(140 * sc)
-    bh = int(36  * sc)
-    y  = dy + DH - bh - int(16 * sc)
-    yes_r = pygame.Rect(dx + DW // 2 - bw - int(12 * sc), y, bw, bh)
-    no_r  = pygame.Rect(dx + DW // 2 + int(12 * sc),      y, bw, bh)
-    return yes_r, no_r
+def _draw_confirm_delete(screen, events, name: str, press, font_md, font_sm,
+                         hits: "dict | None" = None) -> "str | None":
+    """Janela escura pequena "Excluir personagem?" por cima da seleção.
+    Devolve "yes", "no" ou None. `hits`: ver _draw_selection."""
+    sw, sh = screen.get_size()
+    msg = f'"{name}" será removido permanentemente.'
+    bw = aw.tiles_for(font_md, ["Excluir", "Cancelar"], 3)
+    tw = max(aw.tiles_for(font_sm, [msg], 1) + 2,
+             aw.tiles_for(font_md, ["Excluir personagem?"], 1) + 2, 2 * bw + 3)
+    th = 6
+    f = aw.Frame(screen, events, tw, th, area=aw.safe_area(sw, sh, sh), press=press,
+                 font=font_md, style="dark")
+    f.text(msg, tw * aw.T / 2, 2.5 * aw.T, _SEL_INFO_COL, font=font_sm)
+    answer = None
+    if f.button("del:yes", 1, 3, bw, "Excluir"):
+        answer = "yes"
+    if f.button("del:no", tw - 1 - bw, 3, bw, "Cancelar"):
+        answer = "no"
+    if hits is not None:
+        ay0, ay1 = ui_atlas.button_art_y(True)
+        for hid, col in (("del:yes", 1), ("del:no", tw - 1 - bw)):
+            hits[hid] = pygame.Rect(f.px + col * aw.T * aw.S, f.py + (3 * aw.T + ay0) * aw.S,
+                                    bw * aw.T * aw.S, (ay1 - ay0) * aw.S)
+    f.end("Excluir personagem?")
+    return answer
