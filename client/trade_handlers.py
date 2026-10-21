@@ -377,7 +377,7 @@ class TradeHandlers:
         from engine.components import Inventory as _InvDraw
         inv = self.world.get_component(self.player_entity, _InvDraw)
         items = inv.items if inv else []
-        cells = [None if it is None else (ICONS.get(ICONS.item_key(it), ip),
+        cells = [None if it is None else (aw.item_icon(it, self.font_sm),
                                           it.stack if getattr(it, "max_stack", 1) > 1 else 0)
                  for it in items]
         hov_i, _ = f.grid("trade:bag", self._BAG_X, self._BAG_Y, self._BAG_COLS, self._BAG_ROWS, cells,
@@ -424,7 +424,7 @@ class TradeHandlers:
             for i in range(self._N_OFFER):
                 it = offer[i] if i < len(offer) else None
                 sx = ox0 + i * SL
-                icon = ICONS.get(ICONS.item_key(it), ip) if it else None
+                icon = aw.item_icon(it, self.font_sm)
                 count = it.stack if it and getattr(it, "max_stack", 1) > 1 else 0
                 hov, _ = f.slot(f"offer:{int(mine)}:{i}", sx, sy, icon, count, dark=True,
                                 count_font=self.font_xs)

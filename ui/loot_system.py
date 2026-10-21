@@ -625,7 +625,7 @@ class LootSystem(UIScaleMixin, System):
                 color = (255, 215, 0)
             else:
                 it = corpse.loot[row[1]]
-                icon = ICONS.get(ICONS.item_key(it), ip)
+                icon = aw.item_icon(it, self.font_sm, ip)
                 color = self.RARITY_COLORS.get(it.rarity, (200, 200, 200))
             fc.slot(f"loot:{vi}", self.LIST_X, y, icon, dark=True)
             fc.text(labels[vi], text_x, y + mid, color, self.font_sm, anchor="midleft")

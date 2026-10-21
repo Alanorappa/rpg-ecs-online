@@ -436,7 +436,7 @@ class InventoryHandlers:
         for slot_name, (c, r) in self._INV_EQ_POS.items():
             item = equip.slots.get(slot_name)
             locked = slot_name == "offhand" and equip.is_offhand_locked()
-            icon = ICONS.get(ICONS.item_key(item), ip) if item else None
+            icon = aw.item_icon(item, self.font_sm)
             hov, fired = f.slot(f"inv:eq:{slot_name}", eq_x[c], top + r * step, icon, dim=locked)
             if hov:
                 label = Equipment.SLOT_LABELS[slot_name]
@@ -478,7 +478,7 @@ class InventoryHandlers:
             lit = (getattr(item, "light_source", None) and pls is not None
                    and pls.active and pls.item_id == item.item_id)
             ic = (ICONS.get_active(ICONS.item_key(item), ip) if lit
-                  else ICONS.get(ICONS.item_key(item), ip))
+                  else aw.item_icon(item, self.font_sm))
             cells.append((ic, item.stack if getattr(item, "max_stack", 1) > 1 else 0))
         rows = math.ceil(inv.max_slots / self._INV_BAG_COLS)
         hov_i, hit_i = f.grid("inv:bag", bag_x0, top, self._INV_BAG_COLS, rows,

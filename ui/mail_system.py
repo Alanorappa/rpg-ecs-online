@@ -579,7 +579,7 @@ class MailSystem(UIScaleMixin, System):
         cells = []
         for i, it in enumerate(items):
             cells.append(None if it is None else
-                         (ICONS.get(ICONS.item_key(it), ip), it.stack if getattr(it, "max_stack", 1) > 1 else 0))
+                         (aw.item_icon(it, self._font_sm), it.stack if getattr(it, "max_stack", 1) > 1 else 0))
         hov_i, _ = f.grid("mail:bag", bx0, by0_bag, self._BAG_COLS, self._BAG_ROWS, cells,
                           count_font=self._font_xs)
         for i in range(len(items)):
@@ -642,7 +642,7 @@ class MailSystem(UIScaleMixin, System):
                     item_obj = copy.copy(items[idx])
                     item_obj.stack = qty
             sx = fx0 * T + i * self._SLOT_STEP
-            icon = ICONS.get(ICONS.item_key(item_obj), ip) if item_obj else None
+            icon = aw.item_icon(item_obj, self._font_sm)
             count = item_obj.stack if item_obj and getattr(item_obj, "max_stack", 1) > 1 else 0
             hov, _ = f.slot(f"mail:att:{i}", sx, sy, icon, count, dark=True, count_font=self._font_xs)
             self._mail_hit(f"mail:att:{i}", f, sx, sy, sx + SL, sy + SL)
@@ -702,7 +702,7 @@ class MailSystem(UIScaleMixin, System):
                 continue
             sx = px0 + idx * self._SLOT_STEP
             item = None if it["claimed"] else it["item"]
-            icon = ICONS.get(ICONS.item_key(item), ip) if item else None
+            icon = aw.item_icon(item, self._font_sm)
             count = item.stack if item and getattr(item, "max_stack", 1) > 1 else 0
             hov, fired = f.slot(f"mail:claim:{idx}", sx, py0, icon, count, dark=True,
                                 count_font=self._font_xs, enabled=item is not None)

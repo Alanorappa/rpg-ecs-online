@@ -1022,7 +1022,7 @@ class QuestDialogSystem(UIScaleMixin, System):
                 surf = ICONS.get(f"skill_{obj[0]}", inner)
                 stack = 1
             else:
-                surf = ICONS.get(ICONS.item_key(obj), inner)
+                surf = aw.item_icon(obj, self._font_sm, inner)
                 stack = obj.stack
             if surf is not None:
                 content.blit(surf, (px, py))

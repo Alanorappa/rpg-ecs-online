@@ -91,7 +91,7 @@ Ver `arquitetura/HISTORICO_FEATURES.md` §65 (atlas + tela de som), §66 (menu d
 |---|---|
 | `prompt(...)` | Aviso com mensagem e botões altos (convites de troca/duelo/grupo, menu do treinador). |
 | `quantity_window` + `quantity_state`/`quantity_key` | Modal "quantos?" (loja, troca, correio): ◀ quantidade ▶, digitação, roda do mouse, Cancelar/Confirmar. |
-| `item_icon(item, font)` | Ícone do item; sem ícone no catálogo → quadrado da cor da raridade com a inicial. |
+| `item_icon(item, font)` | Ícone do item; sem ícone no catálogo → retângulo na cor da qualidade. Toda janela com slot de item usa ESTA função, nunca `ICONS.get` direto. |
 | `Frame.rreleased` / `right_click(...)` | Clique DIREITO no soltar (equipar, comprar, vender, ofertar...). |
 | `Frame(press=None)` | Janela só de FUNDO (por baixo de um modal) — nunca compartilhar o PressState do modal. |
 | `text_field(placeholder=, align=)`, `field_hover` | Campo com texto-guia cinza e alinhado à esquerda; detectar clique fora pra desfocar. |

@@ -125,6 +125,15 @@ def test_x_da_barra_de_titulo_dispara_no_soltar():
     assert _click(build, (13 * T + 8, 8)) == (False, True)
 
 
+def test_item_sem_icone_vira_retangulo_da_cor_da_qualidade():
+    from content.item_table import ITEMS, RARITY_COLORS
+    from ui.icon_manager import ICONS
+    item = next(f() for f in ITEMS.values() if ICONS.get(ICONS.item_key(f()), 64) is None)
+    surf = aw.item_icon(item, _font(24))
+    assert surf is not None and surf.get_size() == (aw.slot_icon_px(),) * 2
+    assert tuple(surf.get_at((2, 2)))[:3] == tuple(RARITY_COLORS[item.rarity][:3])
+
+
 def test_slot_tem_icone_32_com_borda():
     from ui import ui_atlas
     assert ui_atlas.slot_raw().get_size() == (aw.SLOT, aw.SLOT)

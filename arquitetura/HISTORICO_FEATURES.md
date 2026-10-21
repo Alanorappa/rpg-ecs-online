@@ -5802,6 +5802,10 @@ Retorno do usuário sobre o lote de §72 (prints anotados):
   outro mercador zeram o histórico. Mensagens novas `SHOP_UNDO`/
   `SHOP_UNDO_RESULT`/`SHOP_CLOSE`; `SELL_REQUEST` ganhou `npc_eid`.
 - **"Deletar" do ferreiro** corrigido (HISTORICO_BUGS.md §96).
+- **Item sem ícone** (140 do catálogo ainda): toda janela passou a usar
+  `atlas_window.item_icon` (antes várias chamavam `ICONS.get` direto e o
+  slot ficava vazio); reserva = retângulo na cor da qualidade, sem letra
+  (decisão do usuário).
 
 **Teste**: `tests/test_shop_undo.py` (servidor: compra, venda, LIFO com
 item consumido, sem ouro, fechar/outro mercador),

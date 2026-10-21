@@ -543,14 +543,13 @@ def item_icon(item, font, size: "int | None" = None) -> "pygame.Surface | None":
     icon = ICONS.get(ICONS.item_key(item), size)
     if icon is not None:
         return icon
+    # Sem ícone ainda: retângulo na cor da qualidade (decisão do usuário).
     from content.item_table import RARITY_COLORS
-    key = (item.name[:1].upper(), getattr(item, "rarity", "common"), size, id(font))
+    key = (getattr(item, "rarity", "common"), size)
     surf = _ITEM_FALLBACK_CACHE.get(key)
     if surf is None:
         surf = pygame.Surface((size, size), pygame.SRCALPHA)
-        surf.fill((*RARITY_COLORS.get(key[1], (180, 180, 180))[:3], 255))
-        letter = font.render(key[0], False, (20, 16, 8))
-        surf.blit(letter, letter.get_rect(center=(size // 2, size // 2)))
+        surf.fill((*RARITY_COLORS.get(key[0], (180, 180, 180))[:3], 255))
         if len(_ITEM_FALLBACK_CACHE) >= _ITEM_FALLBACK_CACHE_MAX:
             _ITEM_FALLBACK_CACHE.clear()
         _ITEM_FALLBACK_CACHE[key] = surf

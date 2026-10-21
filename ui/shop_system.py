@@ -542,7 +542,7 @@ class ShopSystem(UIScaleMixin, System):
             y = i * self._ROW_H + 1
             ok = (wallet is not None and wallet.gold >= entry["price"]) and not inv_full
             rar = self._RARITY_COLORS.get(prev.rarity, (200, 200, 200))
-            hov, _ = fc.slot(f"shop:buy:{i}", 0, y, ICONS.get(ICONS.item_key(prev), ip),
+            hov, _ = fc.slot(f"shop:buy:{i}", 0, y, aw.item_icon(prev, self._font_sm),
                              dark=True, dim=not ok)
             row_hov = fc.hover(0, y - 1, list_w, y - 1 + self._ROW_H)
             fc.text(prev.name, aw.SLOT + 6, y + mid, rar if ok else (110, 90, 90),
@@ -573,7 +573,7 @@ class ShopSystem(UIScaleMixin, System):
         cells = []
         for item in bag:
             cells.append(None if item is None else
-                         (ICONS.get(ICONS.item_key(item), ip),
+                         (aw.item_icon(item, self._font_sm),
                           item.stack if getattr(item, "max_stack", 1) > 1 else 0))
         bx0 = lay["bag_x0"]
         hov_i, _ = f.grid("shop:bag", bx0, top, self._BAG_COLS, lay["bag_rows"], cells,
