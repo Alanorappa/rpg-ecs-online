@@ -318,3 +318,4 @@
 - [20/10/2026] (feature) Seleção de personagem no atlas de UI (molduras, rolagem, confirmação de exclusão) — tags: ui, atlas, personagem, selecao — HISTORICO_FEATURES.md §69
 - [20/10/2026] (bug) Limite de personagens por conta era 3 (servidor+cliente), passou pra 8 numa constante única — tags: personagem, limite, auth — HISTORICO_BUGS.md §95
 - [21/10/2026] (feature) Criação de personagem no atlas de UI (campo de nome, cards de classe com contorno na escolhida) — tags: ui, atlas, personagem, criacao — HISTORICO_FEATURES.md §70
+- [21/10/2026] (feature) Kit de peças das janelas do atlas: slot/grade, abas, checkbox, janela com título e X, texto com quebra, divisória, senha — tags: ui, atlas, kit — HISTORICO_FEATURES.md §71

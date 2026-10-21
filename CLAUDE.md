@@ -1975,9 +1975,13 @@ padrão a quebrar, não só os bugs individuais.
   tem texto — a fonte acompanha a escala de UI do jogador, o atlas não:
   medir com a MESMA fonte do desenho (`atlas_window.tiles_for`).
   **Montar/interagir com a janela SEMPRE via `ui/atlas_window.py`**
-  (`Frame` — botão no soltar, campo, seletor, `scrollbar`, `child` pra
-  conteúdo rolável; `PressState`/`ScrollState` por sistema) — NUNCA
-  reimplementar botão/rolagem/hit-test numa tela à parte.
+  (`Frame` — botão no soltar, campo/senha, seletor, `scrollbar`,
+  `child` pra conteúdo rolável, `slot`/`grid` de itens, `tabs`,
+  `checkbox`, `text_block`, divisórias, `close_button`;
+  `PressState`/`ScrollState` por sistema) — NUNCA reimplementar
+  botão/rolagem/grade/aba/hit-test numa tela à parte; peça que faltar
+  entra no kit (com teste em `tests/test_atlas_kit.py`) antes de ser
+  usada.
   **Toda janela do atlas fica dentro da área segura padrão**
   (`atlas_window.safe_area` / `MenuHandlers._mm_safe_area`: margem de
   10% da altura no topo e acima da barra de ações, 10% da largura nas
@@ -1988,7 +1992,7 @@ padrão a quebrar, não só os bugs individuais.
   `arquitetura/ATLAS_UI.md`** (o que cada tile é e pra que serve — ex:
   campo de texto (9,4)–(11,4) pra qualquer valor que o jogador define);
   peça nova/uso novo → atualizar o catálogo no mesmo commit. Ver
-  HISTORICO_FEATURES.md §65–§70.
+  HISTORICO_FEATURES.md §65–§71.
 - **Ícone ANIMADO acima da cabeça de uma entidade, no MUNDO** (marcador
   de quest, ou categoria futura parecida) → `ui/world_icon_animator.py::
   get_frame(name, size, now_ms)` — spritesheet horizontal em

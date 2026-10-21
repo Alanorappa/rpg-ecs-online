@@ -5673,3 +5673,27 @@ passava por cima dele). Paleta antiga e `_BASE_BTN_W/H` removidas.
 só no soltar, clicar fora do campo desativa, Confirmar desabilitado
 enquanto cria, Sortear desabilitado enquanto gera nome, tudo dentro da
 área segura com fonte grande.
+
+## 71. Kit de peças das janelas do atlas (21/10/2026)
+
+Pedido do usuário: "a ideia é nosso sistema ser fácil de ser
+construído, tendo um padrão". Diagnóstico: `ui/atlas_window.py` já
+cobria botão/campo/seletor/rolagem, mas ~25 janelas antigas
+(inventário, loja, correio, artesão, treinador, troca, loot, login,
+talentos, diário, ranking, avisos/convites...) ainda desenham tudo
+sozinhas, e faltavam peças que quase todas precisam. Plano aprovado:
+completar o kit primeiro, depois converter em lotes por família.
+
+Peças novas (`ui/ui_atlas.py` + `Frame`, `ui/atlas_window.py`):
+janela escura com barra de título e X (`titled_dark_window_raw`,
+`close_button` — inventário do mockup); slot claro/escuro com ícone em
+resolução de tela + quantidade (`slot`, sobreposições desenhadas depois
+da ampliação: `Frame.overlays`/`draw_overlays`, `slot_icon_px`); grade
+de slots (`grid`); abas (`tabs`, peças desenhadas pelo usuário em
+(0..5,12), dentro do painel na borda de cima — decisão do usuário);
+checkbox (`checkbox`, (12,9)/(13,9)); texto com quebra (`text_block`,
+`wrap_text`); linha divisória (`divider_h/v`, mesma cor do contorno da
+moldura — as linhas do mockup do inventário); campo de senha
+(`text_field(mask=True)`).
+
+**Teste**: `tests/test_atlas_kit.py`.

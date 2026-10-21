@@ -21,6 +21,7 @@ from ui.ui_helpers import fill_surf
 T, S = ui_atlas.TILE, ui_atlas.SCALE
 
 TEXT_PAD    = 6      # px RAW de folga de cada lado do texto (bordas do botão/campo)
+TITLE_BAR_Y = T / 2  # centro (RAW) do título numa janela COM barra de título (linha 0)
 SAFE_MARGIN = 0.10   # área segura: 10% da altura (topo / acima da barra de ações), 10% da largura
 TITLE_Y     = T      # centro (RAW) do título da janela
 
@@ -77,6 +78,30 @@ def draw_texts(surf: pygame.Surface, texts: list, default_font, ox: int = 0, oy:
         surf.blit(t, t.get_rect(**{anchor: (ox + x * S, oy + y * S)}))
 
 
+def draw_overlays(surf: pygame.Surface, overlays: list, ox: int = 0, oy: int = 0) -> None:
+    """Imagens em resolução de TELA (ícone de item/skill) por cima do painel
+    já ampliado — nunca ampliadas em bloco. (surface, x_raw, y_raw)."""
+    for img, x, y in overlays:
+        surf.blit(img, (ox + round(x * S), oy + round(y * S)))
+
+
+def wrap_text(text: str, max_px: int, font) -> list:
+    """Quebra `text` em linhas de até `max_px` px de TELA (fonte de desenho).
+    Respeita "\n" como quebra forçada."""
+    lines: list = []
+    for para in text.split("\n"):
+        cur = ""
+        for word in para.split():
+            test = f"{cur} {word}".strip()
+            if cur and font.size(test)[0] > max_px:
+                lines.append(cur)
+                cur = word
+            else:
+                cur = test
+        lines.append(cur)
+    return lines
+
+
 class Frame:
     """1 janela durante 1 frame: painel RAW (carimbe por cima), mouse em
     espaço RAW, textos a desenhar no fim. `area` = área segura (Rect de
@@ -102,6 +127,7 @@ class Frame:
         self.down     = pygame.mouse.get_pressed()[0]
         self.wheel    = sum(e.y for e in events if e.type == pygame.MOUSEWHEEL)
         self.texts: list = []   # (texto, x_raw, y_raw, cor, fonte, âncora)
+        self.overlays: list = []   # (surface de tela, x_raw, y_raw) — ver draw_overlays
 
     def child(self, raw: pygame.Surface, ry: float) -> "Frame":
         """Área filha (ex: conteúdo rolável montado num Surface à parte):
@@ -109,8 +135,11 @@ class Frame:
         espaço dela (passar -10000 quando o mouse está fora)."""
         c = object.__new__(Frame)
         c.__dict__.update(self.__dict__)
-        c.raw, c.ry, c.texts = raw, ry, []
+        c.raw, c.ry, c.texts, c.overlays = raw, ry, [], []
         return c
+
+    def hover(self, x0, y0, x1, y1) -> bool:
+        return x0 <= self.rx < x1 and y0 <= self.ry < y1
 
     def tiles_for(self, texts, min_tiles: int, font=None) -> int:
         return tiles_for(font or self.font, texts, min_tiles)
@@ -143,9 +172,12 @@ class Frame:
         return fired
 
     def text_field(self, field_id: str, tx: int, ty: int, w: int, text: str,
-                   active: bool = False) -> bool:
+                   active: bool = False, mask: bool = False) -> bool:
         """Campo de texto do atlas (w tiles, 1 linha). `active` = aguardando
-        entrada (texto destacado). True = clicado (no soltar)."""
+        entrada (texto destacado). `mask` = senha (mostra "*"). True =
+        clicado (no soltar)."""
+        if mask:
+            text = "*" * len(text)
         inset = ui_atlas.FIELD_ART_INSET_X
         ay0, ay1 = ui_atlas.FIELD_ART_Y
         x0, x1 = tx * T + inset, (tx + w) * T - inset
@@ -225,6 +257,106 @@ class Frame:
         ui_atlas.blit_tile_px(self.raw, ui_atlas.SCROLL_GRIP_PRESSED if st.drag is not None
                               else ui_atlas.SCROLL_GRIP, col * T, grip_y)
 
+    # ── Peças do kit (20/10/2026) ────────────────────────────────────────
+
+    def checkbox(self, cb_id: str, tx: int, ty: int, checked: bool, label: str = "",
+                 color=None, font=None) -> bool:
+        """Checkbox (1 tile) + rótulo à direita (clicável junto). True =
+        alternou (no soltar) — o chamador inverte o próprio estado."""
+        ui_atlas.blit_tile(self.raw, ui_atlas.CHECKBOX_ON if checked else ui_atlas.CHECKBOX_OFF, tx, ty)
+        x1 = (tx + 1) * T
+        if label:
+            self.text(label, x1 + 4, ty * T + T / 2, color, font, anchor="midleft")
+            x1 += 8 + (font or self.font).size(label)[0] / S
+        return self.press(cb_id, tx * T, ty * T, x1, (ty + 1) * T)[1]
+
+    def tabs(self, tabs_id: str, tx: int, ty: int, labels: list, active: int,
+             font=None, min_tiles: int = 3) -> "int | None":
+        """Fileira de abas (1 linha) a partir de (tx, ty), dentro do painel,
+        encostada na borda de cima. Largura de cada uma pelo texto. Devolve
+        o índice clicado (no soltar) ou None."""
+        clicked = None
+        col = tx
+        for i, label in enumerate(labels):
+            w = self.tiles_for([label], min_tiles, font)
+            on = i == active
+            ui_atlas.blit_tab(self.raw, col, ty, w, on)
+            self.text(label, (col + w / 2) * T, ty * T + T / 2 + 1,
+                      ACTIVE_COL if on else BTN_TXT, font)
+            if not on and self.press(f"{tabs_id}:{i}", col * T, ty * T, (col + w) * T, (ty + 1) * T)[1]:
+                clicked = i
+            col += w
+        return clicked
+
+    def slot(self, slot_id: str, x: float, y: float, icon=None, count: int = 0,
+             dark: bool = False, selected: bool = False, dim: bool = False,
+             enabled: bool = True, count_font=None) -> tuple:
+        """Slot de item (1 tile) em px RAW livre. Ícone (Surface de TELA, já
+        no tamanho `slot_icon_px()`) vai pras sobreposições. Devolve
+        (hover, disparou) — clique no soltar."""
+        ui_atlas.blit_tile_px(self.raw, ui_atlas.SLOT_DARK if dark else ui_atlas.SLOT, round(x), round(y))
+        if icon is not None:
+            ic = icon
+            if dim:
+                ic = icon.copy()
+                ic.fill((90, 90, 90, 255), special_flags=pygame.BLEND_RGBA_MULT)
+            self.overlays.append((ic, x + 1, y + 1))
+        if selected:
+            ring = pygame.Surface((T * S, T * S), pygame.SRCALPHA)
+            pygame.draw.rect(ring, (255, 215, 60), ring.get_rect(), 2)
+            self.overlays.append((ring, x, y))
+        if count > 1:
+            f = count_font or self.font
+            t = f.render(str(count), False, (255, 255, 255))
+            px = (x + T - 1) * S - t.get_width()
+            py = (y + T - 1) * S - t.get_height()
+            self.overlays.append((t, px / S, py / S))
+        hov = self.hover(x, y, x + T, y + T)
+        fired = self.press(slot_id, x, y, x + T, y + T)[1] if enabled else False
+        return hov, fired
+
+    def grid(self, grid_id: str, tx: int, ty: int, cols: int, rows: int, cells: list,
+             dark: bool = True, gap: int = 0, selected: int = -1, count_font=None) -> tuple:
+        """Grade cols x rows de slots a partir do tile (tx, ty). `cells[i]` =
+        (ícone, quantidade) ou None (vazio). Devolve (índice sob o mouse,
+        índice clicado) — -1 quando nenhum."""
+        hov_i, hit_i = -1, -1
+        for i in range(cols * rows):
+            c, r = i % cols, i // cols
+            x, y = (tx + c) * T + c * gap, (ty + r) * T + r * gap
+            cell = cells[i] if i < len(cells) else None
+            icon, count = cell if cell else (None, 0)
+            hov, fired = self.slot(f"{grid_id}:{i}", x, y, icon, count, dark=dark,
+                                   selected=i == selected, count_font=count_font)
+            if hov:
+                hov_i = i
+            if fired:
+                hit_i = i
+        return hov_i, hit_i
+
+    def text_block(self, text: str, x: float, y: float, max_w: float, color=None,
+                   font=None, anchor: str = "topleft", line_gap: int = 0) -> float:
+        """Texto com quebra de linha em `max_w` px RAW a partir de (x, y).
+        Devolve o y RAW logo abaixo da última linha."""
+        f = font or self.font
+        lh = math.ceil(f.get_linesize() / S) + line_gap
+        for line in wrap_text(text, int(max_w * S), f):
+            self.text(line, x, y, color, font, anchor=anchor)
+            y += lh
+        return y
+
+    def divider_h(self, y: int, x0: int, x1: int) -> None:
+        """Linha divisória horizontal de 1px RAW (cor do contorno da moldura)."""
+        pygame.draw.line(self.raw, ui_atlas.DIVIDER_COL, (x0, y), (x1 - 1, y))
+
+    def divider_v(self, x: int, y0: int, y1: int) -> None:
+        pygame.draw.line(self.raw, ui_atlas.DIVIDER_COL, (x, y0), (x, y1 - 1))
+
+    def close_button(self, close_id: str, tx: int, ty: int = 0) -> bool:
+        """Área do X da barra de título (já carimbado pelo painel com título).
+        True = clicado (no soltar)."""
+        return self.press(close_id, tx * T, ty * T, (tx + 1) * T, (ty + 1) * T)[1]
+
     def end(self, title: str = "", title_col=TITLE_COL) -> None:
         """Amplia o painel, desenha título e textos e encerra o estado de
         botão pressionado ao soltar o mouse."""
@@ -233,5 +365,11 @@ class Frame:
             surf = self.font.render(title, False, title_col)
             self.screen.blit(surf, surf.get_rect(center=(self.px + self.pw // 2, self.py + TITLE_Y * S)))
         draw_texts(self.screen, self.texts, self.font, self.px, self.py)
+        draw_overlays(self.screen, self.overlays, self.px, self.py)
         if self.released or not self.down:
             self.press_state.pressed = ""
+
+
+def slot_icon_px() -> int:
+    """Tamanho em px de TELA do ícone dentro de um slot (1px de borda RAW)."""
+    return (T - 2) * S

@@ -92,8 +92,30 @@ _QUEST = {
 QUEST_CLOSE = (5, 0)       # X da barra de título (sem versão pressionada)
 QUEST_FOOTER_ROWS = 2      # rodapé = 1 botão "alto"
 
-# Slot de item (quadrado claro de 1 tile) — ícone desenhado por cima.
+# Janela escura com barra de título (inventário no mockup): mesma barra
+# cinza da janela de pergaminho, corpo escuro, laterais cromadas.
+_TITLED_DARK = {
+    "left": (0, 1), "right": (5, 1), "center": (7, 1),
+    "bl": (0, 7), "bottom": (8, 3), "br": (11, 3),
+}
+
+# Slot de item (1 tile) — ícone desenhado por cima. Claro = equipamento /
+# recompensa; escuro (marrom) = célula de grade (bolsa).
 SLOT = (9, 5)
+SLOT_DARK = (10, 5)
+
+# Linha divisória fina (1px) — mesma cor do contorno da moldura vazada.
+DIVIDER_COL = (86, 84, 82)
+
+# Checkbox (1 tile): desmarcado / marcado.
+CHECKBOX_OFF = (12, 9)
+CHECKBOX_ON  = (13, 9)
+
+# Aba (1 linha, aberta embaixo — encaixa no corpo do painel): ponta esq.,
+# meio repetível, ponta dir. Ativa = mesma cor do miolo do painel escuro.
+_TAB_ACTIVE_COL0   = 0
+_TAB_INACTIVE_COL0 = 3
+_TAB_ROW           = 12
 
 # Elementos de 1 tile — (coluna, linha) no atlas.
 ICON_SFX_ON    = (12, 7)
@@ -211,6 +233,46 @@ def dark_list_window_raw(tw: int, th: int) -> "pygame.Surface":
         _panel_cache.clear()
     _panel_cache[key] = surf
     return surf
+
+
+def titled_dark_window_raw(tw: int, th: int) -> "pygame.Surface":
+    """Janela escura com barra de título cinza (linha 0, X na última
+    coluna, puxadores na 3ª e na 5ª-a-partir-do-fim — como no mockup do
+    inventário). RAW, cacheada. Mín. 6x3."""
+    key = ("titled_dark", tw, th)
+    cached = _panel_cache.get(key)
+    if cached is not None:
+        return cached
+    q, d = _QUEST, _TITLED_DARK
+    surf = pygame.Surface((tw * TILE, th * TILE), pygame.SRCALPHA)
+    notches = {2, tw - 5}
+    for i in range(tw):
+        t = (q["title_left"] if i == 0 else QUEST_CLOSE if i == tw - 1
+             else q["title_notch"] if i in notches else q["title_mid"])
+        blit_tile(surf, t, i, 0)
+    for j in range(1, th):
+        last = j == th - 1
+        for i in range(tw):
+            if i == 0:
+                t = d["bl"] if last else d["left"]
+            elif i == tw - 1:
+                t = d["br"] if last else d["right"]
+            else:
+                t = d["bottom"] if last else d["center"]
+            blit_tile(surf, t, i, j)
+    if len(_panel_cache) >= _PANEL_CACHE_MAX:
+        _panel_cache.clear()
+    _panel_cache[key] = surf
+    return surf
+
+
+def blit_tab(dst: "pygame.Surface", tx: int, ty: int, width_tiles: int, active: bool) -> None:
+    """Aba de `width_tiles` tiles (mín. 2) em (tx, ty) — pontas fixas, meio repetido."""
+    col0 = _TAB_ACTIVE_COL0 if active else _TAB_INACTIVE_COL0
+    w = max(2, width_tiles)
+    for i in range(w):
+        col = col0 if i == 0 else (col0 + 2 if i == w - 1 else col0 + 1)
+        blit_tile(dst, (col, _TAB_ROW), tx + i, ty)
 
 
 def quest_window_raw(tw: int, th: int) -> "pygame.Surface":
