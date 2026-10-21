@@ -36,7 +36,6 @@ class UI:
     # conteúdo). Aumentar deixa o painel maior; a posição continua
     # centralizada automaticamente (ver nota de POSIÇÃO no topo do arquivo).
 
-    INVENTORY_W, INVENTORY_H     = 660, 580   # painel de Equipamentos/Inventário (tecla I)
     DEBUG_W, DEBUG_H             = 820, 620   # modal de debug (F12)
     HABILIDADES_W, HABILIDADES_H = 720, 560   # painel de Habilidades (tecla H)
     CRAFTING_W, CRAFTING_H       = 700, 510   # modal de Forja/Reciclagem (ferreiro)
@@ -75,17 +74,8 @@ class UI:
     # Menu de pausa (ESC) e submenus: tamanho em TILES do atlas, definido
     # em client/menu_handlers.py (_MAIN_TW/_SND_TW/...) — não mais aqui.
 
-    # ── Inventário — geometria INTERNA (dentro do painel acima) ────────────
-    # Arquivo: client/inventory_handlers.py
-    INVENTORY_PAD       = 10    # respiro entre a borda do painel e o conteúdo (todos os lados)
-    INVENTORY_HEADER_H  = 28    # altura reservada pro título "Equipamentos" no topo
-    INVENTORY_EQ_W      = 260   # largura da coluna da ESQUERDA (lista de slots de equipamento: Cabeça, Ombros...)
-    INVENTORY_EQ_SLOT_H = 36    # altura de cada linha de slot de equipamento (ícone + nome do item)
-    INVENTORY_EQ_ICON   = 28    # tamanho do ícone do item dentro de cada slot de equipamento
-    INVENTORY_BODY_H    = 360   # altura total da área de conteúdo (lista de equipamento + grade da mochila)
-    INVENTORY_SLOT      = 64    # tamanho (largura = altura) de cada slot quadrado da mochila
-    INVENTORY_COLS      = 5     # quantos slots de mochila cabem por linha (não é pixel — é uma contagem)
-    INVENTORY_GAP       = 4     # espaço entre slots vizinhos da grade da mochila
+    # Inventário (tecla I): tamanho em TILES do atlas, calculado em
+    # client/inventory_handlers.py (_inv_layout) — não mais aqui.
 
     # Editor de atalhos (tecla K): tamanho em TILES do atlas, calculado em
     # client/hotbar_editor_handlers.py (_hbe_layout) — não mais aqui.
@@ -271,8 +261,6 @@ class UI:
     # comportamento de sempre (centralizado, sem desvio). Mude um valor aqui
     # e o painel correspondente já nasce deslocado — não precisa editar
     # nenhum outro arquivo.
-    INVENTORY_OFFSET_X    = -60
-    INVENTORY_OFFSET_Y    = -30
     DEBUG_OFFSET_X        = 0
     DEBUG_OFFSET_Y         = 0
     HABILIDADES_OFFSET_X  = 0

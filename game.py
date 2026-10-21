@@ -471,6 +471,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._sound_drag        = ""
         self._sound_arrow_hold: "tuple | None" = None  # (key, dir, próximo_ms) — seta do slider de som segurada
         self._mm_press = PressState()  # botão do atlas afundado (age no soltar — ui/atlas_window.py)
+        self._inv_press = PressState()  # botões/slots do inventário (atlas)
         self._show_hotbar_editor = False
         self._hbe_drag_from: tuple | None = None  # ("panel", skill_id) | ("slot", idx)
         self._hbe_rebind_slot: int | None = None
