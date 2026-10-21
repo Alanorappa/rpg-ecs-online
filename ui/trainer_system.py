@@ -21,8 +21,9 @@ from content.skill_config import (SKILL_CATALOG, SKILL_LEVEL_REQUIREMENTS, SKILL
                           NUM_SLOTS, SKILL_ORDER_BY_CLASS)
 from ui.icon_manager import ICONS
 from ui.combat_log import LOG
+from ui import atlas_window as aw
+from ui import ui_atlas
 from ui.ui_scale_mixin import UIScaleMixin
-from ui.ui_sizes import UI
 from ui.npc_interaction import walk_to_npc, suppress_chase
 
 # ---------------------------------------------------------------------------
@@ -42,11 +43,6 @@ _COL_DARK    = ( 16,  13,   6)
 _COL_BTN_OK  = ( 30,  90,  30)
 _COL_BTN_DIS = ( 40,  35,  25)
 
-_PANEL_W  = UI.TRAINER_W
-_PANEL_H  = UI.TRAINER_H
-_ROW_H    = UI.TRAINER_ROW_H
-_ICON_SZ  = UI.TRAINER_ICON_SZ
-_PAD      = UI.TRAINER_PAD
 
 # Ordem padrão (guerreiro) — substituída dinamicamente por _skill_order_for()
 _SKILL_ORDER = ["golpe_poderoso", "impacto", "vitoria_iminente", "interceptar", "executar"]
@@ -56,17 +52,6 @@ def _skill_order_for(class_id: str) -> list:
     return SKILL_ORDER_BY_CLASS.get(class_id, _SKILL_ORDER)
 
 
-def _draw_text(surf, text: str, font, color, x: int, y: int, max_w: int = 0):
-    """Renderiza texto, truncando com '...' se exceder max_w."""
-    s = font.render(text, False, color)
-    if max_w and s.get_width() > max_w:
-        while len(text) > 1 and font.size(text + "...")[0] > max_w:
-            text = text[:-1]
-        s = font.render(text + "...", False, color)
-    surf.blit(s, (x, y))
-    return s.get_width()
-
-
 class TrainerSystem(UIScaleMixin, System):
     """Gerencia o menu de ação e o modal de treinamento de skills."""
 
@@ -74,7 +59,7 @@ class TrainerSystem(UIScaleMixin, System):
     STATE_MENU     = "ACTION_MENU"
     STATE_TRAINING = "TRAINING"
 
-    _FONT_BASES = {"_font_sm": 20, "_font_md": 26, "_font_lg": 32, "_font_xl": 38}
+    _FONT_BASES = {"_font_xs": 15, "_font_sm": 20, "_font_md": 26, "_font_lg": 32, "_font_xl": 38}
 
     def __init__(self, world, player_entity: int, screen):
         super().__init__()
@@ -97,11 +82,14 @@ class TrainerSystem(UIScaleMixin, System):
         # fora (game.py), mesmo padrão de ShopSystem/BlacksmithSystem._net.
         self._net = None
 
-        # Rects armazenados no render para hit-test
-        self._menu_rects:  dict = {}
-        self._skill_rects: list = []   # [(skill_id, learn_btn_rect)]
-        self._close_r: pygame.Rect | None = None
-        self._list_scroll: int = 0
+        # Atlas de UI: botão afundado, rolagem da lista, eventos do frame
+        # (guardados em handle_events, consumidos em render), área segura
+        # (injetada por game.py), rects clicáveis (testes).
+        self._press = aw.PressState()
+        self._scroll = aw.ScrollState()
+        self._frame_events: list = []
+        self.safe_area_fn = None
+        self._hit_rects: dict = {}
 
     # ------------------------------------------------------------------
     @property
@@ -129,10 +117,6 @@ class TrainerSystem(UIScaleMixin, System):
     @staticmethod
     def _cheby(a, b) -> int:
         return chebyshev(a[0], a[1], b[0], b[1])
-
-    def _panel_origin(self):
-        x0, y0 = self._safe_panel_origin(_PANEL_W, _PANEL_H)
-        return x0 + UI.TRAINER_OFFSET_X, y0 + UI.TRAINER_OFFSET_Y
 
     def _player_level(self) -> int:
         from engine.components import CharacterStats
@@ -213,46 +197,9 @@ class TrainerSystem(UIScaleMixin, System):
     # handle_events() — quando is_open
     # ------------------------------------------------------------------
     def handle_events(self, events):
-        for ev in events:
-            if ev.type == pygame.MOUSEWHEEL and self._state == self.STATE_TRAINING:
-                self._set_panel_scale(_PANEL_W, _PANEL_H)
-                n = len(_skill_order_for(self._tr_class_id))
-                visible_rows = (self._u(_PANEL_H) - self._u(60) - self._u(_PAD)) // self._u(_ROW_H)
-                max_scroll   = max(0, n - visible_rows)
-                self._list_scroll = max(0, min(max_scroll, self._list_scroll - ev.y))
-                continue
-
-            if ev.type != pygame.MOUSEBUTTONDOWN:
-                continue
-            mx, my = ev.pos
-
-            # Botão fechar
-            if ev.button == 1 and self._close_r and self._close_r.collidepoint(mx, my):
-                self._close()
-                return
-
-            # Action menu
-            if self._state == self.STATE_MENU and ev.button == 1:
-                for key, rect in self._menu_rects.items():
-                    if not rect.collidepoint(mx, my):
-                        continue
-                    if key == "treinamento":
-                        self._state = self.STATE_TRAINING
-                        self._list_scroll = 0
-                    elif key.startswith("quest:"):
-                        self.world.add_component(self.player_entity, NPCInteractionRequest(
-                            kind="open_quest_dialog", target_eid=self._tr_eid))
-                        self._state = self.STATE_CLOSED
-                    elif key == "_none":
-                        self._close()
-                    return
-
-            # Training modal — botões "Aprender"
-            if self._state == self.STATE_TRAINING and ev.button == 1:
-                for skill_id, btn_r in self._skill_rects:
-                    if btn_r and btn_r.collidepoint(mx, my):
-                        self._do_learn(skill_id)
-                        return
+        """Atlas de UI: cliques/rolagem agem no SOLTAR dentro de render();
+        aqui só se guardam os eventos do frame."""
+        self._frame_events = list(events)
 
     # ------------------------------------------------------------------
     # Ações internas
@@ -326,7 +273,7 @@ class TrainerSystem(UIScaleMixin, System):
             key = options[0][0] if options else "_none"
             if key == "treinamento":
                 self._state = self.STATE_TRAINING
-                self._list_scroll = 0
+                self._scroll = aw.ScrollState()
             elif key.startswith("quest:"):
                 self.world.add_component(self.player_entity, NPCInteractionRequest(
                     kind="open_quest_dialog", target_eid=eid))
@@ -418,216 +365,163 @@ class TrainerSystem(UIScaleMixin, System):
         pass
 
     # ------------------------------------------------------------------
-    # render() — modal de UI
+    # render() — atlas de UI (21/10/2026)
     # ------------------------------------------------------------------
+    # Menu de assunto: aviso do kit (atlas_window.prompt) com a saudação.
+    # Treinamento: janela escura com barra de título e X; 1 linha de 2
+    # tiles por habilidade (slot com ícone, nome, descrição, nível, custo,
+    # Aprender); lista rolável; ouro e nível do jogador embaixo. Cliques no
+    # SOLTAR (atlas_window).
+
+    _ROW_TILES = 2
+    _VIEW_ROWS = 5           # habilidades visíveis antes de rolar
+
+    def _area(self) -> pygame.Rect:
+        if self.safe_area_fn is not None:
+            return self.safe_area_fn()
+        SW, SH = self.hud_surf.get_size()
+        return aw.safe_area(SW, SH, SH)
+
     def render(self):
+        events, self._frame_events = self._frame_events, []
+        self._hit_rects = {}
         if self._state == self.STATE_CLOSED:
             return
         if self._state == self.STATE_MENU:
-            self._draw_action_menu()
+            self._draw_action_menu(events)
         elif self._state == self.STATE_TRAINING:
-            self._draw_training_modal()
+            self._draw_training_modal(events)
 
-    # ------------------------------------------------------------------
-    # Action menu — mesmo tamanho do diálogo de quest (UI.QUEST_DIALOG_W/H),
-    # com saudação no lugar do título de NPC ("Olá {player}, o que deseja?").
-    # ------------------------------------------------------------------
-    def _draw_action_menu(self):
-        surf = self.hud_surf
-        mx, my = pygame.mouse.get_pos()
-
+    def _draw_action_menu(self, events):
         options = self._compute_options(self._tr_eid)
         from engine.components import CharacterStats
         cs = self.world.get_component(self.player_entity, CharacterStats)
         if not options:
-            options = [("_none", f"Nada para {cs.name if cs else 'você'} aqui.")]
-
-        x0, y0 = self._safe_panel_origin(UI.QUEST_DIALOG_W, UI.QUEST_DIALOG_H)
-        panel_w, panel_h = self._u(UI.QUEST_DIALOG_W), self._u(UI.QUEST_DIALOG_H)
-        pad = self._u(_PAD)
-
-        # Fundo
-        panel_r = pygame.Rect(x0, y0, panel_w, panel_h)
-        pygame.draw.rect(surf, _COL_PANEL, panel_r, border_radius=6)
-        pygame.draw.rect(surf, _COL_BORDER, panel_r, 2, border_radius=6)
-
-        # Botão fechar
-        close_s = self._font_md.render("[X]", False, _COL_RED)
-        self._close_r = pygame.Rect(x0 + panel_w - self._u(36), y0 + self._u(8), self._u(28), self._u(24))
-        surf.blit(close_s, self._close_r.topleft)
-
-        # Saudação
+            options = [("_none", "Fechar")]
         player_name = cs.name if cs else "Aventureiro"
-        greeting = f"Olá {player_name}, o que deseja?"
-        title_s = self._font_lg.render(greeting, False, _COL_TITLE)
-        surf.blit(title_s, (x0 + (panel_w - title_s.get_width()) // 2, y0 + self._u(_PAD)))
-        pygame.draw.line(surf, _COL_BORDER,
-                         (x0 + self._u(4), y0 + self._u(54)), (x0 + panel_w - self._u(4), y0 + self._u(54)))
+        fired = aw.prompt(self.hud_surf, events, area=self._area(), press=self._press, font=self._font_md,
+                          title=self._tr_name, message=f"Olá {player_name}, o que deseja?",
+                          buttons=[lbl for _, lbl in options], hits=self._hit_rects, hit_prefix="tr:opt")
+        if fired is None:
+            return
+        key = options[fired][0]
+        if key == "treinamento":
+            self._state = self.STATE_TRAINING
+            self._scroll = aw.ScrollState()
+        elif key.startswith("quest:"):
+            self.world.add_component(self.player_entity, NPCInteractionRequest(
+                kind="open_quest_dialog", target_eid=self._tr_eid))
+            self._state = self.STATE_CLOSED
+        else:
+            self._close()
 
-        # Botões de assunto, centralizados verticalmente no espaço restante
-        BTN_W, BTN_H = self._u(220), self._u(46)
-        GAP = self._u(12)
-        total_h = len(options) * (BTN_H + GAP) - GAP
-        px = x0 + (panel_w - BTN_W) // 2
-        py = y0 + self._u(54) + (panel_h - self._u(54) - total_h) // 2
+    @staticmethod
+    def _truncate(text: str, font, max_px: int) -> str:
+        if font.size(text)[0] <= max_px:
+            return text
+        while len(text) > 1 and font.size(text + "...")[0] > max_px:
+            text = text[:-1]
+        return text + "..."
 
-        self._menu_rects = {}
-        for key, label in options:
-            r = pygame.Rect(px, py, BTN_W, BTN_H)
-            hov = r.collidepoint(mx, my)
-            pygame.draw.rect(surf, (40, 35, 20) if hov else _COL_DARK, r, border_radius=4)
-            pygame.draw.rect(surf, _COL_BORDER if hov else (60, 50, 25), r, 1, border_radius=4)
-            s = self._font_md.render(label, False, _COL_TITLE if hov else _COL_WHITE)
-            surf.blit(s, (r.x + (r.w - s.get_width()) // 2, r.y + (r.h - s.get_height()) // 2))
-            self._menu_rects[key] = r
-            py += BTN_H + GAP
-
-    # ------------------------------------------------------------------
-    # Training modal
-    # ------------------------------------------------------------------
-    def _draw_training_modal(self):
-        surf = self.hud_surf
-        mx, my = pygame.mouse.get_pos()
-        x0, y0 = self._panel_origin()
-
-        panel_w, panel_h = self._u(_PANEL_W), self._u(_PANEL_H)
-        pad     = self._u(_PAD)
-        icon_sz = self._u(_ICON_SZ)
-        row_h   = self._u(_ROW_H)
-
-        # Fundo do painel
-        panel_r = pygame.Rect(x0, y0, panel_w, panel_h)
-        pygame.draw.rect(surf, _COL_BG, panel_r)
-        pygame.draw.rect(surf, _COL_BORDER, panel_r, 2, border_radius=4)
-
-        # Barra de título
-        title_bar = pygame.Rect(x0, y0, panel_w, self._u(40))
-        pygame.draw.rect(surf, _COL_PANEL, title_bar)
-        pygame.draw.line(surf, _COL_BORDER, (x0, y0 + self._u(40)), (x0 + panel_w, y0 + self._u(40)))
-        title_s = self._font_lg.render(
-            f"{self._tr_name}  —  Treinamento", False, _COL_TITLE)
-        surf.blit(title_s, (x0 + pad, y0 + self._u(10)))
-
-        # Botão fechar
-        close_s = self._font_md.render("[X]", False, _COL_RED)
-        self._close_r = pygame.Rect(x0 + panel_w - self._u(36), y0 + self._u(8), self._u(28), self._u(24))
-        surf.blit(close_s, self._close_r.topleft)
-
-        # Cabeçalho de colunas
-        hy = y0 + self._u(46)
-        pygame.draw.line(surf, _COL_BORDER, (x0, hy + self._u(18)), (x0 + panel_w, hy + self._u(18)))
-        surf.blit(self._font_sm.render("Habilidade", False, _COL_GREY),  (x0 + pad + icon_sz + self._u(8), hy))
-        surf.blit(self._font_sm.render("Nível", False, _COL_GREY),  (x0 + self._u(390), hy))
-        surf.blit(self._font_sm.render("Custo", False, _COL_GREY),  (x0 + self._u(470), hy))
-
-        # Lista de skills
-        ps    = self._player_skills()
-        level = self._player_level()
-        list_y0 = y0 + self._u(66)
-        visible_rows = (panel_h - self._u(66) - pad) // row_h
-
-        skill_order = _skill_order_for(self._tr_class_id)
-        self._skill_rects = []
-        for i, skill_id in enumerate(skill_order):
-            vi = i - self._list_scroll
-            if vi < 0 or vi >= visible_rows:
-                self._skill_rects.append((skill_id, None))
-                continue
-
-            entry     = SKILL_CATALOG.get(skill_id, {})
-            name      = entry.get("name", skill_id) if isinstance(entry, dict) else skill_id
-            desc      = entry.get("desc", "")        if isinstance(entry, dict) else ""
-            req       = SKILL_LEVEL_REQUIREMENTS.get(skill_id, 99)
-            cost      = SKILL_COSTS.get(skill_id, 0)
-            learned   = ps is not None and skill_id in ps.learned_skill_ids
-            can_learn = (not learned) and level >= req and (
-                ps is None or self._player_wallet() is not None and
-                self._player_wallet().gold >= cost)
-
-            ry = list_y0 + vi * row_h
-            row_r = pygame.Rect(x0 + self._u(2), ry, panel_w - self._u(4), row_h - self._u(2))
-
-            # Fundo alternado
-            bg_col = _COL_LEARNED if learned else (_COL_PANEL if i % 2 == 0 else _COL_DARK)
-            pygame.draw.rect(surf, bg_col, row_r, border_radius=3)
-
-            # Ícone da skill
-            icon_r    = pygame.Rect(x0 + pad, ry + (row_h - icon_sz) // 2, icon_sz, icon_sz)
-            icon_surf = ICONS.get(f"skill_{skill_id}", icon_sz)
-            if icon_surf:
-                surf.blit(icon_surf, icon_r)
-                if learned:   # overlay escurecido quando já aprendida
-                    dim = pygame.Surface((icon_sz, icon_sz), pygame.SRCALPHA)
-                    dim.fill((0, 0, 0, 120))
-                    surf.blit(dim, icon_r)
-            else:
-                icon_col = (80, 80, 80) if learned else ((50, 100, 50) if can_learn else (80, 30, 30))
-                pygame.draw.rect(surf, icon_col, icon_r, border_radius=3)
-                init_s = self._font_md.render(name[0].upper(), False,
-                                              _COL_GREY if learned else _COL_WHITE)
-                surf.blit(init_s, (icon_r.centerx - init_s.get_width() // 2,
-                                   icon_r.centery - init_s.get_height() // 2))
-            pygame.draw.rect(surf, _COL_BORDER, icon_r, 1, border_radius=3)
-
-            # Nome + descrição
-            tx = x0 + pad + icon_sz + self._u(10)
-            name_col = _COL_GREY if learned else _COL_WHITE
-            surf.blit(self._font_md.render(name, False, name_col), (tx, ry + self._u(10)))
-            surf.blit(self._font_sm.render(desc, False, _COL_GREY),  (tx, ry + self._u(32)))
-
-            # Nível requerido
-            req_col = _COL_GREEN if level >= req else _COL_RED
-            surf.blit(self._font_md.render(f"Nível {req}", False, req_col), (x0 + self._u(385), ry + self._u(22)))
-
-            # Custo
-            surf.blit(self._font_md.render(f"{cost}g", False, _COL_GOLD), (x0 + self._u(468), ry + self._u(22)))
-
-            # Botão Aprender / Aprendido
-            btn_w, btn_h = self._u(90), self._u(30)
-            btn_r = pygame.Rect(x0 + panel_w - btn_w - pad,
-                                ry + (row_h - btn_h) // 2, btn_w, btn_h)
-
-            if learned:
-                pygame.draw.rect(surf, _COL_BTN_DIS, btn_r, border_radius=4)
-                s = self._font_sm.render("Aprendido", False, _COL_GREY)
-                surf.blit(s, (btn_r.centerx - s.get_width() // 2,
-                              btn_r.centery - s.get_height() // 2))
-                self._skill_rects.append((skill_id, None))
-            else:
-                btn_enabled = level >= req and (
-                    self._player_wallet() and self._player_wallet().gold >= cost)
-                btn_col = _COL_BTN_OK if (btn_enabled and btn_r.collidepoint(mx, my)) else \
-                          (40, 70, 40) if btn_enabled else _COL_BTN_DIS
-                pygame.draw.rect(surf, btn_col, btn_r, border_radius=4)
-                pygame.draw.rect(surf, _COL_GREEN if btn_enabled else _COL_BORDER,
-                                 btn_r, 1, border_radius=4)
-                s = self._font_sm.render("Aprender", False,
-                                         _COL_WHITE if btn_enabled else _COL_GREY)
-                surf.blit(s, (btn_r.centerx - s.get_width() // 2,
-                              btn_r.centery - s.get_height() // 2))
-                self._skill_rects.append((skill_id, btn_r if btn_enabled else None))
-
-            # Separador de linha
-            pygame.draw.line(surf, _COL_BORDER,
-                             (x0 + self._u(2), ry + row_h - self._u(2)), (x0 + panel_w - self._u(2), ry + row_h - self._u(2)))
-
-        # Scrollbar simples (se necessário)
-        n = len(_SKILL_ORDER)
-        if n > visible_rows:
-            sb_h   = panel_h - self._u(66) - pad
-            thumb_h = max(self._u(20), int(sb_h * visible_rows / n))
-            thumb_y = list_y0 + int((sb_h - thumb_h) * self._list_scroll / max(1, n - visible_rows))
-            pygame.draw.rect(surf, _COL_BORDER,
-                             pygame.Rect(x0 + panel_w - self._u(6), list_y0, self._u(4), sb_h))
-            pygame.draw.rect(surf, _COL_TITLE,
-                             pygame.Rect(x0 + panel_w - self._u(6), thumb_y, self._u(4), thumb_h))
-
-        # Ouro do jogador (footer)
+    def _draw_training_modal(self, events):
+        T, S = aw.T, aw.S
+        ps     = self._player_skills()
         wallet = self._player_wallet()
-        if wallet:
-            gold_s = self._font_md.render(f"Seu ouro: {wallet.gold}g", False, _COL_GOLD)
-            surf.blit(gold_s, (x0 + pad, y0 + panel_h - self._u(26)))
+        level  = self._player_level()
+        order  = _skill_order_for(self._tr_class_id)
+        title  = f"{self._tr_name} — Treinamento"
 
-        # Nível do jogador (footer direita)
-        lv_s = self._font_md.render(f"Seu nível: {level}", False, _COL_WHITE)
-        surf.blit(lv_s, (x0 + panel_w - lv_s.get_width() - pad, y0 + panel_h - self._u(26)))
+        lvl_w  = self._font_sm.size("Nível 99")[0] / S
+        cost_w = self._font_sm.size("99999g")[0] / S
+        bw     = aw.tiles_for(self._font_sm, ["Aprender", "Aprendido"], 4)
+        sw_area = self._area().width // (T * S)
+        tw = max(min(sw_area, 30), aw.tiles_for(self._font_md, [title], 1) + 3)
+        th = 2 + self._VIEW_ROWS * self._ROW_TILES + 2
+        list_cols = tw - 3                                  # borda | lista | rolagem | borda
+        lw = list_cols * T
+        btn_col = list_cols - bw                            # coluna (dentro da lista) do botão
+        cost_x = btn_col * T - 6
+        lvl_x = cost_x - cost_w - 10
+        text_x = 4 + T + 8
+        text_w = (lvl_x - lvl_w - 10 - text_x) * S
+
+        f = aw.Frame(self.hud_surf, events, tw, th, area=self._area(), press=self._press,
+                     font=self._font_md, raw=ui_atlas.titled_dark_window_raw(tw, th))
+        f.text(title, (tw - 1) * T / 2, aw.TITLE_BAR_Y, (240, 228, 200))
+        if f.close_button("tr:close", tw - 1):
+            self._close()
+            return
+        self._hit_rects["tr:close"] = pygame.Rect(f.px + (tw - 1) * T * S, f.py, T * S, T * S)
+        self._panel_rect = pygame.Rect(f.px, f.py, f.pw, f.ph)
+
+        hdr = (160, 140, 100)
+        f.text("Habilidade", T + text_x, 1.5 * T, hdr, self._font_sm, anchor="midleft")
+        f.text("Nível", T + lvl_x, 1.5 * T, hdr, self._font_sm, anchor="midright")
+        f.text("Custo", T + cost_x, 1.5 * T, hdr, self._font_sm, anchor="midright")
+
+        view_y0, view_h = 2 * T, self._VIEW_ROWS * self._ROW_TILES * T
+        row_h = self._ROW_TILES * T
+        content_h = max(1, len(order) * row_h)
+        off = f.scrollbar(self._scroll, tw - 2, 2, 2 + self._VIEW_ROWS * self._ROW_TILES - 1,
+                          max(0, content_h - view_h))
+        in_view = view_y0 <= f.ry < view_y0 + view_h and T <= f.rx < T + lw
+        fc = f.child(pygame.Surface((lw, content_h), pygame.SRCALPHA),
+                     f.ry - view_y0 + off if in_view else -10_000)
+        fc.rx = f.rx - T
+        learn = None
+        ay0, ay1 = ui_atlas.button_art_y(False)
+        for i, skill_id in enumerate(order):
+            entry = SKILL_CATALOG.get(skill_id, {})
+            name = entry.get("name", skill_id) if isinstance(entry, dict) else skill_id
+            desc = entry.get("desc", "") if isinstance(entry, dict) else ""
+            req = SKILL_LEVEL_REQUIREMENTS.get(skill_id, 99)
+            cost = SKILL_COSTS.get(skill_id, 0)
+            learned = ps is not None and skill_id in ps.learned_skill_ids
+            enabled = (not learned) and level >= req and wallet is not None and wallet.gold >= cost
+            y = i * row_h
+            if i:
+                fc.divider_h(y, 0, lw)
+            icon = ICONS.get(f"skill_{skill_id}", aw.slot_icon_px())
+            fc.slot(f"tr:icon:{i}", 4, y + T / 2, icon, dim=learned)
+            fc.text(name, text_x, y + T / 2 + 1, aw.DISABLED_COL if learned else aw.TEXT_COL,
+                    self._font_md, anchor="midleft")
+            fc.text(self._truncate(desc, self._font_xs, int(text_w)), text_x, y + 1.4 * T,
+                    (150, 140, 120), self._font_xs, anchor="midleft")
+            fc.text(f"Nível {req}", lvl_x, y + T, _COL_GREEN if level >= req else _COL_RED,
+                    self._font_sm, anchor="midright")
+            fc.text(f"{cost}g", cost_x, y + T, _COL_GOLD, self._font_sm, anchor="midright")
+            # Botão "baixo" em pixel livre (centrado na linha da skill)
+            bx0 = btn_col * T
+            bpy = int(y + T / 2)
+            pressed, fired = fc.press(f"tr:learn:{i}", bx0, bpy + ay0, bx0 + bw * T, bpy + ay1) \
+                if enabled else (False, False)
+            self._blit_button_px(fc.raw, bx0, bpy, bw, pressed)
+            fc.text("Aprendido" if learned else "Aprender", bx0 + bw * T / 2, bpy + (ay0 + ay1) / 2,
+                    aw.BTN_TXT if enabled else aw.DISABLED_COL, self._font_sm)
+            if fired:
+                learn = skill_id
+            ry = view_y0 + y - off
+            if view_y0 <= ry and ry + row_h <= view_y0 + view_h:
+                self._hit_rects[f"tr:learn:{i}"] = pygame.Rect(
+                    f.px + (T + bx0) * S, f.py + (view_y0 + bpy + ay0 - off) * S, bw * T * S, (ay1 - ay0) * S)
+
+        if wallet:
+            f.text(f"Seu ouro: {wallet.gold}g", T, (th - 1.5) * T, _COL_GOLD, self._font_sm, anchor="midleft")
+        f.text(f"Seu nível: {level}", (tw - 1) * T - 4, (th - 1.5) * T, aw.TEXT_COL, self._font_sm,
+               anchor="midright")
+        f.end()
+        content = ui_atlas.scale_up(fc.raw)
+        aw.draw_texts(content, fc.texts, self._font_sm)
+        aw.draw_overlays(content, fc.overlays)
+        view = content.subsurface((0, off * S, content.get_width(), max(0, min(view_h, content_h - off)) * S))
+        self.hud_surf.blit(view, (f.px + T * S, f.py + view_y0 * S))
+        if learn is not None:
+            self._do_learn(learn)
+
+    @staticmethod
+    def _blit_button_px(dst, x: int, y: int, w: int, pressed: bool) -> None:
+        """Botão "baixo" do atlas em pixel RAW livre (linha de skill não
+        alinha com a grade de tiles da janela)."""
+        tmp = pygame.Surface((w * aw.T, aw.T), pygame.SRCALPHA)
+        ui_atlas.blit_button(tmp, 0, 0, w, pressed=pressed, tall=False)
+        dst.blit(tmp, (x, y))

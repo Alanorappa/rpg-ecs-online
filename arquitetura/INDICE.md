@@ -319,3 +319,5 @@
 - [20/10/2026] (bug) Limite de personagens por conta era 3 (servidor+cliente), passou pra 8 numa constante única — tags: personagem, limite, auth — HISTORICO_BUGS.md §95
 - [21/10/2026] (feature) Criação de personagem no atlas de UI (campo de nome, cards de classe com contorno na escolhida) — tags: ui, atlas, personagem, criacao — HISTORICO_FEATURES.md §70
 - [21/10/2026] (feature) Kit de peças das janelas do atlas: slot/grade, abas, checkbox, janela com título e X, texto com quebra, divisória, senha — tags: ui, atlas, kit — HISTORICO_FEATURES.md §71
+- [21/10/2026] (feature) Lote de janelas de item no atlas: inventário, loja, troca, convites, loot, correio, ferreiro, treinador — tags: ui, atlas, inventario, loja, troca, loot, correio, ferreiro, treinador — HISTORICO_FEATURES.md §72
+- [21/10/2026] (bug) "Deletar" do ferreiro apaga item só no cliente (aberto) — tags: ferreiro, inventario, inv_sync — HISTORICO_BUGS.md §96

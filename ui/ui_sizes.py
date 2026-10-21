@@ -38,7 +38,6 @@ class UI:
 
     DEBUG_W, DEBUG_H             = 820, 620   # modal de debug (F12)
     HABILIDADES_W, HABILIDADES_H = 720, 560   # painel de Habilidades (tecla H)
-    TRAINER_W, TRAINER_H         = 640, 480   # modal de treinamento de skills (trainer NPC)
     RANKING_W, RANKING_H         = 720, 560   # modal de Ranking Geral (tecla K)
     RANKING_SIDEBAR_W            = 180        # coluna esquerda de categorias
     QUEST_DIALOG_W, QUEST_DIALOG_H     = 480, 400  # diálogo de aceitar/entregar quest (NPC com !/?)
@@ -88,9 +87,6 @@ class UI:
     CHAT_SCROLL_W  = 8    # largura da barra de rolagem do chat
     # ── Treinador de skills — geometria interna ────────────────────────────
     # Arquivo: trainer_system.py
-    TRAINER_PAD     = 16   # respiro entre a borda do painel e o conteúdo
-    TRAINER_ROW_H   = 72   # altura de cada linha de skill na lista (ícone + nome + custo)
-    TRAINER_ICON_SZ = 44   # tamanho do ícone da skill em cada linha
 
     # ── Loja (comerciante NPC) — geometria interna ──────────────────────────
     # Arquivo: systems.py (classe ShopSystem)
@@ -223,8 +219,6 @@ class UI:
     HABILIDADES_OFFSET_Y  = 0
     HOTBAR_EDITOR_OFFSET_X = 0
     HOTBAR_EDITOR_OFFSET_Y = 0
-    TRAINER_OFFSET_X      = 0
-    TRAINER_OFFSET_Y      = 0
     RANKING_OFFSET_X      = 0
     RANKING_OFFSET_Y      = 0
     QUEST_DIALOG_OFFSET_X  = 0

@@ -5697,3 +5697,71 @@ moldura — as linhas do mockup do inventário); campo de senha
 (`text_field(mask=True)`).
 
 **Teste**: `tests/test_atlas_kit.py`.
+
+## 72. Lote de janelas de item no atlas de UI (21/10/2026)
+
+Continuação de §71 (kit). Pedido do usuário: converter de uma vez as
+janelas que faltam, no mesmo padrão, e depois ver o que sobra. Decisões
+do usuário: inventário com o boneco animado no meio dos 10 slots de
+equipamento (esq. Cabeça/Ombros/Torso/Punhos, dir. Pescoço/Anel/Luvas/
+Botas, embaixo Mão Princ./Mão Secund.), nome do slot só no tooltip;
+janelas sem mockup no mesmo estilo (janela escura com título e X, grade
+de slots marrons, botões vermelhos, abas onde houver telas) e imagens
+de todas pra aprovar antes do teste no jogo.
+
+Convertidas (todas com cliques no SOLTAR, esquerdo e direito, dentro do
+desenho; handlers de clique antigos só "seguram" o clique pra ele não
+vazar pro mundo):
+- **Inventário** (`client/inventory_handlers.py`) — janela 2 do
+  mockup: equipamento em volta do boneco, divisórias, mochila 5x4,
+  estatísticas (Base/Itens) embaixo; ouro no cabeçalho da mochila.
+- **Loja** (`ui/shop_system.py`) — lista à venda rolável (slot + nome +
+  preço), mochila em grade; direito compra/vende, Shift+direito abre o
+  modal de quantidade. "Desfazer" mantido desabilitado (nunca funcionou —
+  histórico de transação nunca é populado; remoção é decisão do usuário).
+- **Troca** (`client/trade_handlers.py`) — mochila 4x5, "sua oferta"
+  (campo de ouro + 5 slots), oferta do outro, Negociar/Cancelar; menu de
+  player (Negociar/Duelar/Seguir/Convidar) e convite.
+- **Convites de duelo e de grupo** (`client/duel_handlers.py`,
+  `client/party_handlers.py`) — `atlas_window.prompt`, mesmo do convite
+  de troca.
+- **Loot** (`ui/loot_system.py`) — lista rolável perto do cursor;
+  esquerdo pega, direito equipa; `_try_take_item`/`_try_equip_item`
+  recebem o índice da linha (lógica e pedido ao servidor inalterados).
+- **Correio** (`ui/mail_system.py`) — 1 janela com abas [Entrada]
+  [Escrever] (ler carta abre dentro de Entrada, Voltar retorna).
+- **Ferreiro/artesão** (`ui/crafting_system.py`) — menu de ação +
+  janela com abas [Reciclar] [Forjar]; ícones reais de item (antes:
+  quadrado com a inicial — agora só reserva, `atlas_window.item_icon`).
+- **Treinador** (`ui/trainer_system.py`) — menu de assunto
+  (`prompt`) + lista de treinamento rolável com Aprender.
+
+Kit ganhou: clique direito no soltar (`Frame.rreleased`/
+`right_click`), `prompt` (aviso com botões), `quantity_window`/
+`quantity_state`/`quantity_key` (modal de quantidade — loja, troca,
+correio; troca o slider antigo por ◀ ▶, digitação e roda do mouse),
+`item_icon` (ícone com reserva), `text_field(placeholder, align)`,
+`field_hover`, `Frame(press=None)` (janela de FUNDO de um modal: estado
+de botão descartável — compartilhar o do modal fazia o `end()` do fundo
+zerar o botão afundado do modal antes dele disparar; bug real pego por
+teste na seleção de personagem E na loja). Sistemas fora do GameEngine
+recebem a área segura por `safe_area_fn` (game.py injeta
+`_mm_safe_area`). Medidas antigas (`UI.INVENTORY_*`, `SHOP_*`,
+`TRADE_*`, `LOOT_*`, `MAIL_*`, `CRAFTING_*`, `TRAINER_*`) removidas de
+`ui/ui_sizes.py`.
+
+Achados no caminho: (1) a limpeza das medidas do loot (por regex)
+cortou "LOOT_SCROLL_W" de dentro de um comentário e grudou a linha de
+`CHAT_SCROLL_W` com a de `CRAFTING_BAG_COLS` — o ferreiro ANTIGO
+quebraria ao abrir entre os commits do loot e do ferreiro (nunca chegou
+a jogo: o ferreiro foi convertido em seguida e não usa mais a medida);
+`CHAT_SCROLL_W` conferido, intacto. (2) "Deletar" do ferreiro só apaga
+no espelho local — ver HISTORICO_BUGS.md §96. (3) cache de ícone de
+moeda do loot nasceu como dict no corpo da classe (proibido pelo
+CLAUDE.md) — corrigido pra dict de módulo com teto antes do commit.
+
+**Teste**: `tests/test_inventory_atlas_ui.py`, `test_shop_atlas_ui.py`,
+`test_trade_atlas_ui.py`, `test_loot_atlas_ui.py`,
+`test_mail_system_compose.py` (reescrito pros cliques no soltar, mesmas
+garantias), `test_crafting_atlas_ui.py`, `test_trainer_atlas_ui.py`,
+`test_atlas_kit.py`.

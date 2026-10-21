@@ -601,7 +601,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._buff_bar = BuffBar(self.world, self.player_entity)
         self._quest_dialog  = QuestDialogSystem(
             self.world, self.player_entity, self.screen, self._quest_system)
-        self._quest_dialog.safe_area_fn = self._mm_safe_area   # área segura das janelas do atlas
+        # Área segura padrão das janelas do atlas (desconta a barra de ações)
+        for _atlas_sys in (self._quest_dialog, self._shop_system, self._mail_system):
+            _atlas_sys.safe_area_fn = self._mm_safe_area
         self._quest_journal = QuestJournalSystem(
             self.world, self.player_entity, self.screen, self._quest_system)
         from ui.crafting_system import BlacksmithSystem
@@ -613,6 +615,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._crafting_system = BlacksmithSystem(self.world, self.player_entity, self.screen)
         from ui.trainer_system import TrainerSystem
         self._trainer_system = TrainerSystem(self.world, self.player_entity, self.screen)
+        self._crafting_system.safe_area_fn = self._mm_safe_area
+        self._trainer_system.safe_area_fn = self._mm_safe_area
         # Empurra a escala de UI atual pra todos os sistemas de painel que
         # vivem fora de GameEngine — eles não têm acesso a self._u()/
         # self.font_* direto, então precisam de set_ui_scale() explícito

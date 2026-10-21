@@ -6644,3 +6644,16 @@ nível), então 8 não volta a estourar o frame WebSocket. Teste:
 `tests/test_character_names.py::test_limite_de_personagens_por_conta`
 (precisa do Postgres — não rodado nesta sessão). Precisa de deploy do
 servidor pra valer em produção.
+
+## 96. "Deletar" do ferreiro apaga item só no cliente (ABERTO, 21/10/2026)
+
+Achado ao converter o ferreiro pro atlas de UI (HISTORICO_FEATURES.md
+§72): clique direito num item que não é equipamento, dentro de
+Reciclar/Forjar, abre o menu "Deletar" — `BlacksmithSystem.
+_do_delete_bag_item` faz `inv.items.pop(idx)` no espelho LOCAL e nunca
+manda INV_SYNC (`self._on_loot_action("item")`). Mesma classe já
+catalogada (CLAUDE.md, "Qualquer mutação local de Inventory feita no
+CLIENTE"; PROBLEMAS_ARQUITETURA.md §275): o servidor nunca fica sabendo
+e o item volta no próximo resync. Comportamento mantido na troca de
+visual (não decidido sozinho); aguardando decisão do usuário entre
+corrigir (mesmo caminho da tecla Delete do inventário) ou remover o menu.

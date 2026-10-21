@@ -1977,11 +1977,21 @@ padrão a quebrar, não só os bugs individuais.
   **Montar/interagir com a janela SEMPRE via `ui/atlas_window.py`**
   (`Frame` — botão no soltar, campo/senha, seletor, `scrollbar`,
   `child` pra conteúdo rolável, `slot`/`grid` de itens, `tabs`,
-  `checkbox`, `text_block`, divisórias, `close_button`;
+  `checkbox`, `text_block`, divisórias, `close_button`, clique direito
+  `rreleased`/`right_click`, `prompt`, `quantity_window`, `item_icon`;
   `PressState`/`ScrollState` por sistema) — NUNCA reimplementar
-  botão/rolagem/grade/aba/hit-test numa tela à parte; peça que faltar
-  entra no kit (com teste em `tests/test_atlas_kit.py`) antes de ser
-  usada.
+  botão/rolagem/grade/aba/hit-test/modal de quantidade numa tela à
+  parte; peça que faltar entra no kit (com teste em
+  `tests/test_atlas_kit.py`) antes de ser usada. **Janela desenhada
+  por BAIXO de um modal passa `press=None`** (estado descartável) —
+  compartilhar o PressState do modal faz o `end()` dela zerar o botão
+  afundado do modal antes dele disparar. Ações agem no soltar DENTRO do
+  desenho; o handler de clique antigo do sistema só "segura" o clique
+  (pra não vazar pro mundo). Medidas por TILE calculadas no próprio
+  sistema — nunca de volta pra `ui/ui_sizes.py`. Limpar constante
+  antiga por regex: casar só a linha que COMEÇA com o nome (nome
+  citado dentro de comentário já colou 2 linhas uma vez, ver
+  HISTORICO_FEATURES.md §72).
   **Toda janela do atlas fica dentro da área segura padrão**
   (`atlas_window.safe_area` / `MenuHandlers._mm_safe_area`: margem de
   10% da altura no topo e acima da barra de ações, 10% da largura nas
@@ -1992,7 +2002,7 @@ padrão a quebrar, não só os bugs individuais.
   `arquitetura/ATLAS_UI.md`** (o que cada tile é e pra que serve — ex:
   campo de texto (9,4)–(11,4) pra qualquer valor que o jogador define);
   peça nova/uso novo → atualizar o catálogo no mesmo commit. Ver
-  HISTORICO_FEATURES.md §65–§71.
+  HISTORICO_FEATURES.md §65–§72.
 - **Ícone ANIMADO acima da cabeça de uma entidade, no MUNDO** (marcador
   de quest, ou categoria futura parecida) → `ui/world_icon_animator.py::
   get_frame(name, size, now_ms)` — spritesheet horizontal em
