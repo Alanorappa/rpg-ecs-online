@@ -38,7 +38,8 @@ from engine.utils import chebyshev, get_camera_offset
 from ui.combat_log import LOG
 from ui.icon_manager import ICONS
 from ui.ui_helpers import item_tooltip_lines
-from ui.npc_interaction import walk_to_npc, suppress_chase
+from ui.npc_interaction import (walk_to_npc, suppress_chase, has_service_tabs, service_tabs,
+                                open_npc_service, default_npc_service)
 from content.merchant_data import SHOPS, INSTANCE_SHOP_STOCK_BY_CLASS
 from content.item_table import RARITY_COLORS as _SHARED_RARITY_COLORS
 from engine.quest_events import fire as quest_fire
@@ -142,6 +143,18 @@ class ShopSystem(UIScaleMixin, System):
         SH = self.world_surf.get_height()
         return get_camera_offset(self.world, SW, SH)
 
+    def _on_npc_clicked(self, eid: int) -> None:
+        """Clique no mercador (já adjacente ou chegou andando): abre a
+        função padrão do NPC — Missões primeiro se houver quest; senão a
+        loja (ui/npc_interaction.py::default_npc_service)."""
+        key = default_npc_service(self.world, self.player_entity, eid)
+        if key is None or key == "shop":
+            self._try_open_merchant(eid)
+        else:
+            self._pending_merchant_id = -1
+            open_npc_service(self.world, self.player_entity, eid, key)
+            self._open_cooldown = 0.3
+
     def _try_open_merchant(self, eid: int) -> None:
         """Abre a loja, OU — se travada por quest (04/10/2026, pedido do
         usuário; trava generalizada por NPC individual em 06/10/2026,
@@ -214,7 +227,7 @@ class ShopSystem(UIScaleMixin, System):
                     auto.path          = []
                     auto.ground_target = None
                 _arrived_eid = self._pending_merchant_id
-                self._try_open_merchant(_arrived_eid)
+                self._on_npc_clicked(_arrived_eid)
 
         if not events:
             return
@@ -239,7 +252,7 @@ class ShopSystem(UIScaleMixin, System):
                             # Já adjacente — abre direto (ou redireciona
                             # pra quest, se travada — _try_open_merchant)
                             suppress_chase(self.world, self.player_entity)
-                            self._try_open_merchant(eid)
+                            self._on_npc_clicked(eid)
                         else:
                             # Inicia caminhada até tile adjacente
                             self._pending_merchant_id = eid
@@ -434,18 +447,19 @@ class ShopSystem(UIScaleMixin, System):
     # ------------------------------------------------------------------
     # Render — painel de loja (atlas de UI)
     # ------------------------------------------------------------------
-    # Janela escura com barra de título (nome da loja) e X. Esquerda:
-    # mochila em grade (mesma do inventário). Divisória. Direita: lista à
-    # venda (slot + nome + preço, rolável) com a barra de rolagem encostada
-    # na borda direita da janela (padrão de todo modal). Embaixo: Desfazer
-    # e saldo. Clique DIREITO compra/vende (Shift+direito = quantidade);
-    # age no soltar. Medidas em px RAW (slot de ícone 32x32 — aw.SLOT).
+    # Janela escura com barra de título (nome da loja) e X; abas das outras
+    # funções do NPC na linha 1 (ui/npc_interaction.py::service_tabs).
+    # Esquerda: lista à venda (slot + nome + preço, rolável) com a barra de
+    # rolagem colada à direita da lista (decisão do usuário). Divisória.
+    # Direita: mochila em grade. Embaixo: Desfazer e saldo. Clique DIREITO
+    # compra/vende (Shift+direito = quantidade); age no soltar. Medidas em
+    # px RAW (slot de ícone 32x32 — aw.SLOT).
 
     _LIST_ROWS  = 4                 # linhas visíveis da lista à venda
     _ROW_H      = aw.SLOT + 2       # px RAW por linha
     _BAG_COLS   = 5
     _PAD        = 6                 # folga da borda da janela
-    _TOP        = 32                # topo da mochila/lista (abaixo do cabeçalho)
+    _TOP        = 32                # topo da mochila/lista sem abas (abaixo do cabeçalho)
 
     def _area(self) -> pygame.Rect:
         if self.safe_area_fn is not None:
@@ -459,27 +473,28 @@ class ShopSystem(UIScaleMixin, System):
             return INSTANCE_SHOP_STOCK_BY_CLASS.get(char.class_id if char else None, [])
         return SHOPS.get(merch.shop_id, {}).get("stock", [])
 
-    def _layout(self, stock_previews, stock, inv) -> dict:
+    def _layout(self, stock_previews, stock, inv, top: int) -> dict:
         T, S = aw.T, aw.S
         fsm = self._font_sm
         name_w = max([fsm.size(p.name)[0] for p in stock_previews] + [fsm.size("À venda (99)")[0]]) / S
         price_w = max([fsm.size(f"{e['price']}g")[0] for e in stock] + [1]) / S
         bag_rows = math.ceil((inv.max_slots if inv else 20) / self._BAG_COLS)
-        bag_x0 = self._PAD + 2
         bag_w = aw.grid_px(self._BAG_COLS)
-        list_x0 = bag_x0 + bag_w + 16
-        list_w = math.ceil(aw.SLOT + 6 + name_w + 10 + price_w + 4)      # px RAW
-        # coluna da barra de rolagem = última coluna da janela (encostada
-        # na borda direita); a lista termina logo antes dela.
-        tw = max(math.ceil((list_x0 + list_w) / T) + 1,
+        list_x0 = self._PAD + 2
+        # A lista termina numa borda de tile: a barra de rolagem ocupa a
+        # coluna seguinte (colada à direita da lista).
+        sb_col = math.ceil((list_x0 + aw.SLOT + 6 + name_w + 10 + price_w + 4) / T)
+        list_w = sb_col * T - list_x0
+        div_x = (sb_col + 1) * T + 4
+        bag_x0 = div_x + 8
+        tw = max(math.ceil((bag_x0 + bag_w + self._PAD + 2) / T),
                  aw.tiles_for(self._font_md, [self._shop_title], 1) + 3)
-        list_w = (tw - 1) * T - list_x0
         body_h = max(self._LIST_ROWS * self._ROW_H, aw.grid_px(bag_rows))
-        foot_y = self._TOP + body_h + 6                                 # divisória do rodapé
+        foot_y = top + body_h + 6                                       # divisória do rodapé
         th = math.ceil((foot_y + T + 8) / T)
         return {"tw": tw, "th": th, "bag_x0": bag_x0, "bag_w": bag_w, "bag_rows": bag_rows,
-                "list_x0": list_x0, "list_w": list_w, "body_h": body_h, "foot_y": foot_y,
-                "div_x": bag_x0 + bag_w + 8}
+                "list_x0": list_x0, "list_w": list_w, "sb_col": sb_col, "body_h": body_h,
+                "foot_y": foot_y, "div_x": div_x}
 
     def render(self, cam_x: float = 0, cam_y: float = 0) -> None:
         events, self._frame_events = self._frame_events, []
@@ -501,9 +516,14 @@ class ShopSystem(UIScaleMixin, System):
         viewer_cls = char.class_id if char else None
         stock = self._stock(merch)
         previews = [e["factory"]() for e in stock]
-        self._shop_title = shop.get("name", "Comerciante")
         modal_open = self._qty_modal is not None
-        lay = self._layout(previews, stock, inv)
+        tabs = has_service_tabs(self.world, self.player_entity, self.open_merchant_id)
+        # Com abas (NPC de várias funções), o título é o nome do NPC — o mesmo
+        # em todas as abas; sem abas, o nome da loja como sempre.
+        _npc = self.world.get_component(self.open_merchant_id, NPC) if tabs else None
+        self._shop_title = _npc.name if _npc else shop.get("name", "Comerciante")
+        top = self._TOP + (T if tabs else 0)
+        lay = self._layout(previews, stock, inv, top)
         tw, th = lay["tw"], lay["th"]
         f = aw.Frame(self.hud_surf, [] if modal_open else events, tw, th, area=self._area(),
                      press=None if modal_open else self._press, font=self._font_md,
@@ -518,19 +538,27 @@ class ShopSystem(UIScaleMixin, System):
             self._close()
             return
         self._hit("shop:close", f, (tw - 1) * T, 0, tw * T, T)
+        if not modal_open:
+            other = service_tabs(f, self.world, self.player_entity, self.open_merchant_id, "shop",
+                                 self._font_sm, self._hit_rects)
+            if other is not None:
+                npc_eid = self.open_merchant_id
+                self._close()
+                open_npc_service(self.world, self.player_entity, npc_eid, other)
+                return
 
         hdr = (190, 170, 120)
-        top, lx0, list_w = self._TOP, lay["list_x0"], lay["list_w"]
-        f.text(f"Mochila {len(bag)}/{inv.max_slots if inv else 0}", lay["bag_x0"], 24,
+        lx0, list_w = lay["list_x0"], lay["list_w"]
+        f.text(f"Mochila {len(bag)}/{inv.max_slots if inv else 0}", lay["bag_x0"], top - 8,
                hdr, self._font_sm, anchor="midleft")
-        f.text(f"À venda ({len(stock)})", lx0, 24, hdr, self._font_sm, anchor="midleft")
-        f.divider_v(lay["div_x"], T, lay["foot_y"])
+        f.text(f"À venda ({len(stock)})", lx0, top - 8, hdr, self._font_sm, anchor="midleft")
+        f.divider_v(lay["div_x"], top - 16, lay["foot_y"])
         f.divider_h(lay["foot_y"], T, (tw - 1) * T)
 
-        # ── Lista à venda (rolável; barra encostada na borda direita) ─────
+        # ── Lista à venda (rolável; barra colada à direita da lista) ──────
         view_y0, view_h = top, self._LIST_ROWS * self._ROW_H
         content_h = max(1, len(stock) * self._ROW_H)
-        off = f.scrollbar(self._shop_scroll_st, tw - 1, view_y0 // T, (view_y0 + view_h) // T - 1,
+        off = f.scrollbar(self._shop_scroll_st, lay["sb_col"], view_y0 // T, (view_y0 + view_h) // T - 1,
                           max(0, content_h - view_h), step=self._ROW_H)
         in_view = view_y0 <= f.ry < view_y0 + view_h and lx0 <= f.rx < lx0 + list_w
         fc = f.child(pygame.Surface((list_w, content_h), pygame.SRCALPHA),

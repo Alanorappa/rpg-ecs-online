@@ -323,3 +323,4 @@
 - [21/10/2026] (bug) "Deletar" do ferreiro apaga item só no cliente (aberto) — tags: ferreiro, inventario, inv_sync — HISTORICO_BUGS.md §96
 - [21/10/2026] (feature) Slots 32x32, layouts centralizados, rolagem na borda direita e Desfazer da loja — tags: ui, atlas, slot, loja, desfazer, inventario, loot — HISTORICO_FEATURES.md §73
 - [21/10/2026] (bug) "Deletar" do ferreiro agora avisa o servidor (resolvido) — tags: ferreiro, inventario, inv_sync — HISTORICO_BUGS.md §96
+- [21/10/2026] (feature) Abas de serviço do NPC (Missões/Negociar/Reciclar/Forjar/Treinar), sem menu intermediário; loja com mochila à direita — tags: ui, atlas, npc, abas, loja, ferreiro, treinador, quest — HISTORICO_FEATURES.md §74

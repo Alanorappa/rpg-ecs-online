@@ -3,12 +3,10 @@
 TrainerSystem — gerencia interação com NPCs treinadores de classe.
 
 Fluxo:
-  1. Clique direito em NPC com componente Trainer → action menu (ou pula
-     direto pro destino se só houver 1 assunto pra essa classe, ou pra
-     entrega de quest se houver alguma completável — ver _open_menu)
-  2. Action menu: Treinamento / Quests (cada um só aparece se houver algo
-     de fato disponível pra essa classe — ver _compute_options)
-  3. Modal de treinamento: lista de skills com requisito de nível e custo
+  1. Clique direito em NPC com componente Trainer → abre direto a função
+     padrão do NPC (Missões se houver quest; senão Treinar — ver _open_menu)
+  2. Janela de treinamento: lista de skills com requisito de nível e custo;
+     abas das outras funções do NPC no topo (ui/npc_interaction.py)
 """
 from __future__ import annotations
 import math
@@ -17,7 +15,6 @@ from ui.systems import System
 from engine.components import (Position, Renderable, TileMovement,
                         NPC, Trainer, Wallet, NPCInteractionRequest)
 from engine.utils import get_camera_offset, chebyshev
-import engine.quest_logic as quest_logic
 from content.skill_config import (SKILL_CATALOG, SKILL_LEVEL_REQUIREMENTS, SKILL_COSTS,
                           NUM_SLOTS, SKILL_ORDER_BY_CLASS)
 from ui.icon_manager import ICONS
@@ -25,7 +22,8 @@ from ui.combat_log import LOG
 from ui import atlas_window as aw
 from ui import ui_atlas
 from ui.ui_scale_mixin import UIScaleMixin
-from ui.npc_interaction import walk_to_npc, suppress_chase
+from ui.npc_interaction import (walk_to_npc, suppress_chase, service_tabs, open_npc_service,
+                                default_npc_service, has_service_tabs)
 
 # ---------------------------------------------------------------------------
 # Constantes visuais
@@ -54,10 +52,9 @@ def _skill_order_for(class_id: str) -> list:
 
 
 class TrainerSystem(UIScaleMixin, System):
-    """Gerencia o menu de ação e o modal de treinamento de skills."""
+    """Janela de treinamento de skills (aba Treinar do NPC)."""
 
     STATE_CLOSED   = "CLOSED"
-    STATE_MENU     = "ACTION_MENU"
     STATE_TRAINING = "TRAINING"
 
     _FONT_BASES = {"_font_xs": 15, "_font_sm": 20, "_font_md": 26, "_font_lg": 32, "_font_xl": 38}
@@ -140,6 +137,13 @@ class TrainerSystem(UIScaleMixin, System):
 
         self._right_click_consumed = False
 
+        # Aba Treinar pedida por outra janela de NPC (abas de serviço,
+        # ui/npc_interaction.py) — só consome o kind DESTE System.
+        _npc_req = self.world.get_component(self.player_entity, NPCInteractionRequest)
+        if _npc_req is not None and _npc_req.kind == "open_train":
+            self.world.remove_component(self.player_entity, NPCInteractionRequest)
+            self._open_training(_npc_req.target_eid)
+
         if self._open_cooldown > 0:
             self._open_cooldown -= dt
 
@@ -205,91 +209,36 @@ class TrainerSystem(UIScaleMixin, System):
     # ------------------------------------------------------------------
     # Ações internas
     # ------------------------------------------------------------------
-    def _compute_options(self, eid: int) -> list:
-        """Opções de assunto disponíveis pra ESTE player com ESTE NPC —
-        "Treinamento" só se a classe do player bate com a do treinador;
-        "Quests" só se houver de fato algo pra essa classe (disponível, em
-        progresso ou completável — não só "o NPC tem quest_ids").
-
-        `self._tr_name` (setado por `_open_menu` antes de chamar isto) vai
-        pra `_get_completable_quests` como `pending_npc_name` — mesmo
-        motivo de `_open_menu` logo abaixo: sem isso, uma quest cujo ÚNICO
-        objetivo pendente é justamente "falar com ESTE NPC" não conta como
-        completável ainda (o talk_to_npc só é aplicado de verdade quando o
-        diálogo de quest abre), e cai como "em progresso" por engano."""
-        from engine.components import CharacterStats, QuestLog
-        options = []
-        cs = self.world.get_component(self.player_entity, CharacterStats)
-        tr = self.world.get_component(eid, Trainer)
-        tr_class = tr.class_id if tr else "guerreiro"
-        # Trava de quest (04/10/2026, pedido do usuário; generalizada por
-        # NPC individual em 06/10/2026, ver NPCUnlock/
-        # quest_logic.is_npc_unlocked) — treino só entra como opção
-        # depois que a trava do NPC estiver completa. Sem isso virar
-        # opção, _open_menu abaixo já prioriza quest disponível/
-        # completável sozinho (nenhuma mudança necessária lá) — é por
-        # isso que nenhuma mensagem de "bloqueado" é preciso: o player
-        # só vê o fluxo de quest, igual sempre foi pra NPC que só tem
-        # quest pra oferecer.
-        ql = self.world.get_component(self.player_entity, QuestLog)
-        _unlocked = quest_logic.is_npc_unlocked(self.world, eid, ql)
-        if cs and cs.class_id == tr_class and _unlocked:
-            options.append(("treinamento", "Treinamento"))
-        if (quest_logic.get_available_quests(self.world, self.player_entity, eid) or
-                quest_logic.get_completable_quests(self.world, self.player_entity, eid, self._tr_name) or
-                quest_logic.get_inprogress_quests(self.world, self.player_entity, eid)):
-            options.append(("quest:0", "Quests"))
-        return options
-
     def _open_menu(self, eid: int):
+        """Clique no treinador: abre direto a função padrão do NPC —
+        Missões se houver quest pra aceitar/entregar, senão Treinar — sem
+        menu de assunto (21/10/2026, pedido do usuário; abas de serviço em
+        ui/npc_interaction.py). Classe errada / travado sem quest: aviso
+        no log, como antes."""
+        key = default_npc_service(self.world, self.player_entity, eid)
+        if key == "train":
+            self._open_training(eid)
+        elif key is not None:
+            open_npc_service(self.world, self.player_entity, eid, key)
+            self._state = self.STATE_CLOSED
+        else:
+            npc = self.world.get_component(eid, NPC)
+            from engine.components import CharacterStats
+            cs = self.world.get_component(self.player_entity, CharacterStats)
+            LOG.add(f"{npc.name if npc else 'Treinador'}: nada para {cs.name if cs else 'você'} aqui.",
+                    _COL_GREY)
+            self._state = self.STATE_CLOSED
+        self._open_cooldown = 0.3
+
+    def _open_training(self, eid: int) -> None:
         self._tr_eid  = eid
         npc = self.world.get_component(eid, NPC)
         self._tr_name = npc.name if npc else "Treinador"
         tr  = self.world.get_component(eid, Trainer)
         self._tr_class_id = tr.class_id if tr else "guerreiro"
-
-        # Prioridade: quest pronta pra entregar abre direto o diálogo de
-        # quest, nunca o menu de assunto (mesmo com treinamento disponível).
-        # `pending_npc_name=self._tr_name` (04/09/2026, bug real reportado
-        # pelo usuário): sem isso, uma quest cujo único objetivo pendente é
-        # "falar com ESTE NPC" nunca aparecia aqui como completável (o
-        # talk_to_npc só conta depois que `_open_dialog` processa — que só
-        # roda se a gente já tivesse decidido abrir o diálogo de quest, ciclo
-        # vicioso). Resultado: o menu de "Quests/Treinamento" aparecia
-        # primeiro, e a quest só se resolvia depois de já estar dentro do
-        # diálogo — mesma checagem que `_open_dialog` já faz certo, só que
-        # ANTES de decidir se pula o menu.
-        if quest_logic.get_completable_quests(self.world, self.player_entity, eid, self._tr_name):
-            self.world.add_component(self.player_entity, NPCInteractionRequest(
-                kind="open_quest_dialog", target_eid=eid))
-            self._state = self.STATE_CLOSED
-            self._open_cooldown = 0.3
-            return
-
-        options = self._compute_options(eid)
-
-        # Só 1 assunto (ou nenhum) pra essa classe — pula direto pro
-        # destino, sem mostrar o menu de "o que deseja?".
-        if len(options) <= 1:
-            key = options[0][0] if options else "_none"
-            if key == "treinamento":
-                self._state = self.STATE_TRAINING
-                self._scroll = aw.ScrollState()
-            elif key.startswith("quest:"):
-                self.world.add_component(self.player_entity, NPCInteractionRequest(
-                    kind="open_quest_dialog", target_eid=eid))
-                self._state = self.STATE_CLOSED
-            else:
-                from engine.components import CharacterStats
-                cs = self.world.get_component(self.player_entity, CharacterStats)
-                LOG.add(f"{self._tr_name}: nada para {cs.name if cs else 'você'} aqui.", _COL_GREY)
-                self._state = self.STATE_CLOSED
-            self._open_cooldown = 0.3
-            return
-
-        self._state = self.STATE_MENU
+        self._state = self.STATE_TRAINING
+        self._scroll = aw.ScrollState()
         self._open_cooldown = 0.3
-
     def _close(self):
         self._state         = self.STATE_CLOSED
         self._tr_eid        = -1
@@ -389,33 +338,8 @@ class TrainerSystem(UIScaleMixin, System):
         self._hit_rects = {}
         if self._state == self.STATE_CLOSED:
             return
-        if self._state == self.STATE_MENU:
-            self._draw_action_menu(events)
-        elif self._state == self.STATE_TRAINING:
+        if self._state == self.STATE_TRAINING:
             self._draw_training_modal(events)
-
-    def _draw_action_menu(self, events):
-        options = self._compute_options(self._tr_eid)
-        from engine.components import CharacterStats
-        cs = self.world.get_component(self.player_entity, CharacterStats)
-        if not options:
-            options = [("_none", "Fechar")]
-        player_name = cs.name if cs else "Aventureiro"
-        fired = aw.prompt(self.hud_surf, events, area=self._area(), press=self._press, font=self._font_md,
-                          title=self._tr_name, message=f"Olá {player_name}, o que deseja?",
-                          buttons=[lbl for _, lbl in options], hits=self._hit_rects, hit_prefix="tr:opt")
-        if fired is None:
-            return
-        key = options[fired][0]
-        if key == "treinamento":
-            self._state = self.STATE_TRAINING
-            self._scroll = aw.ScrollState()
-        elif key.startswith("quest:"):
-            self.world.add_component(self.player_entity, NPCInteractionRequest(
-                kind="open_quest_dialog", target_eid=self._tr_eid))
-            self._state = self.STATE_CLOSED
-        else:
-            self._close()
 
     @staticmethod
     def _truncate(text: str, font, max_px: int) -> str:
@@ -431,7 +355,7 @@ class TrainerSystem(UIScaleMixin, System):
         wallet = self._player_wallet()
         level  = self._player_level()
         order  = _skill_order_for(self._tr_class_id)
-        title  = f"{self._tr_name} — Treinamento"
+        title  = self._tr_name
 
         lvl_w  = self._font_sm.size("Nível 99")[0] / S
         cost_w = self._font_sm.size("99999g")[0] / S
@@ -439,7 +363,9 @@ class TrainerSystem(UIScaleMixin, System):
         sw_area = self._area().width // (T * S)
         tw = max(min(sw_area, 30), aw.tiles_for(self._font_md, [title], 1) + 3)
         row_h = self._ROW_H
-        view_y0, view_h = 2 * T, self._VIEW_ROWS * row_h
+        tabs = has_service_tabs(self.world, self.player_entity, self._tr_eid)
+        hdr_y = (2.5 if tabs else 1.5) * T              # linha 1 = abas, quando houver
+        view_y0, view_h = (3 if tabs else 2) * T, self._VIEW_ROWS * row_h
         th = math.ceil((view_y0 + view_h + 26) / T)
         lw = (tw - 1) * T                                   # lista | rolagem (última coluna)
         btn_x = lw - 4 - bw * T                             # botão (px RAW, dentro da lista)
@@ -456,11 +382,18 @@ class TrainerSystem(UIScaleMixin, System):
             return
         self._hit_rects["tr:close"] = pygame.Rect(f.px + (tw - 1) * T * S, f.py, T * S, T * S)
         self._panel_rect = pygame.Rect(f.px, f.py, f.pw, f.ph)
+        other = service_tabs(f, self.world, self.player_entity, self._tr_eid, "train",
+                             self._font_sm, self._hit_rects)
+        if other is not None:
+            npc_eid = self._tr_eid
+            self._close()
+            open_npc_service(self.world, self.player_entity, npc_eid, other)
+            return
 
         hdr = (160, 140, 100)
-        f.text("Habilidade", text_x, 1.5 * T, hdr, self._font_sm, anchor="midleft")
-        f.text("Nível", lvl_x, 1.5 * T, hdr, self._font_sm, anchor="midright")
-        f.text("Custo", cost_x, 1.5 * T, hdr, self._font_sm, anchor="midright")
+        f.text("Habilidade", text_x, hdr_y, hdr, self._font_sm, anchor="midleft")
+        f.text("Nível", lvl_x, hdr_y, hdr, self._font_sm, anchor="midright")
+        f.text("Custo", cost_x, hdr_y, hdr, self._font_sm, anchor="midright")
 
         content_h = max(1, len(order) * row_h)
         off = f.scrollbar(self._scroll, tw - 1, view_y0 // T, (view_y0 + view_h) // T - 1,

@@ -316,17 +316,19 @@ class TestTrainerComputeOptionsRespeitaTrava(unittest.TestCase):
     def tearDown(self):
         QUESTS.pop(self.UNLOCK_QID, None)
 
+    # 21/10/2026: o menu de assunto virou abas de serviço do NPC — a trava
+    # agora é checada em ui/npc_interaction.py::npc_services (ponto único).
     def test_treinamento_fora_das_opcoes_enquanto_travado(self):
-        options = self.trainer._compute_options(self.npc)
-        keys = {k for k, _ in options}
-        self.assertNotIn("treinamento", keys)
+        from ui.npc_interaction import npc_services
+        keys = {k for k, _ in npc_services(self.world, self.player, self.npc)}
+        self.assertNotIn("train", keys)
 
     def test_treinamento_aparece_apos_completar_a_quest(self):
+        from ui.npc_interaction import npc_services
         ql = self.world.get_component(self.player, QuestLog)
         ql.completed.add(self.UNLOCK_QID)
-        options = self.trainer._compute_options(self.npc)
-        keys = {k for k, _ in options}
-        self.assertIn("treinamento", keys)
+        keys = {k for k, _ in npc_services(self.world, self.player, self.npc)}
+        self.assertIn("train", keys)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -557,8 +559,8 @@ class TestBlacksmithOpenMenuRedirecionaParaQuest(unittest.TestCase):
     def test_destravado_abre_o_menu_normalmente(self):
         ql = self.world.get_component(self.player, QuestLog)
         ql.completed.add(self.UNLOCK_QID)
-        self.bs._open_menu(self.blacksmith)
-        self.assertEqual(self.bs._state, self.bs.STATE_MENU)
+        self.bs._open_menu(self.blacksmith)   # sem Merchant: abre direto em Reciclar
+        self.assertEqual(self.bs._state, self.bs.STATE_RECYCLE)
         self.assertEqual(self.bs._bs_eid, self.blacksmith)
 
 

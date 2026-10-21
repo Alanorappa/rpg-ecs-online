@@ -26,7 +26,8 @@ from ui.combat_log import LOG
 from ui.floating_text import PROC
 from ui.ui_scale_mixin import UIScaleMixin
 from ui.ui_sizes import UI
-from ui.npc_interaction import walk_to_npc, suppress_chase
+from ui.npc_interaction import (walk_to_npc, suppress_chase, has_service_tabs, service_tabs,
+                                open_npc_service)
 
 T, S = aw.T, aw.S
 
@@ -821,15 +822,20 @@ class QuestDialogSystem(UIScaleMixin, System):
         else:
             items, content_h = self._content_turnin(qdef, wrap_px)
 
+        # Fileira de abas das outras funções do NPC (loja, treinador...)
+        # numa linha escura entre o título e o pergaminho.
+        tabs = (not self._item_source
+                and has_service_tabs(self.world, self.player_entity, self._dialog_npc_id))
+        tr = 1 if tabs else 0
         max_th = self._area().height // (T * S)
-        need_th = 3 + math.ceil((content_h + 2 * self._VIEW_PAD) / T)
-        th = max(min(self._MIN_TH, max_th), min(need_th, max_th), 6)
-        view_y0 = T + self._VIEW_PAD
-        view_h  = (th - 3) * T - 2 * self._VIEW_PAD
+        need_th = 3 + tr + math.ceil((content_h + 2 * self._VIEW_PAD) / T)
+        th = max(min(self._MIN_TH + tr, max_th), min(need_th, max_th), 6 + tr)
+        view_y0 = (1 + tr) * T + self._VIEW_PAD
+        view_h  = (th - 3 - tr) * T - 2 * self._VIEW_PAD
         max_scroll = max(0, content_h - view_h)
 
         f = aw.Frame(self.hud_surf, events, tw, th, area=self._area(), press=self._press,
-                     font=self._font_body, raw=ui_atlas.quest_window_raw(tw, th),
+                     font=self._font_body, raw=ui_atlas.quest_window_raw(tw, th, tr),
                      offset=(self._u(UI.QUEST_DIALOG_OFFSET_X), self._u(UI.QUEST_DIALOG_OFFSET_Y)))
         action = None
 
@@ -838,15 +844,18 @@ class QuestDialogSystem(UIScaleMixin, System):
         if f.press("q:close", (tw - 1) * T, 0, tw * T, T)[1]:
             action = ("close",)
         self._hit("q:close", f, (tw - 1) * T, 0, tw * T, T)
+        if tabs:
+            other = service_tabs(f, self.world, self.player_entity, self._dialog_npc_id, "quest",
+                                 self._font_sm, self._hit_rects)
+            if other is not None:
+                action = ("tab", other)
 
-        scroll = f.scrollbar(self._scroll, tw - 1, 1, th - 3, max_scroll)
+        scroll = f.scrollbar(self._scroll, tw - 1, 1 + tr, th - 3, max_scroll)
 
-        # Botões do rodapé (1 = centralizado; 2 = nas pontas, como no mockup)
+        # Botões do rodapé centralizados como grupo (1 tile entre eles)
         bw = aw.tiles_for(self._font_body, [lbl for _, lbl, _ in footer], 3)
-        if len(footer) == 1:
-            cols = [(tw - bw) // 2]
-        else:
-            cols = [1, tw - 1 - bw]
+        x0 = (tw - (len(footer) * bw + len(footer) - 1)) / 2
+        cols = [x0 + i * (bw + 1) for i in range(len(footer))]
         by = th - ui_atlas.QUEST_FOOTER_ROWS
         ay0, ay1 = ui_atlas.button_art_y(True)
         for (bid, label, enabled), col in zip(footer, cols):
@@ -910,6 +919,10 @@ class QuestDialogSystem(UIScaleMixin, System):
             self._select_from_list(action[1])
         elif action[0] == "choice":
             self._turnin_chosen_item = action[1]
+        elif action[0] == "tab":
+            npc_eid = self._dialog_npc_id
+            self._close()
+            open_npc_service(self.world, self.player_entity, npc_eid, action[1])
 
     def _hit(self, hit_id: str, f, x0, y0, x1, y1) -> None:
         """Rect de TELA de um elemento clicável (RAW → tela) — usado pelos

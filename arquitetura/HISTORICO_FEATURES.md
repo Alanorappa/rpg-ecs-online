@@ -5813,3 +5813,41 @@ item consumido, sem ouro, fechar/outro mercador),
 `test_atlas_kit.py` (slot 34, grade em px, modal centralizado),
 `test_inventory_atlas_ui.py` (cabeçalho), demais suítes de janela
 ajustadas. Validação em jogo pendente com o usuário.
+
+## 74. Abas de serviço do NPC — sem menu intermediário (21/10/2026)
+
+Pedido do usuário: o mestre artesão não abre mais o menu de 3 botões
+(Negociar/Reciclar/Forjar) — abre direto em Negociar, com abas pras
+outras funções; o mesmo pra todo NPC com mais de uma função (quest +
+treinador/mercador...), e quando há quest a aba de Missões abre SEMPRE
+primeiro. Decisões do usuário: abas compartilhadas (cada janela continua
+no seu System — opção de menor risco; a janela pode mudar de tamanho ao
+trocar de aba), abas no topo lado a lado, quest como pergaminho dentro
+da janela, e a lista da loja de volta à ESQUERDA com a mochila à direita
+(barra de rolagem colada à direita da lista — exceção consciente à regra
+"rolagem na borda direita da janela" de §73).
+
+Ponto único: `ui/npc_interaction.py` — `npc_services()` (funções que o
+NPC oferece a este player, ordem fixa Missões > Negociar > Reciclar >
+Forjar > Treinar; travado por `NPCUnlock` = só Missões),
+`default_npc_service()` (aba que abre no clique), `service_tabs()`
+(fileira de abas, só com 2+ funções) e `open_npc_service()` (pede a
+janela via `NPCInteractionRequest` — kinds novos `open_recycle`,
+`open_forge`, `open_train`, além de `open_shop`/`open_quest_dialog`).
+Cada System só consome o kind dele (System nunca chama System). Menu de
+ação do ferreiro (`_draw_action_menu`, `STATE_MENU`, `_do_negociar`) e
+menu de assunto do treinador (`_compute_options`, prompt "o que
+deseja?") removidos. Ferreiro também voltou a ter a mochila à direita
+(mesmo lado da aba Negociar, a mochila não "pula" ao trocar de aba).
+`ui_atlas.quest_window_raw(tw, th, tab_rows)` ganhou uma linha escura
+pras abas entre o título e o pergaminho; botões do rodapé da quest
+centralizados como grupo. Título da janela com abas = nome do NPC.
+
+Fora do escopo: correio (Mailbox) ainda não entra nas abas.
+
+**Teste**: `tests/test_crafting_atlas_ui.py` (abre direto em Negociar,
+abas Reciclar/Forjar/Negociar, pedido de aba vindo de outra janela),
+`tests/test_npc_interaction_request.py` (NPC com quest abre Missões
+primeiro com as abas das outras funções; aba Negociar abre a loja via
+componente), `tests/test_npc_service_unlock.py` (trava por quest via
+`npc_services`). Validação em jogo pendente.

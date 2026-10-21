@@ -23,6 +23,90 @@ novo, Espaço, skill) volta a perseguir normalmente.
 from __future__ import annotations
 
 
+# ── Abas de serviço do NPC (21/10/2026, pedido do usuário) ──────────────
+# NPC com mais de uma função (loja + ferreiro, treinador + quest...) abre
+# DIRETO numa janela, com abas no topo pras outras funções — sem o menu
+# intermediário de "o que deseja?". Quest disponível/entregável abre
+# SEMPRE primeiro. Cada janela continua no seu System; trocar de aba
+# fecha a janela atual e pede a outra via NPCInteractionRequest (System
+# nunca chama System). Ordem e rótulos: _SERVICES (fonte única).
+_SERVICES = (
+    ("quest",   "open_quest_dialog", "Missões"),
+    ("shop",    "open_shop",         "Negociar"),
+    ("recycle", "open_recycle",      "Reciclar"),
+    ("forge",   "open_forge",        "Forjar"),
+    ("train",   "open_train",        "Treinar"),
+)
+_KIND = {key: kind for key, kind, _ in _SERVICES}
+
+
+def npc_services(world, player_entity: int, npc_eid: int) -> list:
+    """[(chave, rótulo)] das funções que ESTE NPC oferece a ESTE player,
+    na ordem de _SERVICES (Missões primeiro). NPC travado por quest
+    (NPCUnlock) só oferece Missões."""
+    from engine.components import (NPC, Merchant, Blacksmith, Trainer, CharacterStats,
+                                   QuestLog)
+    import engine.quest_logic as quest_logic
+    npc = world.get_component(npc_eid, NPC)
+    name = npc.name if npc else ""
+    has = set()
+    if (quest_logic.get_available_quests(world, player_entity, npc_eid)
+            or quest_logic.get_completable_quests(world, player_entity, npc_eid, name)):
+        has.add("quest")
+    ql = world.get_component(player_entity, QuestLog)
+    if quest_logic.is_npc_unlocked(world, npc_eid, ql):
+        if world.get_component(npc_eid, Merchant) is not None:
+            has.add("shop")
+        if world.get_component(npc_eid, Blacksmith) is not None:
+            has.update(("recycle", "forge"))
+        tr = world.get_component(npc_eid, Trainer)
+        cs = world.get_component(player_entity, CharacterStats)
+        if tr is not None and cs is not None and cs.class_id == tr.class_id:
+            has.add("train")
+    return [(key, label) for key, _, label in _SERVICES if key in has]
+
+
+def open_npc_service(world, player_entity: int, npc_eid: int, key: str) -> None:
+    """Pede a abertura da janela da função `key` (quem abre é o System
+    dono dela, no update() — consome o NPCInteractionRequest)."""
+    from engine.components import NPCInteractionRequest
+    world.add_component(player_entity, NPCInteractionRequest(kind=_KIND[key], target_eid=npc_eid))
+
+
+def default_npc_service(world, player_entity: int, npc_eid: int) -> "str | None":
+    """Função que abre ao clicar no NPC: a 1ª de npc_services (Missões
+    quando houver quest pra aceitar/entregar)."""
+    services = npc_services(world, player_entity, npc_eid)
+    return services[0][0] if services else None
+
+
+def service_tabs(f, world, player_entity: int, npc_eid: int, active: str, font,
+                 hits: "dict | None" = None) -> "str | None":
+    """Fileira de abas das funções do NPC na linha 1 da janela (Frame do
+    atlas). Só desenha com 2+ funções. Devolve a chave clicada (outra que
+    não a ativa) ou None. `hits` recebe "npc:tab:<chave>" → rect de tela."""
+    services = npc_services(world, player_entity, npc_eid)
+    keys = [k for k, _ in services]
+    if len(services) < 2 or active not in keys:
+        return None
+    labels = [label for _, label in services]
+    idx = f.tabs("npc:tabs", 1, 1, labels, keys.index(active), font=font)
+    if hits is not None:
+        import pygame
+        from ui import atlas_window as aw
+        col = 1
+        for key, label in services:
+            w = f.tiles_for([label], 3, font)
+            hits[f"npc:tab:{key}"] = pygame.Rect(f.px + col * aw.T * aw.S, f.py + aw.T * aw.S,
+                                                 w * aw.T * aw.S, aw.T * aw.S)
+            col += w
+    return keys[idx] if idx is not None else None
+
+
+def has_service_tabs(world, player_entity: int, npc_eid: int) -> bool:
+    return len(npc_services(world, player_entity, npc_eid)) >= 2
+
+
 def suppress_chase(world, player_entity: int) -> None:
     """Liga `CombatState.chase_suppressed` — chamado tanto por
     `walk_to_npc` (abaixo) quanto pelo caminho "já adjacente, abre

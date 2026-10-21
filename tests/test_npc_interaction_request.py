@@ -78,12 +78,14 @@ class TestNPCInteractionRequest(unittest.TestCase):
     def tearDown(self):
         QUESTS.pop(QID, None)
 
-    def test_negociar_abre_a_loja_via_componente_sem_referencia_direta(self):
-        self.blacksmith._bs_eid = self.npc
-        self.blacksmith._do_negociar()
+    def test_aba_negociar_abre_a_loja_via_componente_sem_referencia_direta(self):
+        """Abas de serviço do NPC (21/10/2026): trocar de aba só escreve
+        NPCInteractionRequest — quem abre é o System dono (aqui a loja)."""
+        from ui.npc_interaction import open_npc_service
+        open_npc_service(self.world, self.player, self.npc, "shop")
 
         req = self.world.get_component(self.player, NPCInteractionRequest)
-        self.assertIsNotNone(req, "_do_negociar deveria escrever NPCInteractionRequest")
+        self.assertIsNotNone(req)
         self.assertEqual(req.kind, "open_shop")
         self.assertEqual(req.target_eid, self.npc)
 
@@ -92,7 +94,6 @@ class TestNPCInteractionRequest(unittest.TestCase):
                          "ShopSystem.update() deveria consumir o request e abrir a loja")
         self.assertIsNone(self.world.get_component(self.player, NPCInteractionRequest),
                           "componente deveria ser removido depois de consumido")
-
     def test_shop_system_ignora_request_destinado_a_outro_kind(self):
         """Design anti-corrida: cada System só remove o componente quando
         `kind` é o SEU próprio — senão, quem rodar primeiro no frame
@@ -106,18 +107,22 @@ class TestNPCInteractionRequest(unittest.TestCase):
         self.assertIsNotNone(req, "ShopSystem não deveria consumir um request que não é seu")
         self.assertEqual(req.kind, "open_quest_dialog")
 
-    def test_draw_action_menu_lista_quest_disponivel_sem_crashar(self):
-        """Regressão do bug real do can_start (ver docstring do módulo) —
-        NPC com quest disponível (não iniciada) não pode mais quebrar."""
+    def test_npc_com_quest_abre_missoes_primeiro_com_abas_das_outras_funcoes(self):
+        """Pedido do usuário (21/10/2026): NPC com quest abre SEMPRE a aba
+        de Missões primeiro (sem menu de 3 botões); as outras funções
+        (Negociar/Reciclar/Forjar) viram abas na mesma janela. Também
+        cobre a regressão do can_start (quest disponível não quebra)."""
+        from ui.npc_interaction import npc_services
+        self.assertEqual([k for k, _ in npc_services(self.world, self.player, self.npc)],
+                         ["quest", "shop", "recycle", "forge"])
         self.blacksmith._open_menu(self.npc)
-        try:
-            self.blacksmith.render()
-        except AttributeError as e:
-            self.fail(f"o menu de ação não deveria levantar AttributeError: {e}")
-        keys = [k[3:] for k in self.blacksmith._hit_rects if k.startswith("bs:")]
-        self.assertTrue(any(k == f"quest:{QID}" for k in keys),
-                        f"quest disponível deveria aparecer no menu, opções: {keys}")
-
+        req = self.world.get_component(self.player, NPCInteractionRequest)
+        self.assertEqual(req.kind, "open_quest_dialog")
+        self.dlg.update([], 0.0)
+        self.assertTrue(self.dlg.is_open)
+        self.dlg.render()
+        for key in ("shop", "recycle", "forge"):
+            self.assertIn(f"npc:tab:{key}", self.dlg._hit_rects)
 
 if __name__ == "__main__":
     unittest.main()

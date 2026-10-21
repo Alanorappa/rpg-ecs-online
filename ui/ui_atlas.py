@@ -302,22 +302,26 @@ def blit_tab(dst: "pygame.Surface", tx: int, ty: int, width_tiles: int, active: 
         blit_tile(dst, (col, _TAB_ROW), tx + i, ty)
 
 
-def quest_window_raw(tw: int, th: int) -> "pygame.Surface":
+def quest_window_raw(tw: int, th: int, tab_rows: int = 0) -> "pygame.Surface":
     """Janela de pergaminho de tw x th tiles (mín. 4x6), RAW, cacheada:
-    linha 0 = barra de título (X na última coluna); linhas 1..th-3 =
-    pergaminho nas colunas 0..tw-2 + coluna cromada tw-1 (barra de
-    rolagem); 2 últimas linhas = rodapé escuro dos botões."""
-    key = ("quest", tw, th)
+    linha 0 = barra de título (X na última coluna); `tab_rows` linhas
+    escuras logo abaixo (fileira de abas do NPC); depois o pergaminho nas
+    colunas 0..tw-2 + coluna cromada tw-1 (barra de rolagem); 2 últimas
+    linhas = rodapé escuro dos botões."""
+    key = ("quest", tw, th, tab_rows)
     cached = _panel_cache.get(key)
     if cached is not None:
         return cached
-    q = _QUEST
+    q, d = _QUEST, _TITLED_DARK
     surf = pygame.Surface((tw * TILE, th * TILE), pygame.SRCALPHA)
-    pc, p_top, p_bot = tw - 2, 1, th - QUEST_FOOTER_ROWS - 1
+    pc, p_top, p_bot = tw - 2, 1 + tab_rows, th - QUEST_FOOTER_ROWS - 1
     for i in range(tw):
         t = (q["title_left"] if i == 0 else QUEST_CLOSE if i == tw - 1
              else q["title_notch"] if i == 1 else q["title_mid"])
         blit_tile(surf, t, i, 0)
+    for j in range(1, p_top):
+        for i in range(tw):
+            blit_tile(surf, d["left"] if i == 0 else d["right"] if i == tw - 1 else d["center"], i, j)
     for j in range(p_top, p_bot + 1):
         k = j - p_top   # linha dentro do pergaminho
         for i in range(tw):

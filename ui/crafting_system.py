@@ -27,7 +27,8 @@ import engine.quest_logic as quest_logic
 from ui import atlas_window as aw
 from ui import ui_atlas
 from ui.ui_helpers import item_tooltip_lines
-from ui.npc_interaction import walk_to_npc, suppress_chase
+from ui.npc_interaction import (walk_to_npc, suppress_chase, service_tabs, open_npc_service,
+                                default_npc_service)
 
 
 # ---------------------------------------------------------------------------
@@ -57,11 +58,11 @@ _COL_DARK    = (20,  16,   8)
 
 
 class BlacksmithSystem(UIScaleMixin, System):
-    """Gerencia o menu de ação e os modais de Reciclagem e Forja."""
+    """Janela Reciclar/Forjar do ferreiro (abas de serviço do NPC —
+    ui/npc_interaction.py; Negociar é a loja, Missões o diálogo de quest)."""
 
     # Estado da máquina de estados
     STATE_CLOSED  = "CLOSED"
-    STATE_MENU    = "ACTION_MENU"
     STATE_RECYCLE = "RECYCLE"
     STATE_FORGE   = "FORGE"
 
@@ -178,6 +179,14 @@ class BlacksmithSystem(UIScaleMixin, System):
 
         self._right_click_consumed = False
 
+        # Aba Reciclar/Forjar pedida por outra janela de NPC (abas de
+        # serviço, ui/npc_interaction.py) — só consome os kinds DESTE System.
+        _npc_req = self.world.get_component(self.player_entity, NPCInteractionRequest)
+        if _npc_req is not None and _npc_req.kind in ("open_recycle", "open_forge"):
+            self.world.remove_component(self.player_entity, NPCInteractionRequest)
+            self._open_window(_npc_req.target_eid,
+                              "recycle" if _npc_req.kind == "open_recycle" else "forge")
+
         if self._open_cooldown > 0:
             self._open_cooldown -= dt
 
@@ -254,17 +263,28 @@ class BlacksmithSystem(UIScaleMixin, System):
         _try_open_merchant`/`ui/trainer_system.py::_open_menu`. Cobre
         negociar/reciclar/forjar de uma vez (os 3 só são alcançáveis
         depois de passar por aqui, único ponto de entrada)."""
-        from engine.components import QuestLog as _QL_bs
-        ql = self.world.get_component(self.player_entity, _QL_bs)
-        if not quest_logic.is_npc_unlocked(self.world, eid, ql):
-            self.world.add_component(self.player_entity, NPCInteractionRequest(
-                kind="open_quest_dialog", target_eid=eid))
-            self._open_cooldown = 0.3
+        # Abre direto a função padrão do NPC (Missões se houver quest pra
+        # aceitar/entregar; senão Negociar) — sem menu intermediário
+        # (21/10/2026, pedido do usuário; ui/npc_interaction.py).
+        key = default_npc_service(self.world, self.player_entity, eid)
+        if key in ("recycle", "forge"):
+            self._open_window(eid, key)
             return
+        if key is None:
+            # Travado por quest e nada a oferecer agora: o diálogo de quest
+            # mostra a mensagem de sempre ("continue sua missão"...).
+            key = "quest"
+        open_npc_service(self.world, self.player_entity, eid, key)
+        self._open_cooldown = 0.3
+
+    def _open_window(self, eid: int, key: str) -> None:
+        """Abre a janela Reciclar/Forjar deste ferreiro na aba `key`."""
         self._bs_eid  = eid
         npc = self.world.get_component(eid, NPC)
         self._bs_name = npc.name if npc else "Ferreiro"
-        self._state   = self.STATE_MENU
+        self._state   = self.STATE_RECYCLE if key == "recycle" else self.STATE_FORGE
+        self._reset_recycle()
+        self._reset_forge()
         self._open_cooldown = 0.3
 
     def _close(self):
@@ -285,11 +305,6 @@ class BlacksmithSystem(UIScaleMixin, System):
         self._frg_selected = None
         self._frg_data     = None
         self._frg_pending  = False
-
-    def _do_negociar(self):
-        self.world.add_component(self.player_entity, NPCInteractionRequest(
-            kind="open_shop", target_eid=self._bs_eid))
-        self._state = self.STATE_CLOSED
 
     def _do_recycle(self):
         """Manda RECYCLE_REQUEST — débito A4 (11/08/2026, ver
@@ -422,66 +437,10 @@ class BlacksmithSystem(UIScaleMixin, System):
         self._hit_rects = {}
         if self._state == self.STATE_CLOSED:
             return
-        if self._state == self.STATE_MENU:
-            self._draw_action_menu(events)
-        else:
-            ctx = self._ctx_bag_idx >= 0
-            self._draw_craft_window([] if ctx else events, ctx)
-            if ctx:
-                self._draw_context_menu(events)
-
-    # ── Menu de ação ──────────────────────────────────────────────────
-    def _draw_action_menu(self, events):
-        T = aw.T
-        options = []
-        # Quests disponíveis no NPC — via engine.quest_logic (ponto único
-        # de verdade, ver PROBLEMAS_ARQUITETURA.md item 4/§139).
-        if self._bs_eid != -1:
-            from content.quests_data import QUESTS
-            for qid in quest_logic.get_completable_quests(self.world, self.player_entity, self._bs_eid):
-                qdef = QUESTS.get(qid)
-                if qdef:
-                    options.append(("quest:" + qid, f"[?] {qdef.title}"))
-            for qid in quest_logic.get_available_quests(self.world, self.player_entity, self._bs_eid):
-                qdef = QUESTS.get(qid)
-                if qdef:
-                    options.append(("quest:" + qid, f"[!] {qdef.title}"))
-        from engine.components import Blacksmith
-        if self.world.get_component(self._bs_eid, Blacksmith):
-            options.append(("negociar", "Negociar"))
-        options.append(("reciclar", "Reciclar"))
-        options.append(("forjar", "Forjar"))
-
-        bw = aw.tiles_for(self._font_md, [lbl for _, lbl in options], 5)
-        tw = max(bw + 2, aw.tiles_for(self._font_md, [self._bs_name], 1) + 3)
-        th = 1 + len(options) + 1
-        f = aw.Frame(self.hud_surf, events, tw, th, area=self._area(), press=self._press,
-                     font=self._font_md, raw=ui_atlas.titled_dark_window_raw(tw, th))
-        f.text(self._bs_name, (tw - 1) * T / 2, aw.TITLE_BAR_Y, (240, 228, 200))
-        if f.close_button("bs:close", tw - 1):
-            self._close()
-            return
-        self._hit("bs:close", f, (tw - 1) * T, 0, tw * T, T)
-        col = (tw - bw) // 2
-        ay0, ay1 = ui_atlas.button_art_y(False)
-        chosen = None
-        for i, (key, label) in enumerate(options):
-            if f.button(f"bs:{key}", col, 1 + i, bw, label, tall=False):
-                chosen = key
-            self._hit(f"bs:{key}", f, col * T, (1 + i) * T + ay0, (col + bw) * T, (1 + i) * T + ay1)
-        f.end()
-        if chosen == "negociar":
-            self._do_negociar()
-        elif chosen == "reciclar":
-            self._state = self.STATE_RECYCLE
-            self._reset_recycle()
-        elif chosen == "forjar":
-            self._state = self.STATE_FORGE
-            self._reset_forge()
-        elif chosen and chosen.startswith("quest:"):
-            self.world.add_component(self.player_entity, NPCInteractionRequest(
-                kind="open_quest_dialog", target_eid=self._bs_eid))
-            self._state = self.STATE_CLOSED
+        ctx = self._ctx_bag_idx >= 0
+        self._draw_craft_window([] if ctx else events, ctx)
+        if ctx:
+            self._draw_context_menu(events)
 
     # ── Janela Reciclar/Forjar ────────────────────────────────────────
     def _craft_layout(self) -> dict:
@@ -492,16 +451,18 @@ class BlacksmithSystem(UIScaleMixin, System):
         names = [RECIPES[r]["name"] for r in known] + ["Nenhuma receita aprendida.",
                                                        "Receitas conhecidas", "Custo: 9999g"]
         text_w = max(self._font_sm.size(n)[0] for n in names) / S
-        # Mochila à esquerda; painel Reciclar/Forjar à direita, com a barra
-        # de rolagem das receitas na última coluna (encostada na borda).
-        bag_x0 = 8
-        div_x = bag_x0 + aw.grid_px(self._BAG_COLS) + 8
-        panel_x0 = div_x + 8
+        # Painel Reciclar/Forjar à esquerda (barra de rolagem das receitas
+        # colada à direita dele), mochila à direita — mesmo lado da loja
+        # (aba Negociar), pra mochila não "pular" ao trocar de aba.
+        panel_x0 = 8
         panel_w = max(text_w + 16, 5 * self._SLOT_STEP + 4)
-        tw = math.ceil((panel_x0 + panel_w) / T) + 1
+        sb_col = math.ceil((panel_x0 + panel_w) / T)
+        div_x = (sb_col + 1) * T + 4
+        bag_x0 = div_x + 8
+        tw = math.ceil((bag_x0 + aw.grid_px(self._BAG_COLS) + 8) / T)
         th = 15
         return {"tw": tw, "th": th, "bag_x0": bag_x0, "div_x": div_x, "px": panel_x0,
-                "pw": (tw - 1) * T - panel_x0, "known": known}
+                "pw": sb_col * T - panel_x0, "sb_col": sb_col, "known": known}
 
     def _draw_craft_window(self, events, ctx_open: bool):
         T, S = aw.T, aw.S
@@ -519,11 +480,12 @@ class BlacksmithSystem(UIScaleMixin, System):
 
         self._post_draw = None
         recycle = self._state == self.STATE_RECYCLE
-        tab = f.tabs("bs:tabs", 1, 1, ["Reciclar", "Forjar"], 0 if recycle else 1, font=self._font_sm)
-        w0 = f.tiles_for(["Reciclar"], 3, self._font_sm)
-        w1 = f.tiles_for(["Forjar"], 3, self._font_sm)
-        self._hit("bs:tab:0", f, T, T, (1 + w0) * T, 2 * T)
-        self._hit("bs:tab:1", f, (1 + w0) * T, T, (1 + w0 + w1) * T, 2 * T)
+        # Abas das funções do NPC (Missões/Negociar/Reciclar/Forjar —
+        # ui/npc_interaction.py::service_tabs). Reciclar↔Forjar troca aqui
+        # mesmo; as outras fecham esta janela e pedem a do System dono.
+        tab = None if ctx_open else service_tabs(
+            f, self.world, self.player_entity, self._bs_eid, "recycle" if recycle else "forge",
+            self._font_sm, self._hit_rects)
         f.divider_v(lay["div_x"], 2 * T, (th - 1) * T)
 
         if recycle:
@@ -536,12 +498,16 @@ class BlacksmithSystem(UIScaleMixin, System):
             self._post_draw()
             self._post_draw = None
 
-        if tab == 0 and not recycle:
+        if tab == "recycle":
             self._state = self.STATE_RECYCLE
             self._reset_recycle()
-        elif tab == 1 and recycle:
+        elif tab == "forge":
             self._state = self.STATE_FORGE
             self._reset_forge()
+        elif tab is not None:
+            npc_eid = self._bs_eid
+            self._close()
+            open_npc_service(self.world, self.player_entity, npc_eid, tab)
 
     def _slot_tooltip(self, item) -> None:
         if item is None:
@@ -614,7 +580,7 @@ class BlacksmithSystem(UIScaleMixin, System):
         lw = lay["pw"]                     # até a barra de rolagem (última coluna)
         view_y0, view_h = 3 * T, self._LIST_ROWS * T
         content_h = max(1, len(known) * T)
-        off = f.scrollbar(self._frg_scroll, lay["tw"] - 1, 3, 3 + self._LIST_ROWS - 1,
+        off = f.scrollbar(self._frg_scroll, lay["sb_col"], 3, 3 + self._LIST_ROWS - 1,
                           max(0, content_h - view_h))
         in_view = view_y0 <= f.ry < view_y0 + view_h and px <= f.rx < px + lw
         fc = f.child(pygame.Surface((lw, content_h), pygame.SRCALPHA),
