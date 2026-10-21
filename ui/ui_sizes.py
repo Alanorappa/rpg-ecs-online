@@ -49,13 +49,10 @@ class UI:
     TALENTS_W, TALENTS_H          = 800, 640   # árvore de talentos (tecla T)
     SKILL_LEVELS_W, SKILL_LEVELS_H = 700, 560  # painel de Skill Level (tecla L) — nível+xp do personagem + 11 trilhas, read-only
     CHAR_STATS_W, CHAR_STATS_H    = 460, 560   # modal de estatísticas do personagem (tecla C), read-only
-    TRADE_W, TRADE_H              = 440, 450   # janela de trade (player↔player) — bag própria + 2 colunas de oferta
     CHAT_W, CHAT_H                = 380, 220   # janela de chat (canto inferior esquerdo) — abas Local/Mundial/Combate
     # Modal de interação com player (clique direito em player amigável —
     # substituiu o shift+clique/"Trade", 16/07/2026): Negociar/Duelar/Seguir/
     # Convidar p/ Grupo (4º botão, 17/07/2026).
-    TRADE_POPUP_W, TRADE_POPUP_H  = 140, 172
-    TRADE_INVITE_W, TRADE_INVITE_H = 360, 150  # modal "Fulano quer negociar"
     ARENA_RESULT_W, ARENA_RESULT_H = 380, 290  # modal de fim de partida da Arena (placar + "Sair da Arena")
     ARENA_ACCEPT_W, ARENA_ACCEPT_H = 320, 170  # modal "Partida encontrada!" (aceite, 21/07/2026)
     # modal unificado de fila (Fase H + Battleground) — lista de modos:
@@ -89,9 +86,6 @@ class UI:
 
     # ── Trade (player↔player) — geometria interna ──────────────────────────
     # Arquivo: client/trade_handlers.py
-    TRADE_PAD      = 14   # respiro entre a borda do painel e o conteúdo
-    TRADE_SLOT_SZ  = 56   # tamanho de cada slot de oferta (5 por lado)
-    TRADE_SLOT_GAP = 8    # espaço entre slots vizinhos de oferta
 
     # ── Correio — geometria interna ─────────────────────────────────────
     # Arquivo: ui/mail_system.py
@@ -273,8 +267,6 @@ class UI:
     SKILL_LEVELS_OFFSET_Y = 0
     CHAR_STATS_OFFSET_X = 0
     CHAR_STATS_OFFSET_Y = 0
-    TRADE_OFFSET_X        = 0
-    TRADE_OFFSET_Y        = 0
     CHAT_OFFSET_X         = 0
     CHAT_OFFSET_Y         = 0
     MENU_QUIT_CONFIRM_OFFSET_X = 0

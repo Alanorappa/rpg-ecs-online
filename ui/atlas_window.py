@@ -447,3 +447,48 @@ def quantity_window(screen, events, state: dict, *, area: pygame.Rect, press: Pr
         hits["qty:+"] = pygame.Rect(f.px + col_r * T * S, f.py + 3 * T * S, T * S, T * S)
     f.end(title)
     return result
+
+
+# ── Aviso com botões (convites, confirmações) ────────────────────────────────
+
+def prompt(screen, events, *, area: pygame.Rect, press: PressState, font, message: str,
+           buttons: list, title: str = "", small_font=None, max_text_tiles: int = 24,
+           hits: "dict | None" = None, hit_prefix: str = "prompt") -> "int | None":
+    """Janela escura pequena com `message` (quebra de linha automática) e
+    botões "altos" (1 = centralizado; 2 = nas pontas; mais = distribuídos).
+    Devolve o índice do botão disparado (no SOLTAR) ou None. `hits`
+    (opcional) recebe "{hit_prefix}:{i}" → rect de TELA (testes)."""
+    mfont = small_font or font
+    bw = tiles_for(font, buttons, 3)
+    msg_tiles = min(max_text_tiles, tiles_for(mfont, [message], 1))
+    lines = wrap_text(message, (msg_tiles * T - 2 * TEXT_PAD) * S, mfont)
+    title_tiles = tiles_for(font, [title], 1) if title else 0
+    n = len(buttons)
+    tw = max(msg_tiles + 2, title_tiles + 2, n * bw + (n + 1))
+    lh = math.ceil(mfont.get_linesize() / S)
+    text_top = 2 * T if title else T + 4
+    text_rows = math.ceil((text_top + len(lines) * lh + 6) / T)
+    th = text_rows + 3
+    f = Frame(screen, events, tw, th, area=area, press=press, font=font, style="dark")
+    y = text_top
+    for line in lines:
+        f.text(line, tw * T / 2, y, TEXT_COL, mfont, anchor="midtop")
+        y += lh
+    if n == 1:
+        cols = [(tw - bw) // 2]
+    elif n == 2:
+        cols = [1, tw - 1 - bw]
+    else:
+        gap = (tw - n * bw) / (n + 1)
+        cols = [round(gap + i * (bw + gap)) for i in range(n)]
+    by = th - 3
+    ay0, ay1 = ui_atlas.button_art_y(True)
+    fired = None
+    for i, (label, col) in enumerate(zip(buttons, cols)):
+        if f.button(f"{hit_prefix}:{i}", col, by, bw, label):
+            fired = i
+        if hits is not None:
+            hits[f"{hit_prefix}:{i}"] = pygame.Rect(f.px + col * T * S, f.py + (by * T + ay0) * S,
+                                                     bw * T * S, (ay1 - ay0) * S)
+    f.end(title)
+    return fired

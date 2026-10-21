@@ -19,7 +19,7 @@ plano/ARQUITETURA_ONLINE.md).
 """
 import pygame
 
-from ui.ui_sizes import UI
+from ui import atlas_window as aw
 from ui.sound_manager import SOUNDS
 
 
@@ -119,58 +119,31 @@ class PartyHandlers:
             from shared.messages import MsgType
             self._net.send(MsgType.PARTY_KICK, {"target_eid": target_server_eid})
 
-    # ── Modal de convite (espelho do _draw_duel_ui) ───────────────────────────
-
-    def _party_invite_button_rects(self):
-        SW, SH = self.screen.get_size()
-        w, h = self._u(UI.TRADE_INVITE_W), self._u(UI.TRADE_INVITE_H)
-        x0, y0 = (SW - w) // 2, (SH - h) // 2
-        btn_w = (w - self._u(30)) // 2
-        accept_r  = pygame.Rect(x0 + self._u(10), y0 + h - self._u(48), btn_w, self._u(36))
-        decline_r = pygame.Rect(x0 + w - btn_w - self._u(10), y0 + h - self._u(48), btn_w, self._u(36))
-        return pygame.Rect(x0, y0, w, h), accept_r, decline_r
+    # ── Modal de convite (atlas_window.prompt — mesmo do trade/duelo) ───────
+    # Ações no SOLTAR, dentro do desenho; com o convite aberto,
+    # _handle_party_click só "segura" o clique (modal bloqueante).
 
     def _draw_party_invite_ui(self) -> None:
         if self._party_invite_from is None:
             return
-        rect, accept_r, decline_r = self._party_invite_button_rects()
-        SW, SH = self.screen.get_size()
-        overlay = pygame.Surface((SW, SH), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 140))
-        self.screen.blit(overlay, (0, 0))
-        pygame.draw.rect(self.screen, (24, 26, 20), rect, border_radius=8)
-        pygame.draw.rect(self.screen, (150, 160, 90), rect, 2, border_radius=8)
-        msg = f"{self._party_invite_from[1]} te convidou pro grupo!"
-        msg_s = self.font_md.render(msg, False, (225, 230, 200))
-        self.screen.blit(msg_s, (rect.x + (rect.w - msg_s.get_width()) // 2,
-                                 rect.y + self._u(30)))
-        pygame.draw.rect(self.screen, (50, 90, 50), accept_r, border_radius=5)
-        pygame.draw.rect(self.screen, (90, 50, 50), decline_r, border_radius=5)
-        a_s = self.font_sm.render("Aceitar", False, (220, 240, 220))
-        d_s = self.font_sm.render("Recusar", False, (240, 220, 220))
-        self.screen.blit(a_s, (accept_r.centerx - a_s.get_width() // 2,
-                               accept_r.centery - a_s.get_height() // 2))
-        self.screen.blit(d_s, (decline_r.centerx - d_s.get_width() // 2,
-                               decline_r.centery - d_s.get_height() // 2))
+        self._party_hits = {}
+        fired = aw.prompt(self.screen, getattr(self, "_ui_events", []), area=self._mm_safe_area(),
+                          press=self._trade_press, font=self.font_md,
+                          message=f"{self._party_invite_from[1]} te convidou pro grupo!",
+                          buttons=["Aceitar", "Recusar"], hits=self._party_hits, hit_prefix="party")
+        if fired is None:
+            return
+        from shared.messages import MsgType
+        if self._net:
+            self._net.send(MsgType.PARTY_ACCEPT if fired == 0 else MsgType.PARTY_DECLINE, {})
+        self._party_invite_from_val = None
+        SOUNDS.play_ui("button_click")
 
     def _handle_party_click(self, event) -> bool:
         """True = clique consumido pela UI de grupo (convite ou frame)."""
         if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
             return False
         if self._party_invite_from is not None:
-            _, accept_r, decline_r = self._party_invite_button_rects()
-            from shared.messages import MsgType
-            mx, my = event.pos
-            if accept_r.collidepoint(mx, my):
-                if self._net:
-                    self._net.send(MsgType.PARTY_ACCEPT, {})
-                self._party_invite_from_val = None
-                SOUNDS.play_ui("button_click")
-            elif decline_r.collidepoint(mx, my):
-                if self._net:
-                    self._net.send(MsgType.PARTY_DECLINE, {})
-                self._party_invite_from_val = None
-                SOUNDS.play_ui("button_click")
             return True   # modal é bloqueante: consome qualquer clique
 
         return self._click_party_frame(event)
