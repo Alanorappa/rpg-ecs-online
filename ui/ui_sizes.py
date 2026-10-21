@@ -42,7 +42,6 @@ class UI:
     TRAINER_W, TRAINER_H         = 640, 480   # modal de treinamento de skills (trainer NPC)
     RANKING_W, RANKING_H         = 720, 560   # modal de Ranking Geral (tecla K)
     RANKING_SIDEBAR_W            = 180        # coluna esquerda de categorias
-    LOOT_MODAL_W                  = 260        # janela de loot (clique direito em corpo) — altura é dinâmica (TITLE_H + nº de linhas)
     QUEST_DIALOG_W, QUEST_DIALOG_H     = 480, 400  # diálogo de aceitar/entregar quest (NPC com !/?)
     # Recompensa de item no diálogo de entrega (23/07/2026, pedido do usuário)
     QUEST_JOURNAL_W, QUEST_JOURNAL_H   = 700, 520  # diário de quests (tecla J)
@@ -103,8 +102,7 @@ class UI:
     CHAT_TAB_H     = 22   # altura da linha de abas
     CHAT_INPUT_H   = 22   # altura do campo de digitação (oculto na aba Combate)
     CHAT_LINE_H    = 16   # altura de cada linha de texto na área de mensagens
-    CHAT_SCROLL_W  = 8    # largura da barra de rolagem — igual LOOT_SCROLL_W
-    CRAFTING_BAG_COLS  = 5     # quantos slots cabem por linha na grade (contagem, não pixel)
+    CHAT_SCROLL_W  = 8    # largura da barra de rolagem — igual    CRAFTING_BAG_COLS  = 5     # quantos slots cabem por linha na grade (contagem, não pixel)
     CRAFTING_ITEM_SLOT = 64    # tamanho do slot "item a reciclar" / "resultado da receita" (painel esquerdo)
     CRAFTING_MAT_SZ    = 46    # tamanho de cada slot de material exigido pela receita (painel esquerdo)
 
@@ -121,12 +119,6 @@ class UI:
     # Arquivo: systems.py (classe LootSystem). Esse modal NÃO é centralizado
     # na tela — ele aparece ANCORADO perto do corpo clicado (com clamp pra
     # não passar da borda da tela). Ver nota de POSIÇÃO no topo do arquivo.
-    LOOT_ROW_H    = 46   # altura de cada linha de item dentro do corpo
-    LOOT_ICON_S   = 36   # tamanho do ícone do item em cada linha
-    LOOT_TITLE_H  = 28   # altura da barra de título (nome do corpo + botão fechar)
-    LOOT_MAX_ROWS = 5    # quantas linhas ficam visíveis antes de precisar rolar (contagem)
-    LOOT_PAD      = 8    # respiro entre a borda do modal e o conteúdo
-    LOOT_SCROLL_W = 8    # largura da barrinha de scroll quando há mais itens que LOOT_MAX_ROWS
 
     # ── Quests — geometria interna ───────────────────────────────────────────
     # Arquivo: quest_system.py (3 classes: tracker no HUD, diálogo, diário)

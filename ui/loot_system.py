@@ -6,14 +6,16 @@ ui/systems.py (18/09/2026, ver PROBLEMAS_ARQUITETURA.md §185, item #2
 do backlog de 14).
 """
 from __future__ import annotations
+import math
 import pygame
 # TODO(B4): _font é usado apenas em sistemas visuais (HUD, FloatingText). O servidor
 # importa `from systems import EnemyAISystem` e acaba carregando Pygame fonts pelo
 # caminho. Funciona com SDL_VIDEODRIVER=dummy, mas é dependência desnecessária.
 # Fix futuro: mover sistemas visuais para ClientSystems ou usar lazy import em render().
 from ui.fonts import make as _font
+from ui import atlas_window as aw
+from ui import ui_atlas
 from ui.ui_scale_mixin import UIScaleMixin
-from ui.ui_sizes import UI
 
 # Re-exporta apply_effect de core_systems para compatibilidade com todo o código
 # que já faz `from systems import apply_effect`.
@@ -36,7 +38,7 @@ from engine.utils import get_camera_offset
 from ui.combat_log import LOG
 from ui.sound_manager import SOUNDS
 from ui.icon_manager import ICONS
-from ui.ui_helpers import item_tooltip_lines, fill_surf
+from ui.ui_helpers import item_tooltip_lines
 from content.item_table import RARITY_COLORS as _SHARED_RARITY_COLORS
 from engine.quest_events import fire as quest_fire
 from engine.stat_fns import add_modifier, remove_modifier
@@ -63,6 +65,11 @@ from engine.world_systems import System, EnemyAISystem, is_tile_walkable
 from ui.click_rect_helpers import _corpse_click_rect, _live_target_at_world_pos
 
 
+# Ícone de moeda do modal de loot, por (tamanho, fonte) — ver _coin_icon.
+_COIN_ICON_CACHE: dict = {}
+_COIN_ICON_CACHE_MAX = 8
+
+
 class LootSystem(UIScaleMixin, System):
     """
     Detecta clique direito em cadáveres e exibe modal de loot.
@@ -71,22 +78,12 @@ class LootSystem(UIScaleMixin, System):
     Shift + hover → painel de comparação com item equipado no mesmo slot.
     """
 
-    _FONT_BASES = {"font_sm": 20, "font_md": 24}
+    _FONT_BASES = {"font_xs": 15, "font_sm": 20, "font_md": 24}
 
-    # Layout do modal em lista vertical (tamanho fixo) — ui_sizes.py (UI.LOOT_*)
-    MODAL_W   = UI.LOOT_MODAL_W    # largura fixa do modal
-    ROW_H     = UI.LOOT_ROW_H      # altura de cada linha (ícone + texto)
-    ICON_S    = UI.LOOT_ICON_S     # tamanho do ícone dentro da linha
-    MAX_ROWS  = UI.LOOT_MAX_ROWS   # linhas visíveis (scroll se houver mais)
-    PAD       = UI.LOOT_PAD
-    TITLE_H   = UI.LOOT_TITLE_H
-    SCROLL_W  = UI.LOOT_SCROLL_W   # largura da barra de rolagem
-    MODAL_H   = TITLE_H + MAX_ROWS * (ROW_H + PAD // 2) + PAD  # altura fixa
-
-    # Cores
-    BG_COLOR     = (20, 14, 8, 220)
-    BORDER_COLOR = (140, 100, 60)
-    HOVER_COLOR  = (60, 45, 20)
+    # Modal no atlas de UI (21/10/2026): janela escura com barra de título
+    # e X, lista rolável (slot + nome) — ui/atlas_window.py.
+    MAX_ROWS  = 5        # linhas visíveis (rola se houver mais)
+    ROW_H     = 18       # px RAW por linha (slot de 16 + folga)
 
     # Fonte única em content/item_table.py (achado 06 do benchmark
     # arquitetural, PROBLEMAS_ARQUITETURA.md §12/§13).
@@ -115,10 +112,16 @@ class LootSystem(UIScaleMixin, System):
         # 17/07/2026). fn(local_corpse_eid: int) -> None.
         self._online_loot_requester = None
         self._online_loot_pending: set = set()  # local_corpse_eid com request em voo
-        self._modal_x       = 0   # posição X do modal (definida ao abrir)
-        self._modal_y       = 0   # posição Y do modal
-        self._scroll_offset = 0   # índice da primeira linha visível
+        self._anchor        = (0, 0)  # ponto de tela perto do qual o modal abre
         self._pending_cursor = (0, 0)  # cursor quando o loot foi solicitado
+        # Atlas: botão afundado, rolagem, eventos do frame (guardados em
+        # update, consumidos em render), rect de tela do modal desenhado e
+        # rects clicáveis (testes).
+        self._press = aw.PressState()
+        self._scroll = aw.ScrollState()
+        self._frame_events: list = []
+        self._modal_screen_rect = pygame.Rect(0, 0, 0, 0)
+        self._hit_rects: dict = {}
 
     def set_online_loot_requester(self, fn) -> None:
         """GameEngine chama isto (só em modo online) com
@@ -208,40 +211,19 @@ class LootSystem(UIScaleMixin, System):
                         ax, ay = self._pending_cursor
                         self._open_modal(corpse_id, ax, ay)
 
+        # Ações dentro do modal (pegar = esquerdo, equipar = direito, X,
+        # rolagem) agem no SOLTAR, em render(); aqui só o clique direito no
+        # MUNDO (abrir outro cadáver) e o clique fora do modal (fecha).
+        self._frame_events = list(events)
         for event in events:
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                mx, my = event.pos
-
-                if event.button == 3:
-                    if self.open_corpse_id != -1 and self._point_in_modal(mx, my):
-                        # Clique direito dentro do modal aberto → equipa item
-                        self._try_equip_item(mx, my)
-                    else:
-                        # Clique direito fora → tenta abrir cadáver
-                        self._pending_cursor = (mx, my)
-                        self._try_open_corpse(mx, my)
-
-                elif event.button == 1:  # clique esquerdo → tenta pegar item
-                    if self.open_corpse_id != -1:
-                        modal = self._modal_rect()
-                        if self._close_btn_rect(modal).collidepoint(mx, my):
-                            self._close_modal()
-                        else:
-                            taken = self._try_take_item(mx, my)
-                            if not taken:
-                                # Clique fora do modal → fecha
-                                if not self._point_in_modal(mx, my):
-                                    self._close_modal()
-
-            elif event.type == pygame.MOUSEWHEEL:
-                if self.open_corpse_id != -1:
-                    modal_r = self._modal_rect()
-                    if modal_r.collidepoint(pygame.mouse.get_pos()):
-                        corpse = self.world.get_component(self.open_corpse_id, Corpse)
-                        if corpse:
-                            total = (1 if corpse.coins > 0 else 0) + len(corpse.loot)
-                            max_scroll = max(0, total - self.MAX_ROWS)
-                            self._scroll_offset = max(0, min(self._scroll_offset - event.y, max_scroll))
+            if event.type != pygame.MOUSEBUTTONDOWN:
+                continue
+            in_modal = self.open_corpse_id != -1 and self._point_in_modal(*event.pos)
+            if event.button == 3 and not in_modal:
+                self._pending_cursor = event.pos
+                self._try_open_corpse(*event.pos)
+            elif event.button == 1 and self.open_corpse_id != -1 and not in_modal:
+                self._close_modal()
 
     def _get_camera_offset(self):
         return get_camera_offset(self.world, self.world_surf.get_width(), self.world_surf.get_height())
@@ -338,216 +320,172 @@ class LootSystem(UIScaleMixin, System):
         self._open_modal(entity_id, mx, my)
 
     def _open_modal(self, entity_id: int, ax: int, ay: int) -> None:
-        """Abre o modal ancorado próximo ao ponto (ax, ay), clamped à tela."""
+        """Abre o modal perto do ponto de tela (ax, ay) — posição final
+        (presa à tela) é calculada no render, a partir do tamanho real."""
         self.open_corpse_id = entity_id
-        self._scroll_offset = 0
-        self._set_panel_scale(self.MODAL_W, self.MODAL_H)
-        sw, sh = self.hud_surf.get_size()
-        modal_w = self._u(self.MODAL_W)
-        modal_h = self._u(self.MODAL_H)
-        x = max(4, min(ax + 16, sw - modal_w - 4))
-        y = max(4, min(ay - self._u(self.TITLE_H), sh - modal_h - 4))
-        self._modal_x, self._modal_y = x, y
-
-    def _modal_rect(self) -> pygame.Rect:
-        """Tamanho sempre fixo — não depende do conteúdo."""
-        self._set_panel_scale(self.MODAL_W, self.MODAL_H)
-        return pygame.Rect(self._modal_x, self._modal_y, self._u(self.MODAL_W), self._u(self.MODAL_H))
-
-    def _close_btn_rect(self, modal: pygame.Rect) -> pygame.Rect:
-        """Botão X no canto superior direito da barra de título."""
-        sz = self._u(self.TITLE_H) - self._u(6)
-        return pygame.Rect(modal.right - sz - self._u(4), modal.y + self._u(3), sz, sz)
-
-    def _row_rect(self, modal: pygame.Rect, row: int) -> pygame.Rect:
-        """Rect de uma linha da lista (row 0 = primeira linha)."""
-        y = modal.y + self._u(self.TITLE_H) + row * (self._u(self.ROW_H) + self._u(self.PAD) // 2)
-        return pygame.Rect(modal.x + self._u(self.PAD), y, self._u(self.MODAL_W) - self._u(self.PAD) * 2, self._u(self.ROW_H))
+        self._scroll = aw.ScrollState()
+        self._anchor = (ax, ay)
 
     def _point_in_modal(self, mx: int, my: int) -> bool:
-        return self._modal_rect().collidepoint(mx, my)
+        return self._modal_screen_rect.collidepoint(mx, my)
 
-    def _try_take_item(self, mx: int, my: int) -> bool:
+    def _virtual_rows(self, corpse) -> list:
+        """[("coin",)] se houver ouro + [("item", índice_no_loot)]."""
+        rows = [("coin",)] if corpse.coins > 0 else []
+        rows += [("item", i) for i in range(len(corpse.loot))]
+        return rows
+
+    def _try_take_item(self, vi: int) -> bool:
+        """Clique esquerdo na linha `vi` da lista (0 = ouro, se houver):
+        pega pro inventário. Online: manda LOOT_REQUEST e NÃO credita nada
+        localmente (crédito real só no LOOT_RESULT)."""
         corpse = self.world.get_component(self.open_corpse_id, Corpse)
         if not corpse:
             return False
+        rows = self._virtual_rows(corpse)
+        if not 0 <= vi < len(rows):
+            return False
+        if rows[vi][0] == "coin":
+            if self._try_send_online_loot_request("gold"):
+                return True
+            wallet = self.world.get_component(self.player_entity, Wallet)
+            if wallet:
+                wallet.gold += corpse.coins
+                LOG.add(f"+{corpse.coins} moedas coletadas!", (255, 215, 0))
+                corpse.coins = 0
+                SOUNDS.play_ui("loot_gold")
+                if self._on_loot_collected:
+                    self._on_loot_collected("gold")
+            self._check_auto_close(corpse)
+            return True
 
-        modal     = self._modal_rect()
-        has_coins = corpse.coins > 0
+        i = rows[vi][1]
+        item = corpse.loot[i]
+        if self._try_send_online_loot_request("item", item.item_id):
+            return True
+        inv = self.world.get_component(self.player_entity, Inventory)
+        if inv:
+            # Tenta empilhar em stack existente
+            stacked = False
+            if item.max_stack > 1:
+                for existing in inv.items:
+                    if existing is None:
+                        continue
+                    if existing.item_id == item.item_id and existing.stack < existing.max_stack:
+                        existing.stack += item.stack
+                        stacked = True
+                        break
+            _inv_full = False
+            if stacked:
+                corpse.loot.pop(i)
+            elif len(inv.items) < inv.max_slots:
+                inv.items.append(item)
+                corpse.loot.pop(i)
+            else:
+                LOG.add("Inventario cheio!", (255, 160, 0))
+                _inv_full = True
+            if not _inv_full:
+                col = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
+                LOG.add(f"Coletado: {item.name} ({item.rarity})", col)
+                SOUNDS.play_ui("loot_item")
+                quest_fire("collect_item", item_id=item.item_id)
+                if self._on_loot_collected:
+                    self._on_loot_collected("item")
+        self._check_auto_close(corpse)
+        return True
 
-        # Constrói a lista virtual de linhas considerando scroll
-        # Linha virtual 0 = moedas (se houver), depois itens
-        virtual_row = 0
-        screen_row  = 0  # linha visível (0 = primeira visível)
-
-        if has_coins:
-            if virtual_row >= self._scroll_offset and screen_row < self.MAX_ROWS:
-                if self._row_rect(modal, screen_row).collidepoint(mx, my):
-                    if self._try_send_online_loot_request("gold"):
-                        return True
-                    wallet = self.world.get_component(self.player_entity, Wallet)
-                    if wallet:
-                        wallet.gold += corpse.coins
-                        LOG.add(f"+{corpse.coins} moedas coletadas!", (255, 215, 0))
-                        corpse.coins = 0
-                        SOUNDS.play_ui("loot_gold")
-                        if self._on_loot_collected:
-                            self._on_loot_collected("gold")
-                    self._check_auto_close(corpse)
-                    return True
-                screen_row += 1
-            virtual_row += 1
-
-        for i, item in enumerate(corpse.loot):
-            if virtual_row >= self._scroll_offset and screen_row < self.MAX_ROWS:
-                if self._row_rect(modal, screen_row).collidepoint(mx, my):
-                    if self._try_send_online_loot_request("item", item.item_id):
-                        return True
-                    inv = self.world.get_component(self.player_entity, Inventory)
-                    if inv:
-                        # Tenta empilhar em stack existente
-                        stacked = False
-                        if item.max_stack > 1:
-                            for existing in inv.items:
-                                if existing is None:
-                                    continue
-                                if existing.item_id == item.item_id and existing.stack < existing.max_stack:
-                                    existing.stack += item.stack
-                                    stacked = True
-                                    break
-                        _inv_full = False
-                        if stacked:
-                            corpse.loot.pop(i)
-                        elif len(inv.items) < inv.max_slots:
-                            inv.items.append(item)
-                            corpse.loot.pop(i)
-                        else:
-                            LOG.add("Inventario cheio!", (255, 160, 0))
-                            _inv_full = True
-                        if not _inv_full:
-                            col = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
-                            LOG.add(f"Coletado: {item.name} ({item.rarity})", col)
-                            SOUNDS.play_ui("loot_item")
-                            quest_fire("collect_item", item_id=item.item_id)
-                            if self._on_loot_collected:
-                                self._on_loot_collected("item")
-                            # Corrige scroll se necessário
-                            total = (1 if corpse.coins > 0 else 0) + len(corpse.loot)
-                            self._scroll_offset = min(self._scroll_offset, max(0, total - self.MAX_ROWS))
-                    self._check_auto_close(corpse)
-                    return True
-                screen_row += 1
-            virtual_row += 1
-
-        return False
-
-    def _try_equip_item(self, mx: int, my: int) -> bool:
-        """Clique direito num item do loot: equipa diretamente, sem passar pelo inventário."""
+    def _try_equip_item(self, vi: int) -> bool:
+        """Clique direito na linha `vi`: equipa direto, sem passar pelo
+        inventário (ouro não é equipável)."""
         corpse = self.world.get_component(self.open_corpse_id, Corpse)
         if not corpse:
             return False
+        rows = self._virtual_rows(corpse)
+        if not 0 <= vi < len(rows) or rows[vi][0] != "item":
+            return False
+        i = rows[vi][1]
+        item = corpse.loot[i]
+        # Modo online: mesma proteção de _try_take_item — sem
+        # isso, equipar direto do loot creditava o item da
+        # cópia LOCAL do corpse sem checar com o servidor se
+        # outro membro do grupo já pegou (mesma classe de bug
+        # do ouro duplicado). Cai pro inventário (LOOT_RESULT),
+        # não equipa direto — trade-off aceitável por segurança.
+        if self._try_send_online_loot_request("item", item.item_id):
+            return True
+        equip        = self.world.get_component(self.player_entity, Equipment)
+        inv          = self.world.get_component(self.player_entity, Inventory)
+        combat_stats = self.world.get_component(self.player_entity, CombatStats)
 
-        modal     = self._modal_rect()
-        has_coins = corpse.coins > 0
-        virtual_row = 0
-        screen_row  = 0
+        if not (equip and combat_stats):
+            return False
 
-        # Pula linha de moedas (não é equipável)
-        if has_coins:
-            if virtual_row >= self._scroll_offset and screen_row < self.MAX_ROWS:
-                screen_row += 1
-            virtual_row += 1
+        target_slot = getattr(item, 'slot', None)
+        if target_slot is None or target_slot not in equip.slots:
+            # Item sem slot (consumível etc.) → vai para inventário
+            if inv and len(inv.items) < inv.max_slots:
+                inv.items.append(item)
+                corpse.loot.pop(i)
+                col = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
+                LOG.add(f"Coletado: {item.name} ({item.rarity})", col)
+                SOUNDS.play_ui("loot_item")
+                self._check_auto_close(corpse)
+            else:
+                LOG.add("Inventario cheio!", (255, 160, 0))
+            return True
 
-        for i, item in enumerate(corpse.loot):
-            if virtual_row >= self._scroll_offset and screen_row < self.MAX_ROWS:
-                if self._row_rect(modal, screen_row).collidepoint(mx, my):
-                    # Modo online: mesma proteção de _try_take_item — sem
-                    # isso, equipar direto do loot creditava o item da
-                    # cópia LOCAL do corpse sem checar com o servidor se
-                    # outro membro do grupo já pegou (mesma classe de bug
-                    # do ouro duplicado). Cai pro inventário (LOOT_RESULT),
-                    # não equipa direto — trade-off aceitável por segurança.
-                    if self._try_send_online_loot_request("item", item.item_id):
-                        return True
-                    equip        = self.world.get_component(self.player_entity, Equipment)
-                    inv          = self.world.get_component(self.player_entity, Inventory)
-                    combat_stats = self.world.get_component(self.player_entity, CombatStats)
-
-                    if not (equip and combat_stats):
-                        return False
-
-                    target_slot = getattr(item, 'slot', None)
-                    if target_slot is None or target_slot not in equip.slots:
-                        # Item sem slot (consumível etc.) → vai para inventário
-                        if inv and len(inv.items) < inv.max_slots:
-                            inv.items.append(item)
-                            corpse.loot.pop(i)
-                            col = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
-                            LOG.add(f"Coletado: {item.name} ({item.rarity})", col)
-                            SOUNDS.play_ui("loot_item")
-                            self._check_auto_close(corpse)
-                        else:
-                            LOG.add("Inventario cheio!", (255, 160, 0))
-                        return True
-
-                    # Restrição de armor_class por classe
-                    if getattr(item, "armor_class", "") and item.item_type == "armor":
-                        from engine.stats_system import CLASS_ARMOR_ALLOWED
-                        from engine.components import CharacterStats as _CST
-                        _char = self.world.get_component(self.player_entity, _CST)
-                        _allowed = CLASS_ARMOR_ALLOWED.get(_char.class_id if _char else "", frozenset())
-                        if item.armor_class not in _allowed:
-                            _names = {"placa": "Placa", "couro": "Couro", "tecido": "Tecido"}
-                            LOG.add(f"Sua classe não pode usar armadura de {_names.get(item.armor_class, item.armor_class)}.", (255, 100, 80))
-                            if inv and len(inv.items) < inv.max_slots:
-                                inv.items.append(item)
-                                corpse.loot.pop(i)
-                            return True
-
-                    # Arma de duas mãos → desequipa offhand
-                    if getattr(item, 'two_handed', False) and target_slot == "mainhand":
-                        old_oh = equip.slots.get("offhand")
-                        if old_oh and inv and len(inv.items) < inv.max_slots:
-                            for mod in old_oh.modifiers:
-                                remove_modifier(combat_stats, mod)
-                            inv.items.append(old_oh)
-                            equip.slots["offhand"] = None
-
-                    # Offhand bloqueado por arma de duas mãos
-                    if target_slot == "offhand" and equip.is_offhand_locked():
-                        LOG.add("Desequipe a arma de duas maos primeiro.", (255, 160, 0))
-                        return True
-
-                    # Devolve item já equipado ao inventário (se houver e houver espaço)
-                    old_item = equip.slots[target_slot]
-                    if old_item:
-                        if inv and len(inv.items) < inv.max_slots:
-                            for mod in old_item.modifiers:
-                                remove_modifier(combat_stats, mod)
-                            inv.items.append(old_item)
-                        else:
-                            LOG.add("Inventario cheio para trocar o item equipado!", (255, 160, 0))
-                            return True
-
-                    # Equipa o item do loot
-                    equip.slots[target_slot] = item
+        # Restrição de armor_class por classe
+        if getattr(item, "armor_class", "") and item.item_type == "armor":
+            from engine.stats_system import CLASS_ARMOR_ALLOWED
+            from engine.components import CharacterStats as _CST
+            _char = self.world.get_component(self.player_entity, _CST)
+            _allowed = CLASS_ARMOR_ALLOWED.get(_char.class_id if _char else "", frozenset())
+            if item.armor_class not in _allowed:
+                _names = {"placa": "Placa", "couro": "Couro", "tecido": "Tecido"}
+                LOG.add(f"Sua classe não pode usar armadura de {_names.get(item.armor_class, item.armor_class)}.", (255, 100, 80))
+                if inv and len(inv.items) < inv.max_slots:
+                    inv.items.append(item)
                     corpse.loot.pop(i)
-                    if target_slot == "mainhand" and getattr(item, "attack_speed", 0.0) > 0:
-                        combat_stats.base_attack_interval = item.attack_speed
-                    for mod in item.modifiers:
-                        add_modifier(combat_stats, mod)
-                    col = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
-                    LOG.add(f"Equipado: {item.name} ({item.rarity})", col)
-                    SOUNDS.play_ui("equip_item")
-                    quest_fire("equip_item", item_id=item.item_id, item_type=item.item_type)
-                    total = (1 if corpse.coins > 0 else 0) + len(corpse.loot)
-                    self._scroll_offset = min(self._scroll_offset, max(0, total - self.MAX_ROWS))
-                    self._check_auto_close(corpse)
-                    return True
-                screen_row += 1
-            virtual_row += 1
+                return True
 
-        return False
+        # Arma de duas mãos → desequipa offhand
+        if getattr(item, 'two_handed', False) and target_slot == "mainhand":
+            old_oh = equip.slots.get("offhand")
+            if old_oh and inv and len(inv.items) < inv.max_slots:
+                for mod in old_oh.modifiers:
+                    remove_modifier(combat_stats, mod)
+                inv.items.append(old_oh)
+                equip.slots["offhand"] = None
+
+        # Offhand bloqueado por arma de duas mãos
+        if target_slot == "offhand" and equip.is_offhand_locked():
+            LOG.add("Desequipe a arma de duas maos primeiro.", (255, 160, 0))
+            return True
+
+        # Devolve item já equipado ao inventário (se houver e houver espaço)
+        old_item = equip.slots[target_slot]
+        if old_item:
+            if inv and len(inv.items) < inv.max_slots:
+                for mod in old_item.modifiers:
+                    remove_modifier(combat_stats, mod)
+                inv.items.append(old_item)
+            else:
+                LOG.add("Inventario cheio para trocar o item equipado!", (255, 160, 0))
+                return True
+
+        # Equipa o item do loot
+        equip.slots[target_slot] = item
+        corpse.loot.pop(i)
+        if target_slot == "mainhand" and getattr(item, "attack_speed", 0.0) > 0:
+            combat_stats.base_attack_interval = item.attack_speed
+        for mod in item.modifiers:
+            add_modifier(combat_stats, mod)
+        col = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
+        LOG.add(f"Equipado: {item.name} ({item.rarity})", col)
+        SOUNDS.play_ui("equip_item")
+        quest_fire("equip_item", item_id=item.item_id, item_type=item.item_type)
+        self._check_auto_close(corpse)
+        return True
 
     def _check_auto_close(self, corpse) -> None:
         """Fecha o modal automaticamente se o cadáver estiver vazio."""
@@ -625,143 +563,118 @@ class LootSystem(UIScaleMixin, System):
                                 (int(draw_x - 10), int(draw_y - 6), 20, 12), 1)
 
     def render(self, camera_offset_x: float = 0, camera_offset_y: float = 0) -> None:
-        """Renderiza apenas o modal de loot (chamado por cima de tudo)."""
+        """Modal de loot (atlas de UI) — chamado por cima de tudo."""
+        events, self._frame_events = self._frame_events, []
         self.pending_tooltip = None
-
+        self._hit_rects = {}
         if self.open_corpse_id == -1:
+            self._modal_screen_rect = pygame.Rect(0, 0, 0, 0)
             return
         corpse = self.world.get_component(self.open_corpse_id, Corpse)
         if not corpse:
             return
-        _char_loot  = self.world.get_component(self.player_entity, CharacterStats)
-        _viewer_cls = _char_loot.class_id if _char_loot else None
+        T, S = aw.T, aw.S
+        char = self.world.get_component(self.player_entity, CharacterStats)
+        viewer_cls = char.class_id if char else None
+        rows = self._virtual_rows(corpse)
 
-        modal = self._modal_rect()
-        self.hud_surf.blit(fill_surf((modal.w, modal.h), self.BG_COLOR), modal.topleft)
-        pygame.draw.rect(self.hud_surf, self.BORDER_COLOR, modal, 2, border_radius=4)
+        def _label(row):
+            if row[0] == "coin":
+                return f"{corpse.coins} moedas"
+            it = corpse.loot[row[1]]
+            return f"{it.name} x{it.stack}" if getattr(it, "max_stack", 1) > 1 else it.name
 
-        # --- Barra de título ---
-        title = self.font_sm.render("Loot", False, self.BORDER_COLOR)
-        self.hud_surf.blit(title, (modal.x + self._u(self.PAD), modal.y + (self._u(self.TITLE_H) - title.get_height()) // 2))
-
-        # Botão X
-        close_r = self._close_btn_rect(modal)
-        pygame.draw.rect(self.hud_surf, (90, 30, 30), close_r, border_radius=2)
-        x_surf = self.font_sm.render("X", False, (220, 100, 100))
-        self.hud_surf.blit(x_surf, (close_r.centerx - x_surf.get_width() // 2,
-                                  close_r.centery - x_surf.get_height() // 2))
-
+        labels = [_label(r) for r in rows] or ["(vazio)"]
+        text_w = max(self.font_sm.size(l)[0] for l in labels) / S
+        list_w = 2 + T + 4 + text_w + 4                       # px RAW
+        list_cols = max(6, math.ceil(list_w / T))
+        tw = 1 + list_cols + 1 + 1                            # borda | lista | rolagem | borda
+        view_rows = max(1, min(len(rows), self.MAX_ROWS))
+        th = 2 + math.ceil(view_rows * self.ROW_H / T) + 1
+        sw, sh = self.hud_surf.get_size()
+        pw, ph = tw * T * S, th * T * S
+        ax, ay = self._anchor
+        x = max(4, min(ax + 16, sw - pw - 4))
+        y = max(4, min(ay - T * S, sh - ph - 4))
+        f = aw.Frame(self.hud_surf, events, tw, th, area=pygame.Rect(x, y, pw, ph), press=self._press,
+                     font=self.font_md, raw=ui_atlas.titled_dark_window_raw(tw, th), overlay=False)
+        self._modal_screen_rect = pygame.Rect(f.px, f.py, f.pw, f.ph)
         mx, my = pygame.mouse.get_pos()
-        has_coins = corpse.coins > 0
+        f.text("Loot", (tw - 1) * T / 2, aw.TITLE_BAR_Y, (240, 228, 200), self.font_sm)
+        close = f.close_button("loot:close", tw - 1)
+        self._hit_rects["loot:close"] = pygame.Rect(f.px + (tw - 1) * T * S, f.py, T * S, T * S)
 
-        # Lista virtual: [("coin",) se has_coins] + [("item", item) ...]
-        virtual: list = []
-        if has_coins:
-            virtual.append(("coin",))
-        for item in corpse.loot:
-            virtual.append(("item", item))
-
-        total = len(virtual)
-
-        # --- Barra de rolagem (se necessário) ---
-        need_scroll = total > self.MAX_ROWS
-        scroll_w = self._u(self.SCROLL_W)
-        row_w = self._u(self.MODAL_W) - self._u(self.PAD) * 2 - (scroll_w + self._u(4) if need_scroll else 0)
-
-        if need_scroll:
-            # Trilho
-            track_x = modal.right - scroll_w - self._u(4)
-            track_y = modal.y + self._u(self.TITLE_H) + self._u(self.PAD) // 2
-            track_h = self.MAX_ROWS * (self._u(self.ROW_H) + self._u(self.PAD) // 2) - self._u(self.PAD) // 2
-            pygame.draw.rect(self.hud_surf, (40, 30, 18),
-                             (track_x, track_y, scroll_w, track_h), border_radius=3)
-            # Thumb
-            thumb_h = max(20, track_h * self.MAX_ROWS // total)
-            max_scroll = total - self.MAX_ROWS
-            thumb_y = track_y + (track_h - thumb_h) * self._scroll_offset // max(1, max_scroll)
-            pygame.draw.rect(self.hud_surf, (130, 100, 55),
-                             (track_x, thumb_y, scroll_w, thumb_h), border_radius=3)
-
-        # --- Renderiza linhas visíveis ---
-        visible = virtual[self._scroll_offset: self._scroll_offset + self.MAX_ROWS]
-        hovered_item = None
-
-        for screen_row, entry in enumerate(visible):
-            # Rect da linha (largura ajustada se há scrollbar)
-            base_rr = self._row_rect(modal, screen_row)
-            rr = pygame.Rect(base_rr.x, base_rr.y, row_w, base_rr.h)
-            hovered = rr.collidepoint(mx, my)
-
-            if entry[0] == "coin":
-                # --- Linha de moedas ---
-                icon_s = self._u(self.ICON_S)
-                pygame.draw.rect(self.hud_surf, (70, 55, 15) if hovered else (28, 20, 8), rr, border_radius=3)
-                pygame.draw.rect(self.hud_surf, (200, 170, 50) if hovered else (100, 80, 20), rr, 1, border_radius=3)
-                icon_r = pygame.Rect(rr.x + self._u(4), rr.centery - icon_s // 2, icon_s, icon_s)
-                r_out = icon_s // 2
-                r_in  = max(1, r_out - self._u(4))
-                pygame.draw.circle(self.hud_surf, (180, 140, 0),  icon_r.center, r_out)
-                pygame.draw.circle(self.hud_surf, (255, 215, 0),  icon_r.center, r_in)
-                pygame.draw.circle(self.hud_surf, (120, 90, 0),   icon_r.center, r_out, 1)
-                g_surf = self.font_sm.render("G", False, (120, 90, 0))
-                self.hud_surf.blit(g_surf, (icon_r.centerx - g_surf.get_width() // 2,
-                                          icon_r.centery - g_surf.get_height() // 2))
-                tx = icon_r.right + self._u(8)
-                ty = rr.centery - self.font_md.get_height() // 2
-                self.hud_surf.blit(self.font_md.render(f"{corpse.coins} moedas", False, (255, 215, 0)), (tx, ty))
-                if hovered:
+        view_y0, view_h = int(1.5 * T), view_rows * self.ROW_H
+        content_h = max(1, len(rows) * self.ROW_H)
+        off = f.scrollbar(self._scroll, tw - 2, 1, th - 2, max(0, content_h - view_h), step=self.ROW_H)
+        lw = list_cols * T
+        in_view = view_y0 <= f.ry < view_y0 + view_h and T <= f.rx < T + lw
+        fc = f.child(pygame.Surface((lw, content_h), pygame.SRCALPHA),
+                     f.ry - view_y0 + off if in_view else -10_000)
+        fc.rx = f.rx - T
+        ip = aw.slot_icon_px()
+        take = equip = None
+        for vi, row in enumerate(rows):
+            y = vi * self.ROW_H + 1
+            if row[0] == "coin":
+                icon = self._coin_icon(ip)
+                color = (255, 215, 0)
+            else:
+                it = corpse.loot[row[1]]
+                icon = ICONS.get(ICONS.item_key(it), ip)
+                color = self.RARITY_COLORS.get(it.rarity, (200, 200, 200))
+            fc.slot(f"loot:{vi}", 2, y, icon, dark=True)
+            fc.text(labels[vi], 2 + T + 4, y + T / 2, color, self.font_sm, anchor="midleft")
+            ry = view_y0 + y - 1 - off
+            if view_y0 <= ry + 1 and ry + 1 + T <= view_y0 + view_h:
+                self._hit_rects[f"loot:{vi}"] = pygame.Rect(f.px + T * S, f.py + ry * S, lw * S, self.ROW_H * S)
+            if fc.hover(0, y - 1, lw, y - 1 + self.ROW_H):
+                if fc.press(f"loot:row:{vi}", 0, y - 1, lw, y - 1 + self.ROW_H)[1]:
+                    take = vi
+                if fc.rreleased:
+                    equip = vi
+                if row[0] == "coin":
                     self.pending_tooltip = (mx, my, "Moedas",
                                             [(f"{corpse.coins} moedas disponíveis", (255, 215, 0)),
                                              ("Clique p/ coletar tudo", (140, 140, 140))])
-
-            else:
-                # --- Linha de item ---
-                item = entry[1]
-                icon_s = self._u(self.ICON_S)
-                bg_col = self.HOVER_COLOR if hovered else (28, 20, 8)
-                pygame.draw.rect(self.hud_surf, bg_col, rr, border_radius=3)
-
-                icon_r = pygame.Rect(rr.x + self._u(4), rr.centery - icon_s // 2, icon_s, icon_s)
-                icon_surf = ICONS.get(ICONS.item_key(item), icon_s)
-                if icon_surf:
-                    self.hud_surf.blit(icon_surf, icon_r)
                 else:
-                    fb = self.RARITY_COLORS.get(item.rarity, (100, 100, 100))
-                    pygame.draw.rect(self.hud_surf, fb, icon_r, border_radius=2)
-                from ui.ui_helpers import draw_stack_count as _dsc2
-                _dsc2(self.hud_surf, item, icon_r, self.font_sm)
+                    lines = item_tooltip_lines(it, viewer_cls)
+                    lines.append(("Clique p/ pegar | Dir. p/ equipar | Shift p/ comparar", (140, 140, 140)))
+                    eq = self.world.get_component(self.player_entity, Equipment)
+                    self.pending_tooltip = (mx, my, it.name, lines, color, it,
+                                            eq.slots.get(it.slot) if eq else None)
+        if not rows:
+            fc.text("(vazio)", 4, T / 2, (120, 100, 80), self.font_sm, anchor="midleft")
 
-                rc = self.RARITY_COLORS.get(item.rarity, (200, 200, 200))
-                tx = icon_r.right + self._u(8)
-                _stack = getattr(item, "stack", 1)
-                _max_s = getattr(item, "max_stack", 1)
-                _name_lbl = f"{item.name} x{_stack}" if _max_s > 1 else item.name
-                name_surf = self.font_md.render(_name_lbl, False, rc)
-                sub_surf  = self.font_sm.render(f"{item.item_type}  •  {item.slot}", False, (130, 115, 95))
-                total_h   = name_surf.get_height() + 2 + sub_surf.get_height()
-                ty = rr.centery - total_h // 2
-                self.hud_surf.blit(name_surf, (tx, ty))
-                self.hud_surf.blit(sub_surf,  (tx, ty + name_surf.get_height() + 2))
+        f.end()
+        content = ui_atlas.scale_up(fc.raw)
+        aw.draw_texts(content, fc.texts, self.font_sm)
+        aw.draw_overlays(content, fc.overlays)
+        view = content.subsurface((0, off * S, content.get_width(),
+                                   max(0, min(view_h, content_h - off)) * S))
+        self.hud_surf.blit(view, (f.px + T * S, f.py + view_y0 * S))
 
-                border_col = (180, 140, 60) if hovered else (55, 40, 22)
-                pygame.draw.rect(self.hud_surf, border_col, rr, 1, border_radius=3)
+        if close:
+            self._close_modal()
+        elif take is not None:
+            self._try_take_item(take)
+        elif equip is not None:
+            self._try_equip_item(equip)
 
-                if hovered:
-                    hovered_item = item
-
-        # Vazio
-        if not virtual:
-            empty = self.font_sm.render("(vazio)", False, (120, 100, 80))
-            rr = self._row_rect(modal, 0)
-            self.hud_surf.blit(empty, (rr.x + self._u(4), rr.centery - empty.get_height() // 2))
-
-        # Tooltip + comparação no hover
-        if hovered_item is not None:
-            lines = item_tooltip_lines(hovered_item, _viewer_cls)
-            lines.append(("Clique p/ pegar | Shift p/ comparar", (140, 140, 140)))
-            equip = self.world.get_component(self.player_entity, Equipment)
-            equipped_item = equip.slots.get(hovered_item.slot) if equip else None
-            name_col = self.RARITY_COLORS.get(hovered_item.rarity, (255, 220, 100))
-            self.pending_tooltip = (mx, my, hovered_item.name, lines, name_col,
-                                    hovered_item, equipped_item)
-
+    def _coin_icon(self, size: int) -> pygame.Surface:
+        """Moeda desenhada (sem ícone no atlas): círculo dourado com "G".
+        Cache de MÓDULO com teto (`_COIN_ICON_CACHE`), nunca dict no corpo
+        da classe."""
+        key = (size, id(self.font_xs))
+        surf = _COIN_ICON_CACHE.get(key)
+        if surf is None:
+            surf = pygame.Surface((size, size), pygame.SRCALPHA)
+            c, r = (size // 2, size // 2), size // 2 - 2
+            pygame.draw.circle(surf, (180, 140, 0), c, r)
+            pygame.draw.circle(surf, (255, 215, 0), c, max(1, r - 3))
+            g = self.font_xs.render("G", False, (120, 90, 0))
+            surf.blit(g, g.get_rect(center=c))
+            if len(_COIN_ICON_CACHE) >= _COIN_ICON_CACHE_MAX:
+                _COIN_ICON_CACHE.clear()   # troca de escala de UI recria fontes
+            _COIN_ICON_CACHE[key] = surf
+        return surf

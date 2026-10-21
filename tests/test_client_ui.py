@@ -616,16 +616,12 @@ def _make_harvestable_loot_world():
 
 def _click_gold_row(loot_system, corpse_eid) -> bool:
     loot_system._open_modal(corpse_eid, 50, 50)
-    modal = loot_system._modal_rect()
-    row = loot_system._row_rect(modal, 0)   # linha 0 = ouro
-    return loot_system._try_take_item(row.centerx, row.centery)
+    return loot_system._try_take_item(0)   # linha 0 = ouro
 
 
 def _click_row(loot_system, corpse_eid, row_index: int) -> bool:
     loot_system._open_modal(corpse_eid, 50, 50)
-    modal = loot_system._modal_rect()
-    row = loot_system._row_rect(modal, row_index)
-    return loot_system._try_take_item(row.centerx, row.centery)
+    return loot_system._try_take_item(row_index)
 
 
 def test_online_loot_request_nao_credita_localmente():
