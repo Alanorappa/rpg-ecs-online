@@ -72,14 +72,18 @@ def test_botao_largo_repete_o_tile_do_meio():
     raw = pygame.Surface((5 * T, 2 * T), pygame.SRCALPHA)
     ui_atlas.blit_button(raw, 0, 0, 5)
     c0, r0 = ui_atlas._BTN_IDLE_COL0, ui_atlas._BTN_ROW_TALL
-    for k in range(2):
-        left = raw.subsurface((0, k * T, T, T)).copy()
-        assert _same(left, _atlas_tile_bytes((c0, r0 + k)))
+    # 2ª linha do botão alto: só a altura da arte é copiada (abaixo dela, na
+    # mesma linha do atlas, ficam outras peças — molduras da hotbar).
+    for k, h in ((0, T), (1, ui_atlas._BTN_ART_Y_TALL[1] - T)):
+        def tile(c):
+            return ui_atlas._load().subsurface((c * T, (r0 + k) * T, T, h)).copy()
+        left = raw.subsurface((0, k * T, T, h)).copy()
+        assert _same(left, tile(c0))
         for i in (1, 2, 3):
-            mid = raw.subsurface((i * T, k * T, T, T)).copy()
-            assert _same(mid, _atlas_tile_bytes((c0 + 1, r0 + k)))
-        right = raw.subsurface((4 * T, k * T, T, T)).copy()
-        assert _same(right, _atlas_tile_bytes((c0 + 2, r0 + k)))
+            mid = raw.subsurface((i * T, k * T, T, h)).copy()
+            assert _same(mid, tile(c0 + 1))
+        right = raw.subsurface((4 * T, k * T, T, h)).copy()
+        assert _same(right, tile(c0 + 2))
 
 
 # ── client/menu_handlers.py::_draw_sound_submenu ─────────────────────────

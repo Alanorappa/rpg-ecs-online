@@ -6689,3 +6689,19 @@ campo de nome da criação), menu de pausa (Sim/Não, Voltar, seletor),
 editor de atalhos, menu de player da troca, menu Deletar do ferreiro. O
 aviso de excluir personagem também passou a agrupar os 2 botões no
 centro (antes nas pontas).
+
+## 99. Atlas reorganizado: botões do menu desenhados com pedaços errados + ícones do minimapa altos (21/10/2026)
+
+Relatado pelo usuário com print: o usuário mudou peças de lugar no atlas
+(botões subiram 2 linhas: "baixo" 9→7, "alto" 10-11→8-9) e o código
+continuava lendo as linhas antigas — menu de pausa com faixas vermelhas
+deslocadas do texto. Corrigido em `ui_atlas._BTN_ROW_SHORT/_TALL`. Ao
+corrigir apareceu um risco abaixo do botão alto: na mesma linha de tiles
+(9), logo abaixo da arte, agora ficam as bordas de cima das molduras da
+hotbar (y 158) — `blit_button` passou a copiar a 2ª linha só até o fim da
+arte. Mesma rodada: fileira de ícones do minimapa estava 2px RAW mais alta
+que no esboço (`exemplo_minimapa.png`, medido pixel a pixel) —
+`MINIMAP_ICON_DY` 10→8, e o ícone das espadas ganhou o ajuste fino de 1px
+que o esboço tem. Teste novo `tests/test_hud_atlas.py::
+test_pecas_do_atlas_estao_onde_o_codigo_espera` acusa sozinho quando uma
+peça usada pelo código não tem mais arte na região declarada.

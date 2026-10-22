@@ -127,7 +127,8 @@ class Minimap(UIScaleMixin):
             self.screen.blit(circle, rect.topleft)
             on = bool(lit[i]) if i < len(lit) else False
             icon = self._scaled(ui_atlas.minimap_icon_raw(i, on), ("icon", i, on))
-            self.screen.blit(icon, rect.topleft)
+            nx, ny = ui_atlas.MINIMAP_ICON_NUDGE.get(i, (0, 0))
+            self.screen.blit(icon, (rect.x + nx * ui_atlas.SCALE, rect.y + ny * ui_atlas.SCALE))
 
     def __init__(self, screen: pygame.Surface, map_overlay) -> None:
         self.screen       = screen

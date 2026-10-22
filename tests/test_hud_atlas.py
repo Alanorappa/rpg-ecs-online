@@ -94,3 +94,27 @@ def test_icone_consumido_age_no_soltar():
     assert fx._handle_minimap_icon_event(up) is True and fx.calls == ["inv"]
     away = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(5, 5))
     assert fx._handle_minimap_icon_event(away) is False
+
+
+def test_pecas_do_atlas_estao_onde_o_codigo_espera():
+    """Usuário reorganiza o atlas de tempos em tempos (21/10/2026: botões
+    subiram 2 linhas e o menu desenhou pedaços errados). Cada peça usada
+    precisa ter arte (pixels opacos) exatamente na região declarada."""
+    atlas = ui_atlas._load()
+    T = ui_atlas.TILE
+
+    def opaque(x, y, w, h):
+        return sum(1 for yy in range(y, y + h) for xx in range(x, x + w) if atlas.get_at((xx, yy))[3] > 0)
+
+    for row, (y0, y1) in ((ui_atlas._BTN_ROW_SHORT, ui_atlas._BTN_ART_Y_SHORT),
+                          (ui_atlas._BTN_ROW_TALL, ui_atlas._BTN_ART_Y_TALL)):
+        for col0 in (ui_atlas._BTN_IDLE_COL0, ui_atlas._BTN_PRESSED_COL0):
+            x = col0 * T
+            assert opaque(x, row * T + y0, 3 * T, y1 - y0) > 3 * T * (y1 - y0) * 0.6, (row, col0)
+    for rect in (ui_atlas.HUD_SKILL_FRAME, ui_atlas.HUD_CONS_FRAME, ui_atlas.MINIMAP_FRAME,
+                 ui_atlas.MINIMAP_ICON_CIRCLE, ui_atlas.PORTRAIT):
+        assert opaque(*rect) > 0, rect
+    for i in range(ui_atlas.MINIMAP_ICON_COUNT):
+        for lit in (False, True):
+            ic = ui_atlas.minimap_icon_raw(i, lit)
+            assert any(ic.get_at((x, y))[3] for x in range(16) for y in range(16)), (i, lit)

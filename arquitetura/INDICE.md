@@ -328,3 +328,4 @@
 - [21/10/2026] (bug) Texto do botão Desfazer encostado nas bordas; regra BTN_PAD/button_tiles no kit — tags: ui, atlas, botao — HISTORICO_BUGS.md §97
 - [21/10/2026] (bug) Botões centralizados com // 2 ficavam meio tile à esquerda — tags: ui, atlas, botao, centralizar — HISTORICO_BUGS.md §98
 - [21/10/2026] (feature) HUD no atlas: moldura do minimapa com nome e ícones, retrato com rosto e barras, molduras da hotbar — tags: ui, atlas, hud, minimapa, retrato, hotbar — HISTORICO_FEATURES.md §75
+- [21/10/2026] (bug) Atlas reorganizado: botões lidos das linhas antigas; ícones do minimapa 2px altos — tags: ui, atlas, botao, minimapa — HISTORICO_BUGS.md §99

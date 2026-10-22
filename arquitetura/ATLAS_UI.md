@@ -50,8 +50,8 @@ segura, botão no soltar, campo, seletor, barra de rolagem): `ui/atlas_window.py
 
 | Elemento | Tiles | Constante | Uso |
 |---|---|---|---|
-| Botão "baixo" (1 linha) | idle (6..8, 9) · pressionado (9..11, 9) | `blit_button(tall=False)` | Botões em lista empilhada (menu principal), linhas de lista. Arte em y 1..15. |
-| Botão "alto" (2 linhas) | idle (6..8, 10..11) · pressionado (9..11, 10..11) | `blit_button(tall=True)` | Botão solto entre linhas (Voltar). Arte em y 10..24 do bloco de 32px. |
+| Botão "baixo" (1 linha) | idle (6..8, 7) · pressionado (9..11, 7) | `blit_button(tall=False)` | Botões em lista empilhada (menu principal), linhas de lista. Arte em y 1..15. |
+| Botão "alto" (2 linhas) | idle (6..8, 8..9) · pressionado (9..11, 8..9) | `blit_button(tall=True)` | Botão solto entre linhas (Voltar). Arte em y 10..24 do bloco de 32px — a 2ª linha só é copiada até o fim da arte (abaixo dela ficam as molduras da hotbar). |
 
 Ponta esquerda / meio (repetível) / ponta direita nas 3 colunas de cada bloco.
 
@@ -121,7 +121,7 @@ inteira desloca meio tile quando a sobra é ímpar; HISTORICO_BUGS.md §98).
 |---|---|---|---|
 | Retrato | (0,208) 88x32 | `PORTRAIT` | Anel + faixa com 3 ranhuras (Vida/recurso/XP), desenhado em 3x; ranhuras medidas por `portrait_grooves()`. |
 | Moldura do minimapa | (96,192) 48x50 | `MINIMAP_FRAME` | Barra do nome embutida no topo; cresce por `stretch_raw` (coluna 24 / linha 28 repetidas). |
-| Círculo dos ícones | (168,232) 16x19 | `MINIMAP_ICON_CIRCLE` | Fundo de cada ícone; topo = base da moldura − 10. |
+| Círculo dos ícones | (168,232) 16x19 | `MINIMAP_ICON_CIRCLE` | Fundo de cada ícone; célula no topo = altura da moldura − 8 (círculo 4px acima da linha de baixo, medido no esboço). Ícone na mesma célula; espadas com ajuste fino `MINIMAP_ICON_NUDGE`. |
 | Ícones do minimapa | (168,168) / (168,200) | `MINIMAP_ICON_ROWS` | 5 células de 16px: apagados / acesos (bolsa, espadas, engrenagem, pessoa, troféu). |
 | Moldura slot habilidade | (78,158) 20x20 | `HUD_SKILL_FRAME` | Cinza, borda 2px; montada em 36x36 (ícone 32). |
 | Moldura slot consumível | (110,158) 20x20 | `HUD_CONS_FRAME` | Oliva, idem. |

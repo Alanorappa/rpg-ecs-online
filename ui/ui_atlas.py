@@ -140,14 +140,14 @@ SLIDER_FILL_BAR_W = 3
 # Botão: 3 colunas (ponta esq., meio repetível, ponta dir.), idle nas
 # colunas 6-8 e pressionado nas 9-11. Duas cópias da mesma arte no
 # atlas, que só diferem no encaixe vertical na grade:
-#  - "baixo" (1 linha, linha 9 do atlas): arte em y=1..15 do tile —
+#  - "baixo" (1 linha, linha 7 do atlas): arte em y=1..15 do tile —
 #    preenche exatamente 1 linha da janela (lista empilhada do menu).
-#  - "alto" (2 linhas, linhas 10-11): arte em y=10..24 dos 32px —
+#  - "alto" (2 linhas, linhas 8-9): arte em y=10..24 dos 32px —
 #    fica "entre" 2 linhas da janela (botão solto, ex: Voltar).
 _BTN_IDLE_COL0    = 6
 _BTN_PRESSED_COL0 = 9
-_BTN_ROW_SHORT    = 9
-_BTN_ROW_TALL     = 10
+_BTN_ROW_SHORT    = 7    # atlas reorganizado pelo usuário em 21/10/2026 (era 9)
+_BTN_ROW_TALL     = 8    # (era 10)
 _BTN_ART_Y_SHORT  = (1, 16)
 _BTN_ART_Y_TALL   = (10, 25)
 
@@ -309,7 +309,8 @@ MINIMAP_ICON_CIRCLE = (168, 232, 16, 19) # círculo de fundo (célula com o cír
 MINIMAP_ICON_ROWS = (168, 200)           # y das fileiras de ícones: apagados / acesos
 MINIMAP_ICON_X0   = 168                  # x da 1ª célula de ícone (5 células de 16px)
 MINIMAP_ICON_COUNT = 5
-MINIMAP_ICON_DY   = 10                   # topo da célula do círculo = base da moldura − 10 (encaixe do atlas)
+MINIMAP_ICON_NUDGE = {1: (-1, 1)}       # ajuste fino por ícone (px RAW) medido no esboço — espadas 1px pra esquerda/baixo
+MINIMAP_ICON_DY   = 8                    # topo da célula do círculo = altura da moldura − 8 (círculo começa 4px acima da linha de baixo — medido no esboço exemplo_minimapa.png)
 PORTRAIT          = (0, 208, 88, 32)     # anel do retrato + faixa com 3 ranhuras
 PORTRAIT_FACE     = (16, 16, 10)         # centro x/y e raio da abertura do anel, px RAW na peça
 PORTRAIT_SCALE    = 3                    # retrato desenhado em 3x (decisão do usuário: ranhuras legíveis)
@@ -498,10 +499,16 @@ def blit_button(dst: "pygame.Surface", tx: int, ty: int, width_tiles: int,
     col0 = _BTN_PRESSED_COL0 if pressed else _BTN_IDLE_COL0
     row0, rows = (_BTN_ROW_TALL, 2) if tall else (_BTN_ROW_SHORT, 1)
     w = max(2, width_tiles)
+    # Botão alto: a 2ª linha só é copiada até o fim da arte — logo abaixo,
+    # na mesma linha de tiles do atlas, ficam as molduras da hotbar (y 158).
+    last_h = (_BTN_ART_Y_TALL[1] - TILE) if tall else TILE
+    atlas = _load()
     for i in range(w):
         col = col0 if i == 0 else (col0 + 2 if i == w - 1 else col0 + 1)
         for k in range(rows):
-            blit_tile(dst, (col, row0 + k), tx + i, ty + k)
+            h = last_h if k == rows - 1 else TILE
+            dst.blit(atlas, ((tx + i) * TILE, (ty + k) * TILE),
+                     (col * TILE, (row0 + k) * TILE, TILE, h))
 
 
 def blit_text_field(dst: "pygame.Surface", tx: int, ty: int, width_tiles: int) -> None:
