@@ -37,27 +37,9 @@ class HudHandlers:
             coord_surf = self.font_sm.render(coord_txt, False, (180, 180, 180))
             self.screen.blit(coord_surf, (self.screen.get_width() - coord_surf.get_width() - self._u(10), self._u(10)))
 
-        # --- Retrato (atlas, 3x): rosto + Vida / recurso / XP nas ranhuras ---
+        # --- Retrato (atlas, 3x): busto + Vida / recurso / XP nas ranhuras
+        #     (+ pinos de munição embaixo da faixa, só arqueiro) ---
         y = self._draw_portrait(combat_stats, char_stats)
-        bar_w = self._u(UI.HUD_BAR_W)
-        bar_h = self._u(UI.HUD_BAR_H)
-
-        # --- Aljava do arqueiro (fora do retrato — 3ª ranhura é a XP) ---
-        if char_stats and char_stats.class_id == "arqueiro":
-            from engine.components import Equipment as _EqHUD
-            _eq_hud = self.world.get_component(self.player_entity, _EqHUD)
-            _quiver = _eq_hud.slots.get("offhand") if _eq_hud else None
-            if _quiver and getattr(_quiver, "item_type", "") == "quiver":
-                _arrow_ratio = max(0.0, min(1.0, _quiver.arrow_count / max(1, _quiver.max_arrows)))
-                pygame.draw.rect(self.screen, (40, 30, 10),  (self._u(10), y, bar_w, bar_h))
-                pygame.draw.rect(self.screen, (200, 160, 60), (self._u(10), y, int(bar_w * _arrow_ratio), bar_h))
-                arrow_surf = self.font_sm.render(
-                    f"Aljava {_quiver.arrow_count}/{_quiver.max_arrows}", False, C_WHITE)
-                self.screen.blit(arrow_surf, (self._u(14), y))
-            else:
-                no_q_surf = self.font_sm.render("Sem aljava", False, (180, 130, 50))
-                self.screen.blit(no_q_surf, (self._u(14), y))
-            y += self._u(18)
 
         # --- Ataque CD ---
         if combat_stats.attack_cooldown_timer > 0:
@@ -198,30 +180,57 @@ class HudHandlers:
         vals.append(("xp", "Experiência", cs.current_xp, cs.xp_to_next_level))
         return vals
 
-    def _portrait_face(self, cs, r: int) -> "pygame.Surface | None":
-        """Rosto: quadrado 2r x 2r recortado da cabeça do frame idle de
-        frente, com máscara redonda (cabe na abertura do anel)."""
+    def _portrait_face(self, cs) -> "pygame.Surface | None":
+        """Busto do personagem já recortado na abertura do anel (camada do
+        tamanho da peça do retrato). Sem animação: 1º frame do idle de
+        frente (pedido do usuário). Cabeça centralizada na abertura pelo
+        próprio desenho do frame (colunas da cabeça), topo da cabeça a
+        PORTRAIT_BUST_TOP px do topo da abertura — mostra o que couber do
+        busto."""
         if cs is None:
             return None
+        key = ("bust", cs.class_id)
+        layer = self._portrait_cache.get(key)
+        if layer is not None:
+            return layer
         from engine.character_animation import get_character_frame
-        frame = get_character_frame(cs.class_id, "idle", "down", pygame.time.get_ticks())
+        from ui import ui_atlas
+        frame = get_character_frame(cs.class_id, "idle", "down", 0)
         if frame is None:
             return None
-        key = ("face", id(frame), r)
-        face = self._portrait_cache.get(key)
-        if face is None:
-            fw, fh = frame.get_size()
-            cx, cy = fw // 2, fh // 2 - fh // 8          # cabeça: um pouco acima do centro do frame
-            src = pygame.Rect(cx - r, cy - r, 2 * r, 2 * r).clip(frame.get_rect())
-            face = pygame.Surface((2 * r, 2 * r), pygame.SRCALPHA)
-            face.blit(frame, (0, 0), src)
-            mask = pygame.Surface((2 * r, 2 * r), pygame.SRCALPHA)
-            pygame.draw.circle(mask, (255, 255, 255, 255), (r, r), r)
-            face.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
-            if len(self._portrait_cache) > 64:
-                self._portrait_cache.clear()
-            self._portrait_cache[key] = face
-        return face
+        fw, fh = frame.get_size()
+        rows = [y for y in range(fh) if any(frame.get_at((x, y))[3] for x in range(fw))]
+        if not rows:
+            return None
+        head_top = rows[0]
+        head_cols = [x for x in range(fw)
+                     if any(frame.get_at((x, y))[3] for y in range(head_top, min(fh, head_top + 12)))]
+        head_cx = (head_cols[0] + head_cols[-1] + 1) / 2
+        mask = ui_atlas.portrait_opening_mask()
+        mb = mask.get_bounding_rect()
+        layer = pygame.Surface(mask.get_size(), pygame.SRCALPHA)
+        layer.blit(frame, (round(mb.centerx - head_cx), mb.top + ui_atlas.PORTRAIT_BUST_TOP - head_top))
+        layer.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+        self._portrait_cache[key] = layer
+        return layer
+
+    def _portrait_ammo(self, cs) -> "tuple | None":
+        """(pinos, flechas, máximo) da aljava do arqueiro; None pra outras
+        classes. Pinos = proporção da aljava × PORTRAIT_AMMO_MAX (não é a
+        contagem exata — pedido do usuário)."""
+        if cs is None or cs.class_id != "arqueiro":
+            return None
+        from engine.components import Equipment as _EqAmmo
+        from ui import ui_atlas
+        eq = self.world.get_component(self.player_entity, _EqAmmo)
+        quiver = eq.slots.get("offhand") if eq else None
+        if not quiver or getattr(quiver, "item_type", "") != "quiver":
+            return (0, 0, 0)
+        ratio = max(0.0, min(1.0, quiver.arrow_count / max(1, quiver.max_arrows)))
+        pins = round(ratio * ui_atlas.PORTRAIT_AMMO_MAX)
+        if pins == 0 and quiver.arrow_count > 0:
+            pins = 1      # ainda tem flecha: nunca mostra a aljava vazia
+        return (pins, quiver.arrow_count, quiver.max_arrows)
 
     def _draw_portrait(self, combat_stats, cs) -> int:
         """Desenha o retrato no canto superior esquerdo; devolve o y logo
@@ -235,20 +244,24 @@ class HudHandlers:
         vals = self._portrait_values(combat_stats, cs)
         fills = tuple(round(g[2] * max(0.0, min(1.0, cur / max(1, mx))))
                       for g, (_k, _l, cur, mx) in zip(grooves, vals))
-        fcx, fcy, fr = ui_atlas.PORTRAIT_FACE
-        face = self._portrait_face(cs, fr)
-        key = ("portrait", fills, tuple(k for k, *_ in vals), id(face))
+        face = self._portrait_face(cs)
+        ammo = self._portrait_ammo(cs)
+        key = ("portrait", fills, tuple(k for k, *_ in vals), id(face), ammo[0] if ammo else None)
         cached = self._portrait_cache.get("portrait")
         if cached is None or cached[0] != key:
-            raw = pygame.Surface((w, h), pygame.SRCALPHA)
+            raw = piece.copy()                      # já traz o fundo do círculo
             if face is not None:
-                raw.blit(face, (fcx - fr, fcy - fr))
-            raw.blit(piece, (0, 0))
+                raw.blit(face, (0, 0))              # busto só dentro da abertura do anel
             for (gx, gy, gw, gh), (ck, *_), fw in zip(grooves, vals, fills):
                 if fw > 0:
                     top, base = self._PORTRAIT_FILL[ck]
                     raw.fill(top, (gx, gy, fw, 1))
                     raw.fill(base, (gx, gy + 1, fw, gh - 1))
+            if ammo and ammo[0] > 0:
+                pin = ui_atlas.piece_raw(ui_atlas.PORTRAIT_AMMO_PIN)
+                px0, py0 = ui_atlas.PORTRAIT_AMMO_POS
+                for i in range(ammo[0]):
+                    raw.blit(pin, (px0 + i * ui_atlas.PORTRAIT_AMMO_STEP, py0))
             cached = (key, pygame.transform.scale(raw, (w * K, h * K)))
             self._portrait_cache["portrait"] = cached
         self.screen.blit(cached[1], (x0, y0))
@@ -271,6 +284,13 @@ class HudHandlers:
                     if _rate > 0:
                         lines.append((f"+{_rate:.0f}/s", (200, 200, 200)))
                 self._pending_tooltip = (mx_, my_, f"{label}: {cur}/{mx}", lines)
+        if ammo is not None:
+            px0, py0 = ui_atlas.PORTRAIT_AMMO_POS
+            pw = (ui_atlas.PORTRAIT_AMMO_MAX - 1) * ui_atlas.PORTRAIT_AMMO_STEP + ui_atlas.PORTRAIT_AMMO_PIN[2]
+            hit = pygame.Rect(x0 + px0 * K, y0 + py0 * K, pw * K, ui_atlas.PORTRAIT_AMMO_PIN[3] * K)
+            if hit.collidepoint(mx_, my_):
+                title = f"Aljava: {ammo[1]}/{ammo[2]}" if ammo[2] else "Sem aljava"
+                self._pending_tooltip = (mx_, my_, title, [])
         return y0 + h * K + self._u(6)
 
     # ------------------------------------------------------------------

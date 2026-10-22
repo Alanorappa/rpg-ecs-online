@@ -312,8 +312,14 @@ MINIMAP_ICON_COUNT = 5
 MINIMAP_ICON_NUDGE = {1: (-1, 1)}       # ajuste fino por ícone (px RAW) medido no esboço — espadas 1px pra esquerda/baixo
 MINIMAP_ICON_DY   = 8                    # topo da célula do círculo = altura da moldura − 8 (círculo começa 4px acima da linha de baixo — medido no esboço exemplo_minimapa.png)
 PORTRAIT          = (0, 208, 88, 32)     # anel do retrato + faixa com 3 ranhuras
-PORTRAIT_FACE     = (16, 16, 10)         # centro x/y e raio da abertura do anel, px RAW na peça
+PORTRAIT_FACE     = (16, 16)             # um ponto DENTRO da abertura do anel (semente do preenchimento)
 PORTRAIT_SCALE    = 3                    # retrato desenhado em 3x (decisão do usuário: ranhuras legíveis)
+PORTRAIT_BUST_TOP = 2                    # px entre o topo da abertura e o topo da cabeça
+# Munição do arqueiro: "pinos" pendurados embaixo da faixa (exemplo_munição.png)
+PORTRAIT_AMMO_PIN  = (27, 249, 3, 5)     # 1 pino (contorno compartilhado com o vizinho)
+PORTRAIT_AMMO_POS  = (27, 25)            # 1º pino na peça do retrato (px RAW)
+PORTRAIT_AMMO_STEP = 2
+PORTRAIT_AMMO_MAX  = 18                  # aljava cheia = 18 pinos (proporcional, não a contagem exata)
 
 
 def piece_raw(rect: tuple) -> "pygame.Surface":
@@ -383,6 +389,35 @@ def portrait_grooves() -> list:
                 grooves.append(cur)
         _portrait_grooves = grooves[:3]
     return _portrait_grooves
+
+
+_portrait_opening: "pygame.Surface | None" = None
+
+
+def portrait_opening_mask() -> "pygame.Surface":
+    """Máscara (alpha 255 dentro) da abertura do anel do retrato: região
+    da cor de fundo do círculo ligada à semente PORTRAIT_FACE — medida do
+    próprio atlas (preenchimento), nunca um círculo fixo, pra o rosto
+    nunca cobrir a borda do anel."""
+    global _portrait_opening
+    if _portrait_opening is None:
+        src = piece_raw(PORTRAIT)
+        w, h = src.get_size()
+        sx, sy = PORTRAIT_FACE
+        bg = tuple(src.get_at((sx, sy)))
+        mask = pygame.Surface((w, h), pygame.SRCALPHA)
+        seen, stack = set(), [(sx, sy)]
+        while stack:
+            x, y = stack.pop()
+            if (x, y) in seen or not (0 <= x < w and 0 <= y < h):
+                continue
+            seen.add((x, y))
+            if tuple(src.get_at((x, y))) != bg:
+                continue
+            mask.set_at((x, y), (255, 255, 255, 255))
+            stack += [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]
+        _portrait_opening = mask
+    return _portrait_opening
 
 
 HUD_SLOT_RAW = 32 + 2 * HUD_SLOT_BORDER   # moldura de slot da hotbar: ícone 32x32 + borda (decisão do usuário)

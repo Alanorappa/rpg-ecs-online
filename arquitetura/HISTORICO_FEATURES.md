@@ -5889,3 +5889,26 @@ breve") / ranking; aceso = botão apertado OU janela aberta.
   buff bar 16px à esquerda do mapa.
 
 **Teste**: `tests/test_hud_atlas.py`. Validação em jogo pendente.
+
+## 76. Retrato: busto sem animação, fundo do anel e munição do arqueiro em pinos (22/10/2026)
+
+Retorno do usuário sobre §75: cabeça mal centralizada no retrato; sem
+animação (só o 1º frame do idle); mostrar o busto (o que couber no anel);
+fundo novo do círculo no atlas; elemento novo de munição (pino em
+(27,249), exemplo em `assets/content/exemplo_munição.png`).
+
+- Busto: `client/hud_handlers.py::_portrait_face` — 1º frame do idle de
+  frente, cabeça centralizada pela própria silhueta (colunas das 12
+  primeiras linhas), topo da cabeça a `PORTRAIT_BUST_TOP` do topo da
+  abertura; recortado pela máscara da abertura do anel
+  (`ui_atlas.portrait_opening_mask`, preenchimento a partir de
+  `PORTRAIT_FACE` sobre a cor de fundo do círculo — nunca cobre o anel).
+  Cacheado por classe (sem animação = 1 montagem só).
+- Munição (só arqueiro): pinos pendurados embaixo da faixa (posição/passo
+  medidos no exemplo: 1º em (27,25) da peça, de 2 em 2px, 18 = aljava
+  cheia). Quantidade PROPORCIONAL à aljava (`round(flechas/máx × 18)`,
+  mínimo 1 enquanto houver flecha); tooltip com o número exato ou "Sem
+  aljava". Substitui a barra de aljava antiga abaixo do retrato.
+
+**Teste**: `tests/test_hud_atlas.py` (abertura do anel, pinos
+proporcionais).

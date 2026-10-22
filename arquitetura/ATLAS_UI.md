@@ -119,7 +119,8 @@ inteira desloca meio tile quando a sobra é ímpar; HISTORICO_BUGS.md §98).
 
 | Peça | Atlas (px) | Constante | Uso |
 |---|---|---|---|
-| Retrato | (0,208) 88x32 | `PORTRAIT` | Anel + faixa com 3 ranhuras (Vida/recurso/XP), desenhado em 3x; ranhuras medidas por `portrait_grooves()`. |
+| Retrato | (0,208) 88x32 | `PORTRAIT` | Anel (com fundo) + faixa com 3 ranhuras (Vida/recurso/XP), desenhado em 3x; ranhuras por `portrait_grooves()`, abertura do anel por `portrait_opening_mask()`. |
+| Pino de munição | (27,249) 3x5 | `PORTRAIT_AMMO_PIN` | Arqueiro: pinos embaixo da faixa a partir de (27,25) da peça, passo 2px, 18 = aljava cheia (proporcional). |
 | Moldura do minimapa | (96,192) 48x50 | `MINIMAP_FRAME` | Barra do nome embutida no topo; cresce por `stretch_raw` (coluna 24 / linha 28 repetidas). |
 | Círculo dos ícones | (168,232) 16x19 | `MINIMAP_ICON_CIRCLE` | Fundo de cada ícone; célula no topo = altura da moldura − 8 (círculo 4px acima da linha de baixo, medido no esboço). Ícone na mesma célula; espadas com ajuste fino `MINIMAP_ICON_NUDGE`. |
 | Ícones do minimapa | (168,168) / (168,200) | `MINIMAP_ICON_ROWS` | 5 células de 16px: apagados / acesos (bolsa, espadas, engrenagem, pessoa, troféu). |

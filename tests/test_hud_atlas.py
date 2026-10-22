@@ -118,3 +118,39 @@ def test_pecas_do_atlas_estao_onde_o_codigo_espera():
         for lit in (False, True):
             ic = ui_atlas.minimap_icon_raw(i, lit)
             assert any(ic.get_at((x, y))[3] for x in range(16) for y in range(16)), (i, lit)
+
+
+def test_abertura_do_anel_nao_inclui_a_borda():
+    m = ui_atlas.portrait_opening_mask()
+    src = ui_atlas.piece_raw(ui_atlas.PORTRAIT)
+    bg = tuple(src.get_at(ui_atlas.PORTRAIT_FACE))
+    inside = [(x, y) for x in range(m.get_width()) for y in range(m.get_height()) if m.get_at((x, y))[3]]
+    assert len(inside) > 200                                   # abertura de ~20px de diâmetro
+    assert all(tuple(src.get_at(p)) == bg for p in inside)     # só o fundo do círculo, nunca o anel
+    assert max(x for x, _ in inside) < 27                      # não vaza pra faixa
+
+
+def test_pinos_de_municao_sao_proporcionais():
+    import client.hud_handlers as hh
+    from engine.world import World
+    from engine.components import CharacterStats, Equipment, Item
+
+    class _Fx(hh.HudHandlers):
+        def __init__(self, cls, arrows, max_arrows=40):
+            self.world = World()
+            self.player_entity = self.world.create_entity()
+            self.world.add_component(self.player_entity, CharacterStats(name="A", class_id=cls))
+            eq = Equipment()
+            if max_arrows:
+                q = Item("Aljava", "quiver", "offhand")
+                q.item_type, q.arrow_count, q.max_arrows = "quiver", arrows, max_arrows
+                eq.slots["offhand"] = q
+            self.world.add_component(self.player_entity, eq)
+
+    cs = lambda fx: fx.world.get_component(fx.player_entity, CharacterStats)
+    full = _Fx("arqueiro", 40); assert full._portrait_ammo(cs(full))[0] == ui_atlas.PORTRAIT_AMMO_MAX
+    half = _Fx("arqueiro", 20); assert half._portrait_ammo(cs(half))[0] == ui_atlas.PORTRAIT_AMMO_MAX // 2
+    one = _Fx("arqueiro", 1); assert one._portrait_ammo(cs(one))[0] == 1      # ainda tem flecha
+    empty = _Fx("arqueiro", 0); assert empty._portrait_ammo(cs(empty))[0] == 0
+    none = _Fx("arqueiro", 0, max_arrows=0); assert none._portrait_ammo(cs(none)) == (0, 0, 0)
+    mage = _Fx("mago", 10); assert mage._portrait_ammo(cs(mage)) is None
