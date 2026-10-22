@@ -44,7 +44,7 @@ class QuestSystem(UIScaleMixin, System):
     # (antes era um número fixo, 196, que tinha ficado desatualizado depois
     # que o minimapa cresceu de 120 pra 220px — corrigido junto da
     # centralização em ui_sizes.py).
-    HUD_MARGIN_TOP   = UI.MINIMAP_MARGIN_TOP + UI.MINIMAP_SIZE + 6
+    HUD_MARGIN_TOP   = UI.MINIMAP_MARGIN_TOP + UI.MINIMAP_SIZE + UI.MINIMAP_FOOTER + 6
 
     # Cores
     COL_TITLE  = (220, 200, 120)

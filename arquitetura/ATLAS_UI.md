@@ -114,3 +114,17 @@ rótulos)` com a MESMA fonte do Frame que desenha o botão.
 
 **Centralizar:** coluna = `(tw - largura) / 2` — NUNCA `// 2` (divisão
 inteira desloca meio tile quando a sobra é ímpar; HISTORICO_BUGS.md §98).
+
+## Peças do HUD (HISTORICO_FEATURES.md §75)
+
+| Peça | Atlas (px) | Constante | Uso |
+|---|---|---|---|
+| Retrato | (0,208) 88x32 | `PORTRAIT` | Anel + faixa com 3 ranhuras (Vida/recurso/XP), desenhado em 3x; ranhuras medidas por `portrait_grooves()`. |
+| Moldura do minimapa | (96,192) 48x50 | `MINIMAP_FRAME` | Barra do nome embutida no topo; cresce por `stretch_raw` (coluna 24 / linha 28 repetidas). |
+| Círculo dos ícones | (168,232) 16x19 | `MINIMAP_ICON_CIRCLE` | Fundo de cada ícone; topo = base da moldura − 10. |
+| Ícones do minimapa | (168,168) / (168,200) | `MINIMAP_ICON_ROWS` | 5 células de 16px: apagados / acesos (bolsa, espadas, engrenagem, pessoa, troféu). |
+| Moldura slot habilidade | (78,158) 20x20 | `HUD_SKILL_FRAME` | Cinza, borda 2px; montada em 36x36 (ícone 32). |
+| Moldura slot consumível | (110,158) 20x20 | `HUD_CONS_FRAME` | Oliva, idem. |
+
+`stretch_raw(rect, w, h, mid_x, mid_y)` = peça que muda de tamanho
+mantendo bordas e repetindo UMA coluna/linha do meio (nunca interpola).

@@ -327,3 +327,4 @@
 - [21/10/2026] (arch) Clique em janela aberta vazava pro mundo (NPC embaixo do cursor) — 2 listas de "modal aberto", unificadas no registro — tags: input, modal, npc, inventario, clique — PROBLEMAS_ARQUITETURA.md §294
 - [21/10/2026] (bug) Texto do botão Desfazer encostado nas bordas; regra BTN_PAD/button_tiles no kit — tags: ui, atlas, botao — HISTORICO_BUGS.md §97
 - [21/10/2026] (bug) Botões centralizados com // 2 ficavam meio tile à esquerda — tags: ui, atlas, botao, centralizar — HISTORICO_BUGS.md §98
+- [21/10/2026] (feature) HUD no atlas: moldura do minimapa com nome e ícones, retrato com rosto e barras, molduras da hotbar — tags: ui, atlas, hud, minimapa, retrato, hotbar — HISTORICO_FEATURES.md §75

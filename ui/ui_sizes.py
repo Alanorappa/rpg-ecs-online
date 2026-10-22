@@ -147,8 +147,9 @@ class UI:
     # Arquivo: minimap.py
     MINIMAP_SIZE         = 220   # tamanho (largura = altura) do quadrado do minimapa
     MINIMAP_RADIUS_TILES = 25    # quantos tiles ao redor do jogador o minimapa mostra — é uma CONTAGEM DE TILES, não pixel, por isso não muda com a Escala da UI
-    MINIMAP_MARGIN_RIGHT = 10    # distância do minimapa até a borda direita da tela
-    MINIMAP_MARGIN_TOP   = 68    # distância do minimapa até o topo da tela (abaixo do texto de zona/coordenadas)
+    MINIMAP_MARGIN_RIGHT = 18    # distância do MAPA até a borda direita da tela (a moldura do atlas ocupa 8px disso)
+    MINIMAP_MARGIN_TOP   = 68    # distância do MAPA até o topo da tela (a moldura com a barra do nome ocupa 12px acima)
+    MINIMAP_FOOTER       = 30    # espaço abaixo do mapa ocupado pela borda + fileira de ícones da moldura (21/10/2026)
 
     # ── Relógio de ciclo dia/noite (HUD, topo-centro, 23/09/2026) ───────────
     # Arquivo: ui/day_night_clock_hud.py. Único elemento de HUD no topo-
@@ -166,7 +167,7 @@ class UI:
     # de zona/coordenadas, client/hud_handlers.py) nem ABAIXO (já é o
     # tracker de quest, QuestSystem).
     BUFF_BAR_MARGIN_TOP     = MINIMAP_MARGIN_TOP  # alinhado ao topo do minimapa
-    BUFF_BAR_GAP_TO_MINIMAP = 8   # espaço entre a borda direita da buff bar e a borda esquerda do minimapa
+    BUFF_BAR_GAP_TO_MINIMAP = 16  # espaço entre a borda direita da buff bar e a borda esquerda do mapa (8px são a moldura)
     BUFF_BAR_ICON           = 32  # maior que o ícone de nameplate (16px, effect_animator.ICON_W) — pedido do usuário 01/09/2026
     BUFF_BAR_GAP            = 3   # espaço entre ícones — mesmo valor já usado em _build_effects_row
 

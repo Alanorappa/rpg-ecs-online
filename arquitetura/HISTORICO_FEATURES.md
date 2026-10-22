@@ -5851,3 +5851,41 @@ abas Reciclar/Forjar/Negociar, pedido de aba vindo de outra janela),
 primeiro com as abas das outras funções; aba Negociar abre a loja via
 componente), `tests/test_npc_service_unlock.py` (trava por quest via
 `npc_services`). Validação em jogo pendente.
+
+## 75. HUD no atlas: moldura do minimapa, retrato e molduras da hotbar (21/10/2026)
+
+Peças novas desenhadas pelo usuário no atlas (`ui/ui_atlas.py`, seção
+"Peças do HUD"), esboço em `assets/content/exemplo_minimapa.png`.
+Decisões do usuário: retrato com o ROSTO do personagem; ranhuras = Vida /
+recurso da classe / Experiência; retrato em 3x (ranhuras de 2px ficariam
+finas em 2x); slots da hotbar com ícone 32x32 (moldura montada repetindo
+o meio, igual aos slots de item); ícones do minimapa = inventário / PvP
+(F1) / menu / amigos (aba ainda não existe — por enquanto só avisa "em
+breve") / ranking; aceso = botão apertado OU janela aberta.
+
+- **Minimapa** (`ui/minimap.py`): moldura de madeira em volta do mapa
+  (`stretch_raw` — bordas intactas, coluna/linha do meio repetidas), barra
+  do topo com o nome da zona (ou do mapa), 5 ícones em círculos
+  encaixados na borda de baixo (célula de 16px do atlas: círculo e ícone
+  na mesma célula). Clique age no SOLTAR, o apertar é consumido (não vaza
+  pro mundo) — `client/hud_handlers.py::_handle_minimap_icon_event`;
+  tooltip com o nome/atalho. Nome do mapa/zona saiu do canto superior
+  direito (vai na barra); coordenadas só com debug (F12). Tecla I/K e os
+  ícones usam o mesmo `_toggle_inventory`/`_toggle_ranking`.
+- **Retrato** (`client/hud_handlers.py::_draw_portrait`): rosto recortado
+  da animação idle de frente (mesmo mecanismo do jogo) com máscara
+  redonda atrás do anel; ranhuras medidas do próprio atlas
+  (`ui_atlas.portrait_grooves`, nunca número fixo); nome + nível acima da
+  faixa; valores exatos no tooltip da ranhura (taxa de regen da
+  concentração também). Substitui nome/HP/recurso em texto; aljava do
+  arqueiro continua como barra separada logo abaixo.
+- **Hotbar e consumíveis** (`client/hotbar_handlers.py`,
+  `client/consumable_bar_handlers.py`): moldura cinza (habilidades) /
+  oliva (consumíveis) de `ui_atlas.hud_slot_frame`; slot de tamanho FIXO
+  do atlas (`HUD_SLOT_PX` = 72), nunca a escala de UI. Realce de estado
+  (proc pulsante, requer talento, arrasto) desenhado por dentro da moldura.
+- Ajustes de posição: margem direita do minimapa 18 (8px são a moldura),
+  tracker de quests abaixo da fileira de ícones (`UI.MINIMAP_FOOTER`),
+  buff bar 16px à esquerda do mapa.
+
+**Teste**: `tests/test_hud_atlas.py`. Validação em jogo pendente.

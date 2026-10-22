@@ -77,20 +77,24 @@ class HotbarHandlers:
         self._set_hotbar_row_scale()
         return self.screen.get_height() - self._HB_H - self._u(10)
 
-    # Propriedades (não atributos fixos) — precisam reagir a self._ui_scale
-    # em runtime, e hotbar/consumable_bar/habilidades leem essas 4 via
-    # self._HB_*, então não dá pra virar atributo de classe fixo.
+    # Slot = moldura do atlas (21/10/2026, pedido do usuário): tamanho FIXO
+    # do atlas (ícone 32x32 + borda, ui_atlas.HUD_SLOT_PX), nunca a escala
+    # de UI — mesma regra de toda peça do atlas. Espaçamento continua na
+    # escala de UI. Hotbar/consumable bar/habilidades leem via self._HB_*.
     @property
     def _HB_W(self) -> int:
-        return self._u(UI.HOTBAR_SLOT_W)
+        from ui.ui_atlas import HUD_SLOT_PX
+        return HUD_SLOT_PX
 
     @property
     def _HB_H(self) -> int:
-        return self._u(UI.HOTBAR_SLOT_H)
+        from ui.ui_atlas import HUD_SLOT_PX
+        return HUD_SLOT_PX
 
     @property
     def _HB_ICO(self) -> int:
-        return self._u(UI.HOTBAR_ICON)
+        from ui.ui_atlas import HUD_SLOT_PX, HUD_SLOT_BORDER, SCALE
+        return HUD_SLOT_PX - 2 * HUD_SLOT_BORDER * SCALE
 
     @property
     def _HB_PAD(self) -> int:
@@ -364,14 +368,17 @@ class HotbarHandlers:
                     _drag_hb.reset()
                 break
 
+        from ui import ui_atlas as _ua_hb
+        _frame = _ua_hb.hud_slot_frame("skill")
+        _FB    = _ua_hb.HUD_SLOT_BORDER * _ua_hb.SCALE      # espessura da borda da moldura na tela
         for j, (i, skill) in enumerate(occupied):
             sx = x0 + j * (self._HB_W + self._HB_PAD)
             r  = pygame.Rect(sx, y0, self._HB_W, self._HB_H)
 
-            # Slot vazio exibido durante drag — apenas fundo destacado
+            # Slot vazio exibido durante drag — moldura do atlas, miolo escuro
             if skill is None:
-                pygame.draw.rect(self.screen, (38, 32, 16), r, border_radius=5)
-                pygame.draw.rect(self.screen, (160, 130, 50), r, 2, border_radius=5)
+                self.screen.fill((38, 32, 16), r.inflate(-2 * _FB, -2 * _FB))
+                self.screen.blit(_frame, r.topleft)
                 # Mostra o atalho configurado (não o índice padrão 1-0)
                 _kb_empty = pygame.key.name(player_skills.keybinds[i]).upper()
                 num_s = self.font_xs.render(_kb_empty, False, (100, 85, 48))
@@ -427,9 +434,9 @@ class HotbarHandlers:
                     gs.fill((glow_r, glow_g, glow_b, alpha))
                     self.screen.blit(gs, gr.topleft)
 
-            # --- Fundo do slot ---
+            # --- Fundo do slot (miolo da moldura do atlas) ---
             bg = (35, 28, 14) if visual_ready else (20, 15, 8)
-            pygame.draw.rect(self.screen, bg, r, border_radius=5)
+            self.screen.fill(bg, r.inflate(-2 * _FB, -2 * _FB))
 
             # --- Ícone ---
             ic        = self._HB_ICO
@@ -496,18 +503,15 @@ class HotbarHandlers:
             # --- Lock de talento: skill requer talento não alocado ---
             _talent_locked = skill.skill_id and self._is_talent_locked(skill.skill_id)
 
-            # --- Borda (por cima do overlay) ---
+            # --- Moldura do atlas (por cima do overlay) + realce de estado
+            #     por dentro dela: roxo = requer talento, pulsante = proc ---
+            self.screen.blit(_frame, r.topleft)
             if _talent_locked:
-                # Borda roxa para indicar requisito de talento
-                pygame.draw.rect(self.screen, (130, 50, 180), r, 2, border_radius=5)
+                pygame.draw.rect(self.screen, (130, 50, 180), r.inflate(-2 * _FB, -2 * _FB), 2)
             elif is_procced:
                 br = int(200 + 55 * pulse)
                 bg_ = int(150 + 60 * pulse)
-                border = (br, bg_, 30)
-                pygame.draw.rect(self.screen, border, r, 3, border_radius=5)
-            else:
-                border = (200, 160, 60) if visual_ready else (70, 55, 28)
-                pygame.draw.rect(self.screen, border, r, 2, border_radius=5)
+                pygame.draw.rect(self.screen, (br, bg_, 30), r.inflate(-2 * _FB, -2 * _FB), 3)
 
             # --- Overlay de channeling (Fatiador de Corpos) ---
             if channeling and getattr(skill, "skill_id", None) != "fatiador_de_corpos":

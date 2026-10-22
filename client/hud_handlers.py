@@ -26,102 +26,37 @@ class HudHandlers:
         if not combat_stats:
             return
 
-        # --- Zona atual + coordenadas (canto superior direito) ---
+        # --- Coordenadas (canto superior direito) — só com debug (F12) ---
+        # O nome do mapa/zona foi pra barra da moldura do minimapa
+        # (21/10/2026, ui/minimap.py::_draw_frame).
         import os
-        map_name = os.path.splitext(os.path.basename(self._current_map_file))[0].replace("_", " ").title()
-        zone_surf = self.font_sm.render(map_name, False, C_YELLOW)
-        self.screen.blit(zone_surf, (self.screen.get_width() - zone_surf.get_width() - self._u(10), self._u(10)))
-
         tile_move = self.world.get_component(self.player_entity, TileMovement)
-        if tile_move:
+        if tile_move and self._hud_show_debug_stats:
             map_file = os.path.basename(self._current_map_file)
             coord_txt = f"Map: {map_file} | Tile: {tile_move.current_tile_x}, {tile_move.current_tile_y}"
             coord_surf = self.font_sm.render(coord_txt, False, (180, 180, 180))
-            self.screen.blit(coord_surf, (self.screen.get_width() - coord_surf.get_width() - self._u(10), self._u(28)))
-            if self._current_zone:
-                zone_txt  = self.font_sm.render(self._current_zone, False, (160, 200, 160))
-                self.screen.blit(zone_txt, (self.screen.get_width() - zone_txt.get_width() - self._u(10), self._u(46)))
+            self.screen.blit(coord_surf, (self.screen.get_width() - coord_surf.get_width() - self._u(10), self._u(10)))
 
-        y = self._u(10)  # cursor vertical
-
-        # --- Nome do personagem ---
-        if char_stats:
-            name_surf = self.font_sm.render(
-                f"{char_stats.name}  [{char_stats.class_id.capitalize()}]", False, (210, 185, 255))
-            self.screen.blit(name_surf, (self._u(10), y))
-            y += name_surf.get_height() + self._u(2)
-
-        # --- HP ---
-        # Clamp [0,1] (01/09/2026): sem isso, qualquer desync passageiro
-        # entre current_hp/max_hp locais (ex: max_hp de um buff ainda não
-        # sincronizado, current_hp já atualizado por outro canal) fazia a
-        # barra de PREENCHIMENTO desenhar mais larga que a moldura de
-        # fundo — parecia "a barra crescendo" (bug real relatado pelo
-        # usuário). A causa raiz de sync já foi corrigida
-        # (_sync_player_hp_dirty), mas o clamp aqui é defensivo — mesma
-        # disciplina que build_simple_hp_bar/build_player_hud (ui/hud_bars.py)
-        # já usam, este era o único ponto sem o teto.
-        hp_ratio = max(0.0, min(1.0, combat_stats.current_hp / max(1, combat_stats.max_hp)))
+        # --- Retrato (atlas, 3x): rosto + Vida / recurso / XP nas ranhuras ---
+        y = self._draw_portrait(combat_stats, char_stats)
         bar_w = self._u(UI.HUD_BAR_W)
         bar_h = self._u(UI.HUD_BAR_H)
-        pygame.draw.rect(self.screen, (80, 0, 0),   (self._u(10), y, bar_w, bar_h))
-        pygame.draw.rect(self.screen, C_RED,         (self._u(10), y, int(bar_w * hp_ratio), bar_h))
-        hp_surf = self.font_sm.render(
-            f"HP {combat_stats.current_hp}/{combat_stats.max_hp}", False, C_WHITE)
-        self.screen.blit(hp_surf, (self._u(14), y))
-        y += self._u(18)
 
-        # --- Rage (Guerreiro) / Mana (Mago) / Aljava (Arqueiro) ---
-        if char_stats:
-            if char_stats.class_id == "mago":
-                mana_ratio = max(0.0, min(1.0, char_stats.mana / max(1, char_stats.max_mana)))
-                pygame.draw.rect(self.screen, (0, 20, 80),    (self._u(10), y, bar_w, bar_h))
-                pygame.draw.rect(self.screen, (50, 100, 255), (self._u(10), y, int(bar_w * mana_ratio), bar_h))
-                mana_surf = self.font_sm.render(
-                    f"Mana {char_stats.mana}/{char_stats.max_mana}", False, C_WHITE)
-                self.screen.blit(mana_surf, (self._u(14), y))
-            elif char_stats.class_id == "arqueiro":
-                # Barra de Concentração — laranja forte (C_ORANGE); vira
-                # vermelha (C_RED) perto de esvaziar, mesmo aviso de sempre.
-                # Pedido do usuário 15/07/2026: era azul, confundia com mana.
-                _conc_ratio = max(0.0, min(1.0, char_stats.concentration / max(1, char_stats.max_concentration)))
-                _conc_col   = C_ORANGE if _conc_ratio > 0.3 else C_RED
-                pygame.draw.rect(self.screen, (55, 30, 5),   (self._u(10), y, bar_w, bar_h))
-                pygame.draw.rect(self.screen, _conc_col, (self._u(10), y, int(bar_w * _conc_ratio), bar_h))
-                _cs_conc  = self.world.get_component(self.player_entity, CombatStats)
-                _tm_conc  = self.world.get_component(self.player_entity, TileMovement)
-                _moving   = _tm_conc.is_moving if _tm_conc else False
-                _rate     = (getattr(_cs_conc, "concentration_regen_moving", 0.0)
-                             if _moving else
-                             getattr(_cs_conc, "concentration_regen_idle",   0.0))
-                _rate_str = f"  (+{_rate:.0f}/s)" if _rate > 0 else ""
-                conc_surf = self.font_sm.render(
-                    f"Conc. {int(char_stats.concentration)}/{char_stats.max_concentration}{_rate_str}", False, C_WHITE)
-                self.screen.blit(conc_surf, (self._u(14), y))
-                y += self._u(18)
-                # Barra de Aljava
-                from engine.components import Equipment as _EqHUD
-                _eq_hud = self.world.get_component(self.player_entity, _EqHUD)
-                _quiver = _eq_hud.slots.get("offhand") if _eq_hud else None
-                if _quiver and getattr(_quiver, "item_type", "") == "quiver":
-                    _arrow_ratio = max(0.0, min(1.0, _quiver.arrow_count / max(1, _quiver.max_arrows)))
-                    pygame.draw.rect(self.screen, (40, 30, 10),  (self._u(10), y, bar_w, bar_h))
-                    pygame.draw.rect(self.screen, (200, 160, 60), (self._u(10), y, int(bar_w * _arrow_ratio), bar_h))
-                    arrow_surf = self.font_sm.render(
-                        f"Aljava {_quiver.arrow_count}/{_quiver.max_arrows}", False, C_WHITE)
-                    self.screen.blit(arrow_surf, (self._u(14), y))
-                else:
-                    no_q_surf = self.font_sm.render("Sem aljava", False, (180, 130, 50))
-                    self.screen.blit(no_q_surf, (self._u(14), y))
+        # --- Aljava do arqueiro (fora do retrato — 3ª ranhura é a XP) ---
+        if char_stats and char_stats.class_id == "arqueiro":
+            from engine.components import Equipment as _EqHUD
+            _eq_hud = self.world.get_component(self.player_entity, _EqHUD)
+            _quiver = _eq_hud.slots.get("offhand") if _eq_hud else None
+            if _quiver and getattr(_quiver, "item_type", "") == "quiver":
+                _arrow_ratio = max(0.0, min(1.0, _quiver.arrow_count / max(1, _quiver.max_arrows)))
+                pygame.draw.rect(self.screen, (40, 30, 10),  (self._u(10), y, bar_w, bar_h))
+                pygame.draw.rect(self.screen, (200, 160, 60), (self._u(10), y, int(bar_w * _arrow_ratio), bar_h))
+                arrow_surf = self.font_sm.render(
+                    f"Aljava {_quiver.arrow_count}/{_quiver.max_arrows}", False, C_WHITE)
+                self.screen.blit(arrow_surf, (self._u(14), y))
             else:
-                # Vermelha (C_RED) — pedido do usuário 15/07/2026: era
-                # laranja (C_ORANGE), confundia com a concentração do arqueiro.
-                rage_ratio = max(0.0, min(1.0, char_stats.rage / max(1, char_stats.max_rage)))
-                pygame.draw.rect(self.screen, (60, 20, 0),   (self._u(10), y, bar_w, bar_h))
-                pygame.draw.rect(self.screen, C_RED,          (self._u(10), y, int(bar_w * rage_ratio), bar_h))
-                rage_surf = self.font_sm.render(
-                    f"Raiva {char_stats.rage}/{char_stats.max_rage}", False, C_WHITE)
-                self.screen.blit(rage_surf, (self._u(14), y))
+                no_q_surf = self.font_sm.render("Sem aljava", False, (180, 130, 50))
+                self.screen.blit(no_q_surf, (self._u(14), y))
             y += self._u(18)
 
         # --- Ataque CD ---
@@ -231,6 +166,193 @@ class HudHandlers:
 
         # --- Barra de cast / canalização (centro inferior da tela) ---
         self._draw_cast_bar(char_stats)
+
+    # ------------------------------------------------------------------
+    # Retrato do personagem (atlas, 21/10/2026, pedido do usuário)
+    # ------------------------------------------------------------------
+    # Anel com o rosto do personagem (recorte da animação idle de frente —
+    # mesmo mecanismo do jogo, engine/character_animation.py) + faixa com 3
+    # ranhuras: Vida, recurso da classe, Experiência. Desenhado em 3x
+    # (ui_atlas.PORTRAIT_SCALE, decisão do usuário: ranhuras legíveis).
+    # Valores exatos no tooltip ao passar o mouse na ranhura.
+
+    _PORTRAIT_FILL = {   # (cor da faixa de cima, cor da faixa de baixo)
+        "hp":    ((235, 80, 70), (175, 30, 30)),
+        "mana":  ((110, 150, 255), (50, 90, 220)),
+        "rage":  ((240, 120, 60), (190, 70, 25)),
+        "conc":  ((255, 190, 80), (215, 130, 20)),
+        "xp":    ((190, 140, 245), (130, 80, 200)),
+    }
+
+    def _portrait_values(self, combat_stats, cs) -> list:
+        """[(chave_de_cor, rótulo, atual, máximo)] das 3 ranhuras."""
+        vals = [("hp", "Vida", combat_stats.current_hp, combat_stats.max_hp)]
+        if cs is None:
+            return vals
+        if cs.class_id == "mago":
+            vals.append(("mana", "Mana", cs.mana, cs.max_mana))
+        elif cs.class_id == "arqueiro":
+            vals.append(("conc", "Concentração", int(cs.concentration), cs.max_concentration))
+        else:
+            vals.append(("rage", "Raiva", cs.rage, cs.max_rage))
+        vals.append(("xp", "Experiência", cs.current_xp, cs.xp_to_next_level))
+        return vals
+
+    def _portrait_face(self, cs, r: int) -> "pygame.Surface | None":
+        """Rosto: quadrado 2r x 2r recortado da cabeça do frame idle de
+        frente, com máscara redonda (cabe na abertura do anel)."""
+        if cs is None:
+            return None
+        from engine.character_animation import get_character_frame
+        frame = get_character_frame(cs.class_id, "idle", "down", pygame.time.get_ticks())
+        if frame is None:
+            return None
+        key = ("face", id(frame), r)
+        face = self._portrait_cache.get(key)
+        if face is None:
+            fw, fh = frame.get_size()
+            cx, cy = fw // 2, fh // 2 - fh // 8          # cabeça: um pouco acima do centro do frame
+            src = pygame.Rect(cx - r, cy - r, 2 * r, 2 * r).clip(frame.get_rect())
+            face = pygame.Surface((2 * r, 2 * r), pygame.SRCALPHA)
+            face.blit(frame, (0, 0), src)
+            mask = pygame.Surface((2 * r, 2 * r), pygame.SRCALPHA)
+            pygame.draw.circle(mask, (255, 255, 255, 255), (r, r), r)
+            face.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+            if len(self._portrait_cache) > 64:
+                self._portrait_cache.clear()
+            self._portrait_cache[key] = face
+        return face
+
+    def _draw_portrait(self, combat_stats, cs) -> int:
+        """Desenha o retrato no canto superior esquerdo; devolve o y logo
+        abaixo dele (onde o resto do HUD continua)."""
+        from ui import ui_atlas
+        K = ui_atlas.PORTRAIT_SCALE
+        x0, y0 = self._u(10), self._u(10)
+        piece = ui_atlas.piece_raw(ui_atlas.PORTRAIT)
+        w, h = piece.get_size()
+        grooves = ui_atlas.portrait_grooves()
+        vals = self._portrait_values(combat_stats, cs)
+        fills = tuple(round(g[2] * max(0.0, min(1.0, cur / max(1, mx))))
+                      for g, (_k, _l, cur, mx) in zip(grooves, vals))
+        fcx, fcy, fr = ui_atlas.PORTRAIT_FACE
+        face = self._portrait_face(cs, fr)
+        key = ("portrait", fills, tuple(k for k, *_ in vals), id(face))
+        cached = self._portrait_cache.get("portrait")
+        if cached is None or cached[0] != key:
+            raw = pygame.Surface((w, h), pygame.SRCALPHA)
+            if face is not None:
+                raw.blit(face, (fcx - fr, fcy - fr))
+            raw.blit(piece, (0, 0))
+            for (gx, gy, gw, gh), (ck, *_), fw in zip(grooves, vals, fills):
+                if fw > 0:
+                    top, base = self._PORTRAIT_FILL[ck]
+                    raw.fill(top, (gx, gy, fw, 1))
+                    raw.fill(base, (gx, gy + 1, fw, gh - 1))
+            cached = (key, pygame.transform.scale(raw, (w * K, h * K)))
+            self._portrait_cache["portrait"] = cached
+        self.screen.blit(cached[1], (x0, y0))
+
+        # Nome e nível acima da faixa (à direita do anel)
+        if cs is not None:
+            name_s = self.font_sm.render(f"{cs.name}   Nv {cs.level}", False, (240, 225, 185))
+            self.screen.blit(name_s, name_s.get_rect(bottomleft=(x0 + 30 * K, y0 + 7 * K)))
+
+        # Tooltip com os valores exatos ao passar o mouse numa ranhura
+        mx_, my_ = pygame.mouse.get_pos()
+        for (gx, gy, gw, gh), (ck, label, cur, mx) in zip(grooves, vals):
+            hit = pygame.Rect(x0 + gx * K, y0 + (gy - 1) * K, gw * K, (gh + 2) * K)
+            if hit.collidepoint(mx_, my_):
+                lines = []
+                if ck == "conc":
+                    _tm = self.world.get_component(self.player_entity, TileMovement)
+                    _rate = getattr(combat_stats, "concentration_regen_moving" if _tm and _tm.is_moving
+                                    else "concentration_regen_idle", 0.0)
+                    if _rate > 0:
+                        lines.append((f"+{_rate:.0f}/s", (200, 200, 200)))
+                self._pending_tooltip = (mx_, my_, f"{label}: {cur}/{mx}", lines)
+        return y0 + h * K + self._u(6)
+
+    # ------------------------------------------------------------------
+    # Moldura do minimapa: nome do mapa/zona + fileira de ícones (21/10/2026)
+    # ------------------------------------------------------------------
+    # Ícones (ordem do atlas): bolsa = inventário, espadas = PvP (F1),
+    # engrenagem = menu, pessoa = amigos (ainda não existe), troféu =
+    # ranking. Aceso = botão apertado OU janela correspondente aberta
+    # (decisão do usuário). Clique age no SOLTAR, como todo botão do atlas;
+    # o APERTAR é consumido aqui pra não vazar pro mundo.
+
+    def _minimap_title(self) -> str:
+        import os
+        if self._current_zone:
+            return self._current_zone
+        return os.path.splitext(os.path.basename(self._current_map_file))[0].replace("_", " ").title()
+
+    def _minimap_icons_lit(self) -> list:
+        is_open = (self._show_inventory, self._arena_modal_open, self._show_pause,
+                   False, self._show_ranking)
+        return [on or self._mm_icon_pressed == i for i, on in enumerate(is_open)]
+
+    def _minimap_icon_at(self, pos) -> int:
+        if self._map_overlay.is_open:
+            return -1
+        for i, rect in enumerate(self._minimap.icon_rects()):
+            if rect.collidepoint(pos):
+                return i
+        return -1
+
+    def _handle_minimap_icon_event(self, event) -> bool:
+        """True = clique consumido (apertar/soltar num ícone da moldura)."""
+        if getattr(event, "button", 0) != 1:
+            return False
+        idx = self._minimap_icon_at(event.pos)
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if idx < 0:
+                return False
+            self._mm_icon_pressed = idx
+            return True
+        if event.type == pygame.MOUSEBUTTONUP and self._mm_icon_pressed >= 0:
+            pressed, self._mm_icon_pressed = self._mm_icon_pressed, -1
+            if idx == pressed:
+                self._minimap_icon_action(idx)
+            return True
+        return False
+
+    def _toggle_inventory(self) -> None:
+        """Abre/fecha o inventário — tecla I e ícone da bolsa (ponto único)."""
+        from ui.sound_manager import SOUNDS as _SND_MM
+        already = self._show_inventory
+        self._close_all_modals()
+        if not already:
+            self._show_inventory = True
+            _SND_MM.play_ui("inventory_open")
+
+    def _toggle_ranking(self) -> None:
+        """Abre/fecha o Ranking — tecla K e ícone do troféu (ponto único)."""
+        already = self._show_ranking
+        self._close_all_modals()
+        if not already:
+            self._show_ranking = True
+            self._ranking_system.on_open()
+
+    def _minimap_icon_action(self, idx: int) -> None:
+        if idx == 0:
+            self._toggle_inventory()
+        elif idx == 1:
+            self._open_bg_queue_modal()          # mesma ação do F1 (toggle)
+        elif idx == 2:
+            self._show_pause = not self._show_pause
+        elif idx == 3:
+            from ui.combat_log import LOG as _LOG_MM
+            _LOG_MM.add("Amigos: em breve.", (180, 180, 180))
+        elif idx == 4:
+            self._toggle_ranking()
+
+    def _minimap_icon_tooltip(self) -> None:
+        mx, my = pygame.mouse.get_pos()
+        idx = self._minimap_icon_at((mx, my))
+        if idx >= 0:
+            self._pending_tooltip = (mx, my, self._minimap.ICON_TIPS[idx], [])
 
     def _draw_bg_kda_hud(self) -> None:
         """HUD permanente de topo-centro durante o battleground de teste

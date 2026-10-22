@@ -293,6 +293,122 @@ def slot_raw(dark: bool = False, size: int = SLOT_SIZE) -> "pygame.Surface":
     return surf
 
 
+# ── Peças do HUD (21/10/2026, adicionadas pelo usuário ao atlas) ──────────
+# Retângulos em px do atlas (x, y, w, h). Peças que mudam de tamanho são
+# montadas por stretch_raw(): mantêm as bordas e REPETEM uma coluna/linha
+# do meio (nunca esticam/interpolam) — mesma ideia de slot_raw().
+HUD_SKILL_FRAME   = (78, 158, 20, 20)    # moldura de slot da barra de habilidades (cinza, borda 2px)
+HUD_CONS_FRAME    = (110, 158, 20, 20)   # moldura de slot da barra de consumíveis (oliva, borda 2px)
+HUD_SLOT_BORDER   = 2
+MINIMAP_FRAME     = (96, 192, 48, 50)    # moldura do minimapa com a barra do nome embutida no topo
+MINIMAP_CONTENT   = (4, 6, 4, 3)         # bordas (esq., topo, dir., base) até a área do mapa, px RAW
+MINIMAP_FRAME_MID = (24, 28)             # coluna/linha repetidas ao crescer (meio da barra / laterais)
+MINIMAP_NAME_BAR  = (9, 1, 9, 6)         # barra do nome: x0 / y0 / recuo direito / altura, px RAW na moldura
+MINIMAP_ICON_CELL = 16                   # célula de cada ícone (círculo + ícone encaixam nela)
+MINIMAP_ICON_CIRCLE = (168, 232, 16, 19) # círculo de fundo (célula com o círculo, que passa 3px da célula)
+MINIMAP_ICON_ROWS = (168, 200)           # y das fileiras de ícones: apagados / acesos
+MINIMAP_ICON_X0   = 168                  # x da 1ª célula de ícone (5 células de 16px)
+MINIMAP_ICON_COUNT = 5
+MINIMAP_ICON_DY   = 10                   # topo da célula do círculo = base da moldura − 10 (encaixe do atlas)
+PORTRAIT          = (0, 208, 88, 32)     # anel do retrato + faixa com 3 ranhuras
+PORTRAIT_FACE     = (16, 16, 10)         # centro x/y e raio da abertura do anel, px RAW na peça
+PORTRAIT_SCALE    = 3                    # retrato desenhado em 3x (decisão do usuário: ranhuras legíveis)
+
+
+def piece_raw(rect: tuple) -> "pygame.Surface":
+    """Recorte de uma peça do atlas (px), RAW."""
+    return _load().subsurface(pygame.Rect(rect))
+
+
+def stretch_raw(rect: tuple, w: int, h: int, mid_x: "int | None" = None,
+                mid_y: "int | None" = None) -> "pygame.Surface":
+    """Peça `rect` montada em w x h px RAW repetindo UMA coluna (mid_x) e
+    UMA linha (mid_y) da peça — bordas/cantos intactos. Cacheada."""
+    key = ("stretch", tuple(rect), w, h, mid_x, mid_y)
+    cached = _panel_cache.get(key)
+    if cached is not None:
+        return cached
+    rx, ry, rw, rh = rect
+    mx = rw // 2 if mid_x is None else mid_x
+    my = rh // 2 if mid_y is None else mid_y
+    src = piece_raw(rect)
+    surf = pygame.Surface((w, h), pygame.SRCALPHA)
+    # colunas: [0, mx) | mx repetida | (mx, rw) alinhado à direita
+    right_w = rw - mx - 1
+    bottom_h = rh - my - 1
+    for (sx, sw, dx, dw) in ((0, mx, 0, mx), (mx, 1, mx, w - mx - right_w), (mx + 1, right_w, w - right_w, right_w)):
+        if dw <= 0:
+            continue
+        for (sy, sh, dy, dh) in ((0, my, 0, my), (my, 1, my, h - my - bottom_h),
+                                 (my + 1, bottom_h, h - bottom_h, bottom_h)):
+            if dh <= 0:
+                continue
+            part = src.subsurface((sx, sy, sw, sh))
+            if (sw, sh) != (dw, dh):
+                # só a coluna/linha de 1px é repetida (nearest = cópia do pixel)
+                part = pygame.transform.scale(part, (dw, dh))
+            surf.blit(part, (dx, dy))
+    if len(_panel_cache) >= _PANEL_CACHE_MAX:
+        _panel_cache.clear()
+    _panel_cache[key] = surf
+    return surf
+
+
+_GROOVE_COLS = {(93, 54, 39), (101, 62, 41)}   # fundo das ranhuras do retrato
+_portrait_grooves: "list | None" = None
+
+
+def portrait_grooves() -> list:
+    """[(x0, y0, w, h)] px RAW das 3 ranhuras do retrato (de cima pra
+    baixo), medidas do próprio atlas (cor de fundo da ranhura) — nunca
+    número fixo: se o desenho mudar no atlas, a barra acompanha."""
+    global _portrait_grooves
+    if _portrait_grooves is None:
+        src = piece_raw(PORTRAIT)
+        rows = {}
+        for y in range(src.get_height()):
+            xs = [x for x in range(src.get_width()) if tuple(src.get_at((x, y)))[:3] in _GROOVE_COLS
+                  and src.get_at((x, y))[3] > 0 and x > 26]
+            if len(xs) > 10:
+                rows[y] = (min(xs), max(xs))
+        grooves, cur = [], None
+        for y in sorted(rows):
+            x0, x1 = rows[y]
+            if cur and y == cur[1] + cur[3]:
+                cur = (min(cur[0], x0), cur[1], max(cur[0] + cur[2] - 1, x1) - min(cur[0], x0) + 1, cur[3] + 1)
+                grooves[-1] = cur
+            else:
+                cur = (x0, y, x1 - x0 + 1, 1)
+                grooves.append(cur)
+        _portrait_grooves = grooves[:3]
+    return _portrait_grooves
+
+
+HUD_SLOT_RAW = 32 + 2 * HUD_SLOT_BORDER   # moldura de slot da hotbar: ícone 32x32 + borda (decisão do usuário)
+HUD_SLOT_PX  = HUD_SLOT_RAW * SCALE       # lado do slot na tela (fixo, nunca a escala de UI)
+
+
+def hud_slot_frame(kind: str) -> "pygame.Surface":
+    """Moldura de slot da barra de habilidades (`kind`="skill", cinza) ou
+    de consumíveis ("cons", oliva), montada pra caber o ícone 32x32 e já
+    ampliada (HUD_SLOT_PX). Cacheada."""
+    key = ("hud_slot_frame", kind)
+    cached = _panel_cache.get(key)
+    if cached is None:
+        rect = HUD_SKILL_FRAME if kind == "skill" else HUD_CONS_FRAME
+        cached = scale_up(stretch_raw(rect, HUD_SLOT_RAW, HUD_SLOT_RAW))
+        if len(_panel_cache) >= _PANEL_CACHE_MAX:
+            _panel_cache.clear()
+        _panel_cache[key] = cached
+    return cached
+
+
+def minimap_icon_raw(i: int, lit: bool) -> "pygame.Surface":
+    """Ícone `i` do minimapa (célula 16x16), apagado ou aceso."""
+    y = MINIMAP_ICON_ROWS[1 if lit else 0]
+    return piece_raw((MINIMAP_ICON_X0 + i * MINIMAP_ICON_CELL, y, MINIMAP_ICON_CELL, MINIMAP_ICON_CELL))
+
+
 def blit_tab(dst: "pygame.Surface", tx: int, ty: int, width_tiles: int, active: bool) -> None:
     """Aba de `width_tiles` tiles (mín. 2) em (tx, ty) — pontas fixas, meio repetido."""
     col0 = _TAB_ACTIVE_COL0 if active else _TAB_INACTIVE_COL0

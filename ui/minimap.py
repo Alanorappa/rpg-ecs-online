@@ -44,7 +44,90 @@ class Minimap(UIScaleMixin):
     # de quest (ui/map_markers.py::draw_quest_circle_marker) e pelo
     # tooltip do hover (ui/ui_helpers.py::draw_box_tooltip) — mesma razão,
     # consistência com o mapa cheio.
-    _FONT_BASES = {"_font": 20}
+    _FONT_BASES = {"_font": 20, "_font_title": 18}
+
+    # ── Moldura do atlas (21/10/2026, pedido do usuário) ─────────────────
+    # Moldura de madeira em volta do mapa com a barra do nome no topo (nome
+    # do mapa, ou da zona quando houver) e, encaixada na borda de baixo,
+    # uma fileira de 5 ícones em círculos (bolsa/PvP/menu/amigos/ranking).
+    # Peças e medidas: ui/ui_atlas.py (MINIMAP_*). Escala fixa do atlas,
+    # nunca a escala de UI do jogador. `title` é setado pelo GameEngine.
+    title: str = ""
+    ICON_TIPS = ("Inventário (I)", "PvP (F1)", "Menu (Esc)", "Amigos — em breve", "Ranking (K)")
+    TITLE_COL = (240, 225, 185)
+
+    def _frame_geom(self, fx: int, fy: int, sz: int) -> tuple:
+        """(moldura RAW ampliada, x, y de tela) em volta do conteúdo sz x sz em (fx, fy)."""
+        from ui import ui_atlas
+        S = ui_atlas.SCALE
+        l, t, r, b = ui_atlas.MINIMAP_CONTENT
+        cw = -(-sz // S)
+        raw = ui_atlas.stretch_raw(ui_atlas.MINIMAP_FRAME, cw + l + r, cw + t + b,
+                                   *ui_atlas.MINIMAP_FRAME_MID)
+        return raw, fx - l * S, fy - t * S
+
+    def frame_rect(self) -> pygame.Rect:
+        """Rect de tela da moldura inteira (sem a fileira de ícones)."""
+        r = self.get_rect()
+        raw, x, y = self._frame_geom(r.x, r.y, r.width)
+        from ui import ui_atlas
+        return pygame.Rect(x, y, raw.get_width() * ui_atlas.SCALE, raw.get_height() * ui_atlas.SCALE)
+
+    def icon_rects(self) -> list:
+        """Rects de tela dos 5 círculos de ícone (hit-test e desenho)."""
+        from ui import ui_atlas
+        S, cell = ui_atlas.SCALE, ui_atlas.MINIMAP_ICON_CELL
+        fr = self.frame_rect()
+        w_raw, h_raw = fr.width // S, fr.height // S
+        n = ui_atlas.MINIMAP_ICON_COUNT
+        x0 = (w_raw - n * cell) // 2
+        cy = h_raw - ui_atlas.MINIMAP_ICON_DY
+        circ_h = ui_atlas.MINIMAP_ICON_CIRCLE[3]
+        return [pygame.Rect(fr.x + (x0 + i * cell) * S, fr.y + cy * S, cell * S, circ_h * S)
+                for i in range(n)]
+
+    def _scaled(self, raw: pygame.Surface, key) -> pygame.Surface:
+        surf = self._scaled_cache.get(key)
+        if surf is None:
+            from ui import ui_atlas
+            if len(self._scaled_cache) >= 32:
+                self._scaled_cache.clear()
+            surf = self._scaled_cache[key] = ui_atlas.scale_up(raw)
+        return surf
+
+    def _draw_frame(self, fx: int, fy: int, sz: int) -> None:
+        from ui import ui_atlas
+        S = ui_atlas.SCALE
+        raw, x, y = self._frame_geom(fx, fy, sz)
+        self.screen.blit(self._scaled(raw, ("frame", raw.get_size())), (x, y))
+        if self.title:
+            bx0, by0, bxr, bh = ui_atlas.MINIMAP_NAME_BAR
+            bar_w = (raw.get_width() - bx0 - bxr) * S
+            text = self.title
+            font = self._font_title
+            while len(text) > 1 and font.size(text)[0] > bar_w - 8:
+                text = text[:-2] + "…"
+            t = font.render(text, False, self.TITLE_COL)
+            self.screen.blit(t, t.get_rect(center=(x + raw.get_width() * S // 2,
+                                                   y + (by0 + bh / 2) * S)))
+
+    def _fill_inner(self, fx: int, fy: int, sz: int) -> None:
+        """Fundo preto do miolo da moldura (arredondado pra cima em px RAW —
+        sobra até 1px RAW além do mapa)."""
+        from ui import ui_atlas
+        inner = -(-sz // ui_atlas.SCALE) * ui_atlas.SCALE
+        self.screen.fill((0, 0, 0), (fx, fy, inner, inner))
+
+    def render_icons(self, lit: list) -> None:
+        """Fileira de ícones na borda de baixo da moldura. `lit[i]` = aceso
+        (botão apertado ou janela correspondente aberta)."""
+        from ui import ui_atlas
+        circle = self._scaled(ui_atlas.piece_raw(ui_atlas.MINIMAP_ICON_CIRCLE), "circle")
+        for i, rect in enumerate(self.icon_rects()):
+            self.screen.blit(circle, rect.topleft)
+            on = bool(lit[i]) if i < len(lit) else False
+            icon = self._scaled(ui_atlas.minimap_icon_raw(i, on), ("icon", i, on))
+            self.screen.blit(icon, rect.topleft)
 
     def __init__(self, screen: pygame.Surface, map_overlay) -> None:
         self.screen       = screen
@@ -70,6 +153,9 @@ class Minimap(UIScaleMixin):
         # 22.721ms do label `hud:combat_log` no log de profiling).
         self._fullmap_exp_cache_len: "int | None" = None
         self._fullmap_exp_arr: "np.ndarray | None" = None
+        # Peças do atlas já ampliadas (moldura/círculo/ícones) — chave = id
+        # da Surface RAW (cacheada em ui_atlas, id estável); teto pequeno.
+        self._scaled_cache: dict = {}
 
         # set_ui_scale(1.0) é chamado por super().__init__() (UIScaleMixin) e
         # calcula _tile_px/_content_size/_map_ox/_map_oy abaixo, a partir do
@@ -149,6 +235,7 @@ class Minimap(UIScaleMixin):
         fx = sw - self._u(self.SIZE) - self._u(self.MARGIN_RIGHT)
         fy = self._u(self.MARGIN_TOP)
 
+        self._fill_inner(fx, fy, self._u(self.SIZE))
         self.screen.blit(self._cached_surf, (fx, fy))
 
         tp  = self._tile_px
@@ -253,8 +340,7 @@ class Minimap(UIScaleMixin):
             self.screen.set_clip(_prev_clip)
 
         sz = self._u(self.SIZE)
-        pygame.draw.rect(self.screen, self.BORDER_COL,
-                         (fx - 1, fy - 1, sz + 2, sz + 2), 1)
+        self._draw_frame(fx, fy, sz)
 
         if _hover_tip:
             from ui.ui_helpers import draw_box_tooltip
@@ -299,6 +385,7 @@ class Minimap(UIScaleMixin):
         sz = self._u(self.SIZE)
         fx = sw - sz - self._u(self.MARGIN_RIGHT)
         fy = self._u(self.MARGIN_TOP)
+        self._fill_inner(fx, fy, sz)
         self.screen.blit(self._cached_surf, (fx, fy))
 
         # Mesma geometria de encolhimento usada no rebuild — precisa bater
@@ -314,8 +401,7 @@ class Minimap(UIScaleMixin):
             sy = oy + int(tile_y * scale)
             pygame.draw.circle(self.screen, color, (sx, sy), radius)
 
-        pygame.draw.rect(self.screen, self.BORDER_COL,
-                         (fx - 1, fy - 1, sz + 2, sz + 2), 1)
+        self._draw_frame(fx, fy, sz)
 
     def _get_explored_arr(self, explored: set, cols: int, rows: int) -> "np.ndarray | None":
         """Converte `explored` pra array numpy, filtrado pelos limites do

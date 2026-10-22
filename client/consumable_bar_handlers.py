@@ -135,6 +135,12 @@ class ConsumableBarHandlers:
         released_cb = any(e.type == pygame.MOUSEBUTTONUP and e.button == 1
                           for e in events_cb)
 
+        # Moldura do atlas (oliva, ícone 32x32 — ui_atlas.hud_slot_frame,
+        # 21/10/2026); FB = borda da moldura na tela, IC = miolo/ícone.
+        from ui import ui_atlas as _ua_cb
+        _frame = _ua_cb.hud_slot_frame("cons")
+        FB = _ua_cb.HUD_SLOT_BORDER * _ua_cb.SCALE
+        IC = W - 2 * FB
         for j, (i, item_id) in enumerate(cons_occ):
             sx = x0 + j * (W + PAD)
             r  = pygame.Rect(sx, y0, W, H)
@@ -155,7 +161,7 @@ class ConsumableBarHandlers:
                 bg_col = (65, 20, 20)
             else:
                 bg_col = (18, 36, 22)
-            pygame.draw.rect(self.screen, bg_col, r, border_radius=5)
+            self.screen.fill(bg_col, r.inflate(-2 * FB, -2 * FB))
 
             if item_id:
                 item = next((it for it in inv.items
@@ -166,11 +172,11 @@ class ConsumableBarHandlers:
                 display_name = _resolved.name if _resolved else item_id
                 _ic_key = (ICONS.item_key(_resolved) if _resolved
                           else ICONS.item_key_by_name(display_name))
-                _ic = ICONS.get(_ic_key, W - 2)
+                _ic = ICONS.get(_ic_key, IC)
                 if item:
                     # Item disponível — ícone normal
                     if _ic:
-                        self.screen.blit(_ic, (r.x + 2, r.y + 2))
+                        self.screen.blit(_ic, (r.x + FB, r.y + FB))
                     else:
                         letter = self.font_sm.render(display_name[0].upper(), False, (100, 220, 140))
                         self.screen.blit(letter, letter.get_rect(center=r.center))
@@ -178,8 +184,8 @@ class ConsumableBarHandlers:
                 else:
                     # Item esgotado — ícone com overlay escuro (igual skill indisponível)
                     if _ic:
-                        self.screen.blit(_ic, (r.x + 2, r.y + 2))
-                        self.screen.blit(fill_surf((W - 2, H - 2), (0, 0, 0, 160)), (r.x + 2, r.y + 2))
+                        self.screen.blit(_ic, (r.x + FB, r.y + FB))
+                        self.screen.blit(fill_surf((IC, IC), (0, 0, 0, 160)), (r.x + FB, r.y + FB))
                     else:
                         letter = self.font_sm.render(display_name[0].upper(), False, (100, 140, 120))
                         self.screen.blit(letter, letter.get_rect(center=r.center))
@@ -200,19 +206,17 @@ class ConsumableBarHandlers:
                     self.screen.blit(cd_s, cd_s.get_rect(
                         centerx=sx + W // 2, y=y0 + H // 2 - cd_s.get_height() // 2))
 
-            # Border
+            # Moldura do atlas + realce de arrasto por dentro dela
+            self.screen.blit(_frame, r.topleft)
             if dragging_cons and r.collidepoint(mx_cb, my_cb):
-                border_col = (100, 220, 130)
+                pygame.draw.rect(self.screen, (100, 220, 130), r.inflate(-2 * FB, -2 * FB), 2)
             elif _is_dragged_out:
-                border_col = (220, 80, 80)
-            else:
-                border_col = (80, 160, 100) if item_id else (40, 70, 50)
-            pygame.draw.rect(self.screen, border_col, r, 2, border_radius=5)
+                pygame.draw.rect(self.screen, (220, 80, 80), r.inflate(-2 * FB, -2 * FB), 2)
 
             # Keybind label
             kb_name = pygame.key.name(cbar.keybinds[i]).upper()
             key_col = (140, 210, 160) if item_id else (50, 80, 60)
-            self.screen.blit(self.font_sm.render(kb_name, False, key_col), (sx + 3, y0 + 2))
+            self.screen.blit(self.font_sm.render(kb_name, False, key_col), (sx + FB + 2, y0 + FB))
 
             # Tooltip (só quando não está em drag)
             _cb_self_drag_active = (_drag_cb.kind == "consumable" and _drag_cb.source == "consumable_bar"

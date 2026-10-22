@@ -484,6 +484,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._hbe_skill_scroll: int = 0
         self._hbe_expand_slots: bool = False
         self._hbe_scroll = ScrollState()                # rolagem do modal de atalhos (ui/atlas_window.py)
+        self._mm_icon_pressed = -1                      # ícone da moldura do minimapa afundado (client/hud_handlers.py)
+        self._portrait_cache: dict = {}                 # retrato do HUD montado/ampliado (client/hud_handlers.py)
         self._show_habilidades: bool = False     # painel Habilidades (tecla H)
         self._show_skills: bool = False          # painel Skill Level (tecla L)
         self._show_ranking: bool = False         # modal de Ranking Geral (tecla K)
@@ -2010,11 +2012,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                             self._map_overlay.toggle(tx, ty)
                             SOUNDS.play_ui("map_open")
                     elif event.key == self._menu_keys.get("inventario", pygame.K_i):
-                        already_open = self._show_inventory
-                        self._close_all_modals()
-                        if not already_open:
-                            self._show_inventory = True
-                            SOUNDS.play_ui("inventory_open")
+                        self._toggle_inventory()
                     elif event.key == pygame.K_DELETE and self._show_inventory:
                         inv = self.world.get_component(self.player_entity, Inventory)
                         if inv and 0 <= self._selected_inv_idx < len(inv.items):
@@ -2050,11 +2048,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         if not already_open:
                             self._show_skills = True
                     elif event.key == self._menu_keys.get("ranking", pygame.K_k):
-                        already_open = self._show_ranking
-                        self._close_all_modals()
-                        if not already_open:
-                            self._show_ranking = True
-                            self._ranking_system.on_open()
+                        self._toggle_ranking()
                     elif event.key == self._menu_keys.get("estatisticas", pygame.K_c):
                         already_open = self._show_char_stats
                         self._close_all_modals()
@@ -2096,6 +2090,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                                 _cam_y_first[1].free_mode = not _cam_y_first[1].free_mode
                 elif event.type == pygame.TEXTINPUT:
                     self._handle_chat_text_input(event)
+                elif (event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP)
+                      and self._handle_minimap_icon_event(event)):
+                    # Ícones da moldura do minimapa (client/hud_handlers.py) —
+                    # clique consumido não vaza pro mundo (mesmo flag da hotbar).
+                    _hotbar_click_consumed = True
                 elif (event.type == pygame.MOUSEBUTTONDOWN
                       and self._handle_duel_click(event)):
                     pass
@@ -2964,6 +2963,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 _fog_mm      = self.world.get_component(self.player_entity, FogOfWar)
                 _player_tm_m = self.world.get_component(self.player_entity, TileMovement)
                 if _fog_mm and _player_tm_m:
+                    self._minimap.title = self._minimap_title()
                     from ui.ui_components import InstanceInventoryUIState as _IIUSmm
                     _iius_mm = self.world.get_component(self.player_entity, _IIUSmm)
                     if _iius_mm is not None and _iius_mm.active:
@@ -2998,6 +2998,10 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                             collect_quest_circles(self.world, self.player_entity, self._quest_system,
                                                   self._current_map_file, self._spawn_points),
                         )
+                    # Fileira de ícones na borda de baixo da moldura (bolsa/
+                    # PvP/menu/amigos/ranking) + tooltip ao passar o mouse.
+                    self._minimap.render_icons(self._minimap_icons_lit())
+                    self._minimap_icon_tooltip()
                 if PROFILE_FRAMES:
                     self._prof_record("rnd:minimap", _time.perf_counter() - _ts)
                     _ts = _time.perf_counter()
