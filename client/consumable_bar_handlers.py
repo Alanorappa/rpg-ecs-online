@@ -202,9 +202,7 @@ class ConsumableBarHandlers:
                 self.screen.blit(fill_surf((W, H), (0, 0, 0, 160)),
                                  (sx, y0), area=pygame.Rect(0, 0, W, ov_h))
                 if j == 0:
-                    cd_s = self.font_xs.render(f"{cbar.global_cooldown:.1f}", False, (160, 210, 170))
-                    self.screen.blit(cd_s, cd_s.get_rect(
-                        centerx=sx + W // 2, y=y0 + H // 2 - cd_s.get_height() // 2))
+                    self._hb_center_number(f"{cbar.global_cooldown:.1f}", (160, 210, 170), sx, y0)
 
             # Moldura do atlas + realce de arrasto por dentro dela
             self.screen.blit(_frame, r.topleft)
@@ -216,7 +214,7 @@ class ConsumableBarHandlers:
             # Keybind label
             kb_name = pygame.key.name(cbar.keybinds[i]).upper()
             key_col = (140, 210, 160) if item_id else (50, 80, 60)
-            self.screen.blit(self.font_sm.render(kb_name, False, key_col), (sx + FB + 2, y0 + FB))
+            self._hb_key_label(kb_name, key_col, sx, y0)
 
             # Tooltip (só quando não está em drag)
             _cb_self_drag_active = (_drag_cb.kind == "consumable" and _drag_cb.source == "consumable_bar"

@@ -107,6 +107,24 @@ class HotbarHandlers:
         (140,  60, 200),   # 4 Executar
     ]
 
+    # Texto dos slots (22/10/2026, pedido do usuário): tecla de atalho DENTRO
+    # da moldura do atlas (nem ela nem o contorno encostam na borda) e
+    # número de cooldown maior — os dois com contorno quase preto
+    # (ui/floating_text.py::_render_outlined, cache com teto).
+    _HB_TEXT_OUTLINE = (14, 10, 8)
+
+    def _hb_key_label(self, text: str, color, sx: int, sy: int) -> None:
+        from ui.floating_text import _render_outlined
+        from ui import ui_atlas as _ua_k
+        fb = _ua_k.HUD_SLOT_BORDER * _ua_k.SCALE
+        self.screen.blit(_render_outlined(self.font_sm, text, color, self._HB_TEXT_OUTLINE, 1),
+                         (sx + fb + 1, sy + fb + 1))
+
+    def _hb_center_number(self, text: str, color, sx: int, sy: int) -> None:
+        from ui.floating_text import _render_outlined
+        surf = _render_outlined(self.font_lg, text, color, self._HB_TEXT_OUTLINE, 2)
+        self.screen.blit(surf, surf.get_rect(center=(sx + self._HB_W // 2, sy + self._HB_H // 2)))
+
     def _is_talent_locked(self, skill_id: str) -> bool:
         """True se a skill requer talento e ele não tem pontos alocados suficientes."""
         if skill_id not in _TALENT_SKILL_REQS:
@@ -381,8 +399,7 @@ class HotbarHandlers:
                 self.screen.blit(_frame, r.topleft)
                 # Mostra o atalho configurado (não o índice padrão 1-0)
                 _kb_empty = pygame.key.name(player_skills.keybinds[i]).upper()
-                num_s = self.font_xs.render(_kb_empty, False, (100, 85, 48))
-                self.screen.blit(num_s, (sx + 4, y0 + 4))
+                self._hb_key_label(_kb_empty, (100, 85, 48), sx, y0)
                 continue
 
             # --- Estado de proc por skill ---
@@ -462,9 +479,7 @@ class HotbarHandlers:
                     ov_h     = int(self._HB_H * cd_ratio)
                     self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 160)),
                                      (sx, y0), area=pygame.Rect(0, 0, self._HB_W, ov_h))
-                    cd_surf = self.font_sm.render(f"{skill.current_cooldown:.1f}", False, (220, 200, 130))
-                    self.screen.blit(cd_surf, (sx + self._HB_W // 2 - cd_surf.get_width() // 2,
-                                               y0 + self._HB_H // 2 - cd_surf.get_height() // 2))
+                    self._hb_center_number(f"{skill.current_cooldown:.1f}", (220, 200, 130), sx, y0)
                 elif not is_procced:
                     # Sem condição de proc — inativo (alvo HP alto e sem carga)
                     self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 160)), (sx, y0))
@@ -480,14 +495,10 @@ class HotbarHandlers:
                     ov_h     = int(self._HB_H * cd_ratio)
                     self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 160)),
                                      (sx, y0), area=pygame.Rect(0, 0, self._HB_W, ov_h))
-                    cd_surf = self.font_sm.render(f"{skill.current_cooldown:.1f}", False, (220, 200, 130))
-                    self.screen.blit(cd_surf, (sx + self._HB_W // 2 - cd_surf.get_width() // 2,
-                                               y0 + self._HB_H // 2 - cd_surf.get_height() // 2))
+                    self._hb_center_number(f"{skill.current_cooldown:.1f}", (220, 200, 130), sx, y0)
                 elif is_procced:
                     if skill.charge_timeout > 0 and skill.charge_timer > 0:
-                        timer_surf = self.font_sm.render(f"{skill.charge_timer:.0f}s", False, (100, 255, 120))
-                        self.screen.blit(timer_surf, (sx + self._HB_W // 2 - timer_surf.get_width() // 2,
-                                                      y0 + self._HB_H // 2 - timer_surf.get_height() // 2))
+                        self._hb_center_number(f"{skill.charge_timer:.0f}s", (100, 255, 120), sx, y0)
                 else:
                     self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 160)), (sx, y0))
             elif not visual_ready:
@@ -496,9 +507,7 @@ class HotbarHandlers:
                 ov_h     = int(self._HB_H * cd_ratio)
                 self.screen.blit(fill_surf((self._HB_W, self._HB_H), (0, 0, 0, 160)),
                                  (sx, y0), area=pygame.Rect(0, 0, self._HB_W, ov_h))
-                cd_surf = self.font_sm.render(f"{skill.current_cooldown:.1f}", False, (220, 200, 130))
-                self.screen.blit(cd_surf, (sx + self._HB_W // 2 - cd_surf.get_width() // 2,
-                                           y0 + self._HB_H // 2 - cd_surf.get_height() // 2))
+                self._hb_center_number(f"{skill.current_cooldown:.1f}", (220, 200, 130), sx, y0)
 
             # --- Lock de talento: skill requer talento não alocado ---
             _talent_locked = skill.skill_id and self._is_talent_locked(skill.skill_id)
@@ -593,7 +602,7 @@ class HotbarHandlers:
             key_col = (220, 200, 140) if visual_ready else (80, 70, 50)
             if _talent_locked:
                 key_col = (140, 60, 160)
-            self.screen.blit(self.font_sm.render(kb_name, False, key_col), (sx + 3, y0 + 2))
+            self._hb_key_label(kb_name, key_col, sx, y0)
 
             # --- Tooltip no hover ---
             _hb_self_drag_active = (_drag_hb.kind == "skill" and _drag_hb.source == "hotbar"

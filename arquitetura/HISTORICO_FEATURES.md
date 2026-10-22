@@ -5918,3 +5918,9 @@ abaixo do retrato — "Ataque: Pronto/CD", ouro, "Mochila N/M" e o aviso
 piscando de talentos a alocar (ouro/mochila continuam no inventário e na
 loja). Ficam abaixo do retrato só os ícones de efeitos ativos e, com
 debug (F12), os atributos brutos.
+
+Complemento (22/10/2026, pedido do usuário): tecla de atalho dos slots da
+hotbar e dos consumíveis desenhada DENTRO da moldura do atlas (nem o texto
+nem o contorno encostam na borda) e número de cooldown maior (`font_lg`),
+os dois com contorno quase preto — `HotbarHandlers._hb_key_label`/
+`_hb_center_number`, reaproveitando `ui/floating_text.py::_render_outlined`.

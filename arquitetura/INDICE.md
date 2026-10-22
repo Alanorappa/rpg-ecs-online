@@ -331,3 +331,4 @@
 - [21/10/2026] (bug) Atlas reorganizado: botões lidos das linhas antigas; ícones do minimapa 2px altos — tags: ui, atlas, botao, minimapa — HISTORICO_BUGS.md §99
 - [22/10/2026] (feature) Retrato: busto sem animação centralizado, fundo do anel, munição do arqueiro em pinos — tags: ui, atlas, hud, retrato, arqueiro, aljava — HISTORICO_FEATURES.md §76
 - [22/10/2026] (feature) HUD limpo: sem Ataque/ouro/mochila/aviso de talentos abaixo do retrato — tags: ui, hud, retrato — HISTORICO_FEATURES.md §76
+- [22/10/2026] (feature) Hotbar: atalho dentro da moldura e cooldown maior, ambos com contorno — tags: ui, hud, hotbar — HISTORICO_FEATURES.md §76
