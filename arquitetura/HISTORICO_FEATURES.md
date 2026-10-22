@@ -5924,3 +5924,38 @@ hotbar e dos consumíveis desenhada DENTRO da moldura do atlas (nem o texto
 nem o contorno encostam na borda) e número de cooldown maior (`font_lg`),
 os dois com contorno quase preto — `HotbarHandlers._hb_key_label`/
 `_hb_center_number`, reaproveitando `ui/floating_text.py::_render_outlined`.
+
+## 77. Tileset de caverna novo catalogado como objetos (22/10/2026)
+
+Usuário desenhou um tileset novo de caverna (ainda incompleto) por cima
+de `assets/tiles/TX Tileset Cave.png` e criou 2 PNGs de apoio no mesmo
+padrão das construções (§24): `(dimensions)` (contorno vermelho de cada
+peça) e `(collisions)` (área de colisão). Pediu pra catalogar já, pra
+ir testando em jogo.
+
+**Extração por script** (component-labeling do contorno, alinhado à
+grade de 32px — a 1ª passada sem alinhar pegava 1px a mais em peças sem
+contorno interno): 139 regiões, 2 vazias (sem arte e sem colisão)
+descartadas = **137 peças**, ids `cv001`..`cv137` em
+`OBJECT_SHEET_FAMILIES` (`engine/tileset.py`, família "Caverna"), 13
+grupos por região do sheet (rocha/passagem em chão, lava e água;
+estalactites; buraco/lago/poço de lava e plataformas dentro deles). Cor
+de cada grupo = média dos pixels opacos da região. Peça transparente
+COM colisão (miolo do buraco) é mantida — é o que impede andar no
+buraco.
+
+**Decisões do usuário**: (1) bloqueio de visão (`vision_height=2`) só
+nas peças de rocha com colisão; bordas de buraco/lava/água só impedem
+de andar. (2) O terreno antigo `txc` (o mesmo arquivo era uma imagem
+64x64 com 4 pisos) saiu de `SHEET_FAMILIES` — `map_cave_east`/
+`map_cave_west` perderam esse chão (tokens `txc_*` caem no fallback `G`
+do parser, ver PROBLEMAS_ARQUITETURA.md §131; mapa carrega sem erro) e
+serão repintados com as peças novas. Peça sem colisão fora da rocha
+(chão de plataforma) usa sort 0 (sem Y-sort, desenha por baixo do
+personagem).
+
+**Verificação**: registro (137 ids, colisão/visão conferidas), testes
+de tileset/mapa/God Mode (48 passed), carga dos 2 mapas de caverna,
+folha de conferência visual com todas as peças rotuladas. **Falta**:
+usuário validar no God Mode/jogo (Y-sort das bordas de rocha sem
+colisão é o ponto mais provável de ajuste).
