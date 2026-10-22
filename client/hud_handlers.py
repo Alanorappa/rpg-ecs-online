@@ -10,8 +10,8 @@ self.screen, self.font_sm e os demais atributos referenciados aqui.
 import pygame
 
 from engine.components import (Channeling, CharacterStats, CombatStats, IceBlockEffect,
-                        Inventory, PermanentStats, SpellCast, TileMovement, Wallet)
-from client.colors import C_WHITE, C_YELLOW, C_GREEN, C_RED, C_GRAY, C_ORANGE
+                        PermanentStats, SpellCast, TileMovement)
+from client.colors import C_GRAY
 from ui.ui_sizes import UI
 
 
@@ -40,15 +40,6 @@ class HudHandlers:
         # --- Retrato (atlas, 3x): busto + Vida / recurso / XP nas ranhuras
         #     (+ pinos de munição embaixo da faixa, só arqueiro) ---
         y = self._draw_portrait(combat_stats, char_stats)
-
-        # --- Ataque CD ---
-        if combat_stats.attack_cooldown_timer > 0:
-            cd_surf = self.font_sm.render(
-                f"Ataque CD: {combat_stats.attack_cooldown_timer:.1f}s", False, C_YELLOW)
-        else:
-            cd_surf = self.font_sm.render("Ataque: Pronto", False, C_GREEN)
-        self.screen.blit(cd_surf, (self._u(10), y))
-        y += self._u(18)
 
         # --- Ícones de efeitos de estado (debuffs/buffs ativos) ---
         from engine.components import StatusEffects as _SfxHUD
@@ -118,33 +109,9 @@ class HudHandlers:
             self.screen.blit(rating_surf, (self._u(10), y))
             y += rating_surf.get_height() + self._u(2)
 
-        # --- Ouro ---
-        wallet = self.world.get_component(self.player_entity, Wallet)
-        if wallet:
-            # Pequeno círculo dourado + valor
-            pygame.draw.circle(self.screen, (210, 175, 30), (self._u(18), y + self._u(7)), self._u(6))
-            pygame.draw.circle(self.screen, (255, 220, 60), (self._u(18), y + self._u(7)), self._u(5))
-            gold_surf = self.font_sm.render(f"{wallet.gold}", False, (255, 215, 0))
-            self.screen.blit(gold_surf, (self._u(28), y))
-            y += gold_surf.get_height() + self._u(2)
-
-        # --- Inventário ---
-        inv = self.world.get_component(self.player_entity, Inventory)
-        if inv:
-            inv_surf = self.font_sm.render(
-                f"Mochila: {len(inv.items)}/{inv.max_slots}", False, C_GRAY)
-            self.screen.blit(inv_surf, (self._u(10), y))
-            y += inv_surf.get_height() + self._u(2)
-
-        # --- Talentos pendentes ---
-        from engine.components import TalentTree
-        tt = self.world.get_component(self.player_entity, TalentTree)
-        if tt and tt.available_points > 0:
-            blink = int(pygame.time.get_ticks() / 500) % 2 == 0
-            color = (180, 120, 255) if blink else (130, 80, 220)
-            tal_surf = self.font_md.render(
-                f"+{tt.available_points} TALENTO(S)! Pressione T para alocar", False, color)
-            self.screen.blit(tal_surf, (self._u(10), y))
+        # Ouro, mochila, "Ataque: Pronto" e o aviso piscando de talentos a
+        # alocar saíram do HUD (22/10/2026, pedido do usuário) — ouro e
+        # mochila continuam no inventário/loja.
 
         # --- Barra de cast / canalização (centro inferior da tela) ---
         self._draw_cast_bar(char_stats)

@@ -5912,3 +5912,9 @@ fundo novo do círculo no atlas; elemento novo de munição (pino em
 
 **Teste**: `tests/test_hud_atlas.py` (abertura do anel, pinos
 proporcionais).
+
+Complemento (22/10/2026, pedido do usuário): saíram do HUD as linhas
+abaixo do retrato — "Ataque: Pronto/CD", ouro, "Mochila N/M" e o aviso
+piscando de talentos a alocar (ouro/mochila continuam no inventário e na
+loja). Ficam abaixo do retrato só os ícones de efeitos ativos e, com
+debug (F12), os atributos brutos.
