@@ -6071,6 +6071,9 @@ moldura 3x3 embaixo (miolo transparente com colisão) → 94 peças
 célula limpa. Logo depois o usuário tirou a colisão do miolo da moldura
 → virou célula vazia (sem arte, sem colisão), saiu do catálogo: 93
 peças `cv001`..`cv093`, mapa remapeado em pixel (miolo não era usado).
+Depois +2 peças de rocha com colisão abaixo do bloco de rocha (`cv020`/
+`cv021`) → 95 peças `cv001`..`cv095`, as 33 peças usadas no mapa
+bateram em pixel.
 
 Complemento (23/10/2026, pedido do usuário): Aracnópolis repintada por
 script — todo chão `_` do `aracnopolis_dungeon_terrain.csv` (12329
