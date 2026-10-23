@@ -53,6 +53,13 @@ class TileType:
     # Apenas vision_height >= 2 é considerado bloqueante pelo FogSystem.
     vision_height: int = 0
 
+    # low_ground (23/10/2026, pedido do usuário) — piso ABAIXO do nível do
+    # personagem (água, lava, buraco): sólido pra andar, mas flecha/magia
+    # passa por cima. Lido por EnemyAISystem._has_line_of_sight(...,
+    # projectile=True); a validação de movimento (projectile=False)
+    # continua bloqueando.
+    low_ground: bool = False
+
     # is_bush (01/09/2026) — marca formalmente "isto é um arbusto de
     # stealth", independente de vision_height (árvore também bloqueia
     # visão com vision_height=2, mas NÃO é bush). Único consumidor:
@@ -140,7 +147,8 @@ WALL_TILE     = TileType("Wall",       (115, 108,  98), is_solid=True,  vision_h
 RUINS_WALL    = TileType("RuinsWall",  ( 88,  65,  42), is_solid=True,  vision_height=2)  # Parede das ruínas
 CAVE_WALL     = TileType("CaveWall",   ( 48,  38,  28), is_solid=True,  vision_height=2)  # Parede da caverna
 MOUNTAIN_TILE = TileType("Mountain",   ( 62,  55,  48), is_solid=True,  vision_height=2)  # Montanha / borda
-WATER_TILE    = TileType("Water",      ( 40,  88, 165), is_solid=True,  vision_height=0)  # Água (plana)
+WATER_TILE    = TileType("Water",      ( 40,  88, 165), is_solid=True,  vision_height=0,
+                         low_ground=True)  # Água/lava/buraco (plano, abaixo do personagem)
 TREE_TILE = TileType("Tree", (28, 72, 28), is_solid=True, vision_height=2,
                     # sprites=["tree_1"],
                     # overlay_height=32
@@ -332,6 +340,7 @@ TILE_MAPPING = {
     "m": MOUNTAIN_TILE,
     "W": WATER_TILE,
     "D": ARENA_GATE_TILE,
+    "r": ROCK_TILE,     # pedra como TERRENO (pilar do chão da caverna, 23/10/2026)
     # Spawn chars (renderizam como floor subjacente)
     "P": STONE_FLOOR,   # Player spawn → piso de pedra (cidade)
     "N": STONE_FLOOR,   # Merchant spawn
@@ -719,7 +728,10 @@ SHEET_FAMILIES: list[dict] = [
             (8, 3), (8, 4), (8, 5), (9, 0), (9, 1), (9, 2), (9, 3), (9, 4),
             (9, 5), (10, 0), (10, 1), (10, 2), (10, 3), (10, 4), (10, 5),
         ],
-        "cell_underlying": {c: "W" for c in [
+        # "W" = piso baixo (buraco/lava/água: não anda, flecha passa por
+        # cima); "r" = pilar de pedra 2x2 no meio deles (c3-4) — não anda E
+        # barra flecha/magia (23/10/2026).
+        "cell_underlying": {c: ("r" if c[0] in (3, 4) else "W") for c in [
             (0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5), (0, 6), (0, 7),
             (0, 8), (0, 9), (1, 0), (1, 1), (1, 3), (1, 4), (1, 6), (1, 7),
             (1, 9), (2, 0), (2, 1), (2, 2), (2, 3), (2, 4), (2, 5), (2, 6),

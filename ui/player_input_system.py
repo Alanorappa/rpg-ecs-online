@@ -881,7 +881,8 @@ class PlayerInputSystem(System):
                 from debug.archer_debug import ADBG_CLIENT as _ADBG_c_los
                 _tmap_arch_los = get_tilemap()
                 _has_los_c = (not _tmap_arch_los) or EnemyAISystem._has_line_of_sight(
-                        _tmap_arch_los, pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y)
+                        _tmap_arch_los, pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y,
+                        projectile=True)
                 _ADBG_c_los.log_los(entity_id, target_id, _has_los_c,
                                     p_tile=(pl_tile_x, pl_tile_y), t_tile=(tgt_tile_x, tgt_tile_y))
                 if not _has_los_c:

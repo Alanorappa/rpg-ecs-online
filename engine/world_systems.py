@@ -1790,7 +1790,7 @@ class TowerSystem:
         if not in_range(tx0, ty0, tx1, ty1, tower.attack_range_tiles):
             return False
         if tilemap_comp is not None and not EnemyAISystem._has_line_of_sight(
-                tilemap_comp, tx0, ty0, tx1, ty1):
+                tilemap_comp, tx0, ty0, tx1, ty1, projectile=True):
             return False
         return True
 
@@ -2742,8 +2742,14 @@ class EnemyAISystem(System):
             else self.proximity_threshold_tiles
 
     @staticmethod
-    def _has_line_of_sight(tilemap_comp, x0: int, y0: int, x1: int, y1: int) -> bool:
-        """Bresenham: retorna True se não houver tile sólido entre (x0,y0) e (x1,y1)."""
+    def _has_line_of_sight(tilemap_comp, x0: int, y0: int, x1: int, y1: int,
+                           projectile: bool = False) -> bool:
+        """Bresenham: retorna True se não houver tile sólido entre (x0,y0) e (x1,y1).
+
+        projectile=True (ataque/skill à distância, 23/10/2026): tile
+        `low_ground` (água/lava/buraco) não barra — o tiro passa por cima.
+        Sem ele (ex: validação de movimento em `WorldServer.move_player`),
+        todo tile sólido barra."""
         dx = abs(x1 - x0)
         dy = abs(y1 - y0)
         x, y = x0, y0
@@ -2754,7 +2760,8 @@ class EnemyAISystem(System):
             if (x, y) != (x0, y0) and (x, y) != (x1, y1):
                 if (0 <= x < tilemap_comp.map_width_tiles and
                         0 <= y < tilemap_comp.map_height_tiles):
-                    if tilemap_comp.tile_matrix[y][x].is_solid:
+                    _t = tilemap_comp.tile_matrix[y][x]
+                    if _t.is_solid and not (projectile and _t.low_ground):
                         return False
             if x == x1 and y == y1:
                 break
@@ -3734,7 +3741,8 @@ class EnemyAISystem(System):
                 _cast_los = (_cast_tm is None or self._has_line_of_sight(
                     _cast_tm,
                     enemy_current_tile_x, enemy_current_tile_y,
-                    player_current_tile_x, player_current_tile_y
+                    player_current_tile_x, player_current_tile_y,
+                    projectile=True
                 ))
                 if in_attack_range and _cast_los:
                     ai_control.ranged_cast_timer -= dt
@@ -3811,7 +3819,8 @@ class EnemyAISystem(System):
                         _atk_los = (_atk_tm is None or self._has_line_of_sight(
                             _atk_tm,
                             enemy_current_tile_x, enemy_current_tile_y,
-                            player_current_tile_x, player_current_tile_y
+                            player_current_tile_x, player_current_tile_y,
+                            projectile=True
                         ))
                         if _atk_los:
                             ai_control.ranged_cast_timer = self.RANGED_CAST_TIME
@@ -4810,7 +4819,7 @@ class EnemyAbilitySystem(System):
                     # ── Habilidade ranged: requer LOS + lança projétil ──────
                     _tm_ab = self._get_tilemap()
                     if _tm_ab is not None and not EnemyAISystem._has_line_of_sight(
-                            _tm_ab, ex, ey, px, py):
+                            _tm_ab, ex, ey, px, py, projectile=True):
                         if _MCL:
                             _ident_ab = self.world.get_component(eid, EntityIdentity)
                             _n_ab = _ident_ab.name if _ident_ab else f"mob#{eid}"

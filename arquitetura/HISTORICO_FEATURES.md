@@ -6084,3 +6084,36 @@ muito poluído"): 80% `cvg_6_0` (textura lisa), 20% outra das 29
 texturas do pincel (12612 células, 79,7% lisas na prática). 2 células
 `cvg_3_3` (pedaço de ilha que saiu do tileset) entraram como chão.
 O pincel "Chão Caverna" do God Mode continua sorteio uniforme.
+
+## 81. Flecha/magia passam por cima de água, lava e buraco (23/10/2026)
+
+Pedido do usuário: piso abaixo do nível do personagem (água, lava,
+abismo) impede de andar, mas não deve barrar ataque à distância.
+
+**Mecanismo**: campo novo `TileType.low_ground` (`engine/tileset.py`),
+ligado só em `WATER_TILE` (char `"W"` — o que buraco/lava/água do chão
+da caverna e água do mundo usam). `EnemyAISystem._has_line_of_sight`
+ganhou `projectile: bool = False`; com `True`, tile `low_ground` não
+barra. Passam `projectile=True` os 9 pontos de ataque/skill à distância:
+auto-attack ranged (`server/combat_processor.py`, previsão no cliente
+`ui/player_input_system.py`), skill com projétil (servidor
+`spell_completion_processor.py`, cliente `ui/skill_system.py`), projétil
+do jogador em voo (`ui/spell_system.py`), mob ranged (cast + início do
+ataque), habilidade ranged de mob e torre (`engine/world_systems.py`).
+**Continuam com o padrão (água barra)**: validação de movimento do
+servidor (`WorldServer.move_player`, "pulo por cima de parede" — água
+tem que continuar barrando), aggro/detecção de mob e minion (decisão de
+escopo: o pedido era só ataque). Visão/névoa já não era afetada (usa
+`vision_height`, água = 0).
+
+**Pilares de pedra** do chão da caverna (c3-4, no meio de buraco/lava/
+água) não são piso baixo: char de terreno novo `"r"` → `ROCK_TILE`
+(sólido, não bloqueia visão, barra flecha) via `cell_underlying`. `"k"`
+é pedra só na camada de objetos, não servia como terreno.
+
+**Testes**: `tests/test_ranged_over_low_ground.py` (flecha passa sobre
+água; movimento continua barrado; parede/pedra barram; borda=`W`,
+pilar=`r`). 2 falsos de `_has_line_of_sight` em `tests/test_server.py`
+passaram a aceitar `**kw`. 2 falhas antigas em `tests/test_minions.py`
+(waypoints, loot de lampião) já falhavam antes da mudança, conferido
+num worktree do commit anterior.

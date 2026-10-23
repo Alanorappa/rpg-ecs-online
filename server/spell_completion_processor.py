@@ -1260,7 +1260,8 @@ class SpellCompletionMixin:
                 from engine.world_systems import EnemyAISystem as _EAIS_los
                 if not _EAIS_los._has_line_of_sight(
                         _los_tilemap, _atk_tm.current_tile_x, _atk_tm.current_tile_y,
-                        _tgt_tm.current_tile_x, _tgt_tm.current_tile_y):
+                        _tgt_tm.current_tile_x, _tgt_tm.current_tile_y,
+                        projectile=True):
                     return False, "miss", 0
 
         attacker_cs = self.world.get_component(player_eid, CombatStats)

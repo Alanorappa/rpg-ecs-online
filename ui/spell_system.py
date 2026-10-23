@@ -1000,7 +1000,8 @@ class PlayerProjectileSystem(System):
                     _pty = int(proj_pos.y / _TS)
                     _ttx = int(target_pos.x / _TS)
                     _tty = int(target_pos.y / _TS)
-                    if not _EAIS._has_line_of_sight(_tmap, _ptx, _pty, _ttx, _tty):
+                    if not _EAIS._has_line_of_sight(_tmap, _ptx, _pty, _ttx, _tty,
+                                                    projectile=True):
                         to_remove.append(entry)
                         continue
 

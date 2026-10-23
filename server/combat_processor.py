@@ -182,7 +182,7 @@ class CombatProcessorMixin:
             if _los_tilemap is not None:
                 from engine.world_systems import EnemyAISystem
                 _has_los = EnemyAISystem._has_line_of_sight(
-                    _los_tilemap, _a_tx, _a_ty, _t_tx, _t_ty)
+                    _los_tilemap, _a_tx, _a_ty, _t_tx, _t_ty, projectile=True)
                 ADBG_SERVER.log_los(attacker_eid, target_eid, _has_los)
                 if not _has_los:
                     ADBG_SERVER.log_block(attacker_eid, target_eid, "los_blocked")

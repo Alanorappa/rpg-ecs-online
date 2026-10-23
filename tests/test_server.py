@@ -1598,7 +1598,7 @@ class TestRangedMobAbilities(unittest.TestCase):
 
         # Garante LOS (independe do layout do mapa)
         original_los = EnemyAISystem._has_line_of_sight
-        EnemyAISystem._has_line_of_sight = staticmethod(lambda *a: True)
+        EnemyAISystem._has_line_of_sight = staticmethod(lambda *a, **kw: True)
         try:
             # Antes: player sem poison
             sfx_before = self.ws.world.get_component(self.p_eid, StatusEffects)
@@ -1676,7 +1676,7 @@ class TestRangedMobAbilities(unittest.TestCase):
         original_los = EnemyAISystem._has_line_of_sight
 
         # Força LOS=False
-        EnemyAISystem._has_line_of_sight = staticmethod(lambda *a: False)
+        EnemyAISystem._has_line_of_sight = staticmethod(lambda *a, **kw: False)
         try:
             # Pega slot antes
             abilities = self.ws.world.get_component(hunter, EnemyAbilities)

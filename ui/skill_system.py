@@ -392,7 +392,8 @@ class SkillSystem(System, SkillHandlers):
                             _ttx_los = int(_tgt_pos.x / TILE_SIZE)
                             _tty_los = int(_tgt_pos.y / TILE_SIZE)
                             if not EnemyAISystem._has_line_of_sight(
-                                    _tmap_los, _ptx_los, _pty_los, _ttx_los, _tty_los):
+                                    _tmap_los, _ptx_los, _pty_los, _ttx_los, _tty_los,
+                                    projectile=True):
                                 WARN.add("Há obstáculos no caminho")
                                 return False
 
