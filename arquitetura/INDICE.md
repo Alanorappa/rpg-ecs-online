@@ -338,3 +338,4 @@
 - [22/10/2026] (feature) Paredes da caverna recatalogadas (cv001..cv075) + painel do F10 2x mais largo com grupos montados como no PNG — tags: god-mode, caverna, tileset, editor, mapa — HISTORICO_FEATURES.md §80
 - [22/10/2026] (feature) Paredes da caverna recatalogadas de novo (cv001..cv087), mapa remapeado sem perda — tags: caverna, tileset, mapa — HISTORICO_FEATURES.md §80
 - [23/10/2026] (feature) Paredes da caverna recatalogadas (cv001..cv090), mapa remapeado sem perda — tags: caverna, tileset, mapa — HISTORICO_FEATURES.md §80
+- [23/10/2026] (feature) Aracnópolis: chão trocado por chão de caverna aleatório e paredes por cv017 (script) — tags: caverna, mapa, dungeon, aracnopolis — HISTORICO_FEATURES.md §80

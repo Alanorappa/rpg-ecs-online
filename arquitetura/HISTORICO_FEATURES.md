@@ -6064,3 +6064,13 @@ Complemento (23/10/2026): nova rodada de edição (3 peças novas abaixo
 da rocha, topo da rocha passou a ter colisão) → 90 peças
 `cv001`..`cv090`; as 28 peças usadas no mapa bateram em pixel, nenhuma
 célula limpa.
+
+Complemento (23/10/2026, pedido do usuário): Aracnópolis repintada por
+script — todo chão `_` do `aracnopolis_dungeon_terrain.csv` (12329
+células) virou uma das 30 texturas do pincel "Chão Caverna" (sorteio
+com semente fixa, sem repetir o vizinho da esquerda/de cima; gameplay
+igual: `_` e o `.` da família `cvg` são ambos andáveis), e toda parede
+`c` sem objeto (4321 células) ganhou a peça de parede `cv017` (posição
+0,4 do sheet, a mesma que o usuário já usava em 712 células). Terreno
+`c` mantido embaixo das paredes — colisão/visão idênticas às de antes.
+Bordas de rocha já pintadas à mão não foram tocadas.
