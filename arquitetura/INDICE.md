@@ -337,3 +337,4 @@
 - [22/10/2026] (feature) God Mode edita com zoom (abre em 3x, roda/+- ajusta) + pincel aleatório Chão Caverna (random_brushes) — tags: god-mode, zoom, editor, caverna, terreno, pincel — HISTORICO_FEATURES.md §79
 - [22/10/2026] (feature) Paredes da caverna recatalogadas (cv001..cv075) + painel do F10 2x mais largo com grupos montados como no PNG — tags: god-mode, caverna, tileset, editor, mapa — HISTORICO_FEATURES.md §80
 - [22/10/2026] (feature) Paredes da caverna recatalogadas de novo (cv001..cv087), mapa remapeado sem perda — tags: caverna, tileset, mapa — HISTORICO_FEATURES.md §80
+- [23/10/2026] (feature) Paredes da caverna recatalogadas (cv001..cv090), mapa remapeado sem perda — tags: caverna, tileset, mapa — HISTORICO_FEATURES.md §80

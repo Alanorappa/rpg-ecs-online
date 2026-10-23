@@ -6059,3 +6059,8 @@ ganhou 4 colunas 32x96) → 87 peças `cv001`..`cv087`, mesmo script.
 Remapeamento do mapa: todas as 24 peças usadas bateram em pixel (com
 várias peças idênticas, vence a mais perto da posição antiga no sheet)
 — nenhuma célula limpa.
+
+Complemento (23/10/2026): nova rodada de edição (3 peças novas abaixo
+da rocha, topo da rocha passou a ter colisão) → 90 peças
+`cv001`..`cv090`; as 28 peças usadas no mapa bateram em pixel, nenhuma
+célula limpa.
