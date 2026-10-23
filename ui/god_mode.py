@@ -83,9 +83,13 @@ _C_SAVE_OK  = ( 40, 200,  80)
 
 # ── Layout base (referência 720p) — multiplicado pelo ui_scale em runtime ─────
 
-_BASE_PANEL_W = 220
+# Painel 2x mais largo (22/10/2026, pedido do usuário — miniaturas de
+# tile pequenas demais pra identificar); _THUMB_BASE é o lado máximo de
+# 1 tile de 32px nas miniaturas (64 = 2x o tamanho real).
+_BASE_PANEL_W = 440
 _BASE_MARGIN  = 10
 _COLS         = 4
+_THUMB_BASE   = 64
 
 
 class GodModeEditor:
@@ -689,23 +693,34 @@ class GodModeEditor:
                         cy += lbl.get_height() + int(2 * sc)
                     cy += int(4 * sc)
 
-                cell_size = max(16, min(avail_w // cols, int(36 * sc)))
-                for row in range(rows):
-                    for col in range(cols):
-                        tid  = f"{prefix}_{col}_{row}"
-                        if tid not in SHEET_TILE_MAP:   # célula fora de `cells`
-                            continue
-                        cx_t = x0 + col * cell_size
-                        cr   = pygame.Rect(cx_t, cy, cell_size, cell_size)
-                        pygame.draw.rect(screen, fam["color"], cr)
-                        raw = TILE_SPRITES.get_raw_sprite(tid)
-                        if raw:
-                            screen.blit(pygame.transform.scale(raw, (cell_size, cell_size)), (cx_t, cy))
-                        pygame.draw.rect(screen, _C_SEL if tid == self._sel_char else _C_BORDER, cr,
-                                         2 if tid == self._sel_char else 1)
-                        self._sheet_cell_rects.append((cr, tid, f"{fam['label']} ({col},{row})", fam["color"]))
-                    cy += cell_size
-                cy += int(6 * sc)
+                # Miniatura 2x (22/10/2026): sheet mais largo que o painel é
+                # quebrado em BLOCOS DE COLUNAS, um embaixo do outro — cada
+                # bloco continua montado como no PNG (nunca encolhe o tile).
+                cell_size = max(16, int(_THUMB_BASE * sc))
+                chunk     = max(1, avail_w // cell_size)
+                for c0 in range(0, cols, chunk):
+                    c1 = min(cols, c0 + chunk)
+                    used_rows = [row for row in range(rows)
+                                 if any(f"{prefix}_{col}_{row}" in SHEET_TILE_MAP
+                                        for col in range(c0, c1))]
+                    if not used_rows:
+                        continue
+                    for row in range(used_rows[0], used_rows[-1] + 1):
+                        for col in range(c0, c1):
+                            tid  = f"{prefix}_{col}_{row}"
+                            if tid not in SHEET_TILE_MAP:   # célula fora de `cells`
+                                continue
+                            cx_t = x0 + (col - c0) * cell_size
+                            cr   = pygame.Rect(cx_t, cy, cell_size, cell_size)
+                            pygame.draw.rect(screen, fam["color"], cr)
+                            raw = TILE_SPRITES.get_raw_sprite(tid)
+                            if raw:
+                                screen.blit(pygame.transform.scale(raw, (cell_size, cell_size)), (cx_t, cy))
+                            pygame.draw.rect(screen, _C_SEL if tid == self._sel_char else _C_BORDER, cr,
+                                             2 if tid == self._sel_char else 1)
+                            self._sheet_cell_rects.append((cr, tid, f"{fam['label']} ({col},{row})", fam["color"]))
+                        cy += cell_size
+                    cy += int(6 * sc)
 
         # Sheet picker de objetos (tab 1)
         elif self._tab == 1 and OBJECT_SHEET_FAMILIES:
@@ -762,7 +777,40 @@ class GodModeEditor:
                          label, list(ids), color))
                 cy += lbl.get_height() + int(3 * sc)
 
-                cell_w  = max(16, min(avail_w // 8, int(36 * sc)))
+                # Grupo MONTADO como no PNG (22/10/2026, pedido do usuário):
+                # cada peça na posição relativa dela dentro do grupo, na
+                # escala de 1 tile = _THUMB_BASE (encolhe só se o grupo não
+                # couber na largura). Grupo esparso demais (encolheria a
+                # menos de ~1 px de tela por px de arte, ex: árvores
+                # espalhadas pelo sheet inteiro) continua na fileira antiga.
+                gx0 = min(info[1] for _t, info in family_tiles)
+                gy0 = min(info[2] for _t, info in family_tiles)
+                gw  = max(info[1] + info[3] for _t, info in family_tiles) - gx0
+                gh  = max(info[2] + info[4] for _t, info in family_tiles) - gy0
+                k   = min(_THUMB_BASE * sc / TILE_SIZE, avail_w / max(gw, 1))
+                if k >= sc:
+                    for tid, (_sf, sx_, sy_, tw, th) in family_tiles:
+                        px = x0 + round((sx_ - gx0) * k)
+                        py = cy + round((sy_ - gy0) * k)
+                        cr = pygame.Rect(px, py,
+                                         x0 + round((sx_ - gx0 + tw) * k) - px,
+                                         cy + round((sy_ - gy0 + th) * k) - py)
+                        raw = TILE_SPRITES.get_raw_sprite(tid)
+                        if raw:
+                            screen.blit(pygame.transform.scale(raw, cr.size), cr.topleft)
+                        else:
+                            pygame.draw.rect(screen, color, cr)
+                        if tid == self._sel_char:
+                            pygame.draw.rect(screen, _C_SEL, cr, 2)
+                        else:   # contorno leve: mostra onde cada peça começa
+                            edge = pygame.Surface(cr.size, pygame.SRCALPHA)
+                            pygame.draw.rect(edge, (255, 255, 255, 45), edge.get_rect(), 1)
+                            screen.blit(edge, cr.topleft)
+                        self._obj_sheet_cell_rects.append((cr, tid, f"{label}: {tid}", color))
+                    cy += round(gh * k) + int(6 * sc)
+                    continue
+
+                cell_w  = max(16, min(avail_w // 8, int(_THUMB_BASE * sc)))
                 cur_x   = x0
                 row_y   = cy
                 row_h   = 0

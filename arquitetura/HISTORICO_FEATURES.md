@@ -6030,3 +6030,26 @@ exibido no painel ("Selecionado") vem junto na tupla de
 **Verificação**: testes de God Mode/mapa/tileset (52 passed, 2 novos:
 clique com zoom 3x e pincel da caverna), desenho do God Mode com escala
 3x sem erro. **Falta**: usuário validar no jogo (rodar `python main.py`).
+
+## 80. Paredes da caverna recatalogadas + painel do F10 2x com grupos montados (22/10/2026)
+
+**Paredes**: usuário redesenhou `TX Tileset Cave` (rocha virou grade de
+32x32, passagem com colunas 32x96) e atualizou `(dimensions)`/
+`(collisions)`. Mesmo script de §77/§78 → 75 peças `cv001`..`cv075`, 6
+grupos. `aracnopolis_dungeon_objects.csv` remapeado: peça idêntica em
+pixel → id novo; senão peça na MESMA posição/tamanho do sheet (arte
+editada no lugar); senão célula limpa — 4 células limpas (cv008/cv011/
+cv012 antigas, que viraram peças de outro tamanho): (linha 137, col 98),
+(138, 99), (144, 95), (144, 96).
+
+**Painel do F10 (`ui/god_mode.py`)**, pedido do usuário (miniaturas
+pequenas demais): `_BASE_PANEL_W` 220→440 (decisão do usuário: painel
+mais largo, mapa fica mais estreito), miniatura de tile `_THUMB_BASE =
+64` (2x o real). Aba Objetos: cada GRUPO aparece montado como no PNG
+(peças na posição relativa, contorno leve em cada uma; escala reduz só
+se o grupo não couber; grupo esparso demais cai na fileira antiga). Aba
+Terreno: sheet mais largo que o painel é quebrado em blocos de colunas
+(cada bloco montado, sem encolher o tile).
+
+**Verificação**: 52 testes de God Mode/mapa/tileset, capturas do painel
+renderizado (objetos e terreno). **Falta**: usuário validar no jogo.
