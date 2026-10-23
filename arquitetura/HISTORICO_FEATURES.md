@@ -6065,6 +6065,11 @@ da rocha, topo da rocha passou a ter colisão) → 90 peças
 `cv001`..`cv090`; as 28 peças usadas no mapa bateram em pixel, nenhuma
 célula limpa.
 
+Complemento (23/10/2026, 2ª rodada): passagem sem lava/água ganhou uma
+moldura 3x3 embaixo (miolo transparente com colisão) → 94 peças
+`cv001`..`cv094`; as 33 peças usadas no mapa bateram em pixel, nenhuma
+célula limpa.
+
 Complemento (23/10/2026, pedido do usuário): Aracnópolis repintada por
 script — todo chão `_` do `aracnopolis_dungeon_terrain.csv` (12329
 células) virou uma das 30 texturas do pincel "Chão Caverna" (sorteio
