@@ -39,23 +39,6 @@ ENEMY_TILE_CHARS = {
     "B": ("melee",   "boss"),
 }
 
-# Cache: prefixo de sheet → char de terreno subjacente (populado na primeira chamada)
-_SHEET_UNDERLYING: dict[str, str] | None = None
-
-
-def _get_sheet_underlying() -> dict[str, str]:
-    """Retorna mapeamento prefix → underlying_terrain das SHEET_FAMILIES."""
-    global _SHEET_UNDERLYING
-    if _SHEET_UNDERLYING is None:
-        from engine.tileset import SHEET_TILE_MAP, SHEET_FAMILIES
-        _SHEET_UNDERLYING = {}
-        for fam in SHEET_FAMILIES:
-            prefix = fam["prefix"]
-            under  = fam.get("underlying_terrain", "G")
-            _SHEET_UNDERLYING[prefix] = under
-    return _SHEET_UNDERLYING
-
-
 def _parse_terrain_cell(cell: str) -> tuple[str, str]:
     """
     Interpreta uma célula do terrain CSV unificado.
@@ -65,12 +48,11 @@ def _parse_terrain_cell(cell: str) -> tuple[str, str]:
     """
     from engine.tileset import SHEET_TILE_MAP
     if cell in SHEET_TILE_MAP:
-        # É um sprite de terreno: extrai o char de gameplay do prefixo
-        sheet_under = _get_sheet_underlying()
-        for prefix, under in sheet_under.items():
-            if cell.startswith(prefix + "_"):
-                return under, cell
-        return "G", cell   # fallback
+        # É um sprite de terreno: char de gameplay POR TILE, gravado por
+        # `discover_sheet_tiles` (underlying_terrain da família, ou o
+        # `cell_underlying` da célula — ex: buraco/lava/água sólidos no
+        # chão da caverna, 22/10/2026).
+        return OBJECT_UNDERLYING.get(cell, "G"), cell
     if len(cell) > 1:
         # Token desconhecido (sheet removida do catálogo, nunca
         # cadastrada, erro de digitação no editor, etc.) — NUNCA devolver

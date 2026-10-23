@@ -5959,3 +5959,44 @@ de tileset/mapa/God Mode (48 passed), carga dos 2 mapas de caverna,
 folha de conferência visual com todas as peças rotuladas. **Falta**:
 usuário validar no God Mode/jogo (Y-sort das bordas de rocha sem
 colisão é o ponto mais provável de ajuste).
+
+## 78. Caverna separada em paredes (objetos) e chão (terreno) (22/10/2026)
+
+Usuário corrigiu o tileset de §77 e percebeu que plataformas/buracos/
+lava/água são CHÃO (onde o player pisa) e as paredes ficam POR CIMA
+deles — como tudo era objeto, não dava pra pôr parede sobre chão.
+Separou em 2 arquivos, cada um com seus PNGs de apoio `(dimensions)`/
+`(collisions)`:
+
+- `TX Tileset Cave` (só paredes) → recatalogado em
+  `OBJECT_SHEET_FAMILIES`, 57 peças `cv001`..`cv057`, 6 grupos (rocha/
+  passagem × chão/lava/água), `vision_height=2` em toda peça com
+  colisão.
+- `TX Tileset Cave Ground` (chão) → família NOVA de terreno em
+  `SHEET_FAMILIES`, prefixo `cvg`, 83 células.
+
+**Mudança de motor (pequena, mesmo padrão de `color_overrides`)**:
+terreno só tinha colisão por ARQUIVO inteiro (`underlying_terrain` por
+prefixo). `discover_sheet_tiles` ganhou 2 campos opcionais —
+`cells` (só registra as células listadas, God Mode não mostra vazio) e
+`cell_underlying` (char de gameplay por célula). Célula com colisão no
+PNG de apoio vira `"W"` (sólido, `vision_height=0` — mesma decisão de
+§77: buraco/lava/água impedem andar, não bloqueiam visão).
+`map_loader._parse_terrain_cell` passou a ler o char POR TILE de
+`OBJECT_UNDERLYING` (preenchido por `discover_sheet_tiles`) — o cache
+por prefixo `_get_sheet_underlying` saiu (resultado idêntico pras
+famílias antigas, conferido). God Mode pula célula não registrada na
+grade de terreno. Colisão de terreno pintado no God Mode continua
+valendo só depois de salvar/recarregar o mapa (comportamento de sempre
+pra terreno de sheet).
+
+**Mapa já pintado** (`aracnopolis_dungeon_objects.csv`, 14 células com
+peças de §77): remapeado por comparação de pixel peça antiga × nova —
+9 bateram idênticas (só `cv023`→`cv017` mudou de número); 5 peças da
+passagem antiga não existem mais no desenho novo e foram limpas (linhas
+143–145, colunas 94–96), pra repintar.
+
+**Verificação**: registro (57 + 83), char sólido/andável por célula,
+testes de mapa/tileset/God Mode (50 passed, 2 testes novos em
+`tests/test_map_loader_terrain_parsing.py::TestColisaoPorCelulaNoTerreno`).
+**Falta**: validação do usuário no God Mode/jogo.

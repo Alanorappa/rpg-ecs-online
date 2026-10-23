@@ -651,6 +651,8 @@ class GodModeEditor:
                 for row in range(rows):
                     for col in range(cols):
                         tid  = f"{prefix}_{col}_{row}"
+                        if tid not in SHEET_TILE_MAP:   # célula fora de `cells`
+                            continue
                         cx_t = x0 + col * cell_size
                         cr   = pygame.Rect(cx_t, cy, cell_size, cell_size)
                         pygame.draw.rect(screen, fam["color"], cr)

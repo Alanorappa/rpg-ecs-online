@@ -24,6 +24,29 @@ from engine.map_loader import _parse_terrain_cell, load_map_csv
 from engine.tileset import SHEET_TILE_MAP
 
 
+class TestColisaoPorCelulaNoTerreno(unittest.TestCase):
+    """22/10/2026 — chão da caverna ("cvg"): célula com colisão (buraco/
+    lava/água) vira "W" (sólido, não bloqueia visão) via `cell_underlying`;
+    o resto da família continua no `underlying_terrain` dela."""
+
+    def test_celula_solida_e_andavel_na_mesma_familia(self):
+        from engine.tileset import SHEET_FAMILIES, TILE_MAPPING
+        fam = next(f for f in SHEET_FAMILIES if f["prefix"] == "cvg")
+        solid = next(iter(fam["cell_underlying"]))
+        walk = next(c for c in fam["cells"] if c not in fam["cell_underlying"])
+        tc, vis = _parse_terrain_cell("cvg_%d_%d" % solid)
+        self.assertEqual(tc, "W")
+        self.assertTrue(TILE_MAPPING[tc].is_solid)
+        self.assertEqual(TILE_MAPPING[tc].vision_height, 0)
+        self.assertEqual(_parse_terrain_cell("cvg_%d_%d" % walk)[0], fam["underlying_terrain"])
+
+    def test_celula_fora_de_cells_nao_e_registrada(self):
+        from engine.tileset import SHEET_FAMILIES
+        fam = next(f for f in SHEET_FAMILIES if f["prefix"] == "cvg")
+        self.assertEqual({k for k in SHEET_TILE_MAP if k.startswith("cvg_")},
+                         {"cvg_%d_%d" % c for c in fam["cells"]})
+
+
 class TestParseTerrainCellNuncaInflaLinha(unittest.TestCase):
 
     def test_token_desconhecido_de_varios_chars_cai_pro_G(self):

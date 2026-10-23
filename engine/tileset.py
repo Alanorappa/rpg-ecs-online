@@ -689,6 +689,126 @@ SHEET_FAMILIES: list[dict] = [
         "color":               (120, 92, 62),
         "underlying_terrain":  ".",
     },
+        {
+        # Chão da caverna (22/10/2026) — separado das paredes ("TX Tileset
+        # Cave", objetos) a pedido do usuário. Células extraídas dos PNGs
+        # de apoio `(dimensions)`/`(collisions)` (só as que têm arte ou
+        # colisão, `cells`); célula com colisão (buraco, lava, água) vira
+        # char "W" (sólido, NÃO bloqueia visão) via `cell_underlying`.
+        "file":                "TX Tileset Cave Ground",
+        "prefix":              "cvg",
+        "tile_w":              32,
+        "tile_h":              32,
+        "is_solid":            False,
+        "label":               "Chão de caverna",
+        "underlying_terrain":  ".",
+        "color":               (93, 72, 60),
+        "cells": [
+            (0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5), (0, 6), (0, 7),
+            (0, 8), (0, 9), (1, 0), (1, 1), (1, 3), (1, 4), (1, 6), (1, 7),
+            (1, 9), (2, 0), (2, 1), (2, 2), (2, 3), (2, 4), (2, 5), (2, 6),
+            (2, 7), (2, 8), (2, 9), (3, 0), (3, 1), (3, 2), (3, 3), (3, 4),
+            (3, 5), (3, 6), (3, 7), (3, 8), (4, 0), (4, 2), (4, 3), (4, 5),
+            (4, 6), (4, 8), (5, 0), (5, 1), (5, 2), (5, 3), (5, 4), (5, 5),
+            (5, 6), (5, 7), (5, 8), (6, 0), (6, 1), (6, 2), (6, 3), (6, 4),
+            (6, 5), (6, 6), (6, 7), (7, 0), (7, 1), (7, 2), (7, 3), (7, 4),
+            (7, 5), (8, 0), (8, 1), (8, 2), (8, 3), (8, 4), (8, 5), (9, 0),
+            (9, 1), (9, 2), (9, 3), (9, 4), (9, 5), (10, 0), (10, 1), (10, 2),
+            (10, 3), (10, 4), (10, 5),
+        ],
+        "cell_underlying": {c: "W" for c in [
+            (0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5), (0, 6), (0, 7),
+            (0, 8), (0, 9), (1, 0), (1, 1), (1, 3), (1, 4), (1, 6), (1, 7),
+            (1, 9), (2, 0), (2, 1), (2, 2), (2, 3), (2, 4), (2, 5), (2, 6),
+            (2, 7), (2, 8), (2, 9), (3, 2), (3, 5), (3, 8), (4, 2), (4, 5),
+            (4, 8), (5, 2), (5, 5), (5, 8), (6, 6), (6, 7),
+        ]},
+        "color_overrides": {
+            (0, 0): (78, 60, 55),
+            (0, 1): (74, 57, 53),
+            (0, 2): (81, 62, 57),
+            (0, 3): (82, 63, 58),
+            (0, 4): (114, 81, 56),
+            (0, 5): (157, 99, 56),
+            (0, 6): (134, 89, 57),
+            (0, 7): (70, 64, 60),
+            (0, 8): (59, 64, 62),
+            (0, 9): (67, 64, 61),
+            (1, 0): (90, 66, 55),
+            (1, 1): (66, 50, 47),
+            (1, 3): (82, 63, 58),
+            (1, 4): (139, 94, 54),
+            (1, 6): (161, 102, 56),
+            (1, 7): (60, 63, 61),
+            (1, 9): (58, 65, 62),
+            (2, 0): (75, 60, 56),
+            (2, 1): (73, 55, 52),
+            (2, 2): (80, 62, 57),
+            (2, 3): (83, 64, 59),
+            (2, 4): (111, 79, 55),
+            (2, 5): (160, 100, 56),
+            (2, 6): (132, 87, 57),
+            (2, 7): (69, 64, 60),
+            (2, 8): (58, 64, 62),
+            (2, 9): (68, 65, 61),
+            (3, 0): (83, 64, 59),
+            (3, 1): (86, 66, 61),
+            (3, 2): (63, 47, 45),
+            (3, 3): (122, 84, 58),
+            (3, 4): (106, 76, 60),
+            (3, 5): (148, 97, 54),
+            (3, 6): (72, 66, 61),
+            (3, 7): (79, 66, 61),
+            (3, 8): (57, 64, 61),
+            (4, 0): (86, 67, 61),
+            (4, 2): (66, 50, 47),
+            (4, 3): (105, 77, 60),
+            (4, 5): (138, 94, 54),
+            (4, 6): (81, 68, 63),
+            (4, 8): (60, 63, 61),
+            (5, 0): (84, 65, 59),
+            (5, 1): (86, 66, 61),
+            (5, 2): (62, 47, 44),
+            (5, 3): (119, 82, 58),
+            (5, 4): (98, 72, 59),
+            (5, 5): (147, 97, 54),
+            (5, 6): (73, 66, 61),
+            (5, 7): (81, 66, 61),
+            (5, 8): (57, 64, 62),
+            (6, 0): (90, 70, 64),
+            (6, 1): (91, 71, 64),
+            (6, 2): (91, 71, 64),
+            (6, 3): (90, 70, 64),
+            (6, 4): (100, 78, 66),
+            (6, 5): (93, 72, 64),
+            (6, 6): (47, 67, 66),
+            (6, 7): (202, 119, 56),
+            (7, 0): (90, 70, 64),
+            (7, 1): (88, 68, 63),
+            (7, 2): (88, 69, 63),
+            (7, 3): (94, 74, 65),
+            (7, 4): (99, 77, 66),
+            (7, 5): (98, 76, 65),
+            (8, 0): (90, 70, 64),
+            (8, 1): (90, 70, 64),
+            (8, 2): (91, 70, 64),
+            (8, 3): (91, 71, 64),
+            (8, 4): (98, 76, 65),
+            (8, 5): (93, 72, 64),
+            (9, 0): (90, 70, 64),
+            (9, 1): (90, 70, 64),
+            (9, 2): (91, 71, 64),
+            (9, 3): (93, 72, 64),
+            (9, 4): (92, 72, 64),
+            (9, 5): (96, 75, 65),
+            (10, 0): (90, 70, 64),
+            (10, 1): (90, 70, 64),
+            (10, 2): (91, 71, 64),
+            (10, 3): (94, 73, 64),
+            (10, 4): (96, 75, 65),
+            (10, 5): (92, 72, 64),
+        },
+    },
 ]
 
 
@@ -762,15 +882,27 @@ def discover_sheet_tiles() -> None:
         color_overrides = fam.get("color_overrides", {})
         under     = fam.get("underlying_terrain", "G")
         tw, th    = fam["tile_w"], fam["tile_h"]
+        # `cells` (opcional, 22/10/2026): só registra estas células — sheet
+        # com áreas vazias não polui o God Mode. `cell_underlying`
+        # (opcional): char de gameplay por célula, sobrescrevendo
+        # `underlying_terrain` — mirror de `color_overrides`, pra 1 arquivo
+        # de chão misturar piso andável com buraco/lava/água sólidos.
+        only_cells = set(fam["cells"]) if "cells" in fam else None
+        cell_under = fam.get("cell_underlying", {})
         for row in range(rows):
             for col in range(cols):
+                if only_cells is not None and (col, row) not in only_cells:
+                    continue
                 tile_id = f"{prefix}_{col}_{row}"
                 sx = col * tw
                 sy = row * th
+                cell_char = cell_under.get((col, row), under)
+                cell_solid = (TILE_MAPPING[cell_char].is_solid
+                              if (col, row) in cell_under else is_solid)
                 tile = TileType(
                     name=f"Sheet_{prefix}_{col}_{row}",
                     color=color_overrides.get((col, row), color),
-                    is_solid=is_solid,
+                    is_solid=cell_solid,
                     sprite_name=tile_id,
                     sprite_px_w=tw,
                     sprite_px_h=th,
@@ -778,7 +910,7 @@ def discover_sheet_tiles() -> None:
                 SHEET_TILE_MAP[tile_id] = (sheet_file, sx, sy, tw, th)
                 OBJECT_CHARS.add(tile_id)
                 OBJECT_MAPPING[tile_id] = tile
-                OBJECT_UNDERLYING[tile_id] = under
+                OBJECT_UNDERLYING[tile_id] = cell_char
 
 
 # ── Object Sheets — sheets de múltiplos objetos em um único PNG ──────────────
@@ -1934,20 +2066,15 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
         "label":  "Caverna",
         "color":  (60, 46, 44),
         "underlying_terrain": ".",
-        # Catalogado em 22/10/2026 (pedido do usuário, tileset ainda
-        # incompleto) a partir de 2 PNGs de apoio no mesmo diretório —
-        # `(dimensions)` (contorno vermelho de cada peça) e `(collisions)`
-        # (área de colisão) — mesmo processo das construções (ver
-        # HISTORICO_FEATURES.md §24): peças extraídas por script
-        # (component-labeling alinhado à grade de 32px), nunca a olho.
-        # Células vazias (sem arte e sem colisão) ficam de fora. Grupos =
-        # regiões do sheet. vision_height 2 só nas peças de rocha com
-        # colisão (decisão do usuário); bordas de buraco/lava/água só
-        # impedem de andar. Peça sem colisão fora da rocha (chão de
-        # plataforma, miolo de lava/água) não entra no Y-sort (sort 0,
-        # desenha por baixo do personagem). Substituiu o terreno 64x64
-        # antigo ("txc", mesmo arquivo) — map_cave_east/west perderam
-        # esse chão (decisão do usuário: repintar depois).
+        # Catalogado em 22/10/2026 a partir de 2 PNGs de apoio no mesmo
+        # diretório — `(dimensions)` (contorno vermelho de cada peça) e
+        # `(collisions)` (área de colisão) — mesmo processo das
+        # construções (HISTORICO_FEATURES.md §24/§77): peças extraídas por
+        # script, alinhadas à grade de 32px, nunca a olho. Só PAREDES
+        # (rocha/passagem) — o chão (buraco, lava, água, plataformas) mora
+        # em "TX Tileset Cave Ground" (SHEET_FAMILIES, terreno), pra parede
+        # poder ficar EM CIMA do chão (§78). vision_height 2 em toda peça
+        # com colisão (decisão do usuário: rocha bloqueia visão).
         "groups": {
             "c01": {
                 "prefix": "cv",
@@ -1969,26 +2096,19 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
                 "prefix": "cv",
                 "no_prefix_separator": True,
                 "label":  "Caverna: Passagem",
-                "color":  (35, 25, 27),
+                "color":  (40, 29, 30),
                 "tiles": [
                     ("009",  128,    0,  32,  32, "full", 0, False, 1, None, 2),
                     ("010",  160,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("011",  192,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("012",  224,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("013",  128,   32,  32,  32, "full", 0, False, 1, None, 2),
-                    ("014",  160,   32,  32,  32, "full", 0, False, 1, None, 2),
-                    ("015",  192,   32,  32,  32, "full", 0, False, 1, None, 2),
-                    ("016",  224,   32,  32,  32, "full", 0, False, 1, None, 2),
-                    ("017",  128,   64,  32,  32, "full", 0, False, 1, None, 2),
-                    ("018",  160,   64,  32,  32, None, 0, False, 1, None, 0),
-                    ("019",  192,   64,  32,  32, None, 0, False, 1, None, 0),
-                    ("020",  224,   64,  32,  32, "full", 0, False, 1, None, 2),
-                    ("021",  128,   96,  32,  32, "full", 0, False, 1, None, 2),
-                    ("022",  224,   96,  32,  32, "full", 0, False, 1, None, 2),
-                    ("023",  128,  128,  32,  32, None, 0, False, 1, None, 0),
-                    ("024",  160,  128,  32,  32, None, 0, False, 1, None, 0),
-                    ("025",  192,  128,  32,  32, None, 0, False, 1, None, 0),
-                    ("026",  224,  128,  32,  32, None, 0, False, 1, None, 0),
+                    ("011",  128,   32,  32,  32, "full", 0, False, 1, None, 2),
+                    ("012",  160,   32,  32,  32, "full", 0, False, 1, None, 2),
+                    ("013",  128,   64,  32,  32, "full", 0, False, 1, None, 2),
+                    ("014",  160,   64,  32,  32, "full", 0, False, 1, None, 2),
+                    ("015",  128,   96,  32,  32, "full", 0, False, 1, None, 2),
+                    ("016",  192,   96,  32,  32, "full", 0, False, 1, None, 2),
+                    ("017",  128,  128,  32,  32, "full", 0, False, 1, None, 2),
+                    ("018",  160,  128,  32,  32, "full", 0, False, 1, None, 2),
+                    ("019",  192,  128,  32,  32, "full", 0, False, 1, None, 2),
                 ],
             },
             "c03": {
@@ -1997,41 +2117,33 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
                 "label":  "Caverna: Rocha (lava)",
                 "color":  (80, 53, 37),
                 "tiles": [
-                    ("027",  256,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("028",  288,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("029",  320,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("030",  352,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("031",  256,   32,  32,  96, "full", 0, False, 1, None, 2),
-                    ("032",  288,   32,  32,  96, "full", 0, False, 1, None, 2),
-                    ("033",  320,   32,  32,  96, "full", 0, False, 1, None, 2),
-                    ("034",  352,   32,  32,  96, "full", 0, False, 1, None, 2),
+                    ("020",  256,    0,  32,  32, "full", 0, False, 1, None, 2),
+                    ("021",  288,    0,  32,  32, "full", 0, False, 1, None, 2),
+                    ("022",  320,    0,  32,  32, "full", 0, False, 1, None, 2),
+                    ("023",  352,    0,  32,  32, "full", 0, False, 1, None, 2),
+                    ("024",  256,   32,  32,  96, "full", 0, False, 1, None, 2),
+                    ("025",  288,   32,  32,  96, "full", 0, False, 1, None, 2),
+                    ("026",  320,   32,  32,  96, "full", 0, False, 1, None, 2),
+                    ("027",  352,   32,  32,  96, "full", 0, False, 1, None, 2),
                 ],
             },
             "c04": {
                 "prefix": "cv",
                 "no_prefix_separator": True,
                 "label":  "Caverna: Passagem (lava)",
-                "color":  (71, 46, 33),
+                "color":  (63, 43, 33),
                 "tiles": [
-                    ("035",  384,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("036",  416,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("037",  448,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("038",  480,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("039",  384,   32,  32,  32, "full", 0, False, 1, None, 2),
-                    ("040",  416,   32,  32,  32, "full", 0, False, 1, None, 2),
-                    ("041",  448,   32,  32,  32, "full", 0, False, 1, None, 2),
-                    ("042",  480,   32,  32,  32, "full", 0, False, 1, None, 2),
-                    ("043",  384,   64,  32,  32, "full", 0, False, 1, None, 2),
-                    ("044",  416,   64,  32,  32, "full", 0, False, 1, None, 2),
-                    ("045",  448,   64,  32,  32, "full", 0, False, 1, None, 2),
-                    ("046",  480,   64,  32,  32, "full", 0, False, 1, None, 2),
-                    ("047",  384,   96,  32,  32, "full", 0, False, 1, None, 2),
-                    ("048",  416,   96,  64,  32, "full", 0, False, 1, None, 2),
-                    ("049",  480,   96,  32,  32, "full", 0, False, 1, None, 2),
-                    ("050",  384,  128,  32,  32, "full", 0, False, 1, None, 2),
-                    ("051",  416,  128,  32,  32, "full", 0, False, 1, None, 2),
-                    ("052",  448,  128,  32,  32, "full", 0, False, 1, None, 2),
-                    ("053",  480,  128,  32,  32, "full", 0, False, 1, None, 2),
+                    ("028",  384,    0,  32,  32, "full", 0, False, 1, None, 2),
+                    ("029",  416,    0,  32,  32, "full", 0, False, 1, None, 2),
+                    ("030",  384,   32,  32,  32, "full", 0, False, 1, None, 2),
+                    ("031",  416,   32,  32,  32, "full", 0, False, 1, None, 2),
+                    ("032",  384,   64,  32,  32, "full", 0, False, 1, None, 2),
+                    ("033",  416,   64,  32,  32, "full", 0, False, 1, None, 2),
+                    ("034",  384,   96,  32,  32, "full", 0, False, 1, None, 2),
+                    ("035",  448,   96,  32,  32, "full", 0, False, 1, None, 2),
+                    ("036",  384,  128,  32,  32, "full", 0, False, 1, None, 2),
+                    ("037",  416,  128,  32,  32, "full", 0, False, 1, None, 2),
+                    ("038",  448,  128,  32,  32, "full", 0, False, 1, None, 2),
                 ],
             },
             "c05": {
@@ -2040,154 +2152,33 @@ OBJECT_SHEET_FAMILIES: list[dict] = [
                 "label":  "Caverna: Rocha (água)",
                 "color":  (45, 38, 39),
                 "tiles": [
-                    ("054",  512,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("055",  544,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("056",  576,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("057",  608,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("058",  512,   32,  32,  96, "full", 0, False, 1, None, 2),
-                    ("059",  544,   32,  32,  96, "full", 0, False, 1, None, 2),
-                    ("060",  576,   32,  32,  96, "full", 0, False, 1, None, 2),
-                    ("061",  608,   32,  32,  96, "full", 0, False, 1, None, 2),
+                    ("039",  512,    0,  32,  32, "full", 0, False, 1, None, 2),
+                    ("040",  544,    0,  32,  32, "full", 0, False, 1, None, 2),
+                    ("041",  576,    0,  32,  32, "full", 0, False, 1, None, 2),
+                    ("042",  608,    0,  32,  32, "full", 0, False, 1, None, 2),
+                    ("043",  512,   32,  32,  96, "full", 0, False, 1, None, 2),
+                    ("044",  544,   32,  32,  96, "full", 0, False, 1, None, 2),
+                    ("045",  576,   32,  32,  96, "full", 0, False, 1, None, 2),
+                    ("046",  608,   32,  32,  96, "full", 0, False, 1, None, 2),
                 ],
             },
             "c06": {
                 "prefix": "cv",
                 "no_prefix_separator": True,
                 "label":  "Caverna: Passagem (água)",
-                "color":  (37, 34, 35),
+                "color":  (40, 33, 34),
                 "tiles": [
-                    ("062",  640,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("063",  672,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("064",  704,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("065",  736,    0,  32,  32, "full", 0, False, 1, None, 2),
-                    ("066",  640,   32,  32,  32, "full", 0, False, 1, None, 2),
-                    ("067",  672,   32,  32,  32, "full", 0, False, 1, None, 2),
-                    ("068",  704,   32,  32,  32, "full", 0, False, 1, None, 2),
-                    ("069",  736,   32,  32,  32, "full", 0, False, 1, None, 2),
-                    ("070",  640,   64,  32,  32, "full", 0, False, 1, None, 2),
-                    ("071",  672,   64,  32,  32, "full", 0, False, 1, None, 2),
-                    ("072",  704,   64,  32,  32, "full", 0, False, 1, None, 2),
-                    ("073",  736,   64,  32,  32, "full", 0, False, 1, None, 2),
-                    ("074",  640,   96,  32,  32, "full", 0, False, 1, None, 2),
-                    ("075",  672,   96,  64,  32, "full", 0, False, 1, None, 2),
-                    ("076",  736,   96,  32,  32, "full", 0, False, 1, None, 2),
-                    ("077",  640,  128,  32,  32, "full", 0, False, 1, None, 2),
-                    ("078",  672,  128,  32,  32, "full", 0, False, 1, None, 2),
-                    ("079",  704,  128,  32,  32, "full", 0, False, 1, None, 2),
-                    ("080",  736,  128,  32,  32, "full", 0, False, 1, None, 2),
-                ],
-            },
-            "c07": {
-                "prefix": "cv",
-                "no_prefix_separator": True,
-                "label":  "Caverna: Estalactites",
-                "color":  (81, 62, 55),
-                "tiles": [
-                    ("081",    0,  128,  32,  32, "full", 0, False, 1, None, 0),
-                    ("082",   32,  128,  32,  32, "full", 0, False, 1, None, 0),
-                    ("083",   64,  128,  32,  32, "full", 0, False, 1, None, 0),
-                ],
-            },
-            "c08": {
-                "prefix": "cv",
-                "no_prefix_separator": True,
-                "label":  "Caverna: Buraco",
-                "color":  (76, 58, 54),
-                "tiles": [
-                    ("084",    0,  160,  32,  32, "full", 0, False, 1, None, 0),
-                    ("085",   32,  160,  32,  32, "full", 0, False, 1, None, 0),
-                    ("086",   64,  160,  32,  32, "full", 0, False, 1, None, 0),
-                    ("087",    0,  192,  32,  32, "full", 0, False, 1, None, 0),
-                    ("088",   32,  192,  32,  32, "full", 0, False, 1, None, 0),
-                    ("089",   64,  192,  32,  32, "full", 0, False, 1, None, 0),
-                    ("090",    0,  224,  32,  32, "full", 0, False, 1, None, 0),
-                    ("091",   32,  224,  32,  32, "full", 0, False, 1, None, 0),
-                    ("092",   64,  224,  32,  32, "full", 0, False, 1, None, 0),
-                ],
-            },
-            "c09": {
-                "prefix": "cv",
-                "no_prefix_separator": True,
-                "label":  "Caverna: Plataforma no buraco",
-                "color":  (79, 61, 56),
-                "tiles": [
-                    ("093",   96,  160,  32,  32, None, 0, False, 0, None, 0),
-                    ("094",  128,  160,  32,  32, None, 0, False, 0, None, 0),
-                    ("095",  160,  160,  32,  32, None, 0, False, 0, None, 0),
-                    ("096",   96,  192,  32,  32, None, 0, False, 0, None, 0),
-                    ("097",  128,  192,  32,  32, None, 0, False, 0, None, 0),
-                    ("098",  160,  192,  32,  32, None, 0, False, 0, None, 0),
-                    ("099",   96,  224,  32,  32, "full", 0, False, 1, None, 0),
-                    ("100",  128,  224,  32,  32, "full", 0, False, 1, None, 0),
-                    ("101",  160,  224,  32,  32, "full", 0, False, 1, None, 0),
-                ],
-            },
-            "c10": {
-                "prefix": "cv",
-                "no_prefix_separator": True,
-                "label":  "Caverna: Poço de lava",
-                "color":  (146, 94, 56),
-                "tiles": [
-                    ("102",    0,  256,  32,  32, "full", 0, False, 1, None, 0),
-                    ("103",   32,  256,  32,  32, "full", 0, False, 1, None, 0),
-                    ("104",   64,  256,  32,  32, "full", 0, False, 1, None, 0),
-                    ("105",    0,  288,  32,  32, "full", 0, False, 1, None, 0),
-                    ("106",   32,  288,  32,  32, "full", 0, False, 1, None, 0),
-                    ("107",   64,  288,  32,  32, "full", 0, False, 1, None, 0),
-                    ("108",    0,  320,  32,  32, "full", 0, False, 1, None, 0),
-                    ("109",   32,  320,  32,  32, "full", 0, False, 1, None, 0),
-                    ("110",   64,  320,  32,  32, "full", 0, False, 1, None, 0),
-                ],
-            },
-            "c11": {
-                "prefix": "cv",
-                "no_prefix_separator": True,
-                "label":  "Caverna: Plataforma na lava",
-                "color":  (119, 83, 58),
-                "tiles": [
-                    ("111",   96,  256,  32,  32, None, 0, False, 0, None, 0),
-                    ("112",  128,  256,  32,  32, None, 0, False, 0, None, 0),
-                    ("113",  160,  256,  32,  32, None, 0, False, 0, None, 0),
-                    ("114",   96,  288,  32,  32, None, 0, False, 0, None, 0),
-                    ("115",  128,  288,  32,  32, None, 0, False, 0, None, 0),
-                    ("116",  160,  288,  32,  32, None, 0, False, 0, None, 0),
-                    ("117",   96,  320,  32,  32, "full", 0, False, 1, None, 0),
-                    ("118",  128,  320,  32,  32, "full", 0, False, 1, None, 0),
-                    ("119",  160,  320,  32,  32, "full", 0, False, 1, None, 0),
-                ],
-            },
-            "c12": {
-                "prefix": "cv",
-                "no_prefix_separator": True,
-                "label":  "Caverna: Lago",
-                "color":  (62, 64, 62),
-                "tiles": [
-                    ("120",    0,  352,  32,  32, "full", 0, False, 1, None, 0),
-                    ("121",   32,  352,  32,  32, "full", 0, False, 1, None, 0),
-                    ("122",   64,  352,  32,  32, "full", 0, False, 1, None, 0),
-                    ("123",    0,  384,  32,  32, "full", 0, False, 1, None, 0),
-                    ("124",   32,  384,  32,  32, "full", 0, False, 1, None, 0),
-                    ("125",   64,  384,  32,  32, "full", 0, False, 1, None, 0),
-                    ("126",    0,  416,  32,  32, "full", 0, False, 1, None, 0),
-                    ("127",   32,  416,  32,  32, "full", 0, False, 1, None, 0),
-                    ("128",   64,  416,  32,  32, "full", 0, False, 1, None, 0),
-                ],
-            },
-            "c13": {
-                "prefix": "cv",
-                "no_prefix_separator": True,
-                "label":  "Caverna: Plataforma na água",
-                "color":  (72, 66, 62),
-                "tiles": [
-                    ("129",   96,  352,  32,  32, None, 0, False, 0, None, 0),
-                    ("130",  128,  352,  32,  32, None, 0, False, 0, None, 0),
-                    ("131",  160,  352,  32,  32, None, 0, False, 0, None, 0),
-                    ("132",   96,  384,  32,  32, None, 0, False, 0, None, 0),
-                    ("133",  128,  384,  32,  32, None, 0, False, 0, None, 0),
-                    ("134",  160,  384,  32,  32, None, 0, False, 0, None, 0),
-                    ("135",   96,  416,  32,  32, "full", 0, False, 1, None, 0),
-                    ("136",  128,  416,  32,  32, "full", 0, False, 1, None, 0),
-                    ("137",  160,  416,  32,  32, "full", 0, False, 1, None, 0),
+                    ("047",  640,    0,  32,  32, "full", 0, False, 1, None, 2),
+                    ("048",  672,    0,  32,  32, "full", 0, False, 1, None, 2),
+                    ("049",  640,   32,  32,  32, "full", 0, False, 1, None, 2),
+                    ("050",  672,   32,  32,  32, "full", 0, False, 1, None, 2),
+                    ("051",  640,   64,  32,  32, "full", 0, False, 1, None, 2),
+                    ("052",  672,   64,  32,  32, "full", 0, False, 1, None, 2),
+                    ("053",  640,   96,  32,  32, "full", 0, False, 1, None, 2),
+                    ("054",  704,   96,  32,  32, "full", 0, False, 1, None, 2),
+                    ("055",  640,  128,  32,  32, "full", 0, False, 1, None, 2),
+                    ("056",  672,  128,  32,  32, "full", 0, False, 1, None, 2),
+                    ("057",  704,  128,  32,  32, "full", 0, False, 1, None, 2),
                 ],
             },
         },
