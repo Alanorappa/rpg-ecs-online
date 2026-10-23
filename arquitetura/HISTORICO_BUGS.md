@@ -6705,3 +6705,24 @@ que no esboço (`exemplo_minimapa.png`, medido pixel a pixel) —
 que o esboço tem. Teste novo `tests/test_hud_atlas.py::
 test_pecas_do_atlas_estao_onde_o_codigo_espera` acusa sozinho quando uma
 peça usada pelo código não tem mais arte na região declarada.
+
+## 100. Borda de lava/água/buraco pintada no F10 continuava andável (23/10/2026)
+
+**Sintoma (usuário)**: tiles de transição chão→lava/água/abismo do chão
+da caverna (`cvg`, com colisão por célula, HISTORICO_FEATURES.md §78)
+deixavam o personagem passar.
+
+**Causa**: o catálogo estava certo (`cell_underlying` → `"W"`, sólido),
+mas `GodModeEditor._apply` só gravava o DESENHO (`terrain_visual`) de um
+tile de terreno de sheet — o char de gameplay (`terrain_matrix`) e o
+`tile_matrix` só eram recalculados ao recarregar o mapa do disco. Além
+disso o servidor de produção ainda roda a versão anterior ao catálogo
+da caverna (não conhece `cvg`, cai no fallback andável) até um deploy.
+
+**Correção**: ao pintar um tile de terreno de sheet, se o char de
+gameplay dele muda a SOLIDEZ do tile atual, `_apply` grava o char via
+`_set_terrain` (atualiza `terrain_matrix` + `tile_matrix` na hora).
+Tile andável sobre andável não mexe no char (pincel inteligente de
+grama/terra lê o `terrain_matrix`). Testes em
+`tests/test_god_mode_terrain_brush.py` (pinta borda de lava → bloqueia;
+pinta chão por cima → libera; grama sobre terra mantém "f").

@@ -392,6 +392,37 @@ class TestSmartBrushActivationUI(unittest.TestCase):
             self.assertIn(tid, SHEET_TILE_MAP)
             self.assertFalse(OBJECT_MAPPING[tid].is_solid)
 
+    def test_pintar_borda_de_lava_bloqueia_na_hora_e_chao_libera(self):
+        """23/10/2026, bug relatado: tile de transição chão→lava/água/
+        buraco pintado no F10 continuava andável até recarregar o mapa."""
+        from engine.tileset import SHEET_FAMILIES
+        fam = next(f for f in SHEET_FAMILIES if f["prefix"] == "cvg")
+        solid = "cvg_%d_%d" % next(iter(fam["cell_underlying"]))
+        editor = _make_editor()
+        tm = _make_tilemap(terrain_char="_")
+        editor._get_tilemap = lambda: tm
+        editor._tile_render = type("R", (), {"invalidate_cache": lambda self: None})()
+        editor._sel_char = solid
+        editor._apply(2, 2)
+        self.assertEqual(tm.terrain_matrix[2][2], "W")
+        self.assertTrue(tm.tile_matrix[2][2].is_solid)
+        self.assertEqual(tm.terrain_visual[2][2], solid)
+        editor._sel_char = "cvg_6_0"
+        editor._apply(2, 2)
+        self.assertFalse(tm.tile_matrix[2][2].is_solid)
+        self.assertEqual(tm.terrain_visual[2][2], "cvg_6_0")
+
+    def test_pintar_tile_andavel_nao_mexe_no_char_de_terreno(self):
+        """Grama de sheet sobre terra "f": as duas andáveis, char continua
+        "f" (pincel inteligente lê o terrain_matrix)."""
+        editor = _make_editor()
+        tm = _make_tilemap(terrain_char="f")
+        editor._get_tilemap = lambda: tm
+        editor._tile_render = type("R", (), {"invalidate_cache": lambda self: None})()
+        editor._sel_char = "cvg_6_0"
+        editor._apply(1, 1)
+        self.assertEqual(tm.terrain_matrix[1][1], "f")
+
     def test_clique_no_mapa_considera_zoom(self):
         """22/10/2026 — God Mode passou a editar com zoom: clique em tela
         é dividido pela escala antes de virar tile."""

@@ -340,3 +340,4 @@
 - [23/10/2026] (feature) Paredes da caverna recatalogadas (cv001..cv090), mapa remapeado sem perda — tags: caverna, tileset, mapa — HISTORICO_FEATURES.md §80
 - [23/10/2026] (feature) Aracnópolis: chão trocado por chão de caverna aleatório e paredes por cv017 (script) — tags: caverna, mapa, dungeon, aracnopolis — HISTORICO_FEATURES.md §80
 - [23/10/2026] (feature) Chão da caverna recatalogado (pilares 2x2) + Aracnópolis com 80% chão liso cvg_6_0 — tags: caverna, terreno, mapa, aracnopolis — HISTORICO_FEATURES.md §80
+- [23/10/2026] (bug) Borda de lava/água/buraco pintada no F10 continuava andável até recarregar — tags: god-mode, caverna, terreno, colisao — HISTORICO_BUGS.md §100

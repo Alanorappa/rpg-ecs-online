@@ -1222,6 +1222,18 @@ class GodModeEditor:
         if char in SHEET_TILE_MAP:
             # Sheet tile → visual override de terreno, nunca toca objects
             self._set_terrain_visual(tilemap, tx, ty, char)
+            # Colisão na hora (23/10/2026, bug relatado: borda de lava/água/
+            # buraco pintada no F10 continuava andável até recarregar o
+            # mapa): se o char de gameplay do tile (`cell_underlying`/
+            # `underlying_terrain`) muda o andável/bloqueado do tile atual,
+            # grava o char — mesmo resultado que salvar + recarregar dá.
+            # Só quando a SOLIDEZ muda: grama sobre terra continua "f" no
+            # terrain_matrix (pincel inteligente depende disso).
+            under = OBJECT_UNDERLYING.get(char)
+            cur = tilemap.terrain_matrix[ty][tx] if tx < len(tilemap.terrain_matrix[ty]) else "G"
+            if under and (TILE_MAPPING.get(under, FLOOR_TILE).is_solid
+                          != TILE_MAPPING.get(cur, FLOOR_TILE).is_solid):
+                self._set_terrain(tilemap, tx, ty, under)
         elif self._tab == 0:
             if char in OBJECT_CHARS:
                 return
