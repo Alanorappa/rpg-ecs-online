@@ -388,7 +388,13 @@ class Camera:
     # ui/render_system.py). Re-trava manual (aperta a tecla de novo) —
     # NUNCA volta sozinha ao mover o personagem, decisão explícita do
     # usuário (mesmo comportamento do LoL).
+    # Também ligado enquanto o God Mode (F10) está aberto (23/10/2026).
     free_mode: bool = False
+    # Faixa da DIREITA da tela (px) que não conta como "borda" pro pan da
+    # câmera livre — o painel do God Mode mora ali; cursor no painel não
+    # move a câmera, e a borda direita passa a ser o limite mapa/painel.
+    # 0 = janela inteira (BG). Gravado pelo GameEngine todo frame.
+    free_pan_right_inset: int = 0
 
 @dataclass
 class Collider:

@@ -6127,3 +6127,28 @@ pilar=`r`). 2 falsos de `_has_line_of_sight` em `tests/test_server.py`
 passaram a aceitar `**kw`. 2 falhas antigas em `tests/test_minions.py`
 (waypoints, loot de lampião) já falhavam antes da mudança, conferido
 num worktree do commit anterior.
+
+## 82. Câmera livre no God Mode (F10) (23/10/2026)
+
+Pedido do usuário: editar o mapa sem a câmera presa no personagem,
+"copiando o sistema da BG". Reusa 100% a câmera livre estilo MOBA
+(`Camera.free_mode` + pan por cursor na borda em
+`ui/render_system.py::CameraSystem._pan_free_camera`): abrir o F10 liga
+`free_mode` (guarda o valor anterior em `_free_cam_before_god`), fechar
+por qualquer caminho restaura — no mesmo ponto que já restaurava o zoom
+(`_god_zoom_on`, bloco "Zoom surf" de `game.py`).
+
+Ajustes no mecanismo compartilhado:
+- `Camera.free_pan_right_inset` (campo novo, gravado pelo `GameEngine`
+  todo frame = largura do painel do God Mode, 0 fora dele): faixa da
+  direita que não conta como borda — cursor no painel não move a
+  câmera, e a borda direita do pan vira o limite mapa/painel.
+- Pan da câmera livre agora para no limite do mapa (centro da câmera
+  preso entre 0 e o tamanho do mapa em px). Antes a posição seguia
+  andando além da borda (o que aparecia já era limitado por
+  `get_camera_offset`) e voltar levava tempo sem nada se mexer — vale
+  também pra BG.
+
+**Testes**: `tests/test_client_ui.py` (cursor no painel não move; borda
+do mapa empurra pra direita; pan para na borda do mapa) + os 3 antigos
+da câmera livre.

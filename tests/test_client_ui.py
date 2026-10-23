@@ -153,6 +153,50 @@ def test_camera_livre_empurra_com_cursor_na_borda():
     assert cam_pos.y == 1000.0 - CameraSystem.FREE_CAM_PAN_SPEED
 
 
+def _pan_once(cam_kwargs, mouse, start=(1000.0, 1000.0), tilemap_tiles=None):
+    from engine.world import World
+    from engine.components import Camera, Position, Tilemap
+    from ui.render_system import CameraSystem
+    import pygame
+    world = World()
+    cam = world.create_entity()
+    world.add_component(cam, Camera(target_entity_id=-1, free_mode=True, **cam_kwargs))
+    world.add_component(cam, Position(x=start[0], y=start[1]))
+    if tilemap_tiles:
+        w, h = tilemap_tiles
+        world.add_component(world.create_entity(), Tilemap(
+            tile_matrix=[[None] * w for _ in range(h)], terrain_matrix=["." * w] * h,
+            object_matrix=[["."] * w for _ in range(h)], tile_size=32,
+            map_width_tiles=w, map_height_tiles=h))
+    sys_cam = CameraSystem(world)
+    sys_cam.hud_surf = pygame.Surface((1280, 720))
+    _orig = pygame.mouse.get_pos
+    pygame.mouse.get_pos = lambda: mouse
+    try:
+        sys_cam.update(dt=1.0)
+    finally:
+        pygame.mouse.get_pos = _orig
+    p = world.get_component(cam, Position)
+    return p.x, p.y
+
+
+def test_camera_livre_god_mode_cursor_no_painel_nao_move():
+    """23/10/2026 — F10 liga a câmera livre; o painel do God Mode ocupa a
+    direita (free_pan_right_inset) e cursor ali não pode mover a câmera."""
+    assert _pan_once({"free_pan_right_inset": 440}, (1275, 360)) == (1000.0, 1000.0)
+
+
+def test_camera_livre_god_mode_borda_do_mapa_empurra_pra_direita():
+    from ui.render_system import CameraSystem
+    x, _ = _pan_once({"free_pan_right_inset": 440}, (1280 - 440 - 5, 360))
+    assert x == 1000.0 + CameraSystem.FREE_CAM_PAN_SPEED
+
+
+def test_camera_livre_nao_passa_da_borda_do_mapa():
+    # mapa 10x10 tiles (320px): empurrar pra cima-esquerda para no 0
+    assert _pan_once({}, (5, 5), start=(100.0, 100.0), tilemap_tiles=(10, 10)) == (0.0, 0.0)
+
+
 def test_camera_livre_cursor_longe_da_borda_nao_move():
     from engine.world import World
     from engine.components import Camera, Position

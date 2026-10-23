@@ -1249,7 +1249,8 @@ class CameraSystem(System):
                 # mover) — só reage a cursor na borda (minimapa é
                 # tratado à parte, em game.py, por clique). Re-trava é
                 # manual (tecla Y de novo), decisão explícita do usuário.
-                self._pan_free_camera(camera_position, dt)
+                self._pan_free_camera(camera_position, dt,
+                                      camera_component.free_pan_right_inset)
                 return
 
             target_entity_id = camera_component.target_entity_id
@@ -1271,16 +1272,21 @@ class CameraSystem(System):
                             camera_position.x += dx * t
                             camera_position.y += dy * t
 
-    def _pan_free_camera(self, camera_position, dt: float) -> None:
+    def _pan_free_camera(self, camera_position, dt: float, right_inset: int = 0) -> None:
         """Empurra a câmera livre quando o cursor está perto da borda da
         janela (estilo MOBA) — `self.hud_surf` é atribuído pelo GameEngine
         todo frame (mesmo padrão de qualquer outro System, ver docstring
-        da classe base). Sem hud_surf (ex: teste headless): no-op."""
+        da classe base). Sem hud_surf (ex: teste headless): no-op.
+        `right_inset` (Camera.free_pan_right_inset): faixa da direita fora
+        da área de pan (painel do God Mode) — cursor ali não move nada."""
         if self.hud_surf is None or dt <= 0:
             return
         import pygame
         mx, my = pygame.mouse.get_pos()
         hud_w, hud_h = self.hud_surf.get_size()
+        hud_w -= max(0, right_inset)
+        if mx >= hud_w:
+            return
         margin = self.FREE_CAM_EDGE_MARGIN_PX
 
         dx = dy = 0.0
@@ -1297,4 +1303,15 @@ class CameraSystem(System):
             step = self.FREE_CAM_PAN_SPEED * dt
             camera_position.x += dx * step
             camera_position.y += dy * step
+            # Não deixa o centro da câmera passar da borda do mapa (23/10/2026):
+            # o que aparece já é limitado em get_camera_offset, mas a posição
+            # seguia andando "no vazio" e voltar levava tempo sem mover nada.
+            from engine.components import Tilemap
+            _tm_first = self.world.get_first(Tilemap)
+            if _tm_first is not None:
+                _tmap = _tm_first[1]
+                camera_position.x = max(0.0, min(camera_position.x,
+                                                 float(_tmap.map_width_tiles * _tmap.tile_size)))
+                camera_position.y = max(0.0, min(camera_position.y,
+                                                 float(_tmap.map_height_tiles * _tmap.tile_size)))
 

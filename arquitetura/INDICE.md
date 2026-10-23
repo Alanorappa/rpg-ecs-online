@@ -345,3 +345,4 @@
 - [23/10/2026] (feature) Paredes da caverna recatalogadas (cv001..cv094, moldura 3x3 na passagem), mapa remapeado sem perda — tags: caverna, tileset, mapa — HISTORICO_FEATURES.md §80
 - [23/10/2026] (feature) Paredes da caverna: miolo da moldura sem colisão sai do catálogo (cv001..cv093), mapa remapeado — tags: caverna, tileset, mapa — HISTORICO_FEATURES.md §80
 - [23/10/2026] (feature) Paredes da caverna +2 peças (cv001..cv095), mapa remapeado sem perda — tags: caverna, tileset, mapa — HISTORICO_FEATURES.md §80
+- [23/10/2026] (feature) Câmera livre no God Mode (F10) reusando Camera.free_mode da BG; pan ignora o painel e para na borda do mapa — tags: god-mode, camera, editor, bg — HISTORICO_FEATURES.md §82

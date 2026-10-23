@@ -461,6 +461,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._zoom_pending: float = self._zoom_default
         self._god_zoom_on:     bool  = False   # zoom de edição do God Mode ativo
         self._zoom_before_god: float = self._zoom_default
+        self._free_cam_before_god: bool = False   # Camera.free_mode antes do F10
         self._zoom_surf: "pygame.Surface | None" = None
         self._zoom_surf_sz: tuple = (0, 0)
         self._pending_tooltip       = None  # (mx, my, title, lines) – render no fim do frame
@@ -2023,6 +2024,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                             self._zoom_before_god = self._zoom
                             self._god_zoom_on = True
                             self._set_zoom_now(self._GOD_ZOOM_DEFAULT)
+                            # Câmera livre enquanto edita (23/10/2026, pedido
+                            # do usuário) — mesmo pan por borda da BG
+                            # (Camera.free_mode); volta ao fechar, junto do zoom.
+                            _cam_god = self.world.get_first(Camera)
+                            if _cam_god is not None:
+                                self._free_cam_before_god = _cam_god[1].free_mode
+                                _cam_god[1].free_mode = True
                     elif event.key == pygame.K_F11 and self.is_gm:
                         self._show_perf_overlay = not self._show_perf_overlay
                         # Simétrico com o overlay — antes só ligava (nunca
@@ -2659,6 +2667,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 # volta ao zoom de jogo de antes.
                 self._god_zoom_on = False
                 self._set_zoom_now(self._zoom_before_god)
+                _cam_god = self.world.get_first(Camera)
+                if _cam_god is not None:
+                    _cam_god[1].free_mode = self._free_cam_before_god
+            _cam_inset = self.world.get_first(Camera)
+            if _cam_inset is not None:
+                _cam_inset[1].free_pan_right_inset = (
+                    self._god_mode._panel_w if self._god_mode.active else 0)
             z        = self._zoom
             _panel_w = self._god_mode._panel_w if self._god_mode.active else 0
             dest_w   = self.screen.get_width() - _panel_w          # largura da área de jogo
