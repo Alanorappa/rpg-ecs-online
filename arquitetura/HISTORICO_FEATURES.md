@@ -6074,3 +6074,13 @@ igual: `_` e o `.` da família `cvg` são ambos andáveis), e toda parede
 0,4 do sheet, a mesma que o usuário já usava em 712 células). Terreno
 `c` mantido embaixo das paredes — colisão/visão idênticas às de antes.
 Bordas de rocha já pintadas à mão não foram tocadas.
+
+Complemento 2 (23/10/2026): usuário editou `TX Tileset Cave Ground`
+(ilhas viraram pilares de pedra 2x2 dentro do buraco/lava/água, todos
+com colisão) → `cells`/`cell_underlying`/`color_overrides` da família
+`cvg` regerados (71 células, 41 sólidas; texturas de chão c6-10/r0-5
+não mudaram de lugar). Chão de Aracnópolis re-sorteado a pedido ("ficou
+muito poluído"): 80% `cvg_6_0` (textura lisa), 20% outra das 29
+texturas do pincel (12612 células, 79,7% lisas na prática). 2 células
+`cvg_3_3` (pedaço de ilha que saiu do tileset) entraram como chão.
+O pincel "Chão Caverna" do God Mode continua sorteio uniforme.
