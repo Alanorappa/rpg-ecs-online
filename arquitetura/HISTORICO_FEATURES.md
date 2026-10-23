@@ -6053,3 +6053,9 @@ Terreno: sheet mais largo que o painel é quebrado em blocos de colunas
 
 **Verificação**: 52 testes de God Mode/mapa/tileset, capturas do painel
 renderizado (objetos e terreno). **Falta**: usuário validar no jogo.
+
+Complemento (22/10/2026): usuário editou as paredes de novo (passagem
+ganhou 4 colunas 32x96) → 87 peças `cv001`..`cv087`, mesmo script.
+Remapeamento do mapa: todas as 24 peças usadas bateram em pixel (com
+várias peças idênticas, vence a mais perto da posição antiga no sheet)
+— nenhuma célula limpa.
