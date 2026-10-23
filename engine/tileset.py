@@ -702,6 +702,11 @@ SHEET_FAMILIES: list[dict] = [
         "is_solid":            False,
         "label":               "Chão de caverna",
         "underlying_terrain":  ".",
+        # Pincel aleatório no God Mode (22/10/2026, pedido do usuário):
+        # textura de chão c6-10/r0-5, sorteada a cada tile pintado.
+        "random_brushes": {
+            "Chão Caverna": [(c, r) for r in range(0, 6) for c in range(6, 11)],
+        },
         "color":               (93, 72, 60),
         "cells": [
             (0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5), (0, 6), (0, 7),

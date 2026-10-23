@@ -115,6 +115,12 @@ class GodModeEditor:
         self._save_flash    = 0.0      # timer para flash de "salvo"
         self._unsaved       = False
 
+        # Escala mundo→tela da área do mapa (x, y) — o GameEngine grava
+        # todo frame (largura da área / largura lógica do zoom_surf).
+        # Antes o God Mode supunha 1x e o jogo forçava zoom 1 ao abrir;
+        # 22/10/2026 (pedido do usuário) passou a editar com zoom.
+        self.view_scale: tuple[float, float] = (1.0, 1.0)
+
         self._ui_scale: float = 0.0   # detectado em render; 0 força rebuild
         self._font_sm  = _font(14)
         self._font_med = _font(16)
@@ -164,7 +170,7 @@ class GodModeEditor:
         self._terrain_smart_style:   "str | None" = None
         self._terrain_last_id:       "str | None" = None
         self._terrain_smart_rects:       list[tuple[pygame.Rect, str]] = []
-        self._terrain_floor_group_rects: list[tuple[pygame.Rect, list]] = []
+        self._terrain_floor_group_rects: list[tuple[pygame.Rect, list, str]] = []
 
         # Scroll state — por aba
         self._scroll_y:          dict[int, int] = {0: 0, 1: 0}
@@ -330,23 +336,41 @@ class GodModeEditor:
         self._draw_cursor_preview(cam_x, cam_y, map_w)
         self._draw_panel(map_w, sh)
 
-    def _draw_grid(self, map_w: int, sh: int, cam_x: float, cam_y: float):
-        """Grade semi-transparente sobre o mapa."""
-        ts = TILE_SIZE
-        if (self._grid_surf is None
-                or self._grid_size != (map_w, sh)):
-            surf = pygame.Surface((map_w, sh), pygame.SRCALPHA)
-            for x in range(0, map_w, ts):
-                pygame.draw.line(surf, (255, 255, 255, 22), (x, 0), (x, sh))
-            for y in range(0, sh, ts):
-                pygame.draw.line(surf, (255, 255, 255, 22), (0, y), (map_w, y))
-            self._grid_surf  = surf
-            self._grid_size  = (map_w, sh)
+    def _tile_screen_rect(self, tx: int, ty: int, cam_x: float, cam_y: float) -> pygame.Rect:
+        """Retângulo do tile (tx,ty) em pixels de TELA, já com o zoom."""
+        zx, zy = self.view_scale
+        x0 = round((tx * TILE_SIZE - int(cam_x)) * zx)
+        y0 = round((ty * TILE_SIZE - int(cam_y)) * zy)
+        x1 = round(((tx + 1) * TILE_SIZE - int(cam_x)) * zx)
+        y1 = round(((ty + 1) * TILE_SIZE - int(cam_y)) * zy)
+        return pygame.Rect(x0, y0, x1 - x0, y1 - y0)
 
-        # Offset para alinhar a grade ao scroll da câmera
-        ox = int(cam_x) % ts
-        oy = int(cam_y) % ts
-        self._screen.blit(self._grid_surf, (-ox, -oy))
+    def _draw_grid(self, map_w: int, sh: int, cam_x: float, cam_y: float):
+        """Grade semi-transparente sobre o mapa (linhas no espaço da tela,
+        acompanhando o zoom)."""
+        zx, zy = self.view_scale
+        if (self._grid_surf is None
+                or self._grid_size != (map_w, sh, zx, zy)):
+            self._grid_surf = pygame.Surface((map_w, sh), pygame.SRCALPHA)
+            self._grid_size = (map_w, sh, zx, zy)
+        surf = self._grid_surf
+        surf.fill((0, 0, 0, 0))
+        col = (255, 255, 255, 22)
+        tx = int(cam_x) // TILE_SIZE
+        while True:
+            x = round((tx * TILE_SIZE - int(cam_x)) * zx)
+            if x >= map_w:
+                break
+            pygame.draw.line(surf, col, (x, 0), (x, sh))
+            tx += 1
+        ty = int(cam_y) // TILE_SIZE
+        while True:
+            y = round((ty * TILE_SIZE - int(cam_y)) * zy)
+            if y >= sh:
+                break
+            pygame.draw.line(surf, col, (0, y), (map_w, y))
+            ty += 1
+        self._screen.blit(surf, (0, 0))
 
     def _draw_cursor_preview(self, cam_x: float, cam_y: float, map_w: int):
         """Destaca o tile sob o cursor e desenha efeito pulsante no tile selecionado."""
@@ -355,19 +379,18 @@ class GodModeEditor:
 
         # ── Tile selecionado — borda pulsante ────────────────────────────────
         if self._selected_tile is not None:
-            stx, sty = self._selected_tile
-            sx = stx * TILE_SIZE - int(cam_x)
-            sy = sty * TILE_SIZE - int(cam_y)
-            if -TILE_SIZE <= sx < map_w and -TILE_SIZE <= sy < sh:
+            r = self._tile_screen_rect(*self._selected_tile, cam_x, cam_y)
+            sx, sy = r.topleft
+            if -r.w <= sx < map_w and -r.h <= sy < sh:
                 pulse = (math.sin(self._pulse_timer * 7) + 1) / 2  # 0..1
                 alpha = int(140 + pulse * 115)                       # 140..255
                 thick = 2 if pulse < 0.5 else 3
-                surf = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+                surf = pygame.Surface(r.size, pygame.SRCALPHA)
                 # Fundo semi-transparente vermelho-laranja
                 surf.fill((255, 80, 30, int(40 + pulse * 40)))
                 # Borda pulsante
                 pygame.draw.rect(surf, (255, 200, 50, alpha),
-                                 (0, 0, TILE_SIZE, TILE_SIZE), thick)
+                                 (0, 0, r.w, r.h), thick)
                 self._screen.blit(surf, (sx, sy))
                 # Label "DEL" acima do tile
                 lbl = self._font_sm.render("DEL", False, (255, 200, 50))
@@ -381,13 +404,13 @@ class GodModeEditor:
         # Não sobrepõe o tile já selecionado
         if (tx, ty) == self._selected_tile:
             return
-        sx = tx * TILE_SIZE - int(cam_x)
-        sy = ty * TILE_SIZE - int(cam_y)
-        if 0 <= sx < map_w and 0 <= sy < sh:
-            hl = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+        rect = self._tile_screen_rect(tx, ty, cam_x, cam_y)
+        sx, sy = rect.topleft
+        if -rect.w < sx < map_w and -rect.h < sy < sh:
+            hl = pygame.Surface(rect.size, pygame.SRCALPHA)
             r, g, b = self._sel_color
             hl.fill((r, g, b, 90))
-            pygame.draw.rect(hl, (255, 255, 255, 160), (0, 0, TILE_SIZE, TILE_SIZE), 1)
+            pygame.draw.rect(hl, (255, 255, 255, 160), (0, 0, rect.w, rect.h), 1)
             self._screen.blit(hl, (sx, sy))
 
     def _static_section_h(self, sc: float) -> int:
@@ -643,7 +666,26 @@ class GodModeEditor:
                                                     _C_SEL if active else (140, 140, 150))
                         screen.blit(lbl, (x0, cy))
                         self._terrain_floor_group_rects.append(
-                            (pygame.Rect(x0, cy, lbl.get_width(), lbl.get_height()), ids))
+                            (pygame.Rect(x0, cy, lbl.get_width(), lbl.get_height()), ids,
+                             "Piso (aleatório)"))
+                        cy += lbl.get_height() + int(2 * sc)
+                    cy += int(4 * sc)
+
+                # Pincel aleatório declarado na própria família
+                # (`random_brushes`, ex: "Chão Caverna", 22/10/2026) — mesmo
+                # sorteio sem repetir do "Piso sobre X", sem lógica de vizinho.
+                brushes = fam.get("random_brushes")
+                if brushes:
+                    for name, cells in brushes.items():
+                        ids = [f"{prefix}_{c}_{r}" for (c, r) in cells]
+                        active = (self._brush_group_ids is not None
+                                  and set(self._brush_group_ids) == set(ids))
+                        lbl = self._font_sm.render(f"🎲 {name}", False,
+                                                    _C_SEL if active else (140, 140, 150))
+                        screen.blit(lbl, (x0, cy))
+                        self._terrain_floor_group_rects.append(
+                            (pygame.Rect(x0, cy, lbl.get_width(), lbl.get_height()), ids,
+                             f"{name} (aleatório)"))
                         cy += lbl.get_height() + int(2 * sc)
                     cy += int(4 * sc)
 
@@ -801,12 +843,12 @@ class GodModeEditor:
                     self._sel_name = f"Terreno: {terrain} (inteligente)"
                     return
 
-            for r, ids in self._terrain_floor_group_rects:
+            for r, ids, name in self._terrain_floor_group_rects:
                 if r.collidepoint(pos):
                     self._brush_group_ids = ids
                     self._brush_last_id   = None
                     self._sel_char = ""
-                    self._sel_name = "Piso (aleatório)"
+                    self._sel_name = name
                     self._terrain_smart_terrain = None
                     self._terrain_smart_style   = None
                     return
@@ -847,8 +889,9 @@ class GodModeEditor:
 
     def _screen_to_tile(self, mx: int, my: int,
                         cam_x: float, cam_y: float) -> tuple[int, int]:
-        tx = int((mx + int(cam_x)) / TILE_SIZE)
-        ty = int((my + int(cam_y)) / TILE_SIZE)
+        zx, zy = self.view_scale
+        tx = int((mx / zx + int(cam_x)) // TILE_SIZE)
+        ty = int((my / zy + int(cam_y)) // TILE_SIZE)
         return tx, ty
 
     def _apply_at_screen(self, pos, cam_x: float, cam_y: float):

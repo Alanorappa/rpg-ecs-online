@@ -459,6 +459,8 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
         self._ZOOM_DEBOUNCE_S = 0.15
         self._zoom_cache_dirty_timer: float = -1.0
         self._zoom_pending: float = self._zoom_default
+        self._god_zoom_on:     bool  = False   # zoom de edição do God Mode ativo
+        self._zoom_before_god: float = self._zoom_default
         self._zoom_surf: "pygame.Surface | None" = None
         self._zoom_surf_sz: tuple = (0, 0)
         self._pending_tooltip       = None  # (mx, my, title, lines) – render no fim do frame
@@ -1507,6 +1509,25 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
     # ------------------------------------------------------------------
     # ── Zoom ──────────────────────────────────────────────────────────────────
 
+    # God Mode tem faixa própria (abre em 3x, pedido do usuário 22/10/2026);
+    # fora dele continua _zoom_min.._zoom_max.
+    _GOD_ZOOM_DEFAULT = 3.0
+    _GOD_ZOOM_MIN     = 1.0
+    _GOD_ZOOM_MAX     = 4.0
+    _GOD_ZOOM_STEP    = 0.5
+
+    def _set_zoom_now(self, value: float) -> None:
+        """Aplica zoom na hora (sem debounce), cancelando scroll pendente."""
+        self._zoom_cache_dirty_timer = -1.0
+        if value != self._zoom:
+            self._zoom = value
+            self._tile_render_system.invalidate_cache()
+
+    def _step_god_zoom(self, direction: int) -> None:
+        step = self._GOD_ZOOM_STEP if direction > 0 else -self._GOD_ZOOM_STEP
+        self._set_zoom_now(max(self._GOD_ZOOM_MIN,
+                               min(self._GOD_ZOOM_MAX, round(self._zoom + step, 10))))
+
     def _handle_scroll_zoom(self, scroll_y: int) -> None:
         """Aplica zoom com scroll do mouse — apenas quando o cursor está sobre a área do jogo."""
         mx, my = pygame.mouse.get_pos()
@@ -1921,6 +1942,15 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # dentro de handle_events, o estado pré-frame ainda bloqueia os eventos.
             _god_was_active = self._god_mode.active
             if _god_was_active:
+                for _ev in events:
+                    # Roda do mouse / +- sobre o MAPA ajusta o zoom de edição
+                    # (sobre o painel a roda continua rolando a lista).
+                    if (_ev.type == pygame.MOUSEWHEEL
+                            and pygame.mouse.get_pos()[0] < self.screen.get_width() - self._god_mode._panel_w):
+                        self._step_god_zoom(_ev.y)
+                    elif _ev.type == pygame.KEYDOWN and _ev.key in (
+                            pygame.K_EQUALS, pygame.K_KP_PLUS, pygame.K_MINUS, pygame.K_KP_MINUS):
+                        self._step_god_zoom(1 if _ev.key in (pygame.K_EQUALS, pygame.K_KP_PLUS) else -1)
                 self._god_mode.handle_events(events,
                                              getattr(self, "_cam_x", 0),
                                              getattr(self, "_cam_y", 0))
@@ -1986,10 +2016,13 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                         # abaixo, `DEBUG_MODE and self.is_gm`).
                         self._close_all_modals()
                         self._god_mode.toggle()
-                        if self._god_mode.active and self._zoom != 1.0:
-                            self._zoom = 1.0
-                            self._tile_render_system.invalidate_cache()
-                            self._zoom_cache_dirty_timer = -1.0  # cancela debounce pendente de scroll
+                        if self._god_mode.active:
+                            # Edita com zoom (22/10/2026, pedido do usuário:
+                            # 1x deixava tudo pequeno demais). Zoom de jogo
+                            # volta ao fechar — ver _god_was_active acima.
+                            self._zoom_before_god = self._zoom
+                            self._god_zoom_on = True
+                            self._set_zoom_now(self._GOD_ZOOM_DEFAULT)
                     elif event.key == pygame.K_F11 and self.is_gm:
                         self._show_perf_overlay = not self._show_perf_overlay
                         # Simétrico com o overlay — antes só ligava (nunca
@@ -2621,6 +2654,11 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
                 self._prof_record("sounds+ambient", _time.perf_counter() - _ts)
 
             # ── Zoom surf: dimensiona a world_surf uma vez por frame ──────────
+            if self._god_zoom_on and not self._god_mode.active:
+                # God Mode fechou (F10/Esc/Sair, por qualquer caminho):
+                # volta ao zoom de jogo de antes.
+                self._god_zoom_on = False
+                self._set_zoom_now(self._zoom_before_god)
             z        = self._zoom
             _panel_w = self._god_mode._panel_w if self._god_mode.active else 0
             dest_w   = self.screen.get_width() - _panel_w          # largura da área de jogo
@@ -2633,6 +2671,7 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             # Atribui world_surf todo frame — garante que sistemas inicializados
             # depois do _init_systems (quest, crafting, trainer) sempre recebam a surf correta
             self._assign_world_surf(self._zoom_surf)
+            self._god_mode.view_scale = (dest_w / lw, self.screen.get_height() / lh)
 
             # cam_x/cam_y vêm de get_camera_offset() (engine/utils.py) — ponto
             # único de verdade, mesma função que TODO OUTRO sistema já usava

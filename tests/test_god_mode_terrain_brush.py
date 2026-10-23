@@ -369,15 +369,38 @@ class TestSmartBrushActivationUI(unittest.TestCase):
     def test_clicar_no_label_piso_ativa_pincel_de_grupo_normal(self):
         editor = _make_editor()
         rect = pygame.Rect(10, 10, 80, 20)
-        editor._terrain_floor_group_rects = [(rect, ["ter_0_6", "ter_1_6"])]
+        editor._terrain_floor_group_rects = [(rect, ["ter_0_6", "ter_1_6"], "Piso (aleatório)")]
         editor._scroll_viewport_h = 500
         editor._viewport_top      = 0
 
         editor._handle_panel_click((20, 15), 1)
 
         self.assertEqual(editor._brush_group_ids, ["ter_0_6", "ter_1_6"])
+        self.assertEqual(editor._sel_name, "Piso (aleatório)")
         self.assertIsNone(editor._terrain_smart_terrain)
         self.assertIsNone(editor._terrain_smart_style)
+
+    def test_chao_caverna_tem_pincel_aleatorio_so_com_tiles_registrados(self):
+        """22/10/2026 — "Chão Caverna" (random_brushes da família cvg):
+        só células de textura de chão, todas registradas e andáveis."""
+        from engine.tileset import SHEET_FAMILIES, SHEET_TILE_MAP, OBJECT_MAPPING
+        fam = next(f for f in SHEET_FAMILIES if f["prefix"] == "cvg")
+        cells = fam["random_brushes"]["Chão Caverna"]
+        self.assertEqual(len(cells), 30)
+        for c, r in cells:
+            tid = f"cvg_{c}_{r}"
+            self.assertIn(tid, SHEET_TILE_MAP)
+            self.assertFalse(OBJECT_MAPPING[tid].is_solid)
+
+    def test_clique_no_mapa_considera_zoom(self):
+        """22/10/2026 — God Mode passou a editar com zoom: clique em tela
+        é dividido pela escala antes de virar tile."""
+        editor = _make_editor()
+        editor.view_scale = (3.0, 3.0)
+        self.assertEqual(editor._screen_to_tile(95, 97, 0, 0), (0, 1))
+        self.assertEqual(editor._screen_to_tile(96, 0, 64, 32), (3, 1))
+        r = editor._tile_screen_rect(3, 1, 64, 32)
+        self.assertEqual((r.x, r.y, r.w, r.h), (96, 0, 96, 96))
 
     def test_trocar_de_aba_cancela_pincel_inteligente(self):
         editor = _make_editor()

@@ -6000,3 +6000,33 @@ passagem antiga não existem mais no desenho novo e foram limpas (linhas
 testes de mapa/tileset/God Mode (50 passed, 2 testes novos em
 `tests/test_map_loader_terrain_parsing.py::TestColisaoPorCelulaNoTerreno`).
 **Falta**: validação do usuário no God Mode/jogo.
+
+## 79. God Mode com zoom (abre em 3x) + pincel aleatório "Chão Caverna" (22/10/2026)
+
+**Zoom**: o God Mode (F10) forçava zoom 1x ao abrir porque grade,
+destaque do cursor e clique→tile (`ui/god_mode.py`) supunham 1 px de
+mundo = 1 px de tela — no 1x tudo ficava pequeno demais pra editar
+(pedido do usuário, já feito antes e adiado). Agora o `GameEngine`
+grava todo frame `GodMode.view_scale = (largura da área / largura
+lógica do zoom_surf, altura da tela / altura lógica)` — a escala REAL
+usada no `transform.scale` do mundo, não o zoom nominal (o arredondamento
+de `int(dest_w / z)` faz as 2 diferirem um pouco). `_screen_to_tile`
+divide por ela; `_tile_screen_rect` (novo) é o único ponto que converte
+tile→retângulo de tela, usado pelo destaque/seleção; grade desenhada em
+espaço de tela. Faixa própria do God Mode em `game.py`
+(`_GOD_ZOOM_DEFAULT=3.0`, 1x–4x, passo 0.5): abre em 3x, roda do mouse
+SOBRE O MAPA e `+`/`-` ajustam (sobre o painel a roda continua rolando a
+lista); ao fechar por qualquer caminho (F10/Esc/Sair) volta ao zoom de
+jogo de antes (`_god_zoom_on`, checado no bloco "Zoom surf").
+
+**Pincel "Chão Caverna"**: campo opcional `random_brushes: {nome:
+[células]}` em `SHEET_FAMILIES` (hoje só na família `cvg`, células
+c6-10/r0-5 = 30 texturas de chão) — o God Mode desenha um botão "🎲
+nome" na aba Terreno e reusa o pincel de grupo aleatório que já existia
+pro "Piso sobre grama/terra" (sorteia sem repetir o último). O nome
+exibido no painel ("Selecionado") vem junto na tupla de
+`_terrain_floor_group_rects`, antes era fixo "Piso (aleatório)".
+
+**Verificação**: testes de God Mode/mapa/tileset (52 passed, 2 novos:
+clique com zoom 3x e pincel da caverna), desenho do God Mode com escala
+3x sem erro. **Falta**: usuário validar no jogo (rodar `python main.py`).

@@ -334,3 +334,4 @@
 - [22/10/2026] (feature) Hotbar: atalho dentro da moldura e cooldown maior, ambos com contorno — tags: ui, hud, hotbar — HISTORICO_FEATURES.md §76
 - [22/10/2026] (feature) Tileset de caverna novo catalogado (137 peças cv001..cv137, colisão por PNG de apoio, terreno txc antigo removido) — tags: tileset, caverna, catalogo, colisao, mapa — HISTORICO_FEATURES.md §77
 - [22/10/2026] (feature) Caverna separada: paredes (objetos cv001..cv057) + chão como terreno (cvg, colisão por célula via cell_underlying) — tags: tileset, caverna, terreno, colisao, god-mode, mapa — HISTORICO_FEATURES.md §78
+- [22/10/2026] (feature) God Mode edita com zoom (abre em 3x, roda/+- ajusta) + pincel aleatório Chão Caverna (random_brushes) — tags: god-mode, zoom, editor, caverna, terreno, pincel — HISTORICO_FEATURES.md §79
