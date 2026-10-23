@@ -343,3 +343,4 @@
 - [23/10/2026] (bug) Borda de lava/água/buraco pintada no F10 continuava andável até recarregar — tags: god-mode, caverna, terreno, colisao — HISTORICO_BUGS.md §100
 - [23/10/2026] (feature) Flecha/magia passam por cima de água/lava/buraco (TileType.low_ground, _has_line_of_sight projectile=True); pilares da caverna = char r — tags: combate, ranged, los, caverna, terreno — HISTORICO_FEATURES.md §81
 - [23/10/2026] (feature) Paredes da caverna recatalogadas (cv001..cv094, moldura 3x3 na passagem), mapa remapeado sem perda — tags: caverna, tileset, mapa — HISTORICO_FEATURES.md §80
+- [23/10/2026] (feature) Paredes da caverna: miolo da moldura sem colisão sai do catálogo (cv001..cv093), mapa remapeado — tags: caverna, tileset, mapa — HISTORICO_FEATURES.md §80

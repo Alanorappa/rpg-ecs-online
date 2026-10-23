@@ -6068,7 +6068,9 @@ célula limpa.
 Complemento (23/10/2026, 2ª rodada): passagem sem lava/água ganhou uma
 moldura 3x3 embaixo (miolo transparente com colisão) → 94 peças
 `cv001`..`cv094`; as 33 peças usadas no mapa bateram em pixel, nenhuma
-célula limpa.
+célula limpa. Logo depois o usuário tirou a colisão do miolo da moldura
+→ virou célula vazia (sem arte, sem colisão), saiu do catálogo: 93
+peças `cv001`..`cv093`, mapa remapeado em pixel (miolo não era usado).
 
 Complemento (23/10/2026, pedido do usuário): Aracnópolis repintada por
 script — todo chão `_` do `aracnopolis_dungeon_terrain.csv` (12329
