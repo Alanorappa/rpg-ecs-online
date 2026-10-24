@@ -2281,7 +2281,7 @@ class SessionManager:
             return
         name     = str(payload.get("name", "")).strip()
         class_id = str(payload.get("class_id", "guerreiro"))
-        if class_id not in ("guerreiro", "mago", "arqueiro"):
+        if class_id not in ("guerreiro", "mago", "arqueiro", "xama"):
             class_id = "guerreiro"
 
         from server.auth import create_character as _create_char, _get_pool as _gp

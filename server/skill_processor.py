@@ -225,13 +225,28 @@ class SkillProcessorMixin:
             # proteção que set_player_target já dava pro auto-attack), antes
             # de qualquer mana/cooldown/cast time ser gasto.
             tid = req.get("tid", -1)
+            # Skill de SUPORTE (offensive=False, ex: cura do Xamã) mirando um
+            # player: alvo amigável é o caso NORMAL, nunca recusa — e nunca
+            # vira alvo de combate (target_entity_id) do caster. O handler lê
+            # o alvo via tile_move._server_support_tid (mesmo padrão de
+            # _server_dir_x) e valida aliança/alcance sozinho.
+            tile_move._server_support_tid = -1
+            if not _is_offensive and tid != -1:
+                from engine.components import PlayerControlled as _PCsup
+                from engine.faction_system import can_engage as _can_engage_sup
+                if (self.world.get_component(tid, _PCsup) is not None
+                        and not _can_engage_sup(self.world, player_eid, tid)):
+                    tile_move._server_support_tid = tid
+                    tid = -1
             if tid != -1 and combat_state:
                 from engine.faction_system import can_engage as _can_engage_sk
                 from engine.components import PlayerControlled as _PCskr
                 _tid_is_mob    = tid in self._mob_eids
                 _tid_is_player = (tid != player_eid
                                   and self.world.get_component(tid, _PCskr) is not None)
-                if (_tid_is_mob or _tid_is_player) and not _can_engage_sk(self.world, player_eid, tid):
+                if not _is_offensive and not _can_engage_sk(self.world, player_eid, tid):
+                    tid = -1   # suporte mirando NPC amigável: ignora o alvo, sem recusar
+                elif (_tid_is_mob or _tid_is_player) and not _can_engage_sk(self.world, player_eid, tid):
                     self._skill_results_this_tick.append({
                         "caster_eid": player_eid,
                         "sid":        sid,
@@ -241,7 +256,7 @@ class SkillProcessorMixin:
                         "reason":     "Alvo amigável",
                     })
                     continue
-                if _tid_is_mob or _tid_is_player:
+                if tid != -1 and (_tid_is_mob or _tid_is_player):
                     combat_state.target_entity_id = tid
 
             from server.spell_debug_log import splog as _splog

@@ -503,6 +503,42 @@ SKILL_CATALOG: dict[str, dict] = {
             "quiver_capacity": 100,
         },
     },
+
+    # ── Xamã (24/10/2026, classe nova — docs/classe_xama.md, rascunho) ───────
+    # Recurso: Espírito (CharacterStats.espirito). SP = spell_power (decisão
+    # do usuário: reusa o Poder Mágico). "Drenar energia espiritual" é a
+    # narrativa do dano — não existe barra de energia nos inimigos.
+    "toque_ancestral": {
+        "name":       "Toque Ancestral",
+        "desc":       "Ataque espiritual à distância: 20 + 60% SP. Gera 8 de Espírito. Cast 1s.",
+        "cooldown":   1.5,
+        "cast_time":  1.0,
+        "cast_range": 6,
+        "class_id":   "xama",
+        "school":     "espiritual",
+        "params": {
+            "base_dmg":      20,
+            "dmg_sp_coeff":  0.60,
+            "espirito_gain": 8,
+        },
+    },
+    "sopro_da_coruja": {
+        "name":       "Sopro da Coruja",
+        "desc":       "Cura um aliado (ou você) a até 8 tiles: 60 + 120% SP. Cast 1,5s. 30 Espírito.",
+        "cooldown":   0.0,
+        "cast_time":  1.5,
+        "cast_range": 8,
+        "class_id":   "xama",
+        "school":     "espiritual",
+        "offensive":  False,
+        "needs_target": False,   # sem aliado selecionado, cura o próprio Xamã
+        "params": {
+            "base_heal":     60,
+            "heal_sp_coeff": 1.20,
+            "espirito_cost": 30,
+            "min_cost":      15,  # Alma Generosa nunca baixa o custo além disso
+        },
+    },
 }
 
 # Layout padrão: todos os slots vazios — skills são aprendidas com treinador
@@ -530,6 +566,8 @@ SKILL_LEVEL_REQUIREMENTS: dict[str, int] = {
     "cancao_ninar":     2,
     "picada_escorpiao": 4,
     "flecha_reiterada": 8,
+    # Xamã
+    "toque_ancestral":  1,
 }
 
 SKILL_COSTS: dict[str, int] = {
@@ -549,13 +587,15 @@ SKILL_COSTS: dict[str, int] = {
     "cancao_ninar":     100,
     "picada_escorpiao": 200,
     "flecha_reiterada": 400,
-
+    # Xamã
+    "toque_ancestral":  0,
 }
 
 SKILL_ORDER_BY_CLASS: dict[str, list] = {
     "guerreiro": ["golpe_poderoso", "impacto", "vitoria_iminente", "interceptar", "executar"],
     "mago":      ["bola_de_fogo", "polimorfia", "nova_congelante", "bloco_de_gelo"],
     "arqueiro":  ["recarregar", "cancao_ninar", "picada_escorpiao", "flecha_reiterada"],
+    "xama":      ["toque_ancestral"],
 }
 
 # Skills concedidas automaticamente ao criar um personagem novo (custo 0, nível 1).
@@ -567,6 +607,9 @@ INITIAL_SKILLS_BY_CLASS: dict[str, list] = {
     # (quests_data.py) e SKILL_LEVEL_REQUIREMENTS/SKILL_COSTS acima.
     "mago":      [],
     "arqueiro":  [],
+    # Xamã: Toque Ancestral é o ataque principal e ainda não existe treinador
+    # de Xamã no mapa — nasce aprendida (trocar pra treinador quando houver NPC).
+    "xama":      ["toque_ancestral"],
 }
 
 # ---------------------------------------------------------------------------
@@ -592,5 +635,8 @@ INSTANCE_SKILL_UNLOCK_ORDER: dict[str, list] = {
         "picada_escorpiao", "cancao_ninar", "tiro_multiplo",
         "camuflagem", "tiro_repulsivo", "flecha_reiterada",
 
+    ],
+    "xama": [
+        "toque_ancestral", "sopro_da_coruja",
     ],
 }

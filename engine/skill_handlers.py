@@ -1476,6 +1476,93 @@ class SkillHandlers:
         LOG.add("Calcinando...", (255, 140, 40))
         return True
 
+    # ==================================================================
+    # Habilidades do Xamã (build Raiz)
+    # ==================================================================
+
+    def _check_espirito(self, char_stats, cost: int) -> bool:
+        if not char_stats or char_stats.espirito < cost:
+            cur = int(char_stats.espirito) if char_stats else 0
+            self._warn(f"Espírito insuficiente ({cur}/{cost})")
+            return False
+        return True
+
+    def _heal_espirito_cost(self, skill, combat_stats) -> int:
+        """Custo de Espírito de uma cura, já com o desconto de Alma Generosa."""
+        p = skill.params or {}
+        base = p.get("espirito_cost", 0)
+        red  = getattr(combat_stats, "cura_custo_reducao", 0)
+        return max(p.get("min_cost", 0), base - red)
+
+    def _resolve_heal_target(self, tile_move, max_range: int) -> int:
+        """Alvo de uma cura: o player AMIGÁVEL mirado no request (servidor —
+        `tile_move._server_support_tid`, ver server/skill_processor.py) ou,
+        sem aliado mirado, o próprio caster. Aliado fora de alcance → -1.
+        Player hostil (duelo/PvP) mirado conta como "sem aliado" → caster."""
+        from engine.faction_system import can_engage as _can_engage_heal
+        caster = self.player_entity_id
+        tid = getattr(tile_move, "_server_support_tid", -1)
+        if tid == -1 or tid == caster:
+            return caster
+        cs = self.world.get_component(tid, CombatStats)
+        if cs is None or cs.current_hp <= 0 or _can_engage_heal(self.world, caster, tid):
+            return caster
+        ttm = self.world.get_component(tid, TileMovement)
+        if ttm is None or not in_range(tile_move.current_tile_x, tile_move.current_tile_y,
+                                       ttm.current_tile_x, ttm.current_tile_y, max_range):
+            self._warn("Fora de alcance")
+            return -1
+        return tid
+
+    def _skill_toque_ancestral(self, skill, combat_stats, combat_state, tile_move):
+        """1s cast — 20 + 60% SP, escola espiritual. Sem custo; gera Espírito."""
+        target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
+        if target_id == -1:
+            self._warn("Nenhum alvo")
+            return False
+        if not self._target_alive(target_id):
+            self._warn("Alvo inválido")
+            return False
+
+        _server_pending = self._server_pending_spells
+        if _server_pending is not None:
+            _server_pending.append({
+                "player_eid": self.player_entity_id,
+                "spell_id":   "toque_ancestral",
+                "target_id":  target_id,
+                "timer":      skill.cast_time,
+                "mana_cost":  0,
+                "cooldown":   skill.cooldown,
+            })
+            if combat_state:
+                enter_combat(combat_state)
+            return True
+        return False   # sem modo offline: só o servidor resolve
+
+    def _skill_sopro_da_coruja(self, skill, combat_stats, combat_state, tile_move):
+        """1.5s cast — cura 60 + 120% SP num aliado (ou em si). Custa Espírito."""
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        cost = self._heal_espirito_cost(skill, combat_stats)
+        if not self._check_espirito(char_stats, cost):
+            return False
+        target_id = self._resolve_heal_target(tile_move, skill.cast_range)
+        if target_id == -1:
+            return False
+
+        _server_pending = self._server_pending_spells
+        if _server_pending is not None:
+            _server_pending.append({
+                "player_eid":   self.player_entity_id,
+                "spell_id":     "sopro_da_coruja",
+                "target_id":    target_id,
+                "timer":        skill.cast_time,
+                "mana_cost":    0,
+                "espirito_cost": cost,
+                "cooldown":     skill.cooldown,
+            })
+            return True
+        return False
+
     # ------------------------------------------------------------------
     def _is_concentration_free(self) -> bool:
         """Retorna True se o buff 'Só um Gole' está ativo (Concentração grátis)."""

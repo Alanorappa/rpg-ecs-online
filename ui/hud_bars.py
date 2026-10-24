@@ -64,6 +64,7 @@ RESOURCE_COLORS = {
     "mago":      (50, 100, 255),   # barra de mana (inalterada)
     "arqueiro":  (255, 160, 0),    # barra de concentração — C_ORANGE
     "guerreiro": (220, 50, 50),    # barra de raiva — C_RED
+    "xama":      (80, 200, 170),   # barra de Espírito — verde-água
 }
 LEVEL_TEXT_COLOR = (255, 240, 200)
 # Tamanho da fonte do nome/nível (ui/fonts.py::make, Determination — trocou

@@ -1719,6 +1719,13 @@ class NetworkHandlers:
                     cs.mana = _srv_mana            # CombatStats.mana — checks client-side
                 if _char_sync and _srv_conc is not None:
                     _char_sync.concentration = _srv_conc
+            # Espírito (Xamã) — valor absoluto do servidor, mesmo padrão da concentração
+            _srv_esp = payload.get("espirito")
+            if _srv_esp is not None:
+                from engine.components import CharacterStats as _CSesp
+                _char_esp = self.world.get_component(self.player_entity, _CSesp)
+                if _char_esp:
+                    _char_esp.espirito = _srv_esp
             # Restauração de mana (consumível instantâneo ou HoT tick)
             _mana_amt = payload.get("mana_amount", 0)
             if _mana_amt > 0:

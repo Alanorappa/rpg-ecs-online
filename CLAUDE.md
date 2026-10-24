@@ -368,6 +368,19 @@ padrão a quebrar, não só os bugs individuais.
   guards imune/morto, overkill preservado, quebra polymorph/sleep. Regra nova
   de mitigação/resistência entra SÓ ali (deal_damage/_apply_final_damage/
   _apply_magic_damage são delegates).
+- **Escrita de CURA em HP (skill de cura de qualquer classe)** →
+  `core_systems.apply_heal(world, healer, target, amount, sid)` — limita
+  ao máximo, ignora morto, emite o "+X HP" via sink do WorldServer.
+  NUNCA `current_hp +=` direto num handler de cura novo. Ver
+  HISTORICO_FEATURES.md §85.
+- **Recurso principal da classe numa tela** (retrato, nameplate,
+  painel) → `stats_system.class_resource(char)`; **"essa classe engaja
+  como conjurador?"** → `stats_system.CASTER_CLASSES` — NUNCA um
+  `if class_id == "mago"` novo pra nenhum dos dois.
+- **Skill de suporte (`offensive=False`) mirando um player aliado** →
+  o alvo chega no handler por `TileMovement._server_support_tid`
+  (`server/skill_processor.py`), nunca como `target_entity_id` (que é
+  alvo de COMBATE do caster).
 - **STATS_UPDATE privado (servidor→dono)** → `WorldServer.queue_stats_update()`
   (schema na docstring; valida player_eid na origem). Mudança de
   `current_hp`/`max_hp` do PRÓPRIO player nunca precisa de chamada nova

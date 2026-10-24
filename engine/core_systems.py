@@ -112,6 +112,38 @@ def should_include_skill_damage_target(mob_eid: int, damage: int,
     return damage > 0 and (mob_eid != caster_eid or mob_eid == explicit_target_id)
 
 
+# ── apply_heal ────────────────────────────────────────────────────────────────
+# Destino do evento de cura (servidor registra 1x — transmite o número verde
+# pros jogadores em volta). None no cliente/testes: só aplica o HP.
+_heal_event_sink = None
+
+
+def register_heal_event_sink(fn) -> None:
+    """Servidor registra quem transmite cada cura (`fn(healer, target,
+    healed, hp_after, sid)`). Mesmo padrão de registro de módulo de
+    `register_lethal_interceptor`."""
+    global _heal_event_sink
+    _heal_event_sink = fn
+
+
+def apply_heal(world, healer_eid: int, target_eid: int, amount: int, sid: str = "") -> int:
+    """Ponto único de verdade (24/10/2026, classe Xamã) pra CURA de HP vinda
+    de skill — qualquer regra nova de cura (bônus de poder de cura, escudo de
+    excesso de cura, cura recebida reduzida…) entra SÓ aqui, mesma disciplina
+    de `apply_damage_core`. Alvo morto (HP<=0) nunca é curado. Devolve quanto
+    curou de fato (0 se já estava cheio) e avisa o servidor (`_heal_event_sink`)
+    pra transmitir o número verde."""
+    from engine.components import CombatStats as _CSheal
+    cs = world.get_component(target_eid, _CSheal)
+    if cs is None or cs.current_hp <= 0 or amount <= 0:
+        return 0
+    healed = max(0, min(int(amount), cs.max_hp - cs.current_hp))
+    cs.current_hp += healed
+    if healed > 0 and _heal_event_sink is not None:
+        _heal_event_sink(healer_eid, target_eid, healed, cs.current_hp, sid)
+    return healed
+
+
 # ── apply_damage_core ─────────────────────────────────────────────────────────
 
 def apply_damage_core(world, target_id: int, dmg: int, *,
@@ -923,6 +955,17 @@ class BaseCombatStateSystem:
             )
 
     @staticmethod
+    def _tick_espirito_regen(cs, char, dt: float) -> None:
+        """Regen de Espírito (Xamã) — só FORA de combate; em combate o
+        recurso só sobe atacando (Toque Ancestral, server-side)."""
+        if char.max_espirito <= 0 or char.espirito >= char.max_espirito:
+            return
+        if cs is not None and cs.in_combat:
+            return
+        from engine.stats_system import ESPIRITO_REGEN_OOC
+        char.espirito = min(char.max_espirito, char.espirito + ESPIRITO_REGEN_OOC * dt)
+
+    @staticmethod
     def _tick_concentration_free_timer(cst, dt: float) -> None:
         if cst.concentration_free_timer > 0:
             cst.concentration_free_timer -= dt
@@ -1060,6 +1103,7 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
             if char:
                 self._tick_concentration_regen(cs, char, cst, tm, dt)
                 self._tick_concentration_free_timer(cst, dt)
+                self._tick_espirito_regen(cs, char, dt)
             self._tick_standing_seconds(cst, tm, dt)
 
             self._tick_timed_modifiers(cst, dt)

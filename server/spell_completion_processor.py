@@ -130,6 +130,11 @@ class SpellCompletionMixin:
                 if not (_conc_free and getattr(_conc_free, "concentration_free", False)):
                     char.concentration = max(0, char.concentration - _conc_cost)
 
+            # Cobra Espírito ao completar (Xamã) — mesmo momento da mana/conc.
+            _esp_cost = entry.get("espirito_cost", 0)
+            if char and _esp_cost > 0:
+                char.espirito = max(0.0, char.espirito - _esp_cost)
+
             # Spells com projétil: aguardam PROJECTILE_HIT_CS antes de aplicar dano
             _PROJECTILE_SPELLS = {"bola_de_fogo", "flecha_reiterada", "picada_escorpiao", "tiro_repulsivo"}
 
@@ -155,6 +160,9 @@ class SpellCompletionMixin:
                 "so_um_gole":       self._server_so_um_gole,
                 "camuflagem":       self._server_camuflagem,
                 "recarregar":       self._server_recarregar,
+                # ── Xamã ──────────────────────────────────────────────────────
+                "toque_ancestral":  self._server_toque_ancestral,
+                "sopro_da_coruja":  self._server_sopro_da_coruja,
             }
             from server.spell_debug_log import splog as _splog2
             _tiro_multiplo_targets: list = []
@@ -357,7 +365,9 @@ class SpellCompletionMixin:
                 self._skill_effects_this_tick.append(_launch_evt)
             else:
                 # Spell resolve imediatamente: impact (ou miss se sem resultados)
-                _sfx_event = "impact" if results else "miss"
+                # `_landed`: skill de suporte (cura) não gera `results` de dano,
+                # mas aconteceu de verdade — não é "miss".
+                _sfx_event = "impact" if (results or entry.get("_landed")) else "miss"
                 self._skill_effects_this_tick.append({
                     "sid": spell_id, "event": _sfx_event,
                     "caster_eid": player_eid, "tx": _sfx_tx, "ty": _sfx_ty,
@@ -374,6 +384,8 @@ class SpellCompletionMixin:
                 _conc_compl = getattr(char, "concentration", None)
                 if _conc_compl is not None:
                     _compl_sync["concentration"] = _conc_compl
+                if char.max_espirito > 0:
+                    _compl_sync["espirito"] = char.espirito
                 self.queue_stats_update(_compl_sync)
 
         # Libera is_casting (e portanto o auto-attack) para players cujo último
@@ -1137,6 +1149,52 @@ class SpellCompletionMixin:
         self._trigger_general_fire_talent_procs(
             player_eid, player_cs, char_stats,
             getattr(self, "_last_magic_is_crit", False))
+
+    # ── Xamã (build Raiz) ────────────────────────────────────────────────────
+
+    def _server_toque_ancestral(self, player_eid: int, target_id: int, _entry: dict) -> None:
+        """Dano espiritual 20 + 60% SP; só se acertar, devolve Espírito ao
+        Xamã ("drena a energia espiritual" = dano que alimenta o recurso)."""
+        from engine.components import CombatStats, CharacterStats
+        from engine.core_systems import LAST_DAMAGE_AMOUNTS
+        from content.skill_config import SKILL_CATALOG as _SC_ta
+        _p = _SC_ta.get("toque_ancestral", {}).get("params", {})
+
+        if target_id == -1:
+            return
+        target_cs = self.world.get_component(target_id, CombatStats)
+        if not target_cs or target_cs.current_hp <= 0:
+            return
+        if self._is_evading(target_id):
+            return
+
+        player_cs = self.world.get_component(player_eid, CombatStats)
+        sp = player_cs.spell_power if player_cs else 0
+        dmg = max(1, _p.get("base_dmg", 20) + int(sp * _p.get("dmg_sp_coeff", 0.60)))
+        self._server_apply_magic_damage(player_eid, target_id, dmg, roll_crit=True,
+                                        school="espiritual")
+
+        char = self.world.get_component(player_eid, CharacterStats)
+        if char and char.max_espirito > 0 and LAST_DAMAGE_AMOUNTS.get(target_id, 0) > 0:
+            gain = _p.get("espirito_gain", 8) + getattr(player_cs, "toque_espirito_bonus", 0)
+            char.espirito = min(char.max_espirito, char.espirito + gain)
+
+    def _server_sopro_da_coruja(self, player_eid: int, target_id: int, _entry: dict) -> None:
+        """Cura 60 + 120% SP no alvo escolhido no início do cast (aliado ou o
+        próprio Xamã). Escrita de HP via apply_heal (ponto único)."""
+        from engine.components import CombatStats
+        from engine.core_systems import apply_heal
+        from content.skill_config import SKILL_CATALOG as _SC_sc
+        _p = _SC_sc.get("sopro_da_coruja", {}).get("params", {})
+
+        if target_id == -1:
+            return
+        player_cs = self.world.get_component(player_eid, CombatStats)
+        sp = player_cs.spell_power if player_cs else 0
+        amount = _p.get("base_heal", 60) + int(sp * _p.get("heal_sp_coeff", 1.20))
+        if self.world.get_component(target_id, CombatStats) is not None:
+            apply_heal(self.world, player_eid, target_id, amount, sid="sopro_da_coruja")
+            _entry["_landed"] = True
 
     def _server_nova_congelante(self, player_eid: int, target_id: int, entry: dict) -> None:
         from engine.components import CombatStats, TileMovement

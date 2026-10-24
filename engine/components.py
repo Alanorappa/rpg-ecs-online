@@ -233,6 +233,10 @@ class CombatStats:
         self.fire_crit_timer:           float = 0.0  # janela de 6s para acumular 3 crits
         self.fire_exhaustion_enabled:   bool  = False # pir_exaustao: slow progressivo por BdF consecutiva
         self.crematoria_enabled:        bool  = False # pir_crematoria: +25% dano em alvos <20% HP
+        # ── Flags comportamentais — build Raiz (Xamã) ──────────────────────
+        self.toque_espirito_bonus:      int   = 0     # raiz_sussurros_constantes: +Espírito por Toque Ancestral
+        self.cura_custo_reducao:        int   = 0     # raiz_alma_generosa: desconto fixo no custo de Espírito das curas
+        self.espirito_max_bonus:        int   = 0     # bônus de Espírito máximo (talentos futuros da Raiz)
 
         # ── Bônus derivados de SkillLevels (ver stats_system.apply_skill_bonuses_to_combat) ──
         # Recalculados sob demanda (level-up de skill ou spawn/login), nunca via Modifier —
@@ -787,6 +791,12 @@ class CharacterStats:
         self.max_concentration: int   = 0    # 0 = recurso inexistente para esta classe
         # Canção de Ninar — alvos adormecidos durante o canal (limpo ao concluir/cancelar)
         self.lullaby_targets:   list  = []
+
+        # Espírito (classe Xamã, 24/10/2026) — inicia cheio; regenera só fora
+        # de combate (stats_system.ESPIRITO_REGEN_OOC); em combate sobe com o
+        # Toque Ancestral. NÃO é o atributo `spirit` (regen de HP/MP).
+        self.espirito:     float = 0.0
+        self.max_espirito: int   = 0    # 0 = recurso inexistente para esta classe
 
     @staticmethod
     def xp_for_level(level: int) -> int:
@@ -1413,6 +1423,7 @@ class TileMovement:
     _server_dir_y: float = 0.0   # direção Y normalizada
     _server_aoe_x: float = 0.0   # coordenada X world do alvo AOE (Calamidade Flamejante)
     _server_aoe_y: float = 0.0   # coordenada Y world do alvo AOE
+    _server_support_tid: int = -1  # alvo AMIGÁVEL do request (skill de suporte, ex: Sopro da Coruja)
     # Janela de "ainda considerado em movimento" só pro servidor inferir is_moving
     # de PLAYERS — WorldServer.move_player() faz snap instantâneo de tile (sem
     # tween real, diferente de mob/cliente), então sem isso is_moving nunca

@@ -1552,7 +1552,7 @@ class RemoteEntityHandlers:
         px = tx * _TS + _TS // 2
         py = ty * _TS + _TS // 2
 
-        _CLASS_COLORS = {"guerreiro": (200,80,80), "mago": (80,80,220), "arqueiro": (80,200,80)}
+        _CLASS_COLORS = {"guerreiro": (200,80,80), "mago": (80,80,220), "arqueiro": (80,200,80), "xama": (90,190,160)}
         col = _CLASS_COLORS.get(data.get("class_id", "guerreiro"), (180, 180, 180))
         if data.get("kind") == "player_corpse":
             col = tuple(int(c * 0.35) + 20 for c in col)

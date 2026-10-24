@@ -41,6 +41,7 @@ CLASS_BUILD_MAP: dict[str, str] = {
     "guerreiro": "cavaleiro",
     "mago":      "piromania",
     "arqueiro":  "bardo",
+    "xama":      "raiz",
 }
 
 # ---------------------------------------------------------------------------
@@ -80,6 +81,18 @@ BUILDS: dict[str, dict] = {
                         "-Alguns talentos requerem posicionamento parado"],
         "color":       (80, 180, 220),
         "color_dark":  (20, 60, 100),
+    },
+    "raiz": {
+        "name":        "Raiz",
+        "description": "Xamã ligado aos espíritos ancestrais. Cura aliados, "
+                       "protege o grupo e drena os inimigos para alimentar o "
+                       "próprio Espírito.",
+        "pros":        ["+Cura direta em aliados",
+                        "+Espírito regenera ao causar dano"],
+        "cons":        ["-Depende de Espírito para curar",
+                        "-Dano baixo comparado ao mago"],
+        "color":       (120, 190, 90),
+        "color_dark":  (40, 70, 30),
     },
 }
 
@@ -886,6 +899,57 @@ TALENTS: dict[str, dict] = {
              "reset": 5.0,
              "formula": lambda pts: 5.0},
         ],
+    },
+
+    # ── Raiz (Xamã) — Fase 1: só os 3 nós da 1ª entrega; os outros 12 nós
+    # do desenho (classe_xama.md) entram na Fase 3. ─────────────────────────
+    "raiz_sussurros_constantes": {
+        "name":           "Sussurros Constantes",
+        "description":    "Toque Ancestral gera +{v} de Espírito.",
+        "build":          "raiz",
+        "col": 0, "row": 0,
+        "max_points":     5,
+        "requires":       {},
+        "effects":        None,
+        "unlocks_skill":  None,
+        "icon":           None,
+        "skill_def":      None,
+        "preview_formula": lambda d: d,
+        "cs_flags": [
+            {"field": "toque_espirito_bonus", "reset": 0,
+             "formula": lambda pts: pts},
+        ],
+    },
+    "raiz_alma_generosa": {
+        "name":           "Alma Generosa",
+        "description":    "Reduz em {v} o custo de Espírito das curas.",
+        "build":          "raiz",
+        "col": 1, "row": 0,
+        "max_points":     5,
+        "requires":       {},
+        "effects":        None,
+        "unlocks_skill":  None,
+        "icon":           None,
+        "skill_def":      None,
+        "preview_formula": lambda d: d * 2,
+        "cs_flags": [
+            {"field": "cura_custo_reducao", "reset": 0,
+             "formula": lambda pts: pts * 2},
+        ],
+    },
+    "raiz_sopro_da_coruja": {
+        "name":          "Sopro da Coruja",
+        "description":   "Desbloqueia Sopro da Coruja: cura um aliado (ou você) "
+                         "a até 8 tiles em 60 + 120% do Poder Mágico. Cast 1,5s, "
+                         "30 de Espírito.",
+        "build":         "raiz",
+        "col": 1, "row": 1,
+        "max_points":    1,
+        "requires":      {"raiz_alma_generosa": 1},
+        "effects":       None,
+        "unlocks_skill": "sopro_da_coruja",
+        "icon":          "skill_sopro_da_coruja",
+        "skill_def":     None,
     },
 }
 

@@ -130,6 +130,7 @@ class HudHandlers:
         "mana":  ((110, 150, 255), (50, 90, 220)),
         "rage":  ((240, 120, 60), (190, 70, 25)),
         "conc":  ((255, 190, 80), (215, 130, 20)),
+        "espirito": ((120, 225, 190), (50, 170, 140)),
         "xp":    ((190, 140, 245), (130, 80, 200)),
     }
 
@@ -138,12 +139,9 @@ class HudHandlers:
         vals = [("hp", "Vida", combat_stats.current_hp, combat_stats.max_hp)]
         if cs is None:
             return vals
-        if cs.class_id == "mago":
-            vals.append(("mana", "Mana", cs.mana, cs.max_mana))
-        elif cs.class_id == "arqueiro":
-            vals.append(("conc", "Concentração", int(cs.concentration), cs.max_concentration))
-        else:
-            vals.append(("rage", "Raiva", cs.rage, cs.max_rage))
+        from engine.stats_system import class_resource
+        key, label, cur, mx = class_resource(cs)
+        vals.append((key, label, int(cur), mx))
         vals.append(("xp", "Experiência", cs.current_xp, cs.xp_to_next_level))
         return vals
 

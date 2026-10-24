@@ -647,7 +647,8 @@ class PlayerInputSystem(System):
 
 
         char_stats  = self.world.get_component(entity_id, CharacterStats)
-        is_mage     = char_stats is not None and char_stats.class_id == "mago"
+        from engine.stats_system import CASTER_CLASSES as _CASTERS
+        is_mage     = char_stats is not None and char_stats.class_id in _CASTERS
         is_archer   = char_stats is not None and char_stats.class_id == "arqueiro"
 
         # Arqueiro só entra no combate ranged se tiver um ARCO de verdade

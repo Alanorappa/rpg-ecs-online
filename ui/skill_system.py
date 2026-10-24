@@ -454,6 +454,12 @@ class SkillSystem(System, SkillHandlers):
                 if not _conc_free and getattr(_char, "concentration", 0) < _conc_cost:
                     WARN.add(f"Concentração insuficiente ({int(getattr(_char, 'concentration', 0))}/{_conc_cost})")
                     return False
+            # Espírito (Xamã) — mesma conta de custo do handler do servidor
+            # (SkillHandlers._heal_espirito_cost, já com Alma Generosa)
+            _esp_cost = self._heal_espirito_cost(skill, _cs)
+            if _esp_cost > 0 and _char and getattr(_char, "espirito", 0) < _esp_cost:
+                WARN.add(f"Espírito insuficiente ({int(getattr(_char, 'espirito', 0))}/{_esp_cost})")
+                return False
         # HP threshold (ex: Executar exige alvo <30% HP) — verifica no cliente via RemoteEntityMeta
         if not (_is_procced and _proc_ignores_cost) and combat_state:
             _params_sk   = getattr(skill, "params", {}) or {}

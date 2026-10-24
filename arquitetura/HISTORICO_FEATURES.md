@@ -6211,3 +6211,68 @@ Validado pelo usuário em jogo ("ficou perfeito; às vezes gera um
 probleminha, mas passar o pincel aumentando a largura corrige"). As
 fileiras de laboratório (160–211) foram removidas de Aracnópolis no mesmo
 dia — o mapa voltou a 160 fileiras.
+
+## 85. Classe Xamã (build Raiz) — Fase 1 + Sopro da Coruja (24/10/2026)
+
+Pedido do usuário: classe nova Xamã + build Raiz, conforme o desenho
+`classe_xama.md` (anexado na conversa). Decisões do usuário: Poder de
+Feitiço = reusa `spell_power` (Poder Mágico); armas iguais ao mago +
+armadura tecido E couro; ataque básico corpo-a-corpo igual ao mago
+(Toque Ancestral é o ataque principal); "drena a energia espiritual do
+inimigo" = causa dano e devolve Espírito ao Xamã (sem barra nova no
+inimigo); 1ª entrega = Fase 1 + Sopro da Coruja.
+
+O que entrou:
+- **Classe `xama`** em todas as tabelas por classe de
+  `engine/stats_system.py` (atributos, ganho por nível, HP base, acerto,
+  regen, armas, armadura, overrides de melee). `CASTER_CLASSES` =
+  {mago, xama} — quem engaja como conjurador
+  (`ui/player_input_system.py`), nunca `class_id == "mago"`.
+- **Recurso Espírito** (`CharacterStats.espirito`/`max_espirito`, máx.
+  100 via `CLASS_ESPIRITO`): regen 5/s só FORA de combate
+  (`BaseCombatStateSystem._tick_espirito_regen`, cliente+servidor, mesmo
+  padrão da Concentração); em combate só sobe acertando o Toque
+  Ancestral. Sincronizado em STATS_UPDATE (`"espirito"`) após conclusão
+  de cast. **Nome colide com o ATRIBUTO Espírito** (`spirit`, regen
+  HP/MP) — o painel de atributos do Xamã mostra os dois com o mesmo
+  nome; renomear é decisão pendente do usuário.
+- **`engine.stats_system.class_resource(char)`** — ponto único "qual é o
+  recurso desta classe" (retrato, nameplate, painel de atributos); os 3
+  `if mago / arqueiro / else` duplicados foram trocados por ele.
+- **Cura: `engine.core_systems.apply_heal(world, healer, target, amount,
+  sid)`** — ponto único NOVO de escrita de cura em HP (limita ao máximo,
+  ignora morto). Evento visual via sink registrado pelo WorldServer
+  (`register_heal_event_sink`) → `_combat_this_tick` com outcome
+  `"regen"` e dano negativo (mesmo "+X HP" verde que o cliente já
+  mostra). HP do alvo chega ao dono por `_sync_player_hp_dirty`.
+- **Skills**: `toque_ancestral` (20 + 60% SP, 6 tiles, cast 1s, CD 1,5s,
+  +8 Espírito só se acertar; skill INICIAL da classe — não há treinador
+  de Xamã no mapa ainda, `Trainer` é por classe) e `sopro_da_coruja`
+  (cura 60 + 120% SP, 8 tiles, cast 1,5s, 30 Espírito, mín. 15;
+  desbloqueada por talento).
+- **Alvo amigável de skill de suporte**: `server/skill_processor.py`
+  passa o player AMIGÁVEL mirado por `TileMovement._server_support_tid`
+  (mesmo padrão de `_server_dir_x`) em vez de recusar "Alvo amigável" —
+  nunca vira alvo de combate do caster. Skill de suporte mirando NPC
+  amigável ignora o alvo em vez de recusar. Sem aliado mirado → cura o
+  próprio Xamã; aliado fora de alcance → recusa.
+- **Árvore Raiz (3 de 15 nós)**: Sussurros Constantes (+1 Espírito por
+  Toque, por ponto), Alma Generosa (−2 de custo das curas por ponto),
+  Sopro da Coruja. Os 12 nós restantes = Fase 3. Ícone do Sopro é
+  PROVISÓRIO (célula da Canção de Inspiração) até existir arte própria.
+- UI: opção "Xamã" na criação de personagem, cores por classe, barra de
+  Espírito (verde-água) no retrato/nameplate, hotbar escurece sem
+  Espírito, loja de instância (couro+tecido, armas de mago; tabela de
+  armadura virou conjunto por classe), arena enche Espírito no
+  início/fim da partida. Sem sprite ainda → retângulo colorido.
+
+Fora desta entrega: bots de BG Xamã, treinador de Xamã, sprites,
+Fases 2–4 (Lobo/Gavião/Bisão/Urso, escudo de absorção em
+apply_damage_core, árvore completa, balanceamento).
+
+Testes: `tests/test_xama.py` (18 — apply_heal, regen, Toque/Sopro pela
+fila real do servidor). Falhas pré-existentes conferidas num worktree
+do commit anterior (não são desta mudança): `test_bg_bot.py::
+TestBotInitialShopping` (3), `test_hotbar_bg_leak.py::
+test_trainer_system_real_aprende_skill_sem_crash`, `test_server.py::
+TestTickPerfProfiler::test_perf_push_pop_grava_no_caminho`.

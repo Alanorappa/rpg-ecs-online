@@ -26,7 +26,13 @@ CLASS_LEVEL_GAINS: dict[str, dict] = {
     "guerreiro": {"strength": 1, "vitality": 1, "agility": 0, "intelligence": 0, "defense": 2},
     "mago":      {"strength": 0, "vitality": 1, "agility": 0, "intelligence": 1, "defense": 1},
     "arqueiro":  {"strength": 0, "vitality": 1, "agility": 1, "intelligence": 0, "defense": 1},
+    "xama":      {"strength": 0, "vitality": 1, "agility": 0, "intelligence": 1, "defense": 1},
 }
+
+# Classes conjuradoras (24/10/2026): engajam como o mago — corpo a corpo
+# colado no alvo, senão perseguem até o alcance de skill e esperam o cast.
+# Ponto único: nunca checar `class_id == "mago"` pra esse comportamento.
+CASTER_CLASSES: frozenset = frozenset({"mago", "xama"})
 
 # Atributos base ao criar um personagem novo — específicos por classe.
 # Atributo principal inicia em 3; os demais em valores mínimos.
@@ -34,6 +40,7 @@ CLASS_BASE_STATS: dict[str, dict] = {
     "guerreiro": {"strength": 3, "intelligence": 1, "agility": 1, "vitality": 3, "defense": 2},
     "mago":      {"strength": 1, "intelligence": 3, "agility": 1, "vitality": 2, "defense": 1},
     "arqueiro":  {"strength": 1, "intelligence": 1, "agility": 3, "vitality": 2, "defense": 1},
+    "xama":      {"strength": 1, "intelligence": 3, "agility": 1, "vitality": 2, "defense": 1},
 }
 
 
@@ -48,6 +55,7 @@ CLASS_ARMOR_ALLOWED: dict[str, frozenset] = {
     "guerreiro": frozenset({"placa", "couro", "tecido"}),
     "arqueiro":  frozenset({"couro", "tecido"}),
     "mago":      frozenset({"tecido"}),
+    "xama":      frozenset({"couro", "tecido"}),
 }
 
 
@@ -85,7 +93,7 @@ def is_weapon_allowed_for_class(item, class_id: str) -> bool:
         if item_type == "shield":
             return False
         return True
-    if class_id == "mago":
+    if class_id in ("mago", "xama"):     # xamã: mesmas armas do mago (24/10/2026)
         if item_type == "quiver" or (item_type == "weapon" and subtype == "Bow"):
             return False
         if item_type == "weapon" and subtype in ("Axe", "Mace", "Hammer", "Club"):
@@ -100,6 +108,7 @@ CLASS_BASE_HP: dict[str, int] = {
     "guerreiro": 180,
     "mago":      100,
     "arqueiro":  120,
+    "xama":      110,
 }
 
 # Acerto base por classe. Todos os atributos contribuem +0.1% por ponto (universal).
@@ -107,6 +116,7 @@ CLASS_BASE_ACERTO: dict[str, float] = {
     "guerreiro": 80.0,
     "mago":      75.0,
     "arqueiro":  50.0,
+    "xama":      75.0,
 }
 
 # Regen base por classe (fração de max_hp/max_mana a cada 5s, FORA de combate
@@ -121,6 +131,7 @@ CLASS_BASE_REGEN: dict[str, dict] = {
     "guerreiro": {"hp5": 0.03},
     "mago":      {"hp5": 0.01, "mp5": 0.04, "mp5_ic": 0.01},
     "arqueiro":  {"hp5": 0.01},
+    "xama":      {"hp5": 0.02},
 }
 
 # Concentração máxima por classe (0 = recurso inexistente para a classe).
@@ -128,6 +139,32 @@ CLASS_BASE_REGEN: dict[str, dict] = {
 CLASS_CONCENTRATION: dict[str, int] = {
     "arqueiro": 100,
 }
+
+# Espírito (recurso do Xamã, 24/10/2026) — máximo por classe (0 = classe sem
+# o recurso). Inicia cheio. Regenera ESPIRITO_REGEN_OOC/s só FORA de combate;
+# em combate só sobe atacando (Toque Ancestral). NÃO confundir com o
+# ATRIBUTO `spirit` (CharacterStats.spirit, regen de HP/MP).
+CLASS_ESPIRITO: dict[str, int] = {
+    "xama": 100,
+}
+ESPIRITO_REGEN_OOC: float = 5.0
+
+
+def class_resource(char) -> tuple[str, str, float, int]:
+    """Recurso principal da classe: (chave, rótulo, atual, máximo).
+
+    Ponto único pra QUALQUER tela que mostra "o recurso do personagem"
+    (retrato, nameplate, painel de atributos) — classe nova com recurso
+    novo entra só aqui, nunca num `if class_id == ...` por tela.
+    Chaves: "mana" | "conc" | "espirito" | "rage" (default)."""
+    cid = getattr(char, "class_id", "")
+    if cid == "mago":
+        return "mana", "Mana", char.mana, char.max_mana
+    if cid == "arqueiro":
+        return "conc", "Concentração", char.concentration, char.max_concentration
+    if cid == "xama":
+        return "espirito", "Espírito", char.espirito, char.max_espirito
+    return "rage", "Raiva", char.rage, char.max_rage
 
 CLASS_MELEE_OVERRIDES: dict[str, dict] = {
     "guerreiro": {
@@ -149,6 +186,12 @@ CLASS_MELEE_OVERRIDES: dict[str, dict] = {
         # concentration_regen_idle/moving NÃO ficam aqui — são gerenciados por
         # cs_flags em talent_data.py (reset=5.0 garante o valor base).
         # Colocar aqui sobrescreveria o efeito do talento "Parado e Concentrado".
+    },
+    "xama": {
+        "base_attack_power":        0,
+        "_default_attack_interval": 3.2,
+        "base_physical_damage":     2,
+        "base_physical_damage_max": 5,
     },
 }
 
@@ -235,6 +278,15 @@ def apply_char_stats_to_combat(char_stats: CharacterStats,
     if char_stats.max_concentration != new_max_conc:
         char_stats.max_concentration = new_max_conc
         char_stats.concentration     = new_max_conc  # inicia cheia
+
+    # Espírito (Xamã) — mesmo princípio da Concentração, inicia cheio
+    new_max_esp = CLASS_ESPIRITO.get(char_stats.class_id, 0) \
+        + int(getattr(combat_stats, "espirito_max_bonus", 0))
+    if char_stats.max_espirito != new_max_esp:
+        if char_stats.max_espirito == 0:
+            char_stats.espirito = new_max_esp
+        char_stats.max_espirito = new_max_esp
+        char_stats.espirito = min(char_stats.espirito, new_max_esp)
 
 
 def sync_attack_interval(combat_stats: CombatStats, equipment=None) -> None:

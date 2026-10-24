@@ -953,6 +953,24 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             })
         _sys_svc["emit_combat_event"] = _on_mob_combat_event
 
+        # Cura de skill (Xamã, 24/10/2026) — ponto único `apply_heal`
+        # (engine/core_systems.py) avisa aqui; vira o mesmo resultado de
+        # combate "regen" (dano negativo) que o HP5 já usa, transmitido por
+        # AOI pra todo mundo em volta ver o número verde.
+        def _on_heal_event(healer_eid: int, target_eid: int, healed: int,
+                           hp_after: int, sid: str) -> None:
+            _srv_ref._combat_this_tick.append({
+                "attacker": healer_eid,
+                "target":   target_eid,
+                "damage":   -healed,
+                "outcome":  "regen",
+                "hp_after": hp_after,
+                "source":   "heal",
+                "sid":      sid,
+            })
+        from engine.core_systems import register_heal_event_sink as _reg_heal_sink
+        _reg_heal_sink(_on_heal_event)
+
         # P4: injeção direta de serviços por bundle — elimina dependência no global _svc.
         # `perf_push=self._perf_push, perf_pop=self._perf_pop` (Fase 4.5,
         # 12/08/2026, atualizado Fase 4.7 — ver PROBLEMAS_ARQUITETURA.md

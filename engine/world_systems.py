@@ -1288,6 +1288,7 @@ class CombatStateSystem(_BaseCombatStateSystem, System):
                     self._tick_standing_seconds(combat_stats, tm, dt)
                     if char_stats:
                         self._tick_concentration_regen(cs, char_stats, combat_stats, tm, dt)
+                        self._tick_espirito_regen(cs, char_stats, dt)
 
                 # ── Disoriented / Polymorph: wander aleatório (cliente-only) ──
                 # Para mobs: EnemyAISystem faz o wander; para players: aqui.
@@ -1321,7 +1322,7 @@ class CombatStateSystem(_BaseCombatStateSystem, System):
                         _rend_cam = self.world.get_component(eid, Renderable)
                         _char_cam = char_stats
                         if _rend_cam and _char_cam:
-                            _CLASS_COLORS = {"mago": (80, 80, 220), "arqueiro": (80, 200, 80)}
+                            _CLASS_COLORS = {"mago": (80, 80, 220), "arqueiro": (80, 200, 80), "xama": (90, 190, 160)}
                             _rend_cam.color  = _CLASS_COLORS.get(_char_cam.class_id, (255, 0, 0))
                             _rend_cam.width  = 24
                             _rend_cam.height = 24

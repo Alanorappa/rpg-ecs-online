@@ -21,6 +21,7 @@ _CLASS_COLORS = {
     "guerreiro": (200, 100,  60),
     "mago":      ( 80, 130, 220),
     "arqueiro":  ( 80, 180, 100),
+    "xama":      ( 90, 190, 160),
 }
 
 _CLASSES = [
@@ -28,6 +29,7 @@ _CLASSES = [
      "description": "Mestre do combate corpo a corpo.\nAlta resistencia e dano fisico."},
     {"id": "mago",      "label": "Mago",      "locked": False, "description": "Mestre das artes arcanas.\nAlto poder mágico e controle de área."},
     {"id": "arqueiro",  "label": "Arqueiro",  "locked": False, "description": "Mestre do arco e da flecha.\nAtaques ranged e controle de posicionamento."},
+    {"id": "xama",      "label": "Xamã",      "locked": False, "description": "Elo com os espíritos ancestrais.\nCura aliados e drena os inimigos."},
 ]
 
 

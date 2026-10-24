@@ -1069,12 +1069,9 @@ class RenderSystem(System):
                     if _char_id is not None:
                         if nameplate_mode == 0:
                             _xp_ratio = _char_id.current_xp / max(1, _char_id.xp_to_next_level)
-                            if _char_id.class_id == "mago":
-                                _res_ratio = _char_id.mana / max(1, _char_id.max_mana)
-                            elif _char_id.class_id == "arqueiro":
-                                _res_ratio = _char_id.concentration / max(1, _char_id.max_concentration)
-                            else:
-                                _res_ratio = _char_id.rage / max(1, _char_id.max_rage)
+                            from engine.stats_system import class_resource as _cls_res
+                            _, _, _res_cur, _res_max = _cls_res(_char_id)
+                            _res_ratio = _res_cur / max(1, _res_max)
                             _res_color = RESOURCE_COLORS.get(_char_id.class_id, (150, 150, 150))
                             _hud_surf = build_player_hud(ratio, _xp_ratio, _res_ratio, _res_color,
                                                          _char_id.level, self._level_font)

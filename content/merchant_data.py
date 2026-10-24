@@ -43,9 +43,11 @@ INSTANCE_SHOP_WEAPON_SUBTYPES = {
     "guerreiro": frozenset({"Sword", "Mace", "Axe", "Club", "Hammer", "Dagger"}),
     "arqueiro":  frozenset({"Bow", "Dagger"}),
     "mago":      frozenset({"Wand", "Staff", "Scepter"}),
+    "xama":      frozenset({"Wand", "Staff", "Scepter"}),
 }
 INSTANCE_SHOP_ARMOR_CLASS = {
-    "guerreiro": "placa", "arqueiro": "couro", "mago": "tecido",
+    "guerreiro": frozenset({"placa"}), "arqueiro": frozenset({"couro"}),
+    "mago": frozenset({"tecido"}), "xama": frozenset({"couro", "tecido"}),
 }
 # categoria → posição na lista (ordenação, evita parede de itens sem ordem)
 _INSTANCE_SHOP_CATEGORY_ORDER = {
@@ -65,7 +67,7 @@ def instance_shop_class_allows(item, class_id: str) -> bool:
     if item.item_type in ("jewelry", "consumable"):
         return True
     if item.item_type == "armor":
-        return item.armor_class == INSTANCE_SHOP_ARMOR_CLASS.get(class_id, "")
+        return item.armor_class in INSTANCE_SHOP_ARMOR_CLASS.get(class_id, frozenset())
     if item.item_type == "weapon":
         return item.subtype in INSTANCE_SHOP_WEAPON_SUBTYPES.get(class_id, frozenset())
     if item.item_type == "shield":
@@ -111,7 +113,7 @@ INSTANCE_SHOP_STOCK_BY_CLASS = {
          if instance_shop_class_allows(e["factory"](), cls)),
         key=lambda e: _instance_shop_sort_key(e["factory"]()),
     )
-    for cls in ("guerreiro", "arqueiro", "mago")
+    for cls in ("guerreiro", "arqueiro", "mago", "xama")
 }
 
 SHOPS = {

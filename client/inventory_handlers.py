@@ -342,12 +342,9 @@ class InventoryHandlers:
         if char_stats:
             # Recurso da classe (class_id direto, mesmo critério do HUD) —
             # equipamento nunca modifica mana/concentração/raiva hoje.
-            if char_stats.class_id == "mago":
-                res = ("Mana", char_stats.max_mana, 0, num)
-            elif char_stats.class_id == "arqueiro":
-                res = ("Concentração", char_stats.max_concentration, 0, num)
-            else:
-                res = ("Raiva", char_stats.max_rage, 0, num)
+            from engine.stats_system import class_resource
+            _, _res_label, _, _res_max = class_resource(char_stats)
+            res = (_res_label, _res_max, 0, num)
             # Espírito (HP5/MP5 fora de combate) soma PermanentStats igual
             # ao total usado em apply_char_stats_to_combat.
             from engine.components import PermanentStats as _PermSpirit

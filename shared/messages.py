@@ -615,6 +615,8 @@ def validate_c2s(msg_type: "MsgType", payload) -> "str | None":
 #   "mp_max":int
 #   "rage":  int         (Guerreiro)
 #   "conc":  int         (Arqueiro — concentration)
+#   "espirito": float    (Xamã — recurso Espírito, valor absoluto; enviado
+#                         após conclusão de cast, mesmo canal de mana/conc)
 #   "xp":    int
 #   "xp_next":int
 #   "level":         int              override direto de level, sem passar

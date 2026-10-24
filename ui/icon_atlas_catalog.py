@@ -66,4 +66,7 @@ ICON_ATLAS: "dict[str, tuple[str, int, int]]" = {
     'skill_tiro_multiplo': ('atlas_skills.png', 8, 1),
     'skill_tiro_repulsivo': ('atlas_skills.png', 9, 1),
     'skill_vitoria_iminente': ('atlas_skills.png', 10, 1),
+    # PROVISÓRIO (24/10/2026): reaproveita a célula da Canção de Inspiração
+    # até existir arte própria — trocar pra uma célula livre quando pintar.
+    'skill_sopro_da_coruja': ('atlas_skills.png', 6, 0),
 }
