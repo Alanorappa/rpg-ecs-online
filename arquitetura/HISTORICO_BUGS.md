@@ -6761,3 +6761,30 @@ lugares; absorção emite resultado de combate `"absorb"` → cliente mostra
 "Absorveu(X)" (pedido do usuário); o número de dano do golpe de mob
 passou a ser o que de fato entrou (pós escudo/marca).
 
+## 102. Alvo inalcançável esgotava o orçamento de A* e travava todos os mobs (24/10/2026)
+
+**Sintoma**: depois do fix do §101 os mobs continuaram travando ("perseguindo"
+parados; quem já estava colado atacava). O log novo `NO_PATH` mostrou:
+~10 mil `orcamento_esgotado` + ~9 mil `astar_sem_caminho`, todos vindos de
+1 par — Custódio Benevide (NPC coveiro, dentro de um cercado em
+x 128–130) e um Zumbi do lado de fora (132,366), se agredindo pela cerca.
+
+**Causa**: `should_recalculate_path` disparava em "sem caminho" (`path is
+None`) ignorando `path_recalc_timer`. Caminho que falha deixa `path=None`
+→ recalcula no tick seguinte, testando ~5 tiles de ataque (5 A* que
+falham, o caso mais caro do A*). Medido: 150–278 A*/s de UM mob, contra
+um orçamento de 10/tick por mapa (`MAX_PATHFINDS_PER_FRAME`) — os demais
+mobs/NPCs do mapa ficavam sem vez pra sempre. O A* do mob é limitado
+(retângulo entre mob e alvo + 8 tiles, 300 nós, Manhattan ≤ 60), então
+"inalcançável" inclui desvio grande demais.
+
+**Correção** (`engine/world_systems.py::EnemyAISystem`, decisão do usuário
+sobre comportamento): `AIControlled.path_retry_wait` — falha de caminho
+(`None`) espera o timer normal (~0,8s); caminho esgotado (`[]`) continua
+recalculando na hora. `AIControlled.unreachable_timer` conta tempo seguido
+sem caminho de verdade (orçamento esgotado não conta); passou de
+`UNREACHABLE_GIVE_UP_S` (3s) → desiste do alvo e volta (RETURNING), log
+`GIVE_UP`. Pode reagrar depois (alvo continua perto) — custo agora baixo.
+Teste: `tests/test_mob_unreachable_target.py` (falha no código antigo:
+150 A*/s de 1 mob; passa no novo).
+

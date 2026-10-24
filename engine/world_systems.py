@@ -2626,6 +2626,7 @@ class EnemyAISystem(System):
     MAX_LEASH_RADIUS     = 20  # tiles: mob retorna ao spawn se afastar mais do que isso (aggro normal)
     MAX_LEASH_RADIUS_DMG = 25  # tiles: raio maior quando aggroed por dano (evita reset por 1 hit + recuo)
     MAX_PATHFINDS_PER_FRAME = 10  # limite de chamadas A* por frame (evita travamento com muitos inimigos)
+    UNREACHABLE_GIVE_UP_S   = 3.0  # alvo sem caminho por tanto tempo seguido → desiste (RETURNING), §102
     # Orçamento por tick pro CORPO do loop_mobs (06/09/2026,
     # PROBLEMAS_ARQUITETURA.md §121) — mesmo princípio de
     # MAX_PATHFINDS_PER_FRAME (nunca descarta, só adia pro próximo tick),
@@ -3946,8 +3947,11 @@ class EnemyAISystem(System):
             else:
                 _chase_recalc_due = False
             should_recalculate_path = (
-                ai_control.path is None or
-                not ai_control.path or
+                # None = sem caminho (falhou → espera o timer se
+                # path_retry_wait, §102); [] = caminho esgotado (chegou ao
+                # fim) → sempre recalcula na hora.
+                (ai_control.path is None and not ai_control.path_retry_wait) or
+                (ai_control.path is not None and not ai_control.path) or
                 ai_control.path_recalc_timer <= 0 or
                 ai_control.is_blocked or
                 (_tile_changed and _chase_recalc_due)
@@ -4135,6 +4139,16 @@ class EnemyAISystem(System):
                         ai_control.path_recalc_timer = random.uniform(0.05, 0.25)
                     else:
                         ai_control.path_recalc_timer = self.path_recalc_interval
+                    # Sem caminho (por qualquer motivo) → espera o timer acima
+                    # antes de tentar de novo; só falha de verdade (não
+                    # orçamento) conta pra desistir do alvo. Ver §102.
+                    ai_control.path_retry_wait = not found_path_to_target
+                    _budget_only = (not found_path_to_target and available_attack_tiles
+                                    and self._pathfind_budget <= 0)
+                    if found_path_to_target:
+                        ai_control.unreachable_timer = 0.0      # cronômetro parado
+                    elif not _budget_only and ai_control.unreachable_timer <= 0.0:
+                        ai_control.unreachable_timer = 1e-6     # liga o cronômetro
                     ai_control.last_known_player_tile = player_tile_now
                     # Fase 3 (06/08/2026) — stamp de "acabou de replanejar",
                     # independente de qual dos 4 gatilhos disparou. Só isso
@@ -4159,10 +4173,25 @@ class EnemyAISystem(System):
                 elif ai_control.is_blocked:
                     ai_control.state = "BLOCKED_BY_PLAYER"
                 else:
+                    # Alvo inalcançável de verdade por UNREACHABLE_GIVE_UP_S
+                    # seguidos (ex: NPC dentro de um cercado e o mob do lado
+                    # de fora, se agredindo pela cerca) → desiste e volta pra
+                    # casa, estilo WoW (decisão do usuário, §102).
+                    if ai_control.unreachable_timer > 0.0:
+                        ai_control.unreachable_timer += dt
+                    if ai_control.unreachable_timer >= self.UNREACHABLE_GIVE_UP_S:
+                        if _MCL: _MCL.log("GIVE_UP", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                          reason="inalcancavel", target=target_eid)
+                        ai_control.state             = "RETURNING"
+                        ai_control.target_eid        = -1
+                        ai_control.aggroed_by_damage = False
+                        ai_control.path_recalc_timer = 0.0
+                        ai_control.path_retry_wait   = False
+                        ai_control.unreachable_timer = 0.0
                     # Sem caminho disponível: só desiste se o jogador saiu do raio de detecção.
                     # Se ainda estiver em alcance (ex: kite_cooldown ativo), mantém CHASING para
                     # que o pathfinding seja tentado novamente no próximo ciclo.
-                    if dist_to_player_pixels > detect_radius.radius:
+                    elif dist_to_player_pixels > detect_radius.radius:
                         # Desiste de perseguir — mas se estiver longe do spawn, volta pra
                         # casa (RETURNING) em vez de travar em IDLE no meio do caminho.
                         # detect_radius (~8 tiles) é bem menor que o leash (20 tiles), então

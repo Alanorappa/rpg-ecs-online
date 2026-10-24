@@ -475,6 +475,15 @@ class AIControlled:
     # movimento) — os outros 3 gatilhos (path None/vazio/is_blocked)
     # continuam imediatos, nunca leem este campo.
     _chase_recalc_last_tick: int = -1
+    # Recálculo de caminho que FALHOU (24/10/2026, HISTORICO_BUGS.md §102):
+    # path_retry_wait=True faz o gatilho "sem caminho" respeitar
+    # path_recalc_timer em vez de tentar de novo todo tick (um alvo
+    # inalcançável esgotava o orçamento de A* do mapa inteiro e travava
+    # todos os outros mobs). unreachable_timer acumula o tempo seguido sem
+    # caminho de verdade (não conta orçamento esgotado); passou de
+    # EnemyAISystem.UNREACHABLE_GIVE_UP_S → desiste do alvo (RETURNING).
+    path_retry_wait: bool = False
+    unreachable_timer: float = 0.0
 
 @dataclass
 class InitialPosition:
