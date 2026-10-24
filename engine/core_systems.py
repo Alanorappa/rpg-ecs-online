@@ -81,6 +81,49 @@ LAST_DAMAGE_OUTCOMES: dict[int, str] = {}
 LAST_DAMAGE_AMOUNTS: dict[int, int] = {}
 LAST_EFFECTS_APPLIED: dict[int, list] = {}
 
+def _effects_product(sfx, field: str) -> float:
+    """Produto de um campo multiplicador de EffectDef (speed_mult /
+    damage_taken_mult) sobre todos os efeitos ativos de `sfx`."""
+    if sfx is None or not sfx.effects:
+        return 1.0
+    from content.status_effects_data import EFFECT_DEFS
+    mult = 1.0
+    for et in sfx.effects:
+        d = EFFECT_DEFS.get(et)
+        if d is not None:
+            mult *= getattr(d, field)
+    return mult
+
+
+def has_effect_flag(world, eid: int, field: str) -> bool:
+    """True se algum efeito ativo de `eid` tem a flag booleana `field` de
+    EffectDef ligada (ex: "blocks_stealth")."""
+    from engine.components import StatusEffects
+    from content.status_effects_data import EFFECT_DEFS
+    sfx = world.get_component(eid, StatusEffects)
+    if sfx is None or not sfx.effects:
+        return False
+    return any(getattr(EFFECT_DEFS.get(et), field, False) for et in sfx.effects)
+
+
+def _consume_absorb(sfx, dmg: int) -> int:
+    """Desconta `dmg` dos escudos ativos (EffectDef.absorbs, `magnitude` =
+    dano restante); remove o escudo ao zerar. Retorna quanto absorveu."""
+    if sfx is None or dmg <= 0 or not sfx.effects:
+        return 0
+    from content.status_effects_data import EFFECT_DEFS
+    absorbed = 0
+    for et in [e for e in sfx.effects if getattr(EFFECT_DEFS.get(e), "absorbs", False)]:
+        eff = sfx.effects[et]
+        take = min(int(eff.magnitude), dmg - absorbed)
+        eff.magnitude -= take
+        absorbed += take
+        if eff.magnitude <= 0:
+            sfx.remove(et)
+        if absorbed >= dmg:
+            break
+    return absorbed
+
 
 def should_include_skill_damage_target(mob_eid: int, damage: int,
                                        caster_eid: int, explicit_target_id: int) -> bool:
@@ -243,6 +286,17 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
         # funcionando ponta a ponta em todo chamador, sem precisar ensinar
         # cada um a entender um 5º motivo de bloqueio.
         return _finish("blocked_immune")
+
+    # Modificadores por dado do catálogo de efeitos (24/10/2026, Xamã):
+    # dano recebido amplificado (EffectDef.damage_taken_mult, ex: Marca do
+    # Gavião) e, depois, escudo de absorção (EffectDef.absorbs, ex: Pele do
+    # Urso). Valem pra todo dano que passa aqui — DoT não passa (débito já
+    # conhecido, ver docstring de damage_kind).
+    if dmg > 0:
+        _sfx_mod = world.get_component(target_id, StatusEffects)
+        if _sfx_mod is not None and _sfx_mod.effects:
+            dmg = int(round(dmg * _effects_product(_sfx_mod, "damage_taken_mult")))
+            dmg -= _consume_absorb(_sfx_mod, dmg)
 
     cs.current_hp -= dmg  # overkill preservado por contrato
     LAST_DAMAGE_AMOUNTS[target_id] = LAST_DAMAGE_AMOUNTS.get(target_id, 0) + dmg
@@ -645,6 +699,9 @@ def sync_status_derived_state(world, eid: int, sfx) -> None:
             # (com duração real do servidor) e expira naturalmente por aqui.
             tm.slow_mult          = 1.0
             tm.debilitate_elapsed = 0.0
+        # Aceleração por dado (EffectDef.speed_mult, ex: Espírito do Lobo) —
+        # multiplica por cima da lentidão acima, nunca a substitui.
+        tm.slow_mult *= _effects_product(sfx, "speed_mult")
 
     cst = world.get_component(eid, CombatState)
     if cst:

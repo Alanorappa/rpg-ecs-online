@@ -563,7 +563,7 @@ class HotbarHandlers:
             _insuf_mana = mana_cost > 0 and _char is not None and _char.mana < mana_cost
             _insuf_conc = conc_cost > 0 and _char is not None and _char.concentration < conc_cost
             # Espírito (Xamã) — mesma conta do servidor (já com Alma Generosa)
-            _esp_cost = self._skill_system._heal_espirito_cost(skill, _cs_hb) if self._skill_system else 0
+            _esp_cost = self._skill_system._espirito_cost(skill, _cs_hb) if self._skill_system else 0
             _insuf_esp = _esp_cost > 0 and _char is not None and _char.espirito < _esp_cost
 
             # O overlay só é suprimido se o proc explicitamente dispensa o custo

@@ -163,6 +163,7 @@ class SpellCompletionMixin:
                 # ── Xamã ──────────────────────────────────────────────────────
                 "toque_ancestral":  self._server_toque_ancestral,
                 "sopro_da_coruja":  self._server_sopro_da_coruja,
+                "investida_do_bisao": self._server_investida_do_bisao,
             }
             from server.spell_debug_log import splog as _splog2
             _tiro_multiplo_targets: list = []
@@ -1179,6 +1180,33 @@ class SpellCompletionMixin:
             gain = _p.get("espirito_gain", 8) + getattr(player_cs, "toque_espirito_bonus", 0)
             char.espirito = min(char.max_espirito, char.espirito + gain)
 
+    def _server_investida_do_bisao(self, player_eid: int, target_id: int, _entry: dict) -> None:
+        """Fim da arrancada: 40 + 40% SP (espiritual) e empurrão de 1 tile
+        pra longe do Xamã (_server_knockback, sem stun de colisão)."""
+        from engine.components import CombatStats, TileMovement
+        from engine.core_systems import LAST_DAMAGE_AMOUNTS
+        from content.skill_config import SKILL_CATALOG as _SC_bi
+        _p = _SC_bi.get("investida_do_bisao", {}).get("params", {})
+
+        if target_id == -1:
+            return
+        target_cs = self.world.get_component(target_id, CombatStats)
+        if not target_cs or target_cs.current_hp <= 0 or self._is_evading(target_id):
+            return
+        player_cs = self.world.get_component(player_eid, CombatStats)
+        sp = player_cs.spell_power if player_cs else 0
+        dmg = max(1, _p.get("base_dmg", 40) + int(sp * _p.get("dmg_sp_coeff", 0.40)))
+        self._server_apply_magic_damage(player_eid, target_id, dmg, roll_crit=True,
+                                        school="espiritual")
+        if LAST_DAMAGE_AMOUNTS.get(target_id, 0) <= 0 or target_cs.current_hp <= 0:
+            return
+        p_tm = self.world.get_component(player_eid, TileMovement)
+        if p_tm is None:
+            return
+        # Origem = destino da arrancada (o caster pode ainda estar no tween)
+        self._server_knockback(player_eid, target_id, p_tm.target_tile_x, p_tm.target_tile_y,
+                               _p.get("knockback_tiles", 1), 0.0, "investida_do_bisao")
+
     def _server_sopro_da_coruja(self, player_eid: int, target_id: int, _entry: dict) -> None:
         """Cura 60 + 120% SP no alvo escolhido no início do cast (aliado ou o
         próprio Xamã). Escrita de HP via apply_heal (ponto único)."""
@@ -1572,14 +1600,8 @@ class SpellCompletionMixin:
         # arquitetura/PROBLEMAS_ARQUITETURA.md — agora estendida a
         # knockback/stun de impacto, que até então era o único efeito que
         # não passava por nenhum guard de "torre não sofre isso"). Dano já
-        # foi aplicado acima; só o empurrão+stun de colisão são pulados.
-        from engine.components import Tower as _TowerKb
-        if self.world.get_component(target_id, _TowerKb) is not None:
-            return
-
-        t_tm = self.world.get_component(target_id, TileMovement)
-        if not t_tm:
-            return
+        # foi aplicado acima; só o empurrão+stun de colisão são pulados
+        # (guard dentro de _server_knockback).
 
         # Direção: a partir da posição do atirador NO MOMENTO DO DISPARO (congelada
         # em entry["launch_tx/ty"], ver _process_spell_cast_completions) — usar a
@@ -1591,6 +1613,27 @@ class SpellCompletionMixin:
             if not p_tm:
                 return
             launch_tx, launch_ty = p_tm.current_tile_x, p_tm.current_tile_y
+
+        self._server_knockback(player_eid, target_id, launch_tx, launch_ty,
+                               kb_tiles, stun_dur, "tiro_repulsivo")
+
+    def _server_knockback(self, player_eid: int, target_id: int,
+                          launch_tx: int, launch_ty: int, kb_tiles: int,
+                          stun_dur: float, sid: str) -> None:
+        """Empurrão server-autoritativo de `target_id` pra longe de
+        (launch_tx, launch_ty), até `kb_tiles` tiles (Bresenham), parando em
+        parede/criatura. Ponto único de knockback (Tiro Repulsivo, Investida
+        do Bisão). Colisão com `stun_dur > 0` agenda stun + splash no pouso
+        (_pending_knockback_landings); `stun_dur <= 0` só para. Torre nunca é
+        empurrada. Broadcast como dash (1 evento, posição final + duração)."""
+        from engine.components import TileMovement, Tilemap
+        from engine.components import Tower as _TowerKb
+        if self.world.get_component(target_id, _TowerKb) is not None:
+            return
+
+        t_tm = self.world.get_component(target_id, TileMovement)
+        if not t_tm:
+            return
 
         # Bresenham (mesmo algoritmo de is_tile_walkable/_dash_path_clear), não
         # snap por sinal: sinal puro colapsa qualquer ângulo intermediário num
@@ -1785,7 +1828,7 @@ class SpellCompletionMixin:
                     "is_dash": True, "duration": _duration,
                 })
 
-        if stunned:
+        if stunned and stun_dur > 0:
             # Splash: tudo adjacente (Chebyshev 1) ao ponto de colisão também
             # é pego pelo stun — não só o eid que literalmente bloqueou o
             # passo (ex.: 2 mobs agrupados, o segundo também deve travar).
@@ -1808,7 +1851,7 @@ class SpellCompletionMixin:
             # próximo tick, mantendo o feedback sempre pós-deslocamento.
             self._pending_knockback_landings.append({
                 "timer": _duration,
-                "sid": "tiro_repulsivo",
+                "sid": sid,
                 "target_id": target_id,
                 "collided_eid": collided_eid,
                 "splash_eids": _splash_eids,
@@ -1968,6 +2011,11 @@ class SpellCompletionMixin:
         cs  = self.world.get_component(player_eid, CombatStats)
         cst = self.world.get_component(player_eid, CombatState)
         tm  = self.world.get_component(player_eid, TileMovement)
+
+        # Marcado DURANTE o cast (ex: Marca do Gavião) — não camufla.
+        from engine.core_systems import has_effect_flag
+        if has_effect_flag(self.world, player_eid, "blocks_stealth"):
+            return
 
         try:
             from engine.entity_disguise import discover_sprite_variants

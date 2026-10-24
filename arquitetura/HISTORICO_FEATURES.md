@@ -6276,3 +6276,48 @@ do commit anterior (não são desta mudança): `test_bg_bot.py::
 TestBotInitialShopping` (3), `test_hotbar_bg_leak.py::
 test_trainer_system_real_aprende_skill_sem_crash`, `test_server.py::
 TestTickPerfProfiler::test_perf_push_pop_grava_no_caminho`.
+
+## 86. Xamã — Fase 2: treinador + 4 skills base (24/10/2026)
+
+Pedido do usuário: treinador do Xamã pra testar as skills. Decisões do
+usuário: treinador ao lado dos outros, nome "Maelor Lobo Alfa"; Marca do
+Gavião e Investida do Bisão no treinador até existir a quest line;
+escada de nível/preço copiada do arqueiro (Lobo 2/100, Urso 4/200,
+Gavião 8/400, Bisão 12/800 — o Bisão continua a dobra); Marca QUEBRA a
+camuflagem (impede de camuflar) em vez de "camuflado mas visível";
+Pele do Urso em si OU em aliado; dano do Bisão espiritual/mágico.
+
+- **Treinador** em `maps/map_1_entities.json` (128,393 — o 127 da fila
+  tem objeto sólido). Profissão "Xamã Ancião" é provisória.
+- **Mecânicas por dado no catálogo de efeitos** (`EffectDef`, campos
+  novos): `speed_mult` (lido em `sync_status_derived_state`, multiplica
+  por cima da lentidão), `damage_taken_mult` e `absorbs` (lidos em
+  `apply_damage_core` — amplificação primeiro, depois o escudo consome
+  `ActiveEffect.magnitude` e some ao zerar), `blocks_stealth`
+  (`core_systems.has_effect_flag`, checado no início e na conclusão da
+  Camuflagem). Efeitos novos: `espirito_do_lobo`, `pele_do_urso`,
+  `marca_do_gaviao`. DoT não passa por `apply_damage_core` → escudo não
+  absorve DoT e a marca não o amplifica (débito já conhecido).
+  Limitação visual: número de dano flutuante de alguns caminhos mostra o
+  valor ANTES da marca/escudo (o HP final está certo).
+- **Skills**: `espirito_do_lobo` (instantânea, 15, CD 30s, 8s),
+  `pele_do_urso` (instantânea, 25, CD 40s, absorve 60 + 80% SP),
+  `marca_do_gaviao` (instantânea, 20, CD 20s, 12s, 8 tiles),
+  `investida_do_bisao` (20, CD 25s, até 4 tiles; arrancada + conclusão
+  com timer = duração da arrancada → 40 + 40% SP + empurrão de 1 tile,
+  sem stun de colisão).
+- **Pontos únicos extraídos** (sem duplicar código): arrancada até o
+  alvo `SkillHandlers._begin_dash_adjacent` (Interceptar passou a usar);
+  empurrão `_server_knockback` (Tiro Repulsivo passou a usar; `stun_dur
+  <= 0` = só para na colisão); custo de Espírito `_espirito_cost`
+  (desconto de Alma Generosa só pra cura), alvo de suporte
+  `_resolve_support_target` (renomeado de `_resolve_heal_target`).
+- Espírito de skill instantânea sincroniza no STATS_UPDATE do
+  `skill_processor` (mesma regra da mana: só se o handler mudou).
+
+Testes: `tests/test_xama.py` agora 30 (12 novos: marca/escudo/velocidade
+no ponto único, camuflagem bloqueada, as 4 skills pela fila real).
+Regressão: 41 arquivos que tocam Interceptar/Tiro Repulsivo/Camuflagem/
+dano/efeitos — só as falhas pré-existentes já listadas no §85 (+2 de
+`test_minions.py` e 1 de `test_npc_service_unlock.py`, também
+pré-existentes, conferidas num worktree do commit anterior).

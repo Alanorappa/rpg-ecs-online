@@ -206,6 +206,7 @@ class SkillProcessorMixin:
             _char_snap        = self.world.get_component(player_eid, _CSsnap)
             _free_exec_before = getattr(_char_snap, "free_executar_charges", 0) if _char_snap else 0
             _mana_before_handler = getattr(_char_snap, "mana", 0) if _char_snap else 0
+            _esp_before_handler  = getattr(_char_snap, "espirito", 0.0) if _char_snap else 0.0
 
             # Seta target no servidor usando tid do CAST_SKILL (server_eid enviado pelo cliente)
             # tid pode ser mob (PvE) ou player (PvP — exceto o próprio caster,
@@ -728,6 +729,10 @@ class SkillProcessorMixin:
                 # a mana foi subtraída antes do cast completar.
                 if _mana_after_handler != _mana_before_handler:
                     _stat_entry["mana"] = _mana_after_handler
+                # Espírito (Xamã): mesma regra da mana — só skill instantânea
+                # deduz no handler; com cast/arrancada sincroniza na conclusão.
+                if _char_after.espirito != _esp_before_handler:
+                    _stat_entry["espirito"] = _char_after.espirito
                 # Concentração nunca enviada aqui (nem em sucesso nem em falha).
                 # Sync ocorre SOMENTE na completion em spell_completion_processor.py,
                 # quando o custo foi de fato deduzido pelo servidor.

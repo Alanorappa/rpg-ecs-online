@@ -455,8 +455,8 @@ class SkillSystem(System, SkillHandlers):
                     WARN.add(f"Concentração insuficiente ({int(getattr(_char, 'concentration', 0))}/{_conc_cost})")
                     return False
             # Espírito (Xamã) — mesma conta de custo do handler do servidor
-            # (SkillHandlers._heal_espirito_cost, já com Alma Generosa)
-            _esp_cost = self._heal_espirito_cost(skill, _cs)
+            # (SkillHandlers._espirito_cost, já com Alma Generosa)
+            _esp_cost = self._espirito_cost(skill, _cs)
             if _esp_cost > 0 and _char and getattr(_char, "espirito", 0) < _esp_cost:
                 WARN.add(f"Espírito insuficiente ({int(getattr(_char, 'espirito', 0))}/{_esp_cost})")
                 return False

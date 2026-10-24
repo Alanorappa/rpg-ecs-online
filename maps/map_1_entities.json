@@ -179,6 +179,14 @@
       "profession": "Mestre Arqueiro",
       "quest_ids": ["primeiros_tiros", "antes_da_batalha"],
       "turn_in_ids": ["bem_vindo_arqueiro", "primeiros_tiros", "antes_da_batalha"]
+    },
+    {
+      "x": 128,
+      "y": 393,
+      "name": "Maelor Lobo Alfa",
+      "class_id": "xama",
+      "level": 60,
+      "profession": "Xamã Ancião"
     }
   ],
   "training_dummies": [

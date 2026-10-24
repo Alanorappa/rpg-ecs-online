@@ -40,6 +40,7 @@ _TRAINER_FALLBACK_COLORS = {
     "guerreiro": (200,  60,  60),
     "mago":      (80,  140, 220),
     "arqueiro":  (90,  190,  90),
+    "xama":      (90,  190, 160),
 }
 _MERCHANT_FALLBACK_COLOR = (210, 175,  60)
 # Mesma cor do canal de chat "grupo" (server/session.py::_handle_chat,

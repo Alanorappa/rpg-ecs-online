@@ -377,6 +377,18 @@ padrão a quebrar, não só os bugs individuais.
   painel) → `stats_system.class_resource(char)`; **"essa classe engaja
   como conjurador?"** → `stats_system.CASTER_CLASSES` — NUNCA um
   `if class_id == "mago"` novo pra nenhum dos dois.
+- **Efeito que muda velocidade, dano recebido, absorve dano ou impede
+  camuflagem** → campo no `EffectDef` (`speed_mult`/`damage_taken_mult`/
+  `absorbs`/`blocks_stealth`, `content/status_effects_data.py`) — NUNCA
+  um `if sfx.has("<efeito>")` novo num sistema; os leitores genéricos
+  já existem (`apply_damage_core`, `sync_status_derived_state`,
+  `has_effect_flag`). Ver HISTORICO_FEATURES.md §86.
+- **Arrancada até o alvo** → `SkillHandlers._begin_dash_adjacent`;
+  **empurrão server-side** → `_server_knockback`
+  (`server/spell_completion_processor.py`) — NUNCA copiar o laço de
+  Bresenham/colisão de novo numa skill nova.
+- **Custo de Espírito** → `SkillHandlers._espirito_cost` (handler,
+  checagem do cliente e hotbar usam a mesma).
 - **Skill de suporte (`offensive=False`) mirando um player aliado** →
   o alvo chega no handler por `TileMovement._server_support_tid`
   (`server/skill_processor.py`), nunca como `target_entity_id` (que é

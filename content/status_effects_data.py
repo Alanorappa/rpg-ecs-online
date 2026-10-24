@@ -34,6 +34,20 @@ class EffectDef(NamedTuple):
     # ver PROBLEMAS_ARQUITETURA.md) — nunca quebra nada, é só o
     # fallback padrão do campo.
     description:   str = ""
+    # Mecânicas genéricas lidas por dado (24/10/2026, Xamã) — efeito novo só
+    # marca o campo aqui, nunca um `if effect_type == ...` num sistema:
+    #   speed_mult        — multiplica a velocidade de movimento enquanto ativo
+    #                       (core_systems._resync_derived_states; >1 acelera)
+    #   damage_taken_mult — multiplica TODO dano que o portador recebe
+    #                       (core_systems.apply_damage_core; DoT não passa lá)
+    #   absorbs           — escudo: `magnitude` é o dano restante que absorve
+    #                       (apply_damage_core consome; some ao zerar)
+    #   blocks_stealth    — portador não pode ficar camuflado (Camuflagem
+    #                       recusa e a aplicação do efeito quebra a ativa)
+    speed_mult:        float = 1.0
+    damage_taken_mult: float = 1.0
+    absorbs:           bool  = False
+    blocks_stealth:    bool  = False
 
 
 EFFECT_DEFS: dict[str, EffectDef] = {
@@ -157,4 +171,15 @@ EFFECT_DEFS: dict[str, EffectDef] = {
                               description="A próxima Bola de Fogo é instantânea e gratuita."),
     "na_mosca":      EffectDef("Na Mosca",         (200, 220,  80), True, 0.0,
                               description="A próxima flechada causa 25% de dano a mais."),
+    # ── Xamã (24/10/2026) — valores numéricos de verdade vêm do SKILL_CATALOG;
+    # speed_mult/damage_taken_mult aqui são o efeito do próprio buff/debuff.
+    "espirito_do_lobo": EffectDef("Espírito do Lobo", (170, 200, 230), True, 0.0,
+                                  speed_mult=1.20,
+                                  description="Velocidade de movimento aumentada em 20%."),
+    "pele_do_urso":     EffectDef("Pele do Urso",     (150, 110,  70), True, 0.0,
+                                  absorbs=True,
+                                  description="Escudo espiritual que absorve dano."),
+    "marca_do_gaviao":  EffectDef("Marca do Gavião",  (220, 170,  60), False, 0.0,
+                                  damage_taken_mult=1.05, blocks_stealth=True,
+                                  description="Recebe 5% a mais de dano e não pode se camuflar."),
 }

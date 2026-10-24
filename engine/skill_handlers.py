@@ -720,6 +720,47 @@ class SkillHandlers:
                 return False
 
     # ------------------------------------------------------------------
+    def _begin_dash_adjacent(self, tile_move, tx: int, ty: int, duration: float):
+        """Arrancada animada do caster até o tile livre adjacente (4 direções)
+        ao tile (tx, ty) mais perto dele. Ponto único de "dash até o alvo"
+        (Interceptar, Investida do Bisão). Valida espaço e caminho livre
+        (avisa e devolve None se não der); com sucesso, liga o tween
+        (`is_dash`) e cancela o auto-move, devolvendo (dest_x, dest_y).
+        Nunca escreve current_tile_x/y — só target (ver CLAUDE.md, dash)."""
+        px, py = tile_move.current_tile_x, tile_move.current_tile_y
+        adj = [(tx + dx, ty + dy) for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1))]
+        walkable = [t for t in adj
+                    if is_tile_walkable(self.player_entity_id, t[0], t[1],
+                                       ignore_entities=True)]
+        if not walkable:
+            self._warn("Sem espaço ao redor do alvo")
+            return None
+        dest_x, dest_y = min(walkable, key=lambda t: abs(t[0] - px) + abs(t[1] - py))
+
+        if not self._dash_path_clear(px, py, dest_x, dest_y):
+            self._warn("Caminho bloqueado")
+            return None
+
+        player_pos = self.world.get_component(self.player_entity_id, Position)
+        if isinstance(player_pos, Position):
+            tile_move.start_pixel_x = player_pos.x
+            tile_move.start_pixel_y = player_pos.y
+        tile_move.target_pixel_x  = dest_x * TILE_SIZE + TILE_SIZE / 2
+        tile_move.target_pixel_y  = dest_y * TILE_SIZE + TILE_SIZE / 2
+        tile_move.target_tile_x   = dest_x
+        tile_move.target_tile_y   = dest_y
+        tile_move.progress        = 0.0
+        tile_move.move_duration   = duration
+        tile_move.is_moving       = True
+        tile_move.is_dash         = True
+
+        auto = self.world.get_component(self.player_entity_id, PlayerAutoMove)
+        if auto:
+            auto.active        = False
+            auto.path          = []
+            auto.ground_target = None
+        return dest_x, dest_y
+
     def _skill_interceptar(self, skill, _combat_stats, combat_state, tile_move):
         """Dash até o tile adjacente ao alvo (animado, alcance 2–6 tiles)."""
         # _max_range=8 (não 1): Interceptar é um dash de longo alcance, não melee — o
@@ -758,14 +799,10 @@ class SkillHandlers:
                 self._warn("Alvo muito longe")
             return
 
-        adj = [(tx + dx, ty + dy) for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1))]
-        walkable = [t for t in adj
-                    if is_tile_walkable(self.player_entity_id, t[0], t[1],
-                                       ignore_entities=True)]
-        if not walkable:
-            self._warn("Sem espaço ao redor do alvo")
+        _dest = self._begin_dash_adjacent(tile_move, tx, ty, self.INTERCEPT_DURATION)
+        if _dest is None:
             return
-        dest_x, dest_y = min(walkable, key=lambda t: abs(t[0] - px) + abs(t[1] - py))
+        dest_x, dest_y = _dest
 
         # Debug (28/08/2026, 3ª rodada da investigação "skill falha depois
         # de Interceptar") — captura a leitura INTERNA da posição do alvo
@@ -785,32 +822,6 @@ class SkillHandlers:
             # BG falha mais/não dasheia até o alvo — confirma direto aqui.
             target_is_bot=(self.world.get_component(target_id, _BotCtrlInt) is not None),
         )
-
-        if not self._dash_path_clear(px, py, dest_x, dest_y):
-            self._warn("Caminho bloqueado")
-            return
-
-        player_pos = self.world.get_component(self.player_entity_id, Position)
-        new_px = dest_x * TILE_SIZE + TILE_SIZE / 2
-        new_py = dest_y * TILE_SIZE + TILE_SIZE / 2
-
-        if isinstance(player_pos, Position):
-            tile_move.start_pixel_x = player_pos.x
-            tile_move.start_pixel_y = player_pos.y
-        tile_move.target_pixel_x  = new_px
-        tile_move.target_pixel_y  = new_py
-        tile_move.target_tile_x   = dest_x
-        tile_move.target_tile_y   = dest_y
-        tile_move.progress        = 0.0
-        tile_move.move_duration   = self.INTERCEPT_DURATION
-        tile_move.is_moving       = True
-        tile_move.is_dash         = True
-
-        auto = self.world.get_component(self.player_entity_id, PlayerAutoMove)
-        if auto:
-            auto.active        = False
-            auto.path          = []
-            auto.ground_target = None
 
         char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
         _cs_int = self.world.get_component(self.player_entity_id, CombatStats)
@@ -1487,15 +1498,26 @@ class SkillHandlers:
             return False
         return True
 
-    def _heal_espirito_cost(self, skill, combat_stats) -> int:
-        """Custo de Espírito de uma cura, já com o desconto de Alma Generosa."""
+    def _espirito_cost(self, skill, combat_stats) -> int:
+        """Custo de Espírito da skill (0 = não usa Espírito). Ponto único,
+        usado pelo handler (servidor), pela checagem do cliente e pela
+        hotbar. Cura (`base_heal` nos params) recebe o desconto de Alma
+        Generosa, limitado a `min_cost`."""
         p = skill.params or {}
         base = p.get("espirito_cost", 0)
-        red  = getattr(combat_stats, "cura_custo_reducao", 0)
+        if base <= 0 or "base_heal" not in p:
+            return max(0, base)
+        red = getattr(combat_stats, "cura_custo_reducao", 0)
         return max(p.get("min_cost", 0), base - red)
 
-    def _resolve_heal_target(self, tile_move, max_range: int) -> int:
-        """Alvo de uma cura: o player AMIGÁVEL mirado no request (servidor —
+    def _spend_espirito(self, char_stats, cost: int) -> None:
+        """Desconta Espírito na hora (skill instantânea; com cast_time o
+        custo vai no pending e é cobrado na conclusão)."""
+        if char_stats and cost > 0:
+            char_stats.espirito = max(0.0, char_stats.espirito - cost)
+
+    def _resolve_support_target(self, tile_move, max_range: int) -> int:
+        """Alvo de skill de suporte: o player AMIGÁVEL mirado no request (servidor —
         `tile_move._server_support_tid`, ver server/skill_processor.py) ou,
         sem aliado mirado, o próprio caster. Aliado fora de alcance → -1.
         Player hostil (duelo/PvP) mirado conta como "sem aliado" → caster."""
@@ -1542,10 +1564,10 @@ class SkillHandlers:
     def _skill_sopro_da_coruja(self, skill, combat_stats, combat_state, tile_move):
         """1.5s cast — cura 60 + 120% SP num aliado (ou em si). Custa Espírito."""
         char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
-        cost = self._heal_espirito_cost(skill, combat_stats)
+        cost = self._espirito_cost(skill, combat_stats)
         if not self._check_espirito(char_stats, cost):
             return False
-        target_id = self._resolve_heal_target(tile_move, skill.cast_range)
+        target_id = self._resolve_support_target(tile_move, skill.cast_range)
         if target_id == -1:
             return False
 
@@ -1562,6 +1584,103 @@ class SkillHandlers:
             })
             return True
         return False
+
+    def _skill_espirito_do_lobo(self, skill, combat_stats, combat_state, tile_move):
+        """Instantânea — +20% de velocidade (efeito espirito_do_lobo) por 8s
+        num aliado mirado ou em si. Velocidade vem de EffectDef.speed_mult."""
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        cost = self._espirito_cost(skill, combat_stats)
+        if not self._check_espirito(char_stats, cost):
+            return False
+        target_id = self._resolve_support_target(tile_move, skill.cast_range)
+        if target_id == -1:
+            return False
+        apply_effect(self.world, target_id, "espirito_do_lobo",
+                     (skill.params or {}).get("duration", 8.0))
+        self._spend_espirito(char_stats, cost)
+        return True
+
+    def _skill_pele_do_urso(self, skill, combat_stats, combat_state, tile_move):
+        """Instantânea — escudo (efeito pele_do_urso, magnitude = dano que
+        absorve: 60 + 80% SP) por 8s num aliado mirado ou em si. Consumido
+        por apply_damage_core (EffectDef.absorbs)."""
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        cost = self._espirito_cost(skill, combat_stats)
+        if not self._check_espirito(char_stats, cost):
+            return False
+        target_id = self._resolve_support_target(tile_move, skill.cast_range)
+        if target_id == -1:
+            return False
+        p = skill.params or {}
+        sp = combat_stats.spell_power if combat_stats else 0
+        absorb = p.get("base_absorb", 60) + int(sp * p.get("absorb_sp_coeff", 0.80))
+        apply_effect(self.world, target_id, "pele_do_urso", p.get("duration", 8.0),
+                     magnitude=float(absorb))
+        self._spend_espirito(char_stats, cost)
+        return True
+
+    def _skill_marca_do_gaviao(self, skill, combat_stats, combat_state, tile_move):
+        """Instantânea — marca um inimigo por 12s (efeito marca_do_gaviao:
+        +5% de dano recebido e sem camuflagem, ambos lidos do EffectDef)."""
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        cost = self._espirito_cost(skill, combat_stats)
+        if not self._check_espirito(char_stats, cost):
+            return False
+        target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
+        if target_id == -1:
+            self._warn("Nenhum alvo")
+            return False
+        if not self._target_alive(target_id):
+            self._warn("Alvo inválido")
+            return False
+        apply_effect(self.world, target_id, "marca_do_gaviao",
+                     (skill.params or {}).get("duration", 12.0))
+        self._spend_espirito(char_stats, cost)
+        if combat_state:
+            enter_combat(combat_state)
+        return True
+
+    def _skill_investida_do_bisao(self, skill, combat_stats, combat_state, tile_move):
+        """Arrancada até o inimigo (até 4 tiles, _begin_dash_adjacent) e, ao
+        chegar, 40 + 40% SP + empurrão de 1 tile — resolvido na conclusão
+        (server/spell_completion_processor.py::_server_investida_do_bisao),
+        com timer = duração da arrancada. Já adjacente: sem arrancada."""
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        cost = self._espirito_cost(skill, combat_stats)
+        if not self._check_espirito(char_stats, cost):
+            return False
+        target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
+        if target_id == -1:
+            self._warn("Nenhum alvo")
+            return False
+        target_tm = self.world.get_component(target_id, TileMovement)
+        if target_tm is None or not self._target_alive(target_id):
+            self._warn("Alvo inválido")
+            return False
+
+        p = skill.params or {}
+        timer = 0.0
+        if chebyshev(tile_move.current_tile_x, tile_move.current_tile_y,
+                     target_tm.current_tile_x, target_tm.current_tile_y) > 1:
+            timer = p.get("dash_duration", 0.2)
+            if self._begin_dash_adjacent(tile_move, target_tm.current_tile_x,
+                                         target_tm.current_tile_y, timer) is None:
+                return False
+
+        _server_pending = self._server_pending_spells
+        if _server_pending is not None:
+            _server_pending.append({
+                "player_eid":    self.player_entity_id,
+                "spell_id":      "investida_do_bisao",
+                "target_id":     target_id,
+                "timer":         timer,
+                "mana_cost":     0,
+                "espirito_cost": cost,
+                "cooldown":      skill.cooldown,
+            })
+        if combat_state:
+            enter_combat(combat_state)
+        return True
 
     # ------------------------------------------------------------------
     def _is_concentration_free(self) -> bool:
@@ -1658,6 +1777,10 @@ class SkillHandlers:
 
         if cs and cs.camouflage_timer > 0:
             self._warn("Já está camuflado.")
+            return False
+        from engine.core_systems import has_effect_flag
+        if has_effect_flag(self.world, self.player_entity_id, "blocks_stealth"):
+            self._warn("Você está marcado e não pode se camuflar.")
             return False
 
         duration  = skill.params.get("duration",   5.0)

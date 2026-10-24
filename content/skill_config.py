@@ -539,6 +539,66 @@ SKILL_CATALOG: dict[str, dict] = {
             "min_cost":      15,  # Alma Generosa nunca baixa o custo além disso
         },
     },
+    # Skills base de treinador (Fase 2, 24/10/2026). Gavião/Bisão são "quest"
+    # no desenho — no treinador até existir a quest line (decisão do usuário).
+    "espirito_do_lobo": {
+        "name":       "Espírito do Lobo",
+        "desc":       "+20% de velocidade de movimento por 8s, em você ou num aliado a até 8 tiles. 15 Espírito.",
+        "cooldown":   30.0,
+        "cast_time":  0.0,
+        "cast_range": 8,
+        "class_id":   "xama",
+        "offensive":  False,
+        "needs_target": False,   # sem aliado selecionado, aplica em si
+        "params": {
+            "duration":      8.0,
+            "espirito_cost": 15,
+        },
+    },
+    "pele_do_urso": {
+        "name":       "Pele do Urso",
+        "desc":       "Escudo que absorve 60 + 80% SP de dano por 8s, em você ou num aliado a até 8 tiles. 25 Espírito.",
+        "cooldown":   40.0,
+        "cast_time":  0.0,
+        "cast_range": 8,
+        "class_id":   "xama",
+        "offensive":  False,
+        "needs_target": False,
+        "params": {
+            "duration":       8.0,
+            "base_absorb":    60,
+            "absorb_sp_coeff": 0.80,
+            "espirito_cost":  25,
+        },
+    },
+    "marca_do_gaviao": {
+        "name":       "Marca do Gavião",
+        "desc":       "Marca um inimigo a até 8 tiles por 12s: recebe +5% de dano e não pode se camuflar. 20 Espírito.",
+        "cooldown":   20.0,
+        "cast_time":  0.0,
+        "cast_range": 8,
+        "class_id":   "xama",
+        "params": {
+            "duration":      12.0,
+            "espirito_cost": 20,
+        },
+    },
+    "investida_do_bisao": {
+        "name":       "Investida do Bisão",
+        "desc":       "Avança até um inimigo a até 4 tiles: 40 + 40% SP e o empurra 1 tile. 20 Espírito.",
+        "cooldown":   25.0,
+        "cast_time":  0.0,
+        "cast_range": 4,
+        "class_id":   "xama",
+        "school":     "espiritual",
+        "params": {
+            "base_dmg":        40,
+            "dmg_sp_coeff":    0.40,
+            "knockback_tiles": 1,
+            "dash_duration":   0.2,
+            "espirito_cost":   20,
+        },
+    },
 }
 
 # Layout padrão: todos os slots vazios — skills são aprendidas com treinador
@@ -566,8 +626,12 @@ SKILL_LEVEL_REQUIREMENTS: dict[str, int] = {
     "cancao_ninar":     2,
     "picada_escorpiao": 4,
     "flecha_reiterada": 8,
-    # Xamã
-    "toque_ancestral":  1,
+    # Xamã (escada do arqueiro; Bisão continua dobrando)
+    "toque_ancestral":    1,
+    "espirito_do_lobo":   2,
+    "pele_do_urso":       4,
+    "marca_do_gaviao":    8,
+    "investida_do_bisao": 12,
 }
 
 SKILL_COSTS: dict[str, int] = {
@@ -588,14 +652,19 @@ SKILL_COSTS: dict[str, int] = {
     "picada_escorpiao": 200,
     "flecha_reiterada": 400,
     # Xamã
-    "toque_ancestral":  0,
+    "toque_ancestral":    0,
+    "espirito_do_lobo":   100,
+    "pele_do_urso":       200,
+    "marca_do_gaviao":    400,
+    "investida_do_bisao": 800,
 }
 
 SKILL_ORDER_BY_CLASS: dict[str, list] = {
     "guerreiro": ["golpe_poderoso", "impacto", "vitoria_iminente", "interceptar", "executar"],
     "mago":      ["bola_de_fogo", "polimorfia", "nova_congelante", "bloco_de_gelo"],
     "arqueiro":  ["recarregar", "cancao_ninar", "picada_escorpiao", "flecha_reiterada"],
-    "xama":      ["toque_ancestral"],
+    "xama":      ["toque_ancestral", "espirito_do_lobo", "pele_do_urso",
+                  "marca_do_gaviao", "investida_do_bisao"],
 }
 
 # Skills concedidas automaticamente ao criar um personagem novo (custo 0, nível 1).
@@ -637,6 +706,7 @@ INSTANCE_SKILL_UNLOCK_ORDER: dict[str, list] = {
 
     ],
     "xama": [
-        "toque_ancestral", "sopro_da_coruja",
+        "toque_ancestral", "sopro_da_coruja", "espirito_do_lobo",
+        "pele_do_urso", "marca_do_gaviao", "investida_do_bisao",
     ],
 }

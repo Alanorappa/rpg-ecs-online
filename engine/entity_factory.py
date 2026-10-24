@@ -564,6 +564,7 @@ def _service_npc_race_for_class(class_id: str) -> str:
         "guerreiro": "Guerreiro (NPC)",
         "mago":      "Mago (NPC)",
         "arqueiro":  "Arqueiro (NPC)",
+        "xama":      "Xamã (NPC)",
     }.get(class_id, _SERVICE_NPC_DEFAULT_RACE)
 
 
