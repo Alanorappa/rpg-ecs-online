@@ -121,8 +121,8 @@
                     "first_equip"]
     },
     {
-      "x": 112,
-      "y": 390,
+      "x": 111,
+      "y": 393,
       "name": "Caterina Alisarf",
       "level": 60,
       "profession": "Anfitriã",
@@ -151,7 +151,7 @@
   "trainers": [
     {
       "x": 111,
-      "y": 367,
+      "y": 387,
       "name": "Avido Faseo",
       "class_id": "guerreiro",
       "level": 60,
