@@ -6206,3 +6206,8 @@ com colisão, apagar limpa sobra fina, só topo sem face).
 **Limites conhecidos**: diagonal grossa com 37 duplo e alguns encontros
 em Y ainda divergem do gabarito; pintar "só topo" encostado numa parede
 inteira converte a parte dela dentro do raio pra só topo.
+
+Validado pelo usuário em jogo ("ficou perfeito; às vezes gera um
+probleminha, mas passar o pincel aumentando a largura corrige"). As
+fileiras de laboratório (160–211) foram removidas de Aracnópolis no mesmo
+dia — o mapa voltou a 160 fileiras.
