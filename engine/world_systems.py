@@ -265,8 +265,12 @@ class PathfindingSystem(System):
                 0 <= end_tile[0] < map_width and 0 <= end_tile[1] < map_height):
             return None
 
-        # Bounded A*: limita a busca ao retângulo entre start e end + padding
-        _PAD = 8
+        # Bounded A*: limita a busca ao retângulo entre start e end + padding.
+        # 12 (era 8 até 24/10/2026, pedido do usuário — HISTORICO_BUGS.md §102):
+        # contorno de cerca/muro médio precisava de 11 (Custódio no cercado).
+        # Pior caso continua limitado por max_nodes, então o custo de uma
+        # busca que FALHA quase não muda.
+        _PAD = 12
         _bx0 = max(0,          min(start_tile[0], end_tile[0]) - _PAD)
         _by0 = max(0,          min(start_tile[1], end_tile[1]) - _PAD)
         _bx1 = min(map_width  - 1, max(start_tile[0], end_tile[0]) + _PAD)
@@ -2833,6 +2837,20 @@ class EnemyAISystem(System):
             return self._pathfinding.find_path(start, end, dynamic_obstacles=dynamic_obstacles)
         return find_path(start, end, dynamic_obstacles=dynamic_obstacles)
 
+    @staticmethod
+    def _ignored_as_unreachable(ai_ctrl, cand_eid: int, cand_tm) -> bool:
+        """True se `cand_eid` é o alvo do qual este mob desistiu por não
+        alcançar (AIControlled.unreachable_target_*) e ele AINDA está no
+        mesmo tile. Se ele andou, apaga a memória e libera o agro."""
+        if ai_ctrl is None or cand_eid != ai_ctrl.unreachable_target_eid:
+            return False
+        if cand_tm is not None and (cand_tm.current_tile_x, cand_tm.current_tile_y) \
+                == ai_ctrl.unreachable_target_tile:
+            return True
+        ai_ctrl.unreachable_target_eid  = -1
+        ai_ctrl.unreachable_target_tile = (-1, -1)
+        return False
+
     def _select_target(self, mob_eid: int):
         """Retorna (target_eid, pos, tile_move, combat_stats, combat_state) do
         alvo mais próximo — player OU outra entidade `Combatant` (mob/NPC de
@@ -2903,6 +2921,8 @@ class EnemyAISystem(System):
             p_cst = self.world.get_component(p_eid, CombatState)
             if p_cst is not None and not p_cst.is_visible:
                 continue
+            if self._ignored_as_unreachable(ai_ctrl, p_eid, p_tm):
+                continue
             dist_px = math.sqrt((p_pos.x - mob_pos.x) ** 2 + (p_pos.y - mob_pos.y) ** 2)
             if dist_px < best_dist:
                 best_dist  = dist_px
@@ -2946,6 +2966,8 @@ class EnemyAISystem(System):
                 continue
             c_cst = self.world.get_component(c_eid, CombatState)
             if c_cst is not None and not c_cst.is_visible:
+                continue
+            if self._ignored_as_unreachable(ai_ctrl, c_eid, c_tm):
                 continue
             dist_px = math.sqrt((c_pos.x - mob_pos.x) ** 2 + (c_pos.y - mob_pos.y) ** 2)
             if dist_px < best_dist:
@@ -4182,6 +4204,9 @@ class EnemyAISystem(System):
                     if ai_control.unreachable_timer >= self.UNREACHABLE_GIVE_UP_S:
                         if _MCL: _MCL.log("GIVE_UP", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
                                           reason="inalcancavel", target=target_eid)
+                        ai_control.unreachable_target_eid  = target_eid
+                        ai_control.unreachable_target_tile = (player_current_tile_x,
+                                                              player_current_tile_y)
                         ai_control.state             = "RETURNING"
                         ai_control.target_eid        = -1
                         ai_control.aggroed_by_damage = False

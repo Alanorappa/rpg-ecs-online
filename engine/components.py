@@ -484,6 +484,12 @@ class AIControlled:
     # EnemyAISystem.UNREACHABLE_GIVE_UP_S → desiste do alvo (RETURNING).
     path_retry_wait: bool = False
     unreachable_timer: float = 0.0
+    # Memória do alvo do qual desistiu (24/10/2026, pedido do usuário):
+    # aquisição por proximidade ignora este eid enquanto ele continuar no
+    # MESMO tile de quando o mob desistiu — sem isso o par "não alcança →
+    # desiste → vê de novo → agra" entra em loop. O alvo andar libera.
+    unreachable_target_eid: int = -1
+    unreachable_target_tile: tuple = (-1, -1)
 
 @dataclass
 class InitialPosition:

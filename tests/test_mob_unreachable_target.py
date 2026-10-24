@@ -42,6 +42,16 @@ class TestAlvoInalcancavel(unittest.TestCase):
         self.mob = best[1]
         self.ai = self.ws.world.get_component(self.mob, AIControlled)
         mtm = self.ws.world.get_component(self.mob, TileMovement)
+        # Determinismo: só ESTE mob na região (spawn aleatório + puxão de
+        # grupo deixavam o cenário instável).
+        for m in list(self.ws._mob_eids):
+            if m == self.mob or self.ws.world.get_component(m, AIControlled) is None:
+                continue
+            t = self.ws.world.get_component(m, TileMovement)
+            if t and max(abs(t.current_tile_x - mtm.current_tile_x),
+                         abs(t.current_tile_y - mtm.current_tile_y)) <= 30:
+                self.ws.world.remove_entity(m)
+                self.ws._mob_eids.discard(m)
         # Jogador a 3 tiles do mob (dentro do raio de detecção) → mob agra
         snap_to_tile(self.ws.world, self.p, mtm.current_tile_x + 3, mtm.current_tile_y)
         self.bundle = self.ws._map_bundles["maps/map_1.csv"]
@@ -49,6 +59,7 @@ class TestAlvoInalcancavel(unittest.TestCase):
         def _always_fail(*_a, **_k):
             self.calls += 1
             return None
+        self._real_find_path = self.bundle.pathfinding.find_path
         self.bundle.pathfinding.find_path = _always_fail
 
     def _chasers(self):
@@ -79,6 +90,39 @@ class TestAlvoInalcancavel(unittest.TestCase):
                     gave_up.add(m)
         self.assertEqual(gave_up, set(chasers),
                          "todo mob com alvo inalcançável deveria ter desistido")
+
+        # Religa o pathfinding real: o mob consegue voltar pra casa e o alvo
+        # vira alcançável — só a memória de "desisti dele" impede o reagro.
+        self.bundle.pathfinding.find_path = self._real_find_path
+        # Sem loop: com o alvo PARADO no mesmo tile, ninguém volta a agredi-lo
+        def _engaged(m):
+            ai = self.ws.world.get_component(m, AIControlled)
+            return ai.target_eid == self.p and ai.state in ("CHASING", "AGGRO_DELAY", "ATTACKING")
+        for _ in range(30 * 6):
+            run_ticks(self.ws, 1)
+            for m in chasers:
+                self.assertFalse(_engaged(m), "reagrou o mesmo alvo parado (loop)")
+
+        # O alvo andou → memória liberada, volta a agredir
+        ptm = self.ws.world.get_component(self.p, TileMovement)
+        snap_to_tile(self.ws.world, self.p, ptm.current_tile_x, ptm.current_tile_y + 1)
+        reagrou = False
+        for _ in range(30 * 3):
+            run_ticks(self.ws, 1)
+            if any(_engaged(m) for m in chasers):
+                reagrou = True
+                break
+        self.assertTrue(reagrou, "alvo andou e o mob deveria voltar a agredir")
+
+
+class TestFolgaDoAStar(unittest.TestCase):
+    def test_caminho_do_custodio_contornando_a_cerca(self):
+        """Caso real (§102): Custódio dentro do cercado de map_1 até um tile
+        livre ao lado do zumbi do lado de fora — o desvio precisa de 11
+        tiles de folga; com a folga antiga (8) o A* falhava."""
+        ws = make_world_server()
+        pf = ws._map_bundles["maps/map_1.csv"].pathfinding
+        self.assertIsNotNone(pf.find_path((129, 363), (132, 365)))
 
 
 if __name__ == "__main__":

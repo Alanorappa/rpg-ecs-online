@@ -6788,3 +6788,17 @@ sem caminho de verdade (orçamento esgotado não conta); passou de
 Teste: `tests/test_mob_unreachable_target.py` (falha no código antigo:
 150 A*/s de 1 mob; passa no novo).
 
+**Complemento (mesmo dia, pedido do usuário)**:
+- Folga do A* (`PathfindingSystem.find_path`, `_PAD`) de 8 → **12** tiles:
+  o desvio real do Custódio pela cerca precisava de 11. Medido: falha
+  com 8 (172 nós), acha com 12 (247 nós, 1,3 ms); o pior caso de falha
+  segue limitado por `max_nodes=300`. Vale também pros minions (mesma
+  função). Teste: `TestFolgaDoAStar`.
+- Desistência = o mesmo "Evadiu" do leash (estado RETURNING, imune até
+  chegar em casa) + **memória do alvo**: `AIControlled.
+  unreachable_target_eid/_tile`; `EnemyAISystem._ignored_as_unreachable`
+  faz a aquisição por proximidade (`_select_target`) ignorar esse alvo
+  enquanto ele estiver no MESMO tile — evita o loop "desiste → vê → agra
+  → desiste". O alvo andar apaga a memória. Agro por dano e puxão de
+  grupo não passam pela aquisição, então continuam valendo.
+
