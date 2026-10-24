@@ -801,6 +801,7 @@ class CombatSystem(System):
             elif kind == "sleep":
                 FLT.add("Acordou!", _tx, _ty, (200, 200, 100), "small",
                         target_id=target_id)
+        _hp_before_core = target_stats.current_hp
         apply_damage_core(self.world, target_id, final_damage,
                           killer_eid=attacker_id, add_pending_death=False,
                           on_cc_break=_cc_break_fx,
@@ -822,7 +823,11 @@ class CombatSystem(System):
         if self.is_server and not attacker_is_player and target_is_player:
             _emit_ce_dmg = _svc.get("emit_combat_event")
             if _emit_ce_dmg:
-                _emit_ce_dmg(attacker_id, target_id, final_damage, outcome,
+                # Dano que de fato ENTROU (24/10/2026): apply_damage_core pode
+                # amplificar (Marca) ou absorver (escudo) — o escudo já tem o
+                # próprio "Absorveu(X)", então o número não deve repetir.
+                _dealt = max(0, _hp_before_core - target_stats.current_hp)
+                _emit_ce_dmg(attacker_id, target_id, _dealt, outcome,
                             max(0, target_stats.current_hp))
 
         # Aggro por dano: ataque força o alvo a perseguir independente do raio
@@ -4105,6 +4110,24 @@ class EnemyAISystem(System):
 
                         if not found_path_to_target:
                             ai_control.path = None
+
+                    # Diagnóstico (24/10/2026, mobs "perseguindo" parados em
+                    # produção): motivo de não ter caminho, 1 linha por recálculo.
+                    if not found_path_to_target and _MCL:
+                        if not potential_attack_tiles:
+                            _np_reason = "sem_tile_de_ataque"
+                        elif not available_attack_tiles:
+                            _np_reason = "tiles_de_ataque_ocupados"
+                        elif self._pathfind_budget <= 0:
+                            _np_reason = "orcamento_esgotado"
+                        else:
+                            _np_reason = "astar_sem_caminho"
+                        _MCL.log("NO_PATH", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
+                                 reason=_np_reason,
+                                 mob_tile=current_enemy_tile,
+                                 tgt_tile=(player_current_tile_x, player_current_tile_y),
+                                 attack_tiles=len(potential_attack_tiles),
+                                 free=len(available_attack_tiles))
 
                     # Budget exhausted (not a genuine dead-end) → short jitter so mobs
                     # don't all retry at the same frame 0.8 s later (storm effect).

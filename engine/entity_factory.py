@@ -1013,7 +1013,8 @@ def create_corpse(world: World, x: float, y: float, loot: list, coins: int = 0,
 def create_harvestable_entity(world: World, tile_x: int, tile_y: int,
                               corpse_id: int, sprite_id: str = "",
                               name: str = "Objeto",
-                              requires_quest: str = "") -> int:
+                              requires_quest: str = "",
+                              solid: "bool | None" = None) -> int:
     """Item de mapa saqueável (Fase M1, revisão 2, 25/07/2026) — entidade
     real, parada, SEM combate/diálogo (nada de Combatant/AIControlled/
     Faction) — só posição + aparência + o vínculo com o loot. Colisão e
@@ -1043,9 +1044,18 @@ def create_harvestable_entity(world: World, tile_x: int, tile_y: int,
     # tile como ocupado se Harvestable.solid for True. Sem entrada no
     # catálogo (sprite_id vazio ou id desconhecido) = default sólido,
     # preserva o comportamento de antes desta fix.
-    from engine.tileset import OBJECT_MAPPING
-    _obj_tt = OBJECT_MAPPING.get(sprite_id) if sprite_id else None
-    solid = _obj_tt.is_solid if _obj_tt is not None else True
+    # `solid` explícito (chave "solid" no JSON do mapa) vence o catálogo.
+    # Coleta exclusiva de quest (`requires_quest`) NUNCA é sólida (24/10/2026,
+    # bug real: Vômito da quest de guerreiro ficava invisível pra quem não
+    # tinha a quest mas continuava bloqueando o tile — parede invisível que
+    # travava player, mob e NPC na zona). Algo que o player não vê não pode
+    # bloqueá-lo.
+    if requires_quest:
+        solid = False
+    elif solid is None:
+        from engine.tileset import OBJECT_MAPPING
+        _obj_tt = OBJECT_MAPPING.get(sprite_id) if sprite_id else None
+        solid = _obj_tt.is_solid if _obj_tt is not None else True
     world.add_component(eid, Harvestable(corpse_id=corpse_id,
                                          requires_quest=requires_quest,
                                          solid=solid))

@@ -6726,3 +6726,38 @@ Tile andável sobre andável não mexe no char (pincel inteligente de
 grama/terra lê o `terrain_matrix`). Testes em
 `tests/test_god_mode_terrain_brush.py` (pinta borda de lava → bloqueia;
 pinta chão por cima → libera; grama sobre terra mantém "f").
+
+## 101. Mobs/NPC "perseguindo" parados + Pele do Urso sem absorver (24/10/2026)
+
+**Sintomas (playtest do Xamã em produção)**: mobs perto do spawn (zona de
+~(129,381)) atacavam quem chegasse perto mas não perseguiam; um NPC
+parou no meio da patrulha; continuava igual depois de relogar. Pele do
+Urso mostrava o buff mas "não absorvia".
+
+**Causa 1 — paredes invisíveis**: a zona de coleta "Vômito"
+(`map_1_entities.json`, `requires_quest: bem_vindo_guerreiro`, 10 poças
+que mudam de lugar a cada 30s) usava o sprite `pl_vomito`, que sumiu do
+catálogo quando a família "TX Plant" foi removida (§101 de
+PROBLEMAS_ARQUITETURA). Sem entrada no catálogo,
+`create_harvestable_entity` assume SÓLIDO. E como a coleta é exclusiva
+de quest de guerreiro, quem não tem a quest (o Xamã) nem a enxerga —
+eram paredes invisíveis no servidor (128 passos recusados por
+"occupied Vômito" em 25 min de log). Bloqueavam também o caminho de
+mob/NPC. Por isso "começou com o Xamã": de guerreiro as poças apareciam.
+
+**Correção**: coleta com `requires_quest` NUNCA é sólida (algo que o
+player não vê não pode bloqueá-lo) + chave opcional `"solid"` no JSON
+do mapa (vence o catálogo); o Vômito ganhou `"solid": false`. Testes:
+`tests/test_harvestable_solid.py`. Não foi possível confirmar contra o
+estado travado ao vivo (o deploy reinicia o servidor) — por isso
+entrou junto o log `NO_PATH` (motivo da falta de caminho de um mob em
+perseguição, `debug/logs/mob_combat.log`) pra provar/refutar se voltar.
+
+**Causa 2 — escudo e DoT**: o escudo absorvia os golpes (`apply_damage_core`),
+mas a mordida do zumbi aplica sangramento, e DoT escreve HP direto em
+`StatusEffectSystem._apply_tick`, sem passar pelo ponto único. **Correção**:
+`core_systems.absorb_damage` (ponto único de absorção) é chamado nos 2
+lugares; absorção emite resultado de combate `"absorb"` → cliente mostra
+"Absorveu(X)" (pedido do usuário); o número de dano do golpe de mob
+passou a ser o que de fato entrou (pós escudo/marca).
+

@@ -258,6 +258,7 @@
         {
           "name": "Vômito",
           "sprite": "pl_vomito",
+          "solid": false,
           "items": ["vomito_zumbi"],
           "count": 10
         }

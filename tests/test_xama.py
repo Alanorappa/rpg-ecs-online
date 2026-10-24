@@ -228,6 +228,27 @@ class TestEfeitosPorDado(unittest.TestCase):
         core_systems.apply_damage_core(self.ws.world, self.a, 200)   # 210 - 100
         self.assertEqual(self.cs.current_hp, 400 - 110)
 
+    def test_escudo_segura_dot(self):
+        """Bug relatado em playtest: sangramento do zumbi passava direto
+        pelo escudo (DoT não passa por apply_damage_core)."""
+        from engine.components import StatusEffects, ActiveEffect
+        core_systems.apply_effect(self.ws.world, self.a, "pele_do_urso", 8.0, magnitude=50.0)
+        sfx = self.ws.world.get_component(self.a, StatusEffects)
+        sfx.effects["bleed"] = ActiveEffect("bleed", 10.0, magnitude=20.0, tick_interval=1.0)
+        core_systems.StatusEffectSystem(self.ws.world)._apply_tick(self.a, sfx.effects["bleed"])
+        self.assertEqual(self.cs.current_hp, 400)
+        self.assertAlmostEqual(sfx.get("pele_do_urso").magnitude, 30.0)
+
+    def test_absorcao_vira_evento_absorb(self):
+        core_systems.apply_effect(self.ws.world, self.a, "pele_do_urso", 8.0, magnitude=30.0)
+        self.ws._combat_this_tick.clear()
+        core_systems.apply_damage_core(self.ws.world, self.a, 50)
+        evs = [e for e in self.ws._combat_this_tick if e.get("outcome") == "absorb"]
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0]["absorbed"], 30)
+        self.assertEqual(evs[0]["target"], self.a)
+        self.assertEqual(self.cs.current_hp, 400 - 20)
+
     def test_sem_efeito_dano_inalterado(self):
         core_systems.apply_damage_core(self.ws.world, self.a, 77)
         self.assertEqual(self.cs.current_hp, 400 - 77)

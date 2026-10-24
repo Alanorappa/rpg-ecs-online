@@ -267,6 +267,16 @@ class RemoteEntityHandlers:
         # DoT/HoT ticks: source != "auto"/"skill" — sem som (bleed, poison, burn, regen…)
         _is_dot_hot     = source not in ("auto", "skill")
 
+        # Escudo absorveu dano (24/10/2026, Pele do Urso — pedido do usuário):
+        # só o texto "Absorveu(X)" no alvo; HP chega pelo canal normal.
+        if outcome == "absorb":
+            _abs_eid = self._resolve_server_eid(server_target)
+            _abs_pos = self.world.get_component(_abs_eid, Position) if _abs_eid != -1 else None
+            if _abs_pos is not None:
+                FLT.add(f"Absorveu({int(cr.get('absorbed', 0))})", _abs_pos.x, _abs_pos.y,
+                        (200, 170, 110), "small", target_id=_abs_eid)
+            return
+
         # Animação de golpe do ATACANTE (09/09/2026, pedido do usuário) —
         # independente de quem/o que foi o ALVO (mob ou player): liga
         # sempre que um player de verdade (local ou remoto) resolve um

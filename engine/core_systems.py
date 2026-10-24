@@ -106,6 +106,28 @@ def has_effect_flag(world, eid: int, field: str) -> bool:
     return any(getattr(EFFECT_DEFS.get(et), field, False) for et in sfx.effects)
 
 
+_absorb_event_sink = None
+
+
+def register_absorb_event_sink(fn) -> None:
+    """fn(target_eid, absorbed) — avisado sempre que um escudo absorve dano
+    (servidor registra pra emitir o "Absorveu(X)" ao cliente)."""
+    global _absorb_event_sink
+    _absorb_event_sink = fn
+
+
+def absorb_damage(world, target_id: int, dmg: int) -> int:
+    """Passa `dmg` pelos escudos ativos do alvo (EffectDef.absorbs) e
+    devolve o dano que SOBRA. Ponto único de absorção — usado por
+    apply_damage_core e pelo tick de DoT (StatusEffectSystem._apply_tick)."""
+    from engine.components import StatusEffects
+    sfx = world.get_component(target_id, StatusEffects)
+    absorbed = _consume_absorb(sfx, dmg)
+    if absorbed and _absorb_event_sink is not None:
+        _absorb_event_sink(target_id, absorbed)
+    return dmg - absorbed
+
+
 def _consume_absorb(sfx, dmg: int) -> int:
     """Desconta `dmg` dos escudos ativos (EffectDef.absorbs, `magnitude` =
     dano restante); remove o escudo ao zerar. Retorna quanto absorveu."""
@@ -290,13 +312,13 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
     # Modificadores por dado do catálogo de efeitos (24/10/2026, Xamã):
     # dano recebido amplificado (EffectDef.damage_taken_mult, ex: Marca do
     # Gavião) e, depois, escudo de absorção (EffectDef.absorbs, ex: Pele do
-    # Urso). Valem pra todo dano que passa aqui — DoT não passa (débito já
-    # conhecido, ver docstring de damage_kind).
+    # Urso). DoT não passa aqui — o escudo cobre DoT via absorb_damage
+    # também em StatusEffectSystem._apply_tick; a amplificação não.
     if dmg > 0:
         _sfx_mod = world.get_component(target_id, StatusEffects)
         if _sfx_mod is not None and _sfx_mod.effects:
             dmg = int(round(dmg * _effects_product(_sfx_mod, "damage_taken_mult")))
-            dmg -= _consume_absorb(_sfx_mod, dmg)
+            dmg = absorb_damage(world, target_id, dmg)
 
     cs.current_hp -= dmg  # overkill preservado por contrato
     LAST_DAMAGE_AMOUNTS[target_id] = LAST_DAMAGE_AMOUNTS.get(target_id, 0) + dmg
@@ -832,6 +854,11 @@ class StatusEffectSystem:
                 _resist = getattr(cs, f"resist_{_school}", 0.0)
                 dmg = max(1, int(apply_resistance_reduction(dmg, _resist)))
                 self._on_resisted_dot(eid, _school)
+            # Escudo (EffectDef.absorbs) também segura DoT — mesmo ponto
+            # único de absorção do apply_damage_core.
+            dmg = absorb_damage(self.world, eid, dmg)
+            if dmg <= 0:
+                return
             cs.current_hp = max(0, cs.current_hp - dmg)
             self._emit_damage(eid, dmg, effect.effect_type, pos, color)
 

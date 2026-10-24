@@ -6296,8 +6296,9 @@ Pele do Urso em si OU em aliado; dano do Bisão espiritual/mágico.
   `ActiveEffect.magnitude` e some ao zerar), `blocks_stealth`
   (`core_systems.has_effect_flag`, checado no início e na conclusão da
   Camuflagem). Efeitos novos: `espirito_do_lobo`, `pele_do_urso`,
-  `marca_do_gaviao`. DoT não passa por `apply_damage_core` → escudo não
-  absorve DoT e a marca não o amplifica (débito já conhecido).
+  `marca_do_gaviao`. DoT não passa por `apply_damage_core` → a marca não
+  amplifica DoT (o escudo passou a absorver DoT no mesmo dia, via
+  `absorb_damage`, ver HISTORICO_BUGS.md §101).
   Limitação visual: número de dano flutuante de alguns caminhos mostra o
   valor ANTES da marca/escudo (o HP final está certo).
 - **Skills**: `espirito_do_lobo` (instantânea, 15, CD 30s, 8s),

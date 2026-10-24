@@ -383,6 +383,12 @@ padrão a quebrar, não só os bugs individuais.
   um `if sfx.has("<efeito>")` novo num sistema; os leitores genéricos
   já existem (`apply_damage_core`, `sync_status_derived_state`,
   `has_effect_flag`). Ver HISTORICO_FEATURES.md §86.
+- **Escudo absorvendo dano** → `core_systems.absorb_damage` (chamado por
+  `apply_damage_core` E pelo tick de DoT) — qualquer 3º caminho que
+  escreva dano em HP direto também precisa chamá-lo.
+- **Coleta (harvestable) exclusiva de quest nunca é sólida** — quem não
+  tem a quest não a vê; colisão explícita via `"solid"` no JSON do
+  mapa. Ver HISTORICO_BUGS.md §101.
 - **Arrancada até o alvo** → `SkillHandlers._begin_dash_adjacent`;
   **empurrão server-side** → `_server_knockback`
   (`server/spell_completion_processor.py`) — NUNCA copiar o laço de

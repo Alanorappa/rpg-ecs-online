@@ -971,6 +971,24 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         from engine.core_systems import register_heal_event_sink as _reg_heal_sink
         _reg_heal_sink(_on_heal_event)
 
+        # Escudo absorveu dano (engine/core_systems.py::absorb_damage) —
+        # resultado de combate "absorb" só pro texto "Absorveu(X)"; o HP
+        # real segue pelo canal normal (_sync_player_hp_dirty).
+        def _on_absorb_event(target_eid: int, absorbed: int) -> None:
+            from engine.components import CombatStats as _CSabs
+            _cs_abs = _srv_ref.world.get_component(target_eid, _CSabs)
+            _srv_ref._combat_this_tick.append({
+                "attacker": -1,
+                "target":   target_eid,
+                "damage":   0,
+                "absorbed": int(absorbed),
+                "outcome":  "absorb",
+                "hp_after": max(0, _cs_abs.current_hp) if _cs_abs else 0,
+                "source":   "absorb",
+            })
+        from engine.core_systems import register_absorb_event_sink as _reg_abs_sink
+        _reg_abs_sink(_on_absorb_event)
+
         # P4: injeção direta de serviços por bundle — elimina dependência no global _svc.
         # `perf_push=self._perf_push, perf_pop=self._perf_pop` (Fase 4.5,
         # 12/08/2026, atualizado Fase 4.7 — ver PROBLEMAS_ARQUITETURA.md
@@ -1213,7 +1231,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
             eid = create_harvestable_entity(
                 self.world, h["x"], h["y"], corpse_id=hid,
                 sprite_id=h.get("sprite", ""), name=name,
-                requires_quest=h.get("requires_quest", ""))
+                requires_quest=h.get("requires_quest", ""),
+                solid=h.get("solid"))
             self._harvestable_eids.add(eid)
             self._harvestable_hid_to_eid[hid] = eid
 
@@ -1979,7 +1998,8 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         eid = create_harvestable_entity(
             self.world, tx, ty, corpse_id=hid,
             sprite_id=sub.get("sprite", ""), name=name,
-            requires_quest=zone.get("requires_quest", ""))
+            requires_quest=zone.get("requires_quest", ""),
+            solid=sub.get("solid"))
         # MapLocation manual (fora do diff antes/depois de _load_map_for,
         # que só cobre entidades criadas na carga do mapa — mesmo padrão
         # de SpawnZoneSystem._spawn_one pra mob criado em runtime).
