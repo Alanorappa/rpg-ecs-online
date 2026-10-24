@@ -6152,3 +6152,17 @@ Ajustes no mecanismo compartilhado:
 **Testes**: `tests/test_client_ui.py` (cursor no painel não move; borda
 do mapa empurra pra direita; pan para na borda do mapa) + os 3 antigos
 da câmera livre.
+
+## 83. God Mode (F10) mostra o mapa inteiro, sem névoa (23/10/2026)
+
+Pedido do usuário: área nunca explorada aparecia preta no editor, sem
+como chegar lá com o personagem (o servidor decide a posição; uma área
+de teste só no mapa local nem existe pra ele). Campo novo
+`FogOfWar.reveal_all` (só desenho), gravado pelo `GameEngine` todo
+frame = `God Mode ativo`. Os 3 pontos que escondiam coisa pela névoa
+passam a ignorá-la com ele ligado: overlay preto
+(`TileRenderSystem.render_fog`), objetos sem Y-sort
+(`render_static_objects`) e objetos/entidades com Y-sort
+(`RenderSystem.render`). `visible`/`explored` nunca são tocados — a
+exploração salva do personagem continua igual. Teste em
+`tests/test_fog_render_cache.py`.

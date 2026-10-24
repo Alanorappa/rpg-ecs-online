@@ -524,6 +524,11 @@ class FogOfWar:
         # câmera cruzava fronteira de tile, ficando visualmente "preso"
         # perto de bush pequena (visão muda rápido em poucos passos).
         self.version:          int   = 0
+        # reveal_all (23/10/2026) — só desenho, enquanto o God Mode (F10)
+        # está aberto: mostra o mapa inteiro sem névoa pra editar. NUNCA
+        # mexe em visible/explored (exploração salva do jogador continua
+        # intacta). Gravado pelo GameEngine todo frame.
+        self.reveal_all:       bool  = False
         self._current_map:    str   = ""
         # Visão compartilhada de time (30/07/2026) — lista (tx,ty,radius) de
         # cada aliado (player/torre/minion), recebida do servidor via

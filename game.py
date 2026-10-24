@@ -2674,6 +2674,9 @@ class GameEngine(NetworkHandlers, RemoteEntityHandlers, SaveSyncHandlers, Invent
             if _cam_inset is not None:
                 _cam_inset[1].free_pan_right_inset = (
                     self._god_mode._panel_w if self._god_mode.active else 0)
+            _fog_god = self.world.get_first(FogOfWar)
+            if _fog_god is not None:
+                _fog_god[1].reveal_all = self._god_mode.active   # F10: mapa inteiro sem névoa
             z        = self._zoom
             _panel_w = self._god_mode._panel_w if self._god_mode.active else 0
             dest_w   = self.screen.get_width() - _panel_w          # largura da área de jogo

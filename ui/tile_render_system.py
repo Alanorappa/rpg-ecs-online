@@ -374,7 +374,7 @@ class TileRenderSystem(System):
         _fow_fog_first = self.world.get_first(FogOfWar)
         fog_comp = _fow_fog_first[1] if _fow_fog_first is not None else None
 
-        if fog_comp is None:
+        if fog_comp is None or fog_comp.reveal_all:   # F10 aberto: sem névoa
             return
 
         # Pega tilemap para checar extensões superiores de objetos altos
@@ -616,7 +616,7 @@ class TileRenderSystem(System):
         _fog_visible  = None
         _fog_explored = None
         _fow_static_first = self.world.get_first(FogOfWar)
-        if _fow_static_first is not None:
+        if _fow_static_first is not None and not _fow_static_first[1].reveal_all:
             _fog_visible  = _fow_static_first[1].visible
             _fog_explored = _fow_static_first[1].explored
 

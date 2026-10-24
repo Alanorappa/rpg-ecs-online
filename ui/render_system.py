@@ -389,7 +389,7 @@ class RenderSystem(System):
         _fog_visible:   set | None = None
         _fog_explored:  set | None = None
         _fow_render_first = self.world.get_first(FogOfWar)
-        if _fow_render_first is not None:
+        if _fow_render_first is not None and not _fow_render_first[1].reveal_all:
             _fog_visible  = _fow_render_first[1].visible
             _fog_explored = _fow_render_first[1].explored
 

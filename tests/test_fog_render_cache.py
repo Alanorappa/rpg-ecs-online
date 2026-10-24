@@ -81,6 +81,19 @@ class TestFogOverlayCacheInvalidation(unittest.TestCase):
             sys_.render_fog()
             mock_draw_rect.assert_not_called()
 
+    def test_god_mode_reveal_all_nao_desenha_nevoa(self):
+        """23/10/2026 — F10 aberto (FogOfWar.reveal_all) mostra o mapa
+        inteiro: nenhum overlay de névoa, e explored/visible intactos."""
+        sys_, fog = _make_render_system()
+        fog.reveal_all = True
+        explored_antes, visible_antes = set(fog.explored), set(fog.visible)
+        sys_.render(0, 0)
+        with patch("pygame.draw.rect") as mock_draw_rect:
+            sys_.render_fog()
+            mock_draw_rect.assert_not_called()
+        self.assertIsNone(sys_._fog_overlay_surf)
+        self.assertEqual((fog.explored, fog.visible), (explored_antes, visible_antes))
+
 
 if __name__ == "__main__":
     unittest.main()
