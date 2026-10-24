@@ -6166,3 +6166,43 @@ passam a ignorá-la com ele ligado: overlay preto
 (`RenderSystem.render`). `visible`/`explored` nunca são tocados — a
 exploração salva do personagem continua igual. Teste em
 `tests/test_fog_render_cache.py`.
+
+## 84. Paredes de caverna automáticas: regras de encaixe + pincel inteligente no F10 (24/10/2026)
+
+Pedido do usuário: deixar de montar as paredes da caverna peça a peça.
+Processo (23–24/10/2026): versões de script testadas contra correções
+dele — (1) Aracnópolis inteira decorada à mão (gabarito), (2) 2 rodadas
+de "laboratório" (formas de teste em fileiras extras do mapa, só local)
+corrigidas por ele. Lição de formato: quem decide o FORMATO da parede é o
+autor; a 1ª tentativa de engrossar automaticamente gerou sujeira.
+
+**Regras** (`engine/cave_autotile.py`, ponto único, sem pygame): papel por
+célula a partir do formato — altura da coluna (1 fileira = face baixa; 2 =
+borda+base 31/20/21; 3+ = borda, face alta 10/11, face baixa 14/15); a
+altura que decide face x base é a do DEGRAU (fileiras com chão do lado de
+fora), e degrau curto pendurado embaixo de BASE ainda ganha face; ponta de
+face com parede na diagonal de cima = coluna alta 27/26 (32x96), seguindo
+o degrau de cima (se ele é base, este também); lateral em degrau 29/28
+(também 32x96) só sob ponta de face; peças 32x96 cobrem a face logo acima
+('.'); face alta casa com a baixa (10/14, 11/15); parede fina que só
+desvia não tem face; fora do mapa conta como parede. Modo "só topo"
+(`faces=False`): nenhuma face, toda fileira de baixo vira base. Acerto
+contra o gabarito: ~97% no mapa, ~99% nos laboratórios
+(`tests/test_cave_autotile.py` trava ≥96% no mapa de Aracnópolis).
+
+**Pincel** (`ui/god_mode.py::_cave_stroke`, aba Objetos → "Parede de
+caverna (inteligente)": 🧱 Parede inteira / ⬛ Só topo; esquerdo pinta,
+direito apaga) — decisões do usuário: recalcula na hora num raio de 4
+tiles; corrige forma impossível sozinho (carimbo 3x3 no modo inteira, 2x2
+no só topo; ao apagar, sobra fina demais sai junto, `thin_cells`); peça
+que já está e continua certa pro papel é mantida (ajuste à mão
+sobrevive). Só a parede ligada ao traço muda (componente conectado).
+Terreno: miolo/coberta = 'c' (sólido); peça de borda = chão de caverna
+(80% liso) por baixo, colisão vem da peça; peças 32x96 aplicadas por
+último (colisão das 3 células prevalece). ~1,5 ms por pincelada no mapa
+real. Testes em `tests/test_god_mode_terrain_brush.py` (carimbo montado
+com colisão, apagar limpa sobra fina, só topo sem face).
+
+**Limites conhecidos**: diagonal grossa com 37 duplo e alguns encontros
+em Y ainda divergem do gabarito; pintar "só topo" encostado numa parede
+inteira converte a parte dela dentro do raio pra só topo.

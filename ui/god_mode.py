@@ -176,6 +176,14 @@ class GodModeEditor:
         self._terrain_smart_rects:       list[tuple[pygame.Rect, str]] = []
         self._terrain_floor_group_rects: list[tuple[pygame.Rect, list, str]] = []
 
+        # Pincel "Parede de caverna (inteligente)" (24/10/2026, pedido do
+        # usuário) — 'full' (parede inteira, com face de rocha) ou 'top'
+        # (só a parte escura de cima). Esquerdo pinta, direito apaga; as
+        # peças em volta são reescolhidas na hora por engine/cave_autotile.py.
+        self._cave_brush: "str | None" = None
+        self._cave_brush_rects: list[tuple[pygame.Rect, str]] = []
+        self._erasing = False          # botão direito mantido (arrasto apagando)
+
         # Scroll state — por aba
         self._scroll_y:          dict[int, int] = {0: 0, 1: 0}
         self._content_h:         dict[int, int] = {0: 0, 1: 0}
@@ -259,11 +267,19 @@ class GodModeEditor:
                     self._pulse_timer   = 0.0
                     self._painting      = True
                     consumed = True
+                elif event.button == 3 and self._cave_brush:
+                    tx, ty = self._screen_to_tile(event.pos[0], event.pos[1], cam_x, cam_y)
+                    self._cave_stroke(tx, ty, erase=True)
+                    self._selected_tile = (tx, ty)
+                    self._erasing = True
+                    consumed = True
 
             elif event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 1:
                     self._dragging_scroll = False
                     self._painting        = False
+                elif event.button == 3:
+                    self._erasing = False
 
             elif event.type == pygame.MOUSEMOTION:
                 tx, ty = self._screen_to_tile(mx, my, cam_x, cam_y)
@@ -298,6 +314,14 @@ class GodModeEditor:
         if self._save_flash > 0:
             self._save_flash -= dt
         self._pulse_timer += dt
+        # Arrasto com o botão direito apagando parede de caverna
+        if self._erasing and self._cave_brush:
+            mx, my = pygame.mouse.get_pos()
+            if mx < self._screen.get_width() - self._panel_w:
+                tx, ty = self._screen_to_tile(mx, my, cam_x, cam_y)
+                if (tx, ty) != self._selected_tile:
+                    self._cave_stroke(tx, ty, erase=True)
+                    self._selected_tile = (tx, ty)
         # Arrasto: pinta o tile sob o cursor a cada frame
         if self._painting:
             mx, my = pygame.mouse.get_pos()
@@ -494,6 +518,7 @@ class GodModeEditor:
         self._obj_group_label_rects = []
         self._terrain_smart_rects       = []
         self._terrain_floor_group_rects = []
+        self._cave_brush_rects          = []
 
         # Clip → renderiza conteúdo deslocado pelo scroll
         screen.set_clip(pygame.Rect(panel_x, viewport_top, PW - SB_W, viewport_h))
@@ -725,6 +750,21 @@ class GodModeEditor:
         # Sheet picker de objetos (tab 1)
         elif self._tab == 1 and OBJECT_SHEET_FAMILIES:
             from ui.tile_sprite_manager import TILE_SPRITES
+            # Pincel inteligente de parede de caverna (24/10/2026)
+            sep = self._font_sm.render("Parede de caverna (inteligente):", False, (140, 140, 150))
+            screen.blit(sep, (x0, cy))
+            cy += sep.get_height() + int(3 * sc)
+            for lbl_text, mode in (("🧱 Parede inteira", "full"), ("⬛ Só topo", "top")):
+                lbl = self._font_sm.render(lbl_text, False,
+                                           _C_SEL if self._cave_brush == mode else (140, 140, 150))
+                screen.blit(lbl, (x0, cy))
+                self._cave_brush_rects.append(
+                    (pygame.Rect(x0, cy, lbl.get_width(), lbl.get_height()), mode))
+                cy += lbl.get_height() + int(2 * sc)
+            hint = self._font_sm.render("esquerdo pinta · direito apaga", False, (110, 110, 120))
+            screen.blit(hint, (x0, cy))
+            cy += hint.get_height() + int(8 * sc)
+
             sep = self._font_sm.render("Tiles de objetos:", False, (140, 140, 150))
             screen.blit(sep, (x0, cy))
             cy += sep.get_height() + int(4 * sc)
@@ -853,6 +893,7 @@ class GodModeEditor:
                 self._terrain_smart_terrain = None   # e o pincel inteligente de terreno
                 self._terrain_smart_style   = None
                 self._terrain_last_id       = None
+                self._cave_brush            = None   # e o de parede de caverna
                 return
 
         # Itens da área rolável — só responde se o clique está dentro do viewport
@@ -860,6 +901,23 @@ class GodModeEditor:
                        and self._viewport_top <= pos[1] <= self._viewport_top + self._scroll_viewport_h)
 
         if in_viewport:
+            for r, mode in self._cave_brush_rects:
+                if r.collidepoint(pos):
+                    self._cave_brush = mode
+                    self._brush_group_ids = None
+                    self._terrain_smart_terrain = None
+                    self._terrain_smart_style   = None
+                    self._sel_char = ""
+                    self._sel_name = ("Parede de caverna (inteira)" if mode == "full"
+                                      else "Parede de caverna (só topo)")
+                    self._sel_color = (60, 46, 44)
+                    return
+            # qualquer outra escolha na paleta desliga o pincel de caverna
+            if any(r.collidepoint(pos) for r, *_ in (
+                    self._obj_group_label_rects + self._terrain_smart_rects
+                    + self._terrain_floor_group_rects + self._palette_rects
+                    + self._sheet_cell_rects + self._obj_sheet_cell_rects)):
+                self._cave_brush = None
             # Nome de um grupo (26/08/2026) — ativa o pincel aleatório do
             # grupo inteiro (ver `_resolve_brush_char`). Testado ANTES dos
             # cliques de tile único — clicar numa célula específica depois
@@ -1212,6 +1270,10 @@ class GodModeEditor:
                 and 0 <= tx < tilemap.map_width_tiles):
             return
 
+        if self._cave_brush:
+            self._cave_stroke(tx, ty, erase=False)
+            return
+
         if self._terrain_smart_terrain:
             self._apply_smart_terrain(tilemap, tx, ty)
             self._unsaved = True
@@ -1241,6 +1303,95 @@ class GodModeEditor:
         elif self._tab == 1:
             self._set_object(tilemap, tx, ty, char)
 
+        self._unsaved = True
+        self._tile_render.invalidate_cache()
+
+    _CAVE_RADIUS = 4      # tiles em volta da pincelada que são reescolhidos
+    _CAVE_CONTEXT = 16    # folga de leitura do formato (regras olham até ~12 de lado)
+
+    def _cave_stroke(self, tx: int, ty: int, erase: bool) -> None:
+        """Pincel "Parede de caverna (inteligente)" — pinta/apaga um carimbo
+        (3x3 parede inteira, 2x2 só topo: menor que isso não tem peça que
+        monte) e reescolhe as peças da parede tocada num raio de
+        `_CAVE_RADIUS`, via engine/cave_autotile.py (ponto único das regras).
+        Peça que já está lá e continua certa pro papel é mantida."""
+        import random
+        from collections import deque
+        from engine import cave_autotile as CA
+        tilemap = self._get_tilemap()
+        if tilemap is None or not self._cave_brush:
+            return
+        W, H = tilemap.map_width_tiles, tilemap.map_height_tiles
+        mode = self._cave_brush
+        n = CA.MIN_SIZE[mode]
+        lo = -(n // 2)
+        stamp = {(tx + dx, ty + dy) for dx in range(lo, lo + n) for dy in range(lo, lo + n)
+                 if 0 <= tx + dx < W and 0 <= ty + dy < H}
+        if not stamp:
+            return
+        xs = [p[0] for p in stamp]; ys = [p[1] for p in stamp]
+        R, M = self._CAVE_RADIUS, self._CAVE_CONTEXT
+        wx0, wx1, wy0, wy1 = min(xs) - R, max(xs) + R, min(ys) - R, max(ys) + R
+        T, O = tilemap.terrain_matrix, tilemap.object_matrix
+        F = CA.footprint(T, O, wx0 - M, wy0 - M, wx1 + M + 1, wy1 + M + 1)
+        window = {(x, y) for x in range(max(0, wx0), min(W, wx1 + 1))
+                  for y in range(max(0, wy0), min(H, wy1 + 1))}
+        before = F & window
+        if erase:
+            F -= stamp
+            while True:                       # sobra fina demais pra montar também sai
+                thin = CA.thin_cells(F, F & window, min_w=n, min_h=2)
+                if not thin:
+                    break
+                F -= thin
+            seeds = {(x + dx, y + dy) for x, y in stamp for dx in (-1, 0, 1) for dy in (-1, 0, 1)} & F
+        else:
+            F |= stamp
+            seeds = set(stamp)
+        # só a parede tocada pelo traço (componente ligado) muda de peça
+        comp, queue = set(), deque(p for p in seeds if p in window)
+        comp.update(queue)
+        while queue:
+            x, y = queue.popleft()
+            for q in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if q in F and q in window and q not in comp:
+                    comp.add(q); queue.append(q)
+        rng = random.Random()
+        floor_pool = next((f.get("random_brushes", {}).get("Chão Caverna") for f in SHEET_FAMILIES
+                           if f["prefix"] == "cvg"), None) or [(6, 0)]
+
+        def make_floor(x, y):
+            if T[y][x] == 'c':
+                c, r = (6, 0) if rng.random() < 0.8 else rng.choice(floor_pool)
+                self._set_terrain(tilemap, x, y, '.')
+                self._set_terrain_visual(tilemap, x, y, f"cvg_{c}_{r}")
+
+        # células que deixaram de ser parede
+        for (x, y) in before - F:
+            if O[y][x] != '.':
+                self._set_object(tilemap, x, y, '.')
+            make_floor(x, y)
+        if comp:
+            roles = CA.roles_for(F, W, H, faces=(mode == 'full'), region=comp)
+            current = {(x, y): O[y][x] for (x, y) in roles}
+            out = CA.pick_pieces(roles, current=current, rng=rng)
+            talls = []
+            for (x, y), piece in out.items():
+                if piece in CA.ROLE_PIECES['tall_L'] + CA.ROLE_PIECES['tall_R'] \
+                        + CA.ROLE_PIECES['step_L'] + CA.ROLE_PIECES['step_R']:
+                    talls.append((x, y, piece))
+                    continue
+                if piece in (CA.COVERED, CA.FILL):
+                    # coberta por peça alta / miolo: terreno de parede (sólido) por baixo
+                    self._set_terrain(tilemap, x, y, 'c')
+                    self._set_terrain_visual(tilemap, x, y, "")
+                    self._set_object(tilemap, x, y, '.' if piece == CA.COVERED else piece)
+                else:
+                    self._set_object(tilemap, x, y, piece)
+                    make_floor(x, y)      # transparência da peça mostra chão; colisão vem da peça
+            for x, y, piece in talls:     # por último: colisão das 3 células delas prevalece
+                self._set_object(tilemap, x, y, piece)
+                make_floor(x, y)
         self._unsaved = True
         self._tile_render.invalidate_cache()
 

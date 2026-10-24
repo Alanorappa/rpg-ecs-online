@@ -47,6 +47,8 @@
 | Portal — handler de rede | `server/session.py` | `_handle_portal_enter_req()`; drenos de `consume_portal_teleport_events()`/`consume_portal_cast_cancel_events()` em `_dispatch_tick_deltas` |
 | Portal — cliente | `client/portal_handlers.py` | `PortalHandlers` — detecção de tile (`portal_tiles`), modal de seleção de destino, estado de cast local/otimista |
 | Portal — animação do tile (objeto de mundo, evento, broadcast AOI) | `engine/tileset.py`, `engine/portal_anim_state.py`, `ui/tile_sprite_manager.py`, `ui/tile_render_system.py` | `PORTAL_ACTIVATE_SHEET_BY_TILE_ID`/`PORTAL_DEACTIVATE_SHEET_BY_TILE_ID`, estado de módulo `portal_anim_state`, `get_portal_event_frame()`, branch em `get_world_objects()` |
+| Parede de caverna — escolha automática de peça (regras de encaixe) | `engine/cave_autotile.py` | `roles_for()`, `pick_pieces()`, `tile()`, `footprint()`, `thin_cells()`, `ROLE_PIECES`, `MIN_SIZE` |
+| Parede de caverna — pincel inteligente do God Mode (F10) | `ui/god_mode.py` | `_cave_stroke()`, `_cave_brush` ('full'/'top'), seção "Parede de caverna (inteligente)" na aba Objetos |
 | Ranking Geral — servidor (consulta no banco) | `server/auth.py` | `get_ranking(category)` — level via coluna, skill via `skill_levels_json` lido em Python, até 100 entradas |
 | Ranking Geral — servidor (bridge/handler) | `server/ranking_processor.py`, `server/session.py` | `RankingProcessorMixin.process_ranking_request`; `_handle_ranking_request` |
 | Ranking Geral — cliente | `ui/ranking_system.py` | `RankingSystem` — modal read-only (tecla K), sidebar de categorias + tabela rolável, cache por categoria |

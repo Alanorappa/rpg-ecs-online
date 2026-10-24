@@ -423,6 +423,47 @@ class TestSmartBrushActivationUI(unittest.TestCase):
         editor._apply(1, 1)
         self.assertEqual(tm.terrain_matrix[1][1], "f")
 
+    def _cave_editor(self, mode):
+        from engine.tileset import TILE_MAPPING
+        editor = _make_editor()
+        tm = _make_tilemap(20, 20, terrain_char=".")
+        tm.tile_matrix = [[TILE_MAPPING["."]] * 20 for _ in range(20)]
+        editor._get_tilemap = lambda: tm
+        editor._tile_render = type("R", (), {"invalidate_cache": lambda self: None})()
+        editor._cave_brush = mode
+        return editor, tm
+
+    def test_pincel_caverna_pinta_carimbo_3x3_montado(self):
+        """24/10/2026 — pincel "Parede de caverna (inteligente)": 1 clique
+        = parede 3x3 já com as peças certas e colisão."""
+        editor, tm = self._cave_editor("full")
+        editor._apply(10, 10)
+        O = tm.object_matrix
+        self.assertEqual((O[9][9], O[10][9], O[11][11]), ("cv001", "cv009", "cv016"))
+        self.assertIn(O[11][10], ("cv014", "cv015"))
+        self.assertEqual(O[10][10], {"cv014": "cv010", "cv015": "cv011"}[O[11][10]])
+        for y in (9, 10, 11):
+            for x in (9, 10, 11):
+                self.assertTrue(tm.tile_matrix[y][x].is_solid, (x, y))
+        self.assertFalse(tm.tile_matrix[12][10].is_solid)
+
+    def test_pincel_caverna_apagar_remove_e_limpa_sobra_fina(self):
+        editor, tm = self._cave_editor("full")
+        editor._apply(10, 10)
+        editor._apply(13, 10)                      # parede 6x3
+        editor._cave_stroke(12, 10, erase=True)    # tira o meio: sobra de 2 de largura sai junto
+        walls = [(x, y) for y in range(20) for x in range(20)
+                 if tm.object_matrix[y][x] != "." or tm.terrain_matrix[y][x] == "c"]
+        self.assertEqual(walls, [])
+        self.assertFalse(any(tm.tile_matrix[y][x].is_solid for y in range(20) for x in range(20)))
+
+    def test_pincel_caverna_so_topo_sem_face(self):
+        editor, tm = self._cave_editor("top")
+        editor._apply(10, 10)
+        editor._apply(12, 10)                      # 2x2 + 2x2 = parede 4x2
+        row = tm.object_matrix[10][9:13]
+        self.assertEqual(row, ["cv020", "cv031", "cv031", "cv021"])
+
     def test_clique_no_mapa_considera_zoom(self):
         """22/10/2026 — God Mode passou a editar com zoom: clique em tela
         é dividido pela escala antes de virar tile."""

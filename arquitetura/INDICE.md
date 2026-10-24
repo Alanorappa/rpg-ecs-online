@@ -347,3 +347,4 @@
 - [23/10/2026] (feature) Paredes da caverna +2 peças (cv001..cv095), mapa remapeado sem perda — tags: caverna, tileset, mapa — HISTORICO_FEATURES.md §80
 - [23/10/2026] (feature) Câmera livre no God Mode (F10) reusando Camera.free_mode da BG; pan ignora o painel e para na borda do mapa — tags: god-mode, camera, editor, bg — HISTORICO_FEATURES.md §82
 - [23/10/2026] (feature) God Mode (F10) mostra o mapa inteiro sem névoa (FogOfWar.reveal_all, só desenho) — tags: god-mode, fog, editor — HISTORICO_FEATURES.md §83
+- [24/10/2026] (feature) Paredes de caverna automáticas: engine/cave_autotile.py (regras de encaixe, ~97% contra o mapa feito à mão) + pincel inteligente no F10 (parede inteira / só topo) — tags: caverna, god-mode, pincel, autotile, tileset, editor — HISTORICO_FEATURES.md §84

@@ -2034,6 +2034,15 @@ padrão a quebrar, não só os bugs individuais.
   `assets/effects/`) e `ui/icon_manager.py` (ícones de UI com atlas,
   `assets/icons/`) — nunca confundir os 3 diretórios/módulos.
 
+- **Qual peça de parede de caverna vai em cada célula** (pincel do F10,
+  script, qualquer gerador futuro de mapa de caverna) →
+  `engine/cave_autotile.py` (`roles_for`/`pick_pieces`/`tile`) — o autor
+  decide o FORMATO (células de parede), as regras decidem as peças; NUNCA
+  reimplementar regra de encaixe num 2º lugar nem engrossar/afinar o
+  formato automaticamente sem pedido. Regra nova de encaixe entra só ali,
+  com o placar contra o gabarito (`tests/test_cave_autotile.py`, mapa de
+  Aracnópolis feito à mão) sem cair. Ver HISTORICO_FEATURES.md §84.
+
 ### Abas Entrar/Criar conta no Launcher (09/10/2026)
 `launcher/login_ui.py` espelha a MESMA UX de cadastro que já existe
 dentro do jogo (`ui/login_screen.py`) — mesma validação local (usuário
