@@ -1081,13 +1081,16 @@ class BaseCombatStateSystem:
             )
 
     @staticmethod
-    def _tick_espirito_regen(cs, char, dt: float) -> None:
-        """Regen de Espírito (Xamã) — só EM combate; fora de combate o
-        recurso fica travado (25/10/2026). O ganho por ataque básico é
-        server-side (combat_processor)."""
+    def _tick_espirito_regen(cs, char, dt: float, combat_stats=None) -> None:
+        """Regen de Espírito (Xamã) — só EM combate e VIVO; fora de combate
+        o recurso fica travado (25/10/2026). O ganho por ataque básico é
+        server-side (combat_processor). Morto nunca regenera — o "em
+        combate" continua ligado um tempo depois da morte (bug real do
+        playtest: cliente seguia subindo o Espírito do personagem morto)."""
         if char.max_espirito <= 0:
             return
-        if cs is None or not cs.in_combat or char.espirito >= char.max_espirito:
+        _dead = combat_stats is not None and combat_stats.current_hp <= 0
+        if cs is None or not cs.in_combat or _dead or char.espirito >= char.max_espirito:
             char.espirito_regen_timer = 0.0
             return
         # Degrau de +ESPIRITO_REGEN_IC a cada 1s inteiro em combate (pedido do
@@ -1237,7 +1240,7 @@ class ServerCombatStateSystem(BaseCombatStateSystem):
             if char:
                 self._tick_concentration_regen(cs, char, cst, tm, dt)
                 self._tick_concentration_free_timer(cst, dt)
-                self._tick_espirito_regen(cs, char, dt)
+                self._tick_espirito_regen(cs, char, dt, cst)
             self._tick_standing_seconds(cst, tm, dt)
 
             self._tick_timed_modifiers(cst, dt)

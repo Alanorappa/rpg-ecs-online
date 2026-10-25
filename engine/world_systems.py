@@ -1322,7 +1322,7 @@ class CombatStateSystem(_BaseCombatStateSystem, System):
                     self._tick_standing_seconds(combat_stats, tm, dt)
                     if char_stats:
                         self._tick_concentration_regen(cs, char_stats, combat_stats, tm, dt)
-                        self._tick_espirito_regen(cs, char_stats, dt)
+                        self._tick_espirito_regen(cs, char_stats, dt, combat_stats)
 
                 # ── Disoriented / Polymorph: wander aleatório (cliente-only) ──
                 # Para mobs: EnemyAISystem faz o wander; para players: aqui.

@@ -118,6 +118,19 @@ class TestEspirito(unittest.TestCase):
         self.ws._handle_player_death(self.eid)
         self.assertEqual(self.char.espirito, 0)
 
+    def test_morto_nao_regenera_mesmo_em_combate(self):
+        """Bug do playtest: morto continuava 'em combate' e o Espírito subia."""
+        from engine.stat_fns import enter_combat
+        from engine.core_systems import BaseCombatStateSystem
+        cst = self.ws.world.get_component(self.eid, CombatState)
+        cs = self.ws.world.get_component(self.eid, CombatStats)
+        enter_combat(cst)
+        cs.current_hp = 0
+        self.char.espirito = 0
+        for _ in range(40):
+            BaseCombatStateSystem._tick_espirito_regen(cst, self.char, 0.05, cs)
+        self.assertEqual(self.char.espirito, 0)
+
     def test_regen_sobe_em_degraus_de_1s(self):
         from engine.stat_fns import enter_combat
         self.char.espirito = 50
