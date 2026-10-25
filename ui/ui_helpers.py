@@ -98,6 +98,12 @@ def draw_stack_count(surf, item, rect, font) -> None:
 _PERCENT_FRACTION_ATTRS = frozenset({"crit_rating"})
 
 _MATERIAL_LABELS = {"placa": "Placa", "couro": "Couro", "tecido": "Tecido"}
+# Tipo de arma exibido no tooltip (item.subtype → nome em português).
+_WEAPON_SUBTYPE_LABELS = {
+    "Sword": "Espada", "Dagger": "Adaga", "Axe": "Machado",
+    "Mace": "Maça", "Club": "Maça", "Hammer": "Maça",
+    "Staff": "Cajado", "Scepter": "Cajado", "Wand": "Varinha", "Bow": "Arco",
+}
 
 
 def item_tooltip_lines(item, viewer_class_id: str | None = None):
@@ -169,8 +175,18 @@ def item_tooltip_lines(item, viewer_class_id: str | None = None):
         if item.damage_max > 0:
             lines.append((f"Flecha carregada: +{item.damage_min}–{item.damage_max} dano", (220, 160, 80)))
     elif item.item_type == "weapon":
-        if getattr(item, "subtype", "") == "Bow":
-            lines.append((("Ranged · Two Hand", (160, 130, 80)), ("Arco", (200, 200, 200))))
+        # Tipo da arma em português, verde/vermelho conforme a classe pode
+        # usar (mesma regra que bloqueia equipar — is_weapon_allowed_for_class),
+        # igual escudo/armadura abaixo (25/10/2026).
+        _sub_raw = getattr(item, "subtype", "")
+        _sub_lbl = _WEAPON_SUBTYPE_LABELS.get(_sub_raw, _sub_raw or "Arma")
+        if viewer_class_id is not None:
+            from engine.stats_system import is_weapon_allowed_for_class
+            _sub_col = (80, 220, 80) if is_weapon_allowed_for_class(item, viewer_class_id) else (220, 80, 80)
+        else:
+            _sub_col = (200, 200, 200)
+        if _sub_raw == "Bow":
+            lines.append((("Ranged · Two Hand", (160, 130, 80)), (_sub_lbl, _sub_col)))
             if item.damage_min > 0:
                 dmg_str = f"{item.damage_min} - {item.damage_max} Dano"
                 spd_str = f"Vel. {item.attack_speed:.1f}s"
@@ -180,8 +196,7 @@ def item_tooltip_lines(item, viewer_class_id: str | None = None):
                 lines.append((f"Alcance: {_range} tiles", (160, 200, 220)))
         else:
             hand = "Two Hand" if item.two_handed else "One Hand"
-            sub  = item.subtype if item.subtype else "Weapon"
-            lines.append(((hand, (160, 130, 80)), (sub, (200, 200, 200))))
+            lines.append(((hand, (160, 130, 80)), (_sub_lbl, _sub_col)))
             if item.damage_min > 0:
                 dmg_str = f"{item.damage_min} - {item.damage_max} Damage"
                 spd_str = f"Speed {item.attack_speed:.1f}"

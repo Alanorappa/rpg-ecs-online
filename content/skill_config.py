@@ -510,8 +510,8 @@ SKILL_CATALOG: dict[str, dict] = {
     # Escola das magias do Xamã: "espirito".
     "toque_ancestral": {
         "name":       "Toque Ancestral",
-        "desc":       ("Ataque espiritual a até 6 tiles: 20 + 60% SP. Ao acertar, os aliados "
-                       "no corredor entre o alvo e você são curados em 20 + 30% SP ao longo "
+        "desc":       ("Ataque espiritual a até 6 tiles: 6 + 18% SP. Ao acertar, os aliados "
+                       "no corredor entre o alvo e você são curados em 10 + 15% SP ao longo "
                        "de 6s (mais pra quem está perto do alvo). Cast 1s. 20 Espírito."),
         "cooldown":   8.0,
         "cast_time":  1.0,
@@ -519,12 +519,13 @@ SKILL_CATALOG: dict[str, dict] = {
         "class_id":   "xama",
         "school":     "espirito",
         "params": {
-            "base_dmg":          20,
-            "dmg_sp_coeff":      0.60,
+            # Nerf de playtest (25/10/2026): dano −70%, cura −50%
+            "base_dmg":          6,
+            "dmg_sp_coeff":      0.18,
             "espirito_cost":     20,
             # Corredor de cura (HoT dividido entre os aliados dentro dele)
-            "corridor_heal":     20,
-            "corridor_sp_coeff": 0.30,
+            "corridor_heal":     10,
+            "corridor_sp_coeff": 0.15,
             "corridor_half_width": 2,     # 5 tiles de largura (2 de cada lado)
             "corridor_duration": 6.0,
             "corridor_min_weight": 0.25,  # peso do Xamã (ponta do corredor)
@@ -593,14 +594,15 @@ SKILL_CATALOG: dict[str, dict] = {
     },
     "investida_do_bisao": {
         "name":       "Investida do Bisão",
-        "desc":       "Avança até um inimigo a até 4 tiles e o empurra 1 tile. Dano físico: 80% da arma + 60% AP. 20 Espírito.",
+        "desc":       "Avança até um inimigo a até 4 tiles e o empurra 1 tile. Dano físico: 60% AP. 20 Espírito.",
         "cooldown":   25.0,
         "cast_time":  0.0,
         "cast_range": 4,
         "class_id":   "xama",
         "params": {
-            # Física (25/10/2026) — damage_calculator.ability_physical_damage
-            "dmg_weapon_pct":    0.80,
+            # Física, SÓ AP (25/10/2026, pedido do usuário) —
+            # damage_calculator.ability_physical_damage com arma 0%
+            "dmg_weapon_pct":    0.0,
             "damage_multiplier": 0.60,
             "knockback_tiles": 1,
             "dash_duration":   0.2,

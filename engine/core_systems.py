@@ -1085,12 +1085,19 @@ class BaseCombatStateSystem:
         """Regen de Espírito (Xamã) — só EM combate; fora de combate o
         recurso fica travado (25/10/2026). O ganho por ataque básico é
         server-side (combat_processor)."""
-        if char.max_espirito <= 0 or char.espirito >= char.max_espirito:
+        if char.max_espirito <= 0:
             return
-        if cs is None or not cs.in_combat:
+        if cs is None or not cs.in_combat or char.espirito >= char.max_espirito:
+            char.espirito_regen_timer = 0.0
             return
-        from engine.stats_system import ESPIRITO_REGEN_IC
-        char.espirito = min(char.max_espirito, char.espirito + ESPIRITO_REGEN_IC * dt)
+        # Degrau de +ESPIRITO_REGEN_IC a cada 1s inteiro em combate (pedido do
+        # usuário — antes subia um pouco a cada tick e parecia mais rápido).
+        char.espirito_regen_timer += dt
+        if char.espirito_regen_timer >= 1.0:
+            from engine.stats_system import ESPIRITO_REGEN_IC
+            steps = int(char.espirito_regen_timer)
+            char.espirito_regen_timer -= steps
+            char.espirito = min(char.max_espirito, char.espirito + ESPIRITO_REGEN_IC * steps)
 
     @staticmethod
     def _tick_concentration_free_timer(cst, dt: float) -> None:

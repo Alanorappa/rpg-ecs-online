@@ -6400,3 +6400,15 @@ Xamã ainda engaja como o mago).
 Testes: `tests/test_xama.py` (45) — Espírito novo, custo e corredor do
 Toque, divisão do corredor (unidade), aliado no corredor, armas, +25 no
 acerto, regra de talento.
+
+**Ajustes do playtest (mesmo dia)**:
+- Regen do Espírito em DEGRAUS de +5 a cada 1s inteiro em combate
+  (`CharacterStats.espirito_regen_timer`) — subia um pouco por tick e
+  parecia mais rápido. Espírito zera NA MORTE (`RespawnMixin.
+  _handle_player_death`), não só ao reviver.
+- Toque Ancestral nerfado: dano 6 + 18% SP (−70%), corredor 10 + 15% SP
+  (−50%). Investida do Bisão só AP (60%, arma 0%).
+- Tooltip de arma: tipo em português (`ui_helpers._WEAPON_SUBTYPE_LABELS`)
+  e verde/vermelho pela mesma regra de equipar (`is_weapon_allowed_for_
+  class`) — só escudo/armadura tinham cor; arma mostrava o subtype cru em
+  inglês, cinza. Troca/correio continuam neutros (não passam a classe).

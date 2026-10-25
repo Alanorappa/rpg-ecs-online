@@ -829,6 +829,7 @@ class CharacterStats:
         # ESPIRITO_*). NÃO é o atributo `spirit` (regen de HP/MP).
         self.espirito:     float = 0.0
         self.max_espirito: int   = 0    # 0 = recurso inexistente para esta classe
+        self.espirito_regen_timer: float = 0.0  # regen em degraus de 1s (25/10/2026)
 
     @staticmethod
     def xp_for_level(level: int) -> int:

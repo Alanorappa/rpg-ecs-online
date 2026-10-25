@@ -92,6 +92,14 @@ class RespawnMixin:
         from engine.utils import incr_char_stat as _incr_deaths
         _incr_deaths(self.world, player_eid, "deaths")
 
+        # Xamã: Espírito zera NA MORTE (pedido do usuário, 25/10/2026) —
+        # morto não está em combate, então ficaria travado no valor antigo.
+        _char_esp = self.world.get_component(player_eid, CharacterStats)
+        if _char_esp is not None and _char_esp.max_espirito > 0 and _char_esp.espirito:
+            _char_esp.espirito = 0.0
+            _char_esp.espirito_regen_timer = 0.0
+            self.queue_stats_update({"player_eid": player_eid, "espirito": 0.0})
+
         # Kill credit + assist (16/08/2026, estilo LoL — pesquisado com o
         # usuário) — kill vai pro ÚLTIMO PLAYER inimigo que causou dano,
         # mesmo que o golpe final literal (`killer_eid`) tenha sido de

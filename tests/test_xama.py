@@ -113,6 +113,41 @@ class TestEspirito(unittest.TestCase):
         self.char.reset_volatile()
         self.assertEqual(self.char.espirito, 0)
 
+    def test_morrer_zera(self):
+        self.char.espirito = 80
+        self.ws._handle_player_death(self.eid)
+        self.assertEqual(self.char.espirito, 0)
+
+    def test_regen_sobe_em_degraus_de_1s(self):
+        from engine.stat_fns import enter_combat
+        self.char.espirito = 50
+        enter_combat(self.ws.world.get_component(self.eid, CombatState))
+        valores = set()
+        for _ in range(16):                 # ~0.8s em ticks de 0.05s
+            run_ticks(self.ws, 1, dt=0.05)
+            valores.add(self.char.espirito)
+        self.assertEqual(valores, {50}, "não pode subir antes de 1s inteiro")
+        for _ in range(6):
+            run_ticks(self.ws, 1, dt=0.05)
+        self.assertEqual(self.char.espirito, 55)
+
+
+class TestTooltipTipoDeArma(unittest.TestCase):
+    def _tipo(self, subtype, cls):
+        from ui.ui_helpers import item_tooltip_lines
+        from content.item_table import ITEMS as _IF
+        i = _IF["mystic_staff"]()          # item real; só troca o tipo
+        i.subtype, i.two_handed = subtype, False
+        for line in item_tooltip_lines(i, cls):
+            if isinstance(line[0], tuple):
+                return line[1]
+        return None
+
+    def test_tipo_em_portugues_e_vermelho_quando_proibido(self):
+        self.assertEqual(self._tipo("Sword", "xama"), ("Espada", (220, 80, 80)))
+        self.assertEqual(self._tipo("Staff", "xama"), ("Cajado", (80, 220, 80)))
+        self.assertEqual(self._tipo("Sword", "guerreiro"), ("Espada", (80, 220, 80)))
+
 
 class _XamaDuelBase(unittest.TestCase):
     def setUp(self):
@@ -163,16 +198,19 @@ class TestToqueAncestral(_XamaDuelBase):
         self._cast_until_hit()
         eff = self.ws.world.get_component(self.xama, StatusEffects).get("corredor_ancestral")
         self.assertIsNotNone(eff, "Xamã sozinho no corredor recebe a cura inteira")
-        total = 20 + self.xcs.spell_power * 0.30
-        self.assertAlmostEqual(eff.magnitude * 6, total, delta=0.01)
+        self.assertAlmostEqual(eff.magnitude * 6, self._corredor_base(), delta=0.01)
+
+    def _corredor_base(self):
+        from content.skill_config import SKILL_CATALOG
+        p = SKILL_CATALOG["toque_ancestral"]["params"]
+        return p["corridor_heal"] + self.xcs.spell_power * p["corridor_sp_coeff"]
 
     def test_sussurros_constantes_aumenta_cura_do_corredor(self):
         from engine.components import StatusEffects
         self.xcs.corredor_cura_bonus = 0.30 * 5
         self._cast_until_hit()
         eff = self.ws.world.get_component(self.xama, StatusEffects).get("corredor_ancestral")
-        total = (20 + self.xcs.spell_power * 0.30) * 2.5      # 50 + 75% SP
-        self.assertAlmostEqual(eff.magnitude * 6, total, delta=0.01)
+        self.assertAlmostEqual(eff.magnitude * 6, self._corredor_base() * 2.5, delta=0.01)
 
     def test_sem_espirito_recusa(self):
         self.char.espirito = 5
