@@ -504,38 +504,46 @@ SKILL_CATALOG: dict[str, dict] = {
         },
     },
 
-    # ── Xamã (24/10/2026, classe nova — docs/classe_xama.md, rascunho) ───────
-    # Recurso: Espírito (CharacterStats.espirito). SP = spell_power (decisão
-    # do usuário: reusa o Poder Mágico). "Drenar energia espiritual" é a
-    # narrativa do dano — não existe barra de energia nos inimigos.
+    # ── Xamã (classe_xama.md, redesenho de 25/10/2026) ──────────────────────
+    # Recurso: Espírito (CharacterStats.espirito) — vem do ataque básico e da
+    # regen em combate. SP = spell_power (magia/cura); AP = dano físico.
+    # Escola das magias do Xamã: "espirito".
     "toque_ancestral": {
         "name":       "Toque Ancestral",
-        "desc":       "Ataque espiritual à distância: 20 + 60% SP. Gera 8 de Espírito. Cast 1s.",
-        "cooldown":   1.5,
+        "desc":       ("Ataque espiritual a até 6 tiles: 20 + 60% SP. Ao acertar, os aliados "
+                       "no corredor entre o alvo e você são curados em 20 + 30% SP ao longo "
+                       "de 6s (mais pra quem está perto do alvo). Cast 1s. 20 Espírito."),
+        "cooldown":   8.0,
         "cast_time":  1.0,
         "cast_range": 6,
         "class_id":   "xama",
-        "school":     "espiritual",
+        "school":     "espirito",
         "params": {
-            "base_dmg":      20,
-            "dmg_sp_coeff":  0.60,
-            "espirito_gain": 8,
+            "base_dmg":          20,
+            "dmg_sp_coeff":      0.60,
+            "espirito_cost":     20,
+            # Corredor de cura (HoT dividido entre os aliados dentro dele)
+            "corridor_heal":     20,
+            "corridor_sp_coeff": 0.30,
+            "corridor_half_width": 2,     # 5 tiles de largura (2 de cada lado)
+            "corridor_duration": 6.0,
+            "corridor_min_weight": 0.25,  # peso do Xamã (ponta do corredor)
         },
     },
     "sopro_da_coruja": {
         "name":       "Sopro da Coruja",
-        "desc":       "Cura um aliado (ou você) a até 8 tiles: 60 + 120% SP. Cast 1,5s. 30 Espírito.",
+        "desc":       "Cura um aliado (ou você) a até 8 tiles: 60 + 120% SP. Cast 1,5s. 40 Espírito.",
         "cooldown":   0.0,
         "cast_time":  1.5,
         "cast_range": 8,
         "class_id":   "xama",
-        "school":     "espiritual",
+        "school":     "espirito",
         "offensive":  False,
         "needs_target": False,   # sem aliado selecionado, cura o próprio Xamã
         "params": {
             "base_heal":     60,
             "heal_sp_coeff": 1.20,
-            "espirito_cost": 30,
+            "espirito_cost": 40,
             "min_cost":      15,  # Alma Generosa nunca baixa o custo além disso
         },
     },
@@ -585,15 +593,15 @@ SKILL_CATALOG: dict[str, dict] = {
     },
     "investida_do_bisao": {
         "name":       "Investida do Bisão",
-        "desc":       "Avança até um inimigo a até 4 tiles: 40 + 40% SP e o empurra 1 tile. 20 Espírito.",
+        "desc":       "Avança até um inimigo a até 4 tiles e o empurra 1 tile. Dano físico: 80% da arma + 60% AP. 20 Espírito.",
         "cooldown":   25.0,
         "cast_time":  0.0,
         "cast_range": 4,
         "class_id":   "xama",
-        "school":     "espiritual",
         "params": {
-            "base_dmg":        40,
-            "dmg_sp_coeff":    0.40,
+            # Física (25/10/2026) — damage_calculator.ability_physical_damage
+            "dmg_weapon_pct":    0.80,
+            "damage_multiplier": 0.60,
             "knockback_tiles": 1,
             "dash_duration":   0.2,
             "espirito_cost":   20,

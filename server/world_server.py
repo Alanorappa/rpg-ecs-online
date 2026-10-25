@@ -5343,6 +5343,7 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
           heal_amount int  quanto curou | heal_sid: origem da cura
           talent_points int  pontos de talento (level up)
           concentration  float  (mago)
+          espirito    float  valor absoluto do Espírito (Xamã)
           proj_incoming/proj_caster/proj_target  notificação de projétil
           applied_effects/effect_durations       efeitos aplicados (PvP)
           level       int  OVERRIDE direto de level (01/08/2026) — cliente
@@ -5419,6 +5420,14 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 continue
             new_allocated[talent_id] = points
             spent += points
+
+        # Talento que exige habilidade aprendida (requires_skill) sem ela →
+        # descartado, ponto volta pro orçamento (25/10/2026). Checado depois
+        # do laço: a habilidade pode vir de OUTRO talento do mesmo payload.
+        from engine.world_systems import talent_skill_requirement_met as _tsr_ok
+        for talent_id in [tid for tid in new_allocated
+                          if not _tsr_ok(self.world, eid, _TAL_v[tid], new_allocated)]:
+            spent -= new_allocated.pop(talent_id)
 
         if spent > total_budget:
             # Claim excede o orçamento real — rejeita a alocação inteira (não

@@ -22,7 +22,7 @@ import pygame
 pygame.init()
 
 from tests.helpers import make_world_server, spawn_player, run_ticks, authorize_skill
-from engine.components import CombatStats, CharacterStats, CombatState
+from engine.components import CombatStats, CharacterStats, CombatState, TileMovement
 from engine import core_systems
 
 
@@ -66,33 +66,52 @@ class TestApplyHeal(unittest.TestCase):
         self.assertFalse([e for e in self.ws._combat_this_tick if e.get("source") == "heal"])
 
 
+def _sem_mobs(ws):
+    """Determinismo: nenhum mob nascendo/vivo puxando combate no teste."""
+    from engine.components import AIControlled, SpawnZone
+    for _z, zone in ws.world.get_entities_with(SpawnZone):
+        zone.max_count = 0
+        zone.respawn_timers.clear()
+    for m in list(ws._mob_eids):
+        if ws.world.get_component(m, AIControlled) is not None:
+            ws.world.remove_entity(m)
+            ws._mob_eids.discard(m)
+
+
 class TestEspirito(unittest.TestCase):
     def setUp(self):
         self.ws = make_world_server()
+        _sem_mobs(self.ws)
         self.eid = spawn_player(self.ws, "esp_p", 130, 374, class_id="xama")
         self.char = self.ws.world.get_component(self.eid, CharacterStats)
 
-    def test_xama_nasce_com_espirito_cheio(self):
+    def test_xama_nasce_com_espirito_vazio(self):
         self.assertEqual(self.char.max_espirito, 100)
-        self.assertEqual(self.char.espirito, 100)
+        self.assertEqual(self.char.espirito, 0)
 
     def test_outras_classes_sem_espirito(self):
         g = spawn_player(self.ws, "esp_g", 132, 374, class_id="guerreiro")
         self.assertEqual(self.ws.world.get_component(g, CharacterStats).max_espirito, 0)
 
-    def test_regen_fora_de_combate(self):
+    def test_travado_fora_de_combate(self):
         self.char.espirito = 50
         for _ in range(10):               # 1s, em blocos curtos (ver debug do helper)
             run_ticks(self.ws, 2, dt=0.05)
-        self.assertAlmostEqual(self.char.espirito, 55, delta=0.6)
+        self.assertAlmostEqual(self.char.espirito, 50, delta=0.01)
 
-    def test_sem_regen_em_combate(self):
+    def test_regen_em_combate(self):
         self.char.espirito = 50
         cst = self.ws.world.get_component(self.eid, CombatState)
         from engine.stat_fns import enter_combat
         enter_combat(cst)
-        run_ticks(self.ws, 20, dt=0.05)
-        self.assertAlmostEqual(self.char.espirito, 50, delta=0.01)
+        for _ in range(10):
+            run_ticks(self.ws, 2, dt=0.05)
+        self.assertAlmostEqual(self.char.espirito, 55, delta=0.6)
+
+    def test_reviver_zera(self):
+        self.char.espirito = 80
+        self.char.reset_volatile()
+        self.assertEqual(self.char.espirito, 0)
 
 
 class _XamaDuelBase(unittest.TestCase):
@@ -101,6 +120,10 @@ class _XamaDuelBase(unittest.TestCase):
         self.xama = spawn_player(self.ws, "x_xama", 130, 374, class_id="xama", hp=300)
         self.char = self.ws.world.get_component(self.xama, CharacterStats)
         self.xcs  = self.ws.world.get_component(self.xama, CombatStats)
+        self.char.espirito = 100   # começa vazio no jogo; aqui, tanque cheio pros testes
+        # Determinismo: sem mobs da região puxando combate (regen em combate
+        # mexeria nos valores exatos de custo).
+        _sem_mobs(self.ws)
 
     def _cast(self, sid, tid, ticks):
         self.ws.queue_skill("x_xama", sid, tid=tid, dir_x=0.0, dir_y=0.0, ts=0)
@@ -117,30 +140,94 @@ class TestToqueAncestral(_XamaDuelBase):
         self.vcs = self.ws.world.get_component(self.victim, CombatStats)
 
     def _cast_until_hit(self):
-        """Magia pode errar (rolagem de acerto) — tenta até 6 casts."""
+        """Magia pode errar (rolagem de acerto) — tenta até 6 casts (CD 8s
+        zerado entre tentativas)."""
         for _ in range(6):
             hp0, esp0 = self.vcs.current_hp, self.char.espirito
-            self._cast("toque_ancestral", self.victim, 40)   # 1s cast + CD 1.5s de folga
+            self._cast("toque_ancestral", self.victim, 40)   # 1s cast
             if self.vcs.current_hp < hp0:
-                return hp0 - self.vcs.current_hp, self.char.espirito - esp0
+                return hp0 - self.vcs.current_hp, esp0 - self.char.espirito
+            self.ws._skill_last_used.clear()
+            self.char.espirito = 100
         self.fail("Toque Ancestral nunca acertou em 6 casts")
 
-    def test_causa_dano_e_gera_espirito(self):
-        self.char.espirito = 20
-        dmg, gain = self._cast_until_hit()
+    def test_causa_dano_e_custa_20(self):
+        dmg, spent = self._cast_until_hit()
         self.assertGreater(dmg, 0)
-        self.assertAlmostEqual(gain, 8, delta=0.5)    # +regen de ~1 tick antes de entrar em combate
+        # custa 20; em combate regenera 5/s durante o cast (~1s)
+        self.assertGreater(spent, 12)
+        self.assertLessEqual(spent, 20)
 
-    def test_sussurros_constantes_soma_espirito(self):
-        self.char.espirito = 20
-        self.xcs.toque_espirito_bonus = 3
-        _dmg, gain = self._cast_until_hit()
-        self.assertAlmostEqual(gain, 11, delta=0.5)
-
-    def test_espirito_nao_passa_do_maximo(self):
-        self.char.espirito = 98
+    def test_corredor_da_hot_no_proprio_xama(self):
+        from engine.components import StatusEffects
         self._cast_until_hit()
-        self.assertEqual(self.char.espirito, 100)
+        eff = self.ws.world.get_component(self.xama, StatusEffects).get("corredor_ancestral")
+        self.assertIsNotNone(eff, "Xamã sozinho no corredor recebe a cura inteira")
+        total = 20 + self.xcs.spell_power * 0.30
+        self.assertAlmostEqual(eff.magnitude * 6, total, delta=0.01)
+
+    def test_sussurros_constantes_aumenta_cura_do_corredor(self):
+        from engine.components import StatusEffects
+        self.xcs.corredor_cura_bonus = 0.30 * 5
+        self._cast_until_hit()
+        eff = self.ws.world.get_component(self.xama, StatusEffects).get("corredor_ancestral")
+        total = (20 + self.xcs.spell_power * 0.30) * 2.5      # 50 + 75% SP
+        self.assertAlmostEqual(eff.magnitude * 6, total, delta=0.01)
+
+    def test_sem_espirito_recusa(self):
+        self.char.espirito = 5
+        self.ws.queue_skill("x_xama", "toque_ancestral", tid=self.victim, dir_x=0.0, dir_y=0.0, ts=0)
+        run_ticks(self.ws, 1)
+        self.assertFalse([e for e in self.ws._pending_spell_completions
+                          if e["spell_id"] == "toque_ancestral"], "cast não deveria começar")
+
+
+class TestDivisaoDoCorredor(unittest.TestCase):
+    """core_systems.corridor_heal_shares — função pura."""
+
+    def test_sozinho_recebe_tudo(self):
+        s = core_systems.corridor_heal_shares((0, 0), (6, 0), {1: (6, 0)}, 1, 2, 60)
+        self.assertEqual(s, {1: 60})
+
+    def test_quem_esta_perto_do_alvo_recebe_mais(self):
+        s = core_systems.corridor_heal_shares(
+            (0, 0), (6, 0), {1: (6, 0), 2: (1, 0), 3: (4, 1)}, 1, 2, 100)
+        self.assertGreater(s[2], s[3])
+        self.assertGreater(s[3], s[1])
+        self.assertAlmostEqual(sum(s.values()), 100)
+
+    def test_fora_do_corredor_nao_entra(self):
+        s = core_systems.corridor_heal_shares(
+            (0, 0), (6, 0), {1: (6, 0), 2: (3, 3), 3: (-1, 0), 4: (8, 0)}, 1, 2, 100)
+        self.assertEqual(set(s), {1})
+
+    def test_largura_maior_com_rastros_de_alma(self):
+        s = core_systems.corridor_heal_shares((0, 0), (6, 0), {1: (6, 0), 2: (3, 3)}, 1, 3, 100)
+        self.assertIn(2, s)
+
+
+class TestCorredorComAliado(_XamaDuelBase):
+    def test_aliado_no_corredor_tambem_recebe(self):
+        from engine.components import StatusEffects
+        victim = spawn_player(self.ws, "x_v2", 134, 374, class_id="guerreiro", hp=500)
+        self.assertIsNone(self.ws.request_duel(self.xama, victim))
+        self.ws.respond_duel_invite(victim, accept=True)
+        ally = spawn_player(self.ws, "x_al2", 133, 374, class_id="guerreiro", hp=500)
+        authorize_skill(self.ws, self.xama, "toque_ancestral")
+        vcs = self.ws.world.get_component(victim, CombatStats)
+        for _ in range(6):
+            hp0 = vcs.current_hp
+            self._cast("toque_ancestral", victim, 40)
+            if vcs.current_hp < hp0:
+                break
+            self.ws._skill_last_used.clear()
+            self.char.espirito = 100
+        a = self.ws.world.get_component(ally, StatusEffects).get("corredor_ancestral")
+        x = self.ws.world.get_component(self.xama, StatusEffects).get("corredor_ancestral")
+        self.assertIsNotNone(a)
+        self.assertGreater(a.magnitude, x.magnitude)
+        self.assertIsNone(self.ws.world.get_component(victim, StatusEffects).get("corredor_ancestral")
+                          if self.ws.world.get_component(victim, StatusEffects) else None)
 
 
 class TestSoproDaCoruja(_XamaDuelBase):
@@ -157,7 +244,7 @@ class TestSoproDaCoruja(_XamaDuelBase):
         self.acs.current_hp = 100
         self._cast("sopro_da_coruja", self.ally, 40)   # 1.5s cast
         self.assertEqual(self.acs.current_hp, min(self.acs.max_hp, 100 + self._expected_heal()))
-        self.assertAlmostEqual(self.char.espirito, 70, delta=3)   # cura não põe em combate: regen volta
+        self.assertAlmostEqual(self.char.espirito, 60, delta=0.01)   # 40; travado fora de combate
 
     def test_mirar_aliado_nao_vira_alvo_de_combate(self):
         self.acs.current_hp = 100
@@ -182,16 +269,15 @@ class TestSoproDaCoruja(_XamaDuelBase):
         self.xcs.cura_custo_reducao = 10
         self.acs.current_hp = 100
         self._cast("sopro_da_coruja", self.ally, 40)
-        self.assertAlmostEqual(self.char.espirito, 80, delta=3)
+        self.assertAlmostEqual(self.char.espirito, 70, delta=0.01)   # 40 - 10
 
     def test_espirito_insuficiente_recusa(self):
         self.char.espirito = 10
         self.acs.current_hp = 100
-        from engine.stat_fns import enter_combat
-        enter_combat(self.ws.world.get_component(self.xama, CombatState))  # sem regen
         self._cast("sopro_da_coruja", self.ally, 40)
         self.assertLessEqual(self.acs.current_hp, 101)
-        self.assertAlmostEqual(self.char.espirito, 10, delta=0.01)
+        # não gastou (pode ter subido se algum mob da região puxou combate)
+        self.assertGreaterEqual(self.char.espirito, 10)
 
 
 # ── Fase 2: mecânicas por dado no catálogo de efeitos ─────────────────────────
@@ -322,7 +408,7 @@ class TestSkillsBaseFase2(_XamaDuelBase):
         v = self._duel(134)
         self._cast("marca_do_gaviao", v, 2)
         self.assertTrue(self._sfx(v).has("marca_do_gaviao"))
-        self.assertAlmostEqual(self.char.espirito, 80, delta=0.01)
+        self.assertAlmostEqual(self.char.espirito, 80, delta=0.6)   # entra em combate: regen 5/s
 
     def test_bisao_avanca_causa_dano_e_empurra(self):
         from engine.components import TileMovement
@@ -347,6 +433,82 @@ class TestSkillsBaseFase2(_XamaDuelBase):
         xtm = self.ws.world.get_component(self.xama, TileMovement)
         self.assertEqual(xtm.target_tile_x, vx0 - 1)          # parou ao lado do alvo
         self.assertEqual(vtm.current_tile_x, vx0 + 1)         # alvo empurrado 1 tile
+
+
+# ── Redesenho 25/10/2026: armas, ataque básico, regra de talento ─────────────
+
+class TestArmasDoXama(unittest.TestCase):
+    def _item(self, item_type, subtype="", two_handed=False):
+        class _I: pass
+        i = _I(); i.item_type = item_type; i.subtype = subtype; i.two_handed = two_handed
+        return i
+
+    def test_permitidas(self):
+        from engine.stats_system import is_weapon_allowed_for_class as ok
+        for st in ("Staff", "Scepter", "Mace", "Club", "Hammer", "Axe"):
+            self.assertTrue(ok(self._item("weapon", st), "xama"), st)
+        self.assertTrue(ok(self._item("shield"), "xama"))
+
+    def test_proibidas(self):
+        from engine.stats_system import is_weapon_allowed_for_class as ok
+        for st in ("Wand", "Sword", "Dagger", "Bow"):
+            self.assertFalse(ok(self._item("weapon", st), "xama"), st)
+        self.assertFalse(ok(self._item("quiver"), "xama"))
+
+
+class TestEspiritoNoAtaqueBasico(_XamaDuelBase):
+    def setUp(self):
+        super().setUp()
+        self.char.espirito = 0
+        self.v = spawn_player(self.ws, "x_vab", 131, 374, class_id="guerreiro", hp=5000)
+        self.assertIsNone(self.ws.request_duel(self.xama, self.v))
+        self.ws.respond_duel_invite(self.v, accept=True)
+
+    def test_ganha_25_so_quando_acerta(self):
+        from engine.components import CombatState
+        cst = self.ws.world.get_component(self.xama, CombatState)
+        tcs = self.ws.world.get_component(self.v, CombatStats)
+        tm  = self.ws.world.get_component(self.xama, TileMovement)
+        ttm = self.ws.world.get_component(self.v, TileMovement)
+        cst.target_entity_id = self.v
+        cst.is_pursuing = True
+        res = self.ws._resolve_auto_attack(self.xama, self.v, "x_xama", 0.05,
+                                           self.xcs, tm, tcs, ttm)
+        self.assertIsNotNone(res, "ataque básico não disparou")
+        hit = res["outcome"] not in ("miss", "dodge", "parry")
+        self.assertAlmostEqual(self.char.espirito, 25 if hit else 0, delta=0.01)
+
+
+class TestTalentoExigeHabilidade(_XamaDuelBase):
+    def test_sussurros_exige_toque_aprendido(self):
+        from engine.components import PlayerSkills, TalentTree
+        from engine.world_systems import talent_skill_requirement_met
+        from content.talent_data import TALENTS
+        ps = self.ws.world.get_component(self.xama, PlayerSkills)
+        t = TALENTS["raiz_sussurros_constantes"]
+        ps.learned_skill_ids.discard("toque_ancestral")
+        self.assertFalse(talent_skill_requirement_met(self.ws.world, self.xama, t, {}))
+        ps.learned_skill_ids.add("toque_ancestral")
+        self.assertTrue(talent_skill_requirement_met(self.ws.world, self.xama, t, {}))
+
+    def test_servidor_descarta_ponto_sem_habilidade(self):
+        from engine.components import PlayerSkills, TalentTree
+        ps = self.ws.world.get_component(self.xama, PlayerSkills)
+        tt = self.ws.world.get_component(self.xama, TalentTree)
+        tt.available_points = 3
+        ps.learned_skill_ids.discard("toque_ancestral")
+        out = self.ws.validate_talent_allocation(
+            "x_xama", {"allocated": {"raiz_sussurros_constantes": 2, "raiz_alma_generosa": 1}})
+        self.assertNotIn("raiz_sussurros_constantes", out["allocated"])
+        self.assertEqual(out["allocated"].get("raiz_alma_generosa"), 1)
+        self.assertEqual(out["available_points"], 2)
+
+    def test_habilidade_vinda_de_talento_do_mesmo_payload_vale(self):
+        from engine.world_systems import talent_skill_requirement_met
+        fake = {"requires_skill": "sopro_da_coruja"}
+        self.assertFalse(talent_skill_requirement_met(self.ws.world, self.xama, fake, {}))
+        self.assertTrue(talent_skill_requirement_met(self.ws.world, self.xama, fake,
+                                                     {"raiz_sopro_da_coruja": 1}))
 
 
 if __name__ == "__main__":

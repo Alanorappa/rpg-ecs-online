@@ -59,6 +59,12 @@ CLASS_ARMOR_ALLOWED: dict[str, frozenset] = {
 }
 
 
+# Xamã (25/10/2026): armas permitidas. Cajado (Staff/Scepter) dá o ataque
+# básico à distância (flecha espiritual); o resto é corpo a corpo.
+XAMA_STAFF_SUBTYPES: frozenset = frozenset({"Staff", "Scepter"})
+XAMA_WEAPON_SUBTYPES: frozenset = XAMA_STAFF_SUBTYPES | frozenset({"Mace", "Club", "Hammer", "Axe"})
+
+
 def is_weapon_allowed_for_class(item, class_id: str) -> bool:
     """Restrição de arma/offhand por classe — equivalente de CLASS_ARMOR_ALLOWED
     pra arma (mainhand) e escudo/aljava (offhand). Único ponto de verdade:
@@ -80,6 +86,11 @@ def is_weapon_allowed_for_class(item, class_id: str) -> bool:
                   permitidas (Staff/Scepter são de duas mãos por definição
                   do próprio item — bloqueiam escudo sozinhas, via
                   is_offhand_locked(), sem precisar de regra extra aqui).
+      xama      — (25/10/2026, classe_xama.md) SÓ cajado (Staff/Scepter),
+                  maça (Mace/Club/Hammer), machado (Axe) e escudo; qualquer
+                  outra arma/offhand (Wand, Sword, Dagger, Bow, aljava) é
+                  proibida. Escudo só com arma de 1 mão — já garantido por
+                  is_offhand_locked() (arma two_handed bloqueia o offhand).
     """
     item_type  = getattr(item, "item_type", "")
     subtype    = getattr(item, "subtype", "")
@@ -93,7 +104,13 @@ def is_weapon_allowed_for_class(item, class_id: str) -> bool:
         if item_type == "shield":
             return False
         return True
-    if class_id in ("mago", "xama"):     # xamã: mesmas armas do mago (24/10/2026)
+    if class_id == "xama":
+        if item_type == "shield":
+            return True
+        if item_type == "weapon":
+            return subtype in XAMA_WEAPON_SUBTYPES
+        return item_type != "quiver"
+    if class_id == "mago":
         if item_type == "quiver" or (item_type == "weapon" and subtype == "Bow"):
             return False
         if item_type == "weapon" and subtype in ("Axe", "Mace", "Hammer", "Club"):
@@ -140,14 +157,17 @@ CLASS_CONCENTRATION: dict[str, int] = {
     "arqueiro": 100,
 }
 
-# Espírito (recurso do Xamã, 24/10/2026) — máximo por classe (0 = classe sem
-# o recurso). Inicia cheio. Regenera ESPIRITO_REGEN_OOC/s só FORA de combate;
-# em combate só sobe atacando (Toque Ancestral). NÃO confundir com o
-# ATRIBUTO `spirit` (CharacterStats.spirit, regen de HP/MP).
+# Espírito (recurso do Xamã) — máximo por classe (0 = classe sem o
+# recurso). Redesenho de 25/10/2026 (classe_xama.md, "Recurso: Espírito"):
+# começa em 0 (login e depois de reviver), sobe ESPIRITO_PER_BASIC_HIT por
+# ataque básico que ACERTA + ESPIRITO_REGEN_IC/s EM combate; fora de combate
+# fica TRAVADO (não sobe nem desce). NÃO confundir com o ATRIBUTO `spirit`
+# (CharacterStats.spirit, regen de HP/MP).
 CLASS_ESPIRITO: dict[str, int] = {
     "xama": 100,
 }
-ESPIRITO_REGEN_OOC: float = 5.0
+ESPIRITO_REGEN_IC: float = 5.0
+ESPIRITO_PER_BASIC_HIT: int = 25
 
 
 def class_resource(char) -> tuple[str, str, float, int]:
@@ -187,8 +207,10 @@ CLASS_MELEE_OVERRIDES: dict[str, dict] = {
         # cs_flags em talent_data.py (reset=5.0 garante o valor base).
         # Colocar aqui sobrescreveria o efeito do talento "Parado e Concentrado".
     },
+    # Xamã (25/10/2026): AP normal (derivado de STR, sem override) — dano
+    # físico (maça/machado, Investida do Bisão) escala com AP; magia e cura
+    # com SP (classe_xama.md, "Combate e armas").
     "xama": {
-        "base_attack_power":        0,
         "_default_attack_interval": 3.2,
         "base_physical_damage":     2,
         "base_physical_damage_max": 5,
@@ -283,8 +305,7 @@ def apply_char_stats_to_combat(char_stats: CharacterStats,
     new_max_esp = CLASS_ESPIRITO.get(char_stats.class_id, 0) \
         + int(getattr(combat_stats, "espirito_max_bonus", 0))
     if char_stats.max_espirito != new_max_esp:
-        if char_stats.max_espirito == 0:
-            char_stats.espirito = new_max_esp
+        # Começa em 0 (nunca enche ao ganhar o recurso) — 25/10/2026.
         char_stats.max_espirito = new_max_esp
         char_stats.espirito = min(char_stats.espirito, new_max_esp)
 

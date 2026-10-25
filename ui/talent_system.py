@@ -125,6 +125,10 @@ class TalentSystem(UIScaleMixin):
         for req_id, req_pts in t["requires"].items():
             if tt.allocated.get(req_id, 0) < req_pts:
                 return False
+        # Habilidade exigida aprendida (requires_skill) — mesma regra do servidor
+        from engine.world_systems import talent_skill_requirement_met
+        if not talent_skill_requirement_met(self.world, self.player_id, t, tt.allocated):
+            return False
         return True
 
     def can_deallocate(self, talent_id: str, tt) -> bool:
@@ -595,6 +599,16 @@ class TalentSystem(UIScaleMixin):
                 met     = cur_req >= req_pts
                 col     = C_GREEN if met else C_RED
                 lines.append((f"  {TALENTS[req_id]['name']}: {cur_req}/{req_pts}", col))
+            lines.append(("", C_GRAY))
+
+        # Habilidade exigida (requires_skill, 25/10/2026)
+        _req_sid = t.get("requires_skill")
+        if _req_sid:
+            from content.skill_config import SKILL_CATALOG as _SC_req
+            from engine.world_systems import talent_skill_requirement_met as _tsr
+            _met = _tsr(self.world, self.player_id, t, tt.allocated)
+            _nm  = _SC_req.get(_req_sid, {}).get("name", _req_sid)
+            lines.append((f"Requer habilidade aprendida: {_nm}", C_GREEN if _met else C_RED))
             lines.append(("", C_GRAY))
 
         # Dica de interação

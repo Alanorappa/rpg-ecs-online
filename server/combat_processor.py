@@ -237,6 +237,18 @@ class CombatProcessorMixin:
             attacker_char.rage = min(getattr(attacker_char, "max_rage", 100), attacker_char.rage + 5)
             if attacker_char.rage != _rage_before:
                 self.queue_stats_update({"player_eid": attacker_eid, "rage": attacker_char.rage})
+        # Espírito (Xamã, 25/10/2026): +ESPIRITO_PER_BASIC_HIT só quando o
+        # ataque básico ACERTA (decisão do usuário — erro/esquiva/aparo não
+        # gera; bloqueio conta, o golpe conectou).
+        if (attacker_char and attacker_char.max_espirito > 0
+                and outcome not in ("miss", "dodge", "parry", "immune", "evade")):
+            from engine.stats_system import ESPIRITO_PER_BASIC_HIT
+            _esp_before = attacker_char.espirito
+            attacker_char.espirito = min(attacker_char.max_espirito,
+                                         attacker_char.espirito + ESPIRITO_PER_BASIC_HIT)
+            if attacker_char.espirito != _esp_before:
+                self.queue_stats_update({"player_eid": attacker_eid,
+                                         "espirito": attacker_char.espirito})
 
         # Punho no Queixo (Cavaleiro): incrementa contador por golpe de
         # verdade (não miss/dodge/parry/block). Espelha

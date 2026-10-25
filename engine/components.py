@@ -234,7 +234,8 @@ class CombatStats:
         self.fire_exhaustion_enabled:   bool  = False # pir_exaustao: slow progressivo por BdF consecutiva
         self.crematoria_enabled:        bool  = False # pir_crematoria: +25% dano em alvos <20% HP
         # ── Flags comportamentais — build Raiz (Xamã) ──────────────────────
-        self.toque_espirito_bonus:      int   = 0     # raiz_sussurros_constantes: +Espírito por Toque Ancestral
+        self.corredor_cura_bonus:       float = 0.0   # raiz_sussurros_constantes: +X × cura base do corredor do Toque
+        self.corredor_meia_largura_bonus: int = 0     # raiz_rastros_de_alma (futuro): +tiles de cada lado do corredor
         self.cura_custo_reducao:        int   = 0     # raiz_alma_generosa: desconto fixo no custo de Espírito das curas
         self.espirito_max_bonus:        int   = 0     # bônus de Espírito máximo (talentos futuros da Raiz)
 
@@ -801,6 +802,7 @@ class CharacterStats:
         ("fire_crit_counter",     0),
         ("fire_crit_timer",       0.0),
         ("rage",                  0),
+        ("espirito",              0.0),   # Xamã: começa em 0 (25/10/2026)
     )
 
     def reset_volatile(self) -> None:
@@ -822,9 +824,9 @@ class CharacterStats:
         # Canção de Ninar — alvos adormecidos durante o canal (limpo ao concluir/cancelar)
         self.lullaby_targets:   list  = []
 
-        # Espírito (classe Xamã, 24/10/2026) — inicia cheio; regenera só fora
-        # de combate (stats_system.ESPIRITO_REGEN_OOC); em combate sobe com o
-        # Toque Ancestral. NÃO é o atributo `spirit` (regen de HP/MP).
+        # Espírito (classe Xamã) — começa em 0; sobe por ataque básico que
+        # acerta + regen EM combate; travado fora de combate (stats_system.
+        # ESPIRITO_*). NÃO é o atributo `spirit` (regen de HP/MP).
         self.espirito:     float = 0.0
         self.max_espirito: int   = 0    # 0 = recurso inexistente para esta classe
 

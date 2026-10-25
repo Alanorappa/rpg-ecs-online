@@ -247,7 +247,7 @@ class ArenaHandlers:
         if char:
             char.mana          = char.max_mana
             char.concentration = char.max_concentration
-            char.espirito      = char.max_espirito
+            char.espirito      = 0.0   # Espírito começa vazio (25/10/2026)
         ps = self.world.get_component(self.player_entity, _PS_ar)
         if ps:
             ps.gcd_timer = 0.0

@@ -42,7 +42,7 @@ SKILL_LABELS: dict[str, str] = {
     "espada":          "Espada",
     "maca":            "Maça",
     "arco":            "Arco",
-    "baculo":          "Báculo",
+    "baculo":          "Cajado",   # grupo de Staff/Scepter/Wand (rótulo trocado 25/10/2026)
     "escudo":          "Escudo",
     "defesa":          "Defesa",
     "resist_fogo":     "Resistência a Fogo",

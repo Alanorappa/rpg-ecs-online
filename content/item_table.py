@@ -241,7 +241,7 @@ _RAW_ITEMS = {
         damage_min=18, damage_max=34, attack_speed=2.3, two_handed=True, subtype="Staff"),
 
     "shadow_bow": lambda: Item(
-        "Arco das Sombras", "weapon", "mainhand",
+        "Lâmina das Sombras", "weapon", "mainhand",
         modifiers=[Modifier("crit_rating", 0.08), Modifier("attack_power", 8)],
         rarity="rare", value=3025,
         damage_min=18, damage_max=34, attack_speed=1.9, two_handed=True, subtype="Sword"),
@@ -294,7 +294,7 @@ _RAW_ITEMS = {
               "chance": 0.20, "label": "Carcaça de Ferro"}),
 
     "phantom_bow": lambda: Item(
-        "Arco Fantasma", "weapon", "mainhand",
+        "Lâmina Fantasma", "weapon", "mainhand",
         modifiers=[Modifier("crit_rating", 0.12), Modifier("attack_power", 14)],
         rarity="epic", value=11949,
         damage_min=30, damage_max=56, attack_speed=1.8, two_handed=True, subtype="Sword",

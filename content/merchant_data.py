@@ -43,7 +43,7 @@ INSTANCE_SHOP_WEAPON_SUBTYPES = {
     "guerreiro": frozenset({"Sword", "Mace", "Axe", "Club", "Hammer", "Dagger"}),
     "arqueiro":  frozenset({"Bow", "Dagger"}),
     "mago":      frozenset({"Wand", "Staff", "Scepter"}),
-    "xama":      frozenset({"Wand", "Staff", "Scepter"}),
+    "xama":      frozenset({"Staff", "Scepter", "Mace", "Club", "Hammer", "Axe"}),
 }
 INSTANCE_SHOP_ARMOR_CLASS = {
     "guerreiro": frozenset({"placa"}), "arqueiro": frozenset({"couro"}),
@@ -71,7 +71,7 @@ def instance_shop_class_allows(item, class_id: str) -> bool:
     if item.item_type == "weapon":
         return item.subtype in INSTANCE_SHOP_WEAPON_SUBTYPES.get(class_id, frozenset())
     if item.item_type == "shield":
-        return class_id == "guerreiro"
+        return class_id in ("guerreiro", "xama")
     if item.item_type in ("quiver", "ammo"):
         return class_id == "arqueiro"
     return False  # item_type desconhecido/futuro — não vende até alguém decidir

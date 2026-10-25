@@ -403,6 +403,12 @@ padrão a quebrar, não só os bugs individuais.
   Bresenham/colisão de novo numa skill nova.
 - **Custo de Espírito** → `SkillHandlers._espirito_cost` (handler,
   checagem do cliente e hotbar usam a mesma).
+- **Cura ao longo do tempo de skill** → efeito com `EffectDef.heals`
+  (cura `magnitude` por tick via `apply_heal`) — NUNCA um tick de cura
+  próprio num sistema novo.
+- **"Este talento pode receber ponto?" quanto à habilidade que ele
+  melhora** → `world_systems.talent_skill_requirement_met` (campo
+  `requires_skill` do talento) — tela de talentos e servidor usam a mesma.
 - **Skill de suporte (`offensive=False`) mirando um player aliado** →
   o alvo chega no handler por `TileMovement._server_support_tid`
   (`server/skill_processor.py`), nunca como `target_entity_id` (que é

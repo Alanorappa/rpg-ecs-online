@@ -194,6 +194,31 @@ def is_skill_authorized(world, entity_id: int, sid: str) -> "tuple[bool, str]":
     return True, ""
 
 
+def talent_skill_requirement_met(world, entity_id: int, talent_def: dict,
+                                 allocated: dict) -> bool:
+    """O talento pode receber ponto quanto à HABILIDADE que ele melhora?
+    (25/10/2026, classe_xama.md — "talento que melhora uma habilidade só
+    aceita pontos se o jogador já tiver aprendido essa habilidade").
+
+    `talent_def["requires_skill"]` (opcional, skill_id) precisa estar
+    aprendida: em `PlayerSkills.learned_skill_ids` (treinador/inicial) OU
+    desbloqueada por um talento com ponto em `allocated` (mesma regra de
+    `is_skill_authorized`). Ponto único — tela de talentos (cliente) e
+    `WorldServer.validate_talent_allocation` (servidor) usam esta função."""
+    sid = talent_def.get("requires_skill")
+    if not sid:
+        return True
+    from engine.components import PlayerSkills
+    ps = world.get_component(entity_id, PlayerSkills)
+    if ps is not None and sid in ps.learned_skill_ids:
+        return True
+    _treq = _TALENT_SKILL_REQS.get(sid)
+    if _treq is not None:
+        tid, _tname, min_pts = _treq
+        return allocated.get(tid, 0) >= min_pts
+    return False
+
+
 class System:
     """
     Classe base para todos os sistemas ECS.

@@ -6346,3 +6346,57 @@ repouso pra briga, "Evadiu" sempre, texto curto (sem nome do alvo).
 
 Testes: `tests/test_mob_ai_fx_events.py` (aggro + evade quando o alvo
 some; alvo morto não é evade).
+
+## 88. Xamã — redesenho do combate e do Espírito, bloco 1 (25/10/2026)
+
+Pedido do usuário: documento `classe_xama.md` atualizado (combate e
+armas, recurso Espírito, Toque Ancestral com corredor de cura, regra de
+talento). Decisões do usuário nesta rodada: Espírito começa em 0 (login e
+ao reviver); +25 por ataque básico SÓ quando acerta; flecha do cajado
+10 + 80% SP (bloco 2); o tipo "Staff/Scepter" se chama Cajado (rótulo da
+perícia "Báculo" → "Cajado" pra todos); Arco das Sombras/Arco Fantasma
+eram espadas de propósito — só renomeados pra Lâmina das Sombras/Lâmina
+Fantasma.
+
+- **Armas** (`stats_system.is_weapon_allowed_for_class`,
+  `XAMA_WEAPON_SUBTYPES`/`XAMA_STAFF_SUBTYPES`): só Staff/Scepter (cajado),
+  Mace/Club/Hammer (maça), Axe e escudo; escudo só com arma de 1 mão (já
+  garantido por `is_offhand_locked`). Loja de instância segue a mesma
+  lista (+ escudo).
+- **AP**: removido o `base_attack_power: 0` do Xamã — dano físico (maça,
+  machado, Bisão) escala com AP; magia e cura com SP.
+- **Espírito**: começa em 0 (não enche mais ao ganhar o recurso;
+  `reset_volatile` zera ao reviver/início de arena, servidor manda o
+  valor no STATS_UPDATE do reviver); +`ESPIRITO_PER_BASIC_HIT` (25) por
+  ataque básico que ACERTA (`combat_processor`, mesmo ponto da Raiva —
+  bloqueio conta, erro/esquiva/aparo não); `ESPIRITO_REGEN_IC` (5/s) só
+  EM combate; travado fora de combate.
+- **Toque Ancestral**: custa 20, recarga 8s, escola "espirito". Ao
+  acertar abre o **corredor de cura**: `core_systems.corridor_heal_shares`
+  (função pura) pega os aliados (player/NPC não atacáveis, mesmo mapa,
+  vivos) a até 2 tiles do segmento alvo→Xamã naquele instante e divide
+  20 + 30% SP (× Sussurros Constantes) por peso linear — 1.0 colado no
+  alvo até 0.25 na ponta do Xamã; sozinho, o Xamã recebe tudo. A parte
+  de cada um vira o HoT `corredor_ancestral` (6 ticks em 6s).
+- **HoT de skill por dado**: `EffectDef.heals` — cada tick cura
+  `magnitude` via `apply_heal` (`StatusEffectSystem._apply_tick`).
+- **Sussurros Constantes**: +30% da cura base do corredor por ponto
+  (`CombatStats.corredor_cura_bonus`); campo `corredor_meia_largura_bonus`
+  já pronto pro Rastros de Alma (futuro).
+- **Sopro da Coruja**: 40 de Espírito. **Investida do Bisão**: dano físico
+  80% da arma + 60% AP (`ability_physical_damage` + `deal_damage`).
+- **Regra "talento exige habilidade aprendida"**: campo opcional
+  `requires_skill` no talento; `world_systems.talent_skill_requirement_met`
+  (ponto único — tela de talentos E `validate_talent_allocation` no
+  servidor, que descarta o ponto e devolve pro orçamento). Habilidade
+  pode vir do treinador/inicial ou de um talento do MESMO payload.
+  Tooltip mostra "Requer habilidade aprendida: X".
+
+Fica pro bloco 2: ataque básico à distância com cajado (flecha espiritual,
+projétil provisório + sprite `assets/effects/skill_flecha_espiritual.png`),
+perseguição até o alcance no cliente, e rever `CASTER_CLASSES` (hoje o
+Xamã ainda engaja como o mago).
+
+Testes: `tests/test_xama.py` (45) — Espírito novo, custo e corredor do
+Toque, divisão do corredor (unidade), aliado no corredor, armas, +25 no
+acerto, regra de talento.

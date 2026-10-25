@@ -459,6 +459,8 @@ class RespawnMixin:
         if char:
             char.mana = char.max_mana
             char.reset_volatile()
+            if char.max_espirito > 0:      # Xamã: Espírito volta a 0 (25/10/2026)
+                self.queue_stats_update({"player_eid": player_eid, "espirito": char.espirito})
 
         # Revive sempre na posição atual do espírito (cemitério ou perto do
         # corpo) — não teleporta pro corpo, o jogador já está perto dele.

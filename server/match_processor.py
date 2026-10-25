@@ -362,8 +362,7 @@ class MatchProcessorMixin(InstancedMatchMixin):
         if char:
             char.mana         = char.max_mana
             char.concentration = char.max_concentration
-            char.espirito      = char.max_espirito
-            char.reset_volatile()
+            char.reset_volatile()          # inclui rage e Espírito → 0
         for key in [k for k in self._skill_last_used if k[0] == eid]:
             del self._skill_last_used[key]
 

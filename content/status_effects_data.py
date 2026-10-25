@@ -44,10 +44,14 @@ class EffectDef(NamedTuple):
     #                       (apply_damage_core consome; some ao zerar)
     #   blocks_stealth    — portador não pode ficar camuflado (Camuflagem
     #                       recusa e a aplicação do efeito quebra a ativa)
+    #   heals             — cura por tick: cada tick cura `magnitude` via
+    #                       core_systems.apply_heal (HoT de skill, ex: corredor
+    #                       do Toque Ancestral). Nunca dano.
     speed_mult:        float = 1.0
     damage_taken_mult: float = 1.0
     absorbs:           bool  = False
     blocks_stealth:    bool  = False
+    heals:             bool  = False
 
 
 EFFECT_DEFS: dict[str, EffectDef] = {
@@ -179,6 +183,9 @@ EFFECT_DEFS: dict[str, EffectDef] = {
     "pele_do_urso":     EffectDef("Pele do Urso",     (150, 110,  70), True, 0.0,
                                   absorbs=True,
                                   description="Escudo espiritual que absorve dano."),
+    "corredor_ancestral": EffectDef("Corredor Ancestral", (120, 225, 190), True, 1.0,
+                                    heals=True,
+                                    description="Recebe cura espiritual a cada segundo."),
     "marca_do_gaviao":  EffectDef("Marca do Gavião",  (220, 170,  60), False, 0.0,
                                   damage_taken_mult=1.05, blocks_stealth=True,
                                   description="Recebe 5% a mais de dano e não pode se camuflar."),

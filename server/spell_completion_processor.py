@@ -1154,10 +1154,15 @@ class SpellCompletionMixin:
     # ── Xamã (build Raiz) ────────────────────────────────────────────────────
 
     def _server_toque_ancestral(self, player_eid: int, target_id: int, _entry: dict) -> None:
-        """Dano espiritual 20 + 60% SP; só se acertar, devolve Espírito ao
-        Xamã ("drena a energia espiritual" = dano que alimenta o recurso)."""
-        from engine.components import CombatStats, CharacterStats
-        from engine.core_systems import LAST_DAMAGE_AMOUNTS
+        """Dano espiritual 20 + 60% SP; ao ACERTAR, abre o corredor de cura
+        entre o alvo e o Xamã (classe_xama.md, redesenho 25/10/2026): os
+        aliados dentro dele NESTE instante recebem um HoT (`corredor_ancestral`,
+        EffectDef.heals) com a sua parte de 20 + 30% SP (× Sussurros
+        Constantes), dividida por peso — mais pra quem está perto do alvo."""
+        from engine.components import (CombatStats, TileMovement, PlayerControlled,
+                                       NPC)
+        from engine.core_systems import LAST_DAMAGE_AMOUNTS, apply_effect, corridor_heal_shares
+        from engine.faction_system import can_engage
         from content.skill_config import SKILL_CATALOG as _SC_ta
         _p = _SC_ta.get("toque_ancestral", {}).get("params", {})
 
@@ -1173,18 +1178,54 @@ class SpellCompletionMixin:
         sp = player_cs.spell_power if player_cs else 0
         dmg = max(1, _p.get("base_dmg", 20) + int(sp * _p.get("dmg_sp_coeff", 0.60)))
         self._server_apply_magic_damage(player_eid, target_id, dmg, roll_crit=True,
-                                        school="espiritual")
+                                        school="espirito")
+        if LAST_DAMAGE_AMOUNTS.get(target_id, 0) <= 0:
+            return   # errou/bloqueado: sem corredor
 
-        char = self.world.get_component(player_eid, CharacterStats)
-        if char and char.max_espirito > 0 and LAST_DAMAGE_AMOUNTS.get(target_id, 0) > 0:
-            gain = _p.get("espirito_gain", 8) + getattr(player_cs, "toque_espirito_bonus", 0)
-            char.espirito = min(char.max_espirito, char.espirito + gain)
+        e_tm = self.world.get_component(target_id, TileMovement)
+        x_tm = self.world.get_component(player_eid, TileMovement)
+        if e_tm is None or x_tm is None:
+            return
+        enemy_tile  = (e_tm.current_tile_x, e_tm.current_tile_y)
+        caster_tile = (x_tm.current_tile_x, x_tm.current_tile_y)
+        caster_map  = self.get_entity_map(player_eid)
+
+        candidates = {}
+        for eid, cs_c, tm_c in self.world.get_entities_with(CombatStats, TileMovement):
+            if cs_c.current_hp <= 0:
+                continue
+            if eid != player_eid:
+                is_ally = (self.world.get_component(eid, PlayerControlled) is not None
+                           or self.world.get_component(eid, NPC) is not None)
+                if not is_ally or can_engage(self.world, player_eid, eid):
+                    continue
+                if self.get_entity_map(eid) != caster_map:
+                    continue
+            candidates[eid] = (tm_c.current_tile_x, tm_c.current_tile_y)
+
+        half_w = _p.get("corridor_half_width", 2) + int(getattr(player_cs, "corredor_meia_largura_bonus", 0))
+        total = (_p.get("corridor_heal", 20) + sp * _p.get("corridor_sp_coeff", 0.30)) \
+            * (1.0 + float(getattr(player_cs, "corredor_cura_bonus", 0.0)))
+        shares = corridor_heal_shares(enemy_tile, caster_tile, candidates, player_eid,
+                                      half_w, total, _p.get("corridor_min_weight", 0.25))
+        dur = float(_p.get("corridor_duration", 6.0))
+        ticks = max(1, int(round(dur)))
+        for eid, amount in shares.items():
+            if amount <= 0:
+                continue
+            # +0.05: garante o último tick antes da expiração (tick e expiração
+            # caem no mesmo passo do StatusEffectSystem).
+            apply_effect(self.world, eid, "corredor_ancestral", dur + 0.05,
+                         magnitude=amount / ticks, tick_interval=dur / ticks)
 
     def _server_investida_do_bisao(self, player_eid: int, target_id: int, _entry: dict) -> None:
-        """Fim da arrancada: 40 + 40% SP (espiritual) e empurrão de 1 tile
-        pra longe do Xamã (_server_knockback, sem stun de colisão)."""
+        """Fim da arrancada: dano FÍSICO (80% da arma + 60% AP, via
+        ability_physical_damage — 25/10/2026) e empurrão de 1 tile pra longe
+        do Xamã (_server_knockback, sem stun de colisão)."""
         from engine.components import CombatStats, TileMovement
         from engine.core_systems import LAST_DAMAGE_AMOUNTS
+        from engine.damage_calculator import ability_physical_damage
+        from engine.world_systems import deal_damage
         from content.skill_config import SKILL_CATALOG as _SC_bi
         _p = _SC_bi.get("investida_do_bisao", {}).get("params", {})
 
@@ -1193,11 +1234,9 @@ class SpellCompletionMixin:
         target_cs = self.world.get_component(target_id, CombatStats)
         if not target_cs or target_cs.current_hp <= 0 or self._is_evading(target_id):
             return
-        player_cs = self.world.get_component(player_eid, CombatStats)
-        sp = player_cs.spell_power if player_cs else 0
-        dmg = max(1, _p.get("base_dmg", 40) + int(sp * _p.get("dmg_sp_coeff", 0.40)))
-        self._server_apply_magic_damage(player_eid, target_id, dmg, roll_crit=True,
-                                        school="espiritual")
+        deal_damage(player_eid, target_id, "physical_fixed",
+                    base_ability_damage=ability_physical_damage(self.world, player_eid, _p),
+                    is_ability=True)
         if LAST_DAMAGE_AMOUNTS.get(target_id, 0) <= 0 or target_cs.current_hp <= 0:
             return
         p_tm = self.world.get_component(player_eid, TileMovement)

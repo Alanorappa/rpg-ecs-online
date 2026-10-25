@@ -1537,7 +1537,12 @@ class SkillHandlers:
         return tid
 
     def _skill_toque_ancestral(self, skill, combat_stats, combat_state, tile_move):
-        """1s cast — 20 + 60% SP, escola espiritual. Sem custo; gera Espírito."""
+        """1s cast — 20 + 60% SP, escola Espírito; ao acertar, corredor de cura
+        (server/spell_completion_processor.py::_server_toque_ancestral)."""
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        cost = self._espirito_cost(skill, combat_stats)
+        if not self._check_espirito(char_stats, cost):
+            return False
         target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
         if target_id == -1:
             self._warn("Nenhum alvo")
@@ -1554,6 +1559,7 @@ class SkillHandlers:
                 "target_id":  target_id,
                 "timer":      skill.cast_time,
                 "mana_cost":  0,
+                "espirito_cost": cost,
                 "cooldown":   skill.cooldown,
             })
             if combat_state:

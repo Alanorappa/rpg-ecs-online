@@ -13,6 +13,9 @@ Estrutura de cada talento:
       "row"           int  (0–5)
       "max_points"    int
       "requires"      dict {talent_id: min_points}
+      "requires_skill" str | ausente — skill_id que precisa estar aprendida
+                       pro talento aceitar ponto (world_systems.
+                       talent_skill_requirement_met, 25/10/2026)
       "effects"       list de {"attribute", "value", "type"} | None
       "unlocks_skill" str | None  — nome do handler
       "skill_def"     dict | None — {"name", "description", "cooldown"}
@@ -905,19 +908,20 @@ TALENTS: dict[str, dict] = {
     # do desenho (classe_xama.md) entram na Fase 3. ─────────────────────────
     "raiz_sussurros_constantes": {
         "name":           "Sussurros Constantes",
-        "description":    "Toque Ancestral gera +{v} de Espírito.",
+        "description":    "A cura do corredor do Toque Ancestral aumenta {v}% do valor base.",
         "build":          "raiz",
         "col": 0, "row": 0,
         "max_points":     5,
         "requires":       {},
+        "requires_skill": "toque_ancestral",
         "effects":        None,
         "unlocks_skill":  None,
         "icon":           None,
         "skill_def":      None,
-        "preview_formula": lambda d: d,
+        "preview_formula": lambda d: d * 30,
         "cs_flags": [
-            {"field": "toque_espirito_bonus", "reset": 0,
-             "formula": lambda pts: pts},
+            {"field": "corredor_cura_bonus", "reset": 0.0,
+             "formula": lambda pts: 0.30 * pts},
         ],
     },
     "raiz_alma_generosa": {
@@ -941,7 +945,7 @@ TALENTS: dict[str, dict] = {
         "name":          "Sopro da Coruja",
         "description":   "Desbloqueia Sopro da Coruja: cura um aliado (ou você) "
                          "a até 8 tiles em 60 + 120% do Poder Mágico. Cast 1,5s, "
-                         "30 de Espírito.",
+                         "40 de Espírito.",
         "build":         "raiz",
         "col": 1, "row": 1,
         "max_points":    1,

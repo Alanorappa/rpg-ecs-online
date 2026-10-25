@@ -209,6 +209,42 @@ def apply_heal(world, healer_eid: int, target_eid: int, amount: int, sid: str = 
     return healed
 
 
+def corridor_heal_shares(enemy_tile: tuple, caster_tile: tuple, candidates: dict,
+                         caster_eid: int, half_width: float, total: float,
+                         min_weight: float = 0.25) -> dict:
+    """Divisão da cura do corredor do Toque Ancestral (função pura, 25/10/2026).
+
+    Corredor = faixa de `half_width` tiles de cada lado do segmento
+    alvo→Xamã (`enemy_tile`→`caster_tile`), em tiles. `candidates` =
+    {eid: (tx, ty)} já filtrados como aliados vivos (o Xamã sempre entra).
+    Peso cai em linha reta de 1.0 (colado no alvo) até `min_weight` (na
+    ponta do Xamã); a parte de cada um é `total × peso / soma_dos_pesos` —
+    sozinho no corredor, o Xamã recebe tudo. Devolve {eid: quantidade}."""
+    ex, ey = enemy_tile
+    vx, vy = caster_tile[0] - ex, caster_tile[1] - ey
+    seg2 = vx * vx + vy * vy
+    weights = {}
+    for eid, (px, py) in candidates.items():
+        if eid == caster_eid:
+            weights[eid] = min_weight
+            continue
+        if seg2 == 0:
+            continue
+        t = ((px - ex) * vx + (py - ey) * vy) / seg2
+        if t < 0.0 or t > 1.0:
+            continue
+        dx, dy = (px - ex) - t * vx, (py - ey) - t * vy
+        if dx * dx + dy * dy > half_width * half_width:
+            continue
+        weights[eid] = 1.0 - (1.0 - min_weight) * t
+    if caster_eid not in weights:
+        weights[caster_eid] = min_weight
+    total_w = sum(weights.values())
+    if total_w <= 0 or total <= 0:
+        return {}
+    return {eid: total * w / total_w for eid, w in weights.items()}
+
+
 # ── apply_damage_core ─────────────────────────────────────────────────────────
 
 def apply_damage_core(world, target_id: int, dmg: int, *,
@@ -829,6 +865,12 @@ class StatusEffectSystem:
         # Dano mínimo garantido de 1 — magnitude nunca resulta em 0
         dmg   = max(1, round(effect.magnitude))
 
+        # Cura por tick de skill (EffectDef.heals, ex: corredor do Toque
+        # Ancestral) — pelo ponto único de cura (limita ao máximo + "+X HP").
+        if defn is not None and defn.heals:
+            apply_heal(self.world, -1, eid, dmg, sid=effect.effect_type)
+            return
+
         if effect.effect_type == "regen":
             healed = min(dmg, cs.max_hp - cs.current_hp)
             cs.current_hp = min(cs.max_hp, cs.current_hp + dmg)
@@ -1040,14 +1082,15 @@ class BaseCombatStateSystem:
 
     @staticmethod
     def _tick_espirito_regen(cs, char, dt: float) -> None:
-        """Regen de Espírito (Xamã) — só FORA de combate; em combate o
-        recurso só sobe atacando (Toque Ancestral, server-side)."""
+        """Regen de Espírito (Xamã) — só EM combate; fora de combate o
+        recurso fica travado (25/10/2026). O ganho por ataque básico é
+        server-side (combat_processor)."""
         if char.max_espirito <= 0 or char.espirito >= char.max_espirito:
             return
-        if cs is not None and cs.in_combat:
+        if cs is None or not cs.in_combat:
             return
-        from engine.stats_system import ESPIRITO_REGEN_OOC
-        char.espirito = min(char.max_espirito, char.espirito + ESPIRITO_REGEN_OOC * dt)
+        from engine.stats_system import ESPIRITO_REGEN_IC
+        char.espirito = min(char.max_espirito, char.espirito + ESPIRITO_REGEN_IC * dt)
 
     @staticmethod
     def _tick_concentration_free_timer(cst, dt: float) -> None:
