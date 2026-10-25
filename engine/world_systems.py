@@ -194,6 +194,38 @@ def is_skill_authorized(world, entity_id: int, sid: str) -> "tuple[bool, str]":
     return True, ""
 
 
+RANGED_AUTO_DEFAULT_RANGE = 6   # arma sem cast_range (cajado) — mesmo alcance dos arcos
+
+
+def ranged_auto_attack(world, entity_id: int) -> "tuple[str, int]":
+    """O ataque BÁSICO desta entidade é à distância? Ponto único (25/10/2026)
+    — servidor (combat_processor), cliente (perseguição/disparo) e bots.
+
+    Devolve (tipo, alcance_tiles):
+      ("arrow", n)  — arqueiro (CombatStats.is_ranged) com ARCO na mão:
+                      flecha física, exige aljava com flechas.
+      ("spirit", n) — Xamã com CAJADO (Staff/Scepter): flecha espiritual,
+                      dano mágico (10 + 80% SP), sem munição.
+      ("", 1)       — corpo a corpo (qualquer outro caso).
+    Alcance = `cast_range` da arma, senão RANGED_AUTO_DEFAULT_RANGE."""
+    from engine.components import Equipment, CombatStats, CharacterStats
+    eq = world.get_component(entity_id, Equipment)
+    weapon = eq.slots.get("mainhand") if eq else None
+    if weapon is None:
+        return "", 1
+    subtype = getattr(weapon, "subtype", "")
+    rng = getattr(weapon, "cast_range", 0) or RANGED_AUTO_DEFAULT_RANGE
+    cs = world.get_component(entity_id, CombatStats)
+    if subtype == "Bow" and cs is not None and getattr(cs, "is_ranged", False):
+        return "arrow", rng
+    char = world.get_component(entity_id, CharacterStats)
+    if char is not None and char.class_id == "xama":
+        from engine.stats_system import XAMA_STAFF_SUBTYPES
+        if subtype in XAMA_STAFF_SUBTYPES:
+            return "spirit", rng
+    return "", 1
+
+
 def talent_skill_requirement_met(world, entity_id: int, talent_def: dict,
                                  allocated: dict) -> bool:
     """O talento pode receber ponto quanto à HABILIDADE que ele melhora?

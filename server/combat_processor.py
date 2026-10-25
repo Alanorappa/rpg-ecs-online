@@ -49,15 +49,42 @@ class CombatProcessorMixin:
         decide a que distância parar de andar e brigar; antes usava 1
         constante genérica pra todas as classes, ver PROBLEMAS_
         ARQUITETURA.md)."""
-        from engine.components import Equipment
-        if not class_is_ranged:
-            return False, 1
-        eq  = self.world.get_component(attacker_eid, Equipment)
-        bow = eq.slots.get("mainhand") if eq else None
-        has_bow_equipped = bow is not None and getattr(bow, "subtype", "") == "Bow"
-        if not has_bow_equipped:
-            return False, 1
-        return True, (getattr(bow, "cast_range", 0) or 6)
+        # Delegado do ponto único engine.world_systems.ranged_auto_attack
+        # (25/10/2026 — passou a cobrir também o cajado do Xamã).
+        # `class_is_ranged` ficou só por compatibilidade de assinatura.
+        from engine.world_systems import ranged_auto_attack
+        kind, rng = ranged_auto_attack(self.world, attacker_eid)
+        return bool(kind), rng
+
+    # Flecha espiritual (ataque básico do Xamã com cajado, 25/10/2026):
+    # dano mágico SÓ de SP (decisão do usuário), escola Espírito.
+    SPIRIT_BOLT_BASE    = 10
+    SPIRIT_BOLT_SP_COEF = 0.80
+
+    def _server_spirit_bolt(self, attacker_eid: int, target_eid: int) -> "tuple[bool, str, int]":
+        """Dano da flecha espiritual via o caminho mágico de sempre
+        (`_server_apply_magic_damage` → apply_damage_core); sobe a perícia
+        mágica (Magic) por disparo. Devolve (morreu, outcome, dano)."""
+        from engine.components import CombatStats, SkillLevels
+        attacker_cs = self.world.get_component(attacker_eid, CombatStats)
+        target_cs   = self.world.get_component(target_eid, CombatStats)
+        sp  = attacker_cs.spell_power if attacker_cs else 0
+        dmg = max(1, self.SPIRIT_BOLT_BASE + int(sp * self.SPIRIT_BOLT_SP_COEF))
+        hp_before = target_cs.current_hp if target_cs else 0
+        self._magic_blocked_immune_eids = set()
+        dead = self._server_apply_magic_damage(attacker_eid, target_eid, dmg,
+                                               roll_crit=True, school="espirito")
+        damage = max(0, hp_before - (target_cs.current_hp if target_cs else 0))
+        if target_eid in self._magic_blocked_immune_eids:
+            outcome = "immune"
+        else:
+            outcome = "crit" if getattr(self, "_last_magic_is_crit", False) else "hit"
+        self._magic_blocked_immune_eids = None
+        skl = self.world.get_component(attacker_eid, SkillLevels)
+        if skl is not None and attacker_cs is not None:
+            from engine.stats_system import grant_skill_xp
+            grant_skill_xp(skl, attacker_cs, "magic", 1)
+        return dead, outcome, damage
 
     def _resolve_auto_attack(self, attacker_eid: int, target_eid: int, session_id: str, dt: float,
                              attacker_cs, attacker_tm, target_cs, target_tm) -> "dict | None":
@@ -103,19 +130,19 @@ class CombatProcessorMixin:
         # arco equipado — os 3 arcos nivelados em 6 (14/09/2026, decisão do
         # usuário, ver content/item_table.py) — nunca hardcoded
         # (`_ranged_weapon_range`, ponto único de verdade).
-        _class_is_ranged = getattr(attacker_cs, "is_ranged", False)
-        _is_ranged, attack_range = self._ranged_weapon_range(attacker_eid, _class_is_ranged)
+        from engine.world_systems import ranged_auto_attack
+        _ranged_kind, attack_range = ranged_auto_attack(self.world, attacker_eid)
+        _is_ranged = bool(_ranged_kind)
         _qv = None
-        if _is_ranged:
+        if _ranged_kind == "arrow":
             _eq = self.world.get_component(attacker_eid, Equipment)
             _qv = _eq.slots.get("offhand") if _eq else None
 
-        # Ranged (arco de verdade equipado): requer aljava com flechas no
-        # offhand — sem isso, NÃO ataca (nem ranged nem melee: tem arco
-        # em mãos, só falta munição — "Use Recarregar" é o fluxo
-        # esperado, não cair pra soco). Sem arco: nem entra aqui, já
-        # segue reto pro dano melee mais abaixo.
-        if _is_ranged:
+        # Ranged com ARCO: requer aljava com flechas no offhand — sem isso,
+        # NÃO ataca (nem ranged nem melee: tem arco em mãos, só falta
+        # munição — "Use Recarregar" é o fluxo esperado, não cair pra soco).
+        # Flecha espiritual (cajado do Xamã) não usa munição.
+        if _ranged_kind == "arrow":
             if not _qv or getattr(_qv, "item_type", "") != "quiver" or _qv.arrow_count < 1:
                 ADBG_SERVER.log_block(attacker_eid, target_eid, "no_quiver_or_empty",
                                       arrows=getattr(_qv, "arrow_count", None))
@@ -215,7 +242,10 @@ class CombatProcessorMixin:
         # completa com crit/block/armor/perícia de arco/consumo de
         # flecha); melee usa deal_damage normal. ──
         hp_before = target_cs.current_hp
-        if _is_ranged:
+        if _ranged_kind == "spirit":
+            dead, outcome, damage = self._server_spirit_bolt(attacker_eid, target_eid)
+            hp_after = max(0, target_cs.current_hp)
+        elif _is_ranged:
             ADBG_SERVER.log_fire_ok(attacker_eid)
             dead, outcome, damage = self._server_apply_ranged_physical(
                 attacker_eid, target_eid, is_ability=False)
@@ -286,7 +316,8 @@ class CombatProcessorMixin:
                             _sk_p.charges += 1
 
         return {"dead": dead, "outcome": outcome, "damage": damage,
-                "hp_after": hp_after, "is_ranged": _is_ranged}
+                "hp_after": hp_after, "is_ranged": _is_ranged,
+                "ranged_kind": _ranged_kind}
 
     def _process_player_attacks(self, dt: float,
                                player_hp_snapshot: dict[int, int]) -> None:
@@ -390,6 +421,9 @@ class CombatProcessorMixin:
                 # sozinho (remote_entity_handlers.py so sabe a classe do
                 # remoto, nunca o equipamento) — ver PROBLEMAS_ARQUITETURA.md.
                 "is_ranged": result["is_ranged"],
+                # "arrow" (arco) | "spirit" (cajado do Xamã) | "" (melee) —
+                # qual projétil visual o cliente desenha (25/10/2026)
+                "ranged_kind": result["ranged_kind"],
             })
 
             # Evento de quest "auto_attack_hit" (Fase Q1, 25/07/2026) — só
@@ -484,6 +518,7 @@ class CombatProcessorMixin:
             "hp_after": result["hp_after"],
             "source":   "auto",
             "is_ranged": result["is_ranged"],
+            "ranged_kind": result["ranged_kind"],
         })
 
         # HP sync direto para a vítima (STATS_UPDATE individual)

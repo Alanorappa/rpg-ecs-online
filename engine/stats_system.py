@@ -32,7 +32,10 @@ CLASS_LEVEL_GAINS: dict[str, dict] = {
 # Classes conjuradoras (24/10/2026): engajam como o mago — corpo a corpo
 # colado no alvo, senão perseguem até o alcance de skill e esperam o cast.
 # Ponto único: nunca checar `class_id == "mago"` pra esse comportamento.
-CASTER_CLASSES: frozenset = frozenset({"mago", "xama"})
+# Xamã saiu em 25/10/2026: com cajado ataca à distância (world_systems.
+# ranged_auto_attack), com maça/machado é corpo a corpo e o ataque básico
+# é o que gera Espírito — engaja como o guerreiro.
+CASTER_CLASSES: frozenset = frozenset({"mago"})
 
 # Atributos base ao criar um personagem novo — específicos por classe.
 # Atributo principal inicia em 3; os demais em valores mínimos.

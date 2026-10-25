@@ -163,6 +163,12 @@ class RemoteEntityHandlers:
                             and _char_ar is not None
                             and _char_ar.class_id == "arqueiro")
         _is_archer = _is_self_archer or _is_remote_archer
+        if source == "auto" and cr.get("ranged_kind") == "spirit" and not _is_proj_damage_ar:
+            # Flecha espiritual (Xamã com cajado): o servidor manda o tipo do
+            # ataque à distância — vale pra qualquer classe, sem class_id.
+            _is_self = server_attacker == self._my_eid
+            _eid = self.player_entity if _is_self else _attacker_remote
+            return _eid is not None, _eid, _is_self
         if source == "auto":
             # Auto-attack: o servidor decide ranged x melee golpe-a-golpe (arma
             # REAL equipada agora — arqueiro sem arco/com arma melee cai pra
@@ -180,7 +186,8 @@ class RemoteEntityHandlers:
 
     def _spawn_archer_auto_arrow(self, attacker_eid, is_self_attacker: bool,
                                   target_local_eid: int, target_pos, _lx: float, _ly: float,
-                                  color: tuple = (101, 67, 33)) -> "object | None":
+                                  color: tuple = (101, 67, 33),
+                                  kind: str = "arrow") -> "object | None":
         """Cria a flecha visual (`PlayerProjectileEntry`, fora do ECS desde
         15/09/2026 — item 9, ver PROBLEMAS_ARQUITETURA.md §144) do auto-attack
         do arqueiro e toca os sons de saque/disparo (cheios para o player
@@ -197,6 +204,20 @@ class RemoteEntityHandlers:
         _ppos = self.world.get_component(attacker_eid, Position)
         if _ppos is None:
             return None
+        if kind == "spirit":
+            # Flecha espiritual: projétil mágico próprio, sem sons de arco
+            # nem atraso de soltura (sem frame de "soltar a corda").
+            from ui.spell_system import SPIRIT_BOLT_ID, PlayerProjectileSystem as _PPS
+            return self._player_proj_system.spawn(
+                _ppos.x, _ppos.y, attacker_eid, target_local_eid,
+                spell_id=SPIRIT_BOLT_ID,
+                speed=_PPS.SPIRIT_BOLT_SPEED,
+                dmg_weapon_pct=0.0,
+                color=_PPS.SPIRIT_BOLT_COLOR,
+                damage_type="magical",
+                target_last_x=target_pos.x,
+                target_last_y=target_pos.y,
+            )
         from engine.character_animation import DEFAULT_FRAME_MS as _DFMS_arrow
         _arrow_entry = self._player_proj_system.spawn(
             _ppos.x, _ppos.y, attacker_eid, target_local_eid,
@@ -447,7 +468,8 @@ class RemoteEntityHandlers:
             _arrow_entry = None
             if source == "auto" and _is_archer_arrow and pos is not None:
                 _arrow_entry = self._spawn_archer_auto_arrow(_attacker_local_remote, _is_self_archer_attacker,
-                                              local_eid, pos, _lx, _ly)
+                                              local_eid, pos, _lx, _ly,
+                                              kind=cr.get("ranged_kind") or "arrow")
                 # Desconto da aljava local NÃO acontece mais aqui (removido
                 # 16/09/2026, ver PROBLEMAS_ARQUITETURA.md §154/§156) — este
                 # bloco fazia um decremento "espelhado" (-1, sem checar
@@ -609,7 +631,8 @@ class RemoteEntityHandlers:
                     if player_pos:
                         _arrow_entry_pl = self._spawn_archer_auto_arrow(
                             _atk_eid_pl, _is_self_atk_pl,
-                            self.player_entity, player_pos, _lx, _ly)
+                            self.player_entity, player_pos, _lx, _ly,
+                            kind=cr.get("ranged_kind") or "arrow")
                         if _arrow_entry_pl is not None:
                             _arrow_entry_pl.deferred_result = {
                                 "outcome": outcome, "damage": damage,
@@ -705,7 +728,8 @@ class RemoteEntityHandlers:
                     self._resolve_archer_attack(cr, server_attacker, source)
                 if _is_arrow_rp and source == "auto":
                     _arrow_entry_rp = self._spawn_archer_auto_arrow(
-                        _atk_eid_rp, _is_self_atk_rp, local_eid, pos, _lx, _ly)
+                        _atk_eid_rp, _is_self_atk_rp, local_eid, pos, _lx, _ly,
+                        kind=cr.get("ranged_kind") or "arrow")
                     if _arrow_entry_rp is not None:
                         _arrow_entry_rp.deferred_result = {
                             "outcome": outcome, "damage": damage,

@@ -643,6 +643,11 @@ class SpellCastSystem(System):
 # PlayerProjectileSystem
 # ---------------------------------------------------------------------------
 
+# Ataque básico à distância do Xamã com cajado (resolvido no servidor,
+# `ranged_kind == "spirit"`) — spell_id do projétil visual.
+SPIRIT_BOLT_ID = "flecha_espiritual"
+
+
 class PlayerProjectileEntry:
     """Projétil lançado pelo jogador (magia ou flecha) — puramente visual,
     NUNCA usado pelo servidor (confirmado por grep no repo inteiro, 15/09/2026,
@@ -744,6 +749,19 @@ class PlayerProjectileSystem(System):
     FIREBALL_LIGHT_RADIUS_TILES  = 3
     FIREBALL_LIGHT_COLOR = (255, 200, 100)
 
+    # Flecha espiritual (ataque básico do Xamã com cajado): enquanto não
+    # existe `assets/effects/skill_flecha_espiritual.png` (sheet horizontal
+    # de quadros QUADRADOS, mesmo padrão da Bola de Fogo), desenha uma linha
+    # azul a 50% de opacidade; o sheet, quando existir, é usado sozinho.
+    SPIRIT_BOLT_SHEET     = "assets/effects/skill_flecha_espiritual.png"
+    SPIRIT_BOLT_COLOR     = (90, 170, 255)
+    SPIRIT_BOLT_ALPHA     = 128
+    SPIRIT_BOLT_LINE_LEN  = 22
+    SPIRIT_BOLT_SPEED     = 520.0
+    SPIRIT_BOLT_LIGHT_INTENSITY_PCT = 55
+    SPIRIT_BOLT_LIGHT_RADIUS_TILES  = 2
+    SPIRIT_BOLT_LIGHT_COLOR = (120, 180, 255)
+
     # Fade de opacidade no NASCIMENTO (15/10/2026, pedido do usuário —
     # substitui a tentativa de deslocar a posição de spawn, revertida no
     # mesmo dia por quebrar a trajetória em alvo diagonal, ver
@@ -793,6 +811,8 @@ class PlayerProjectileSystem(System):
         # ela ainda voava).
         # Animação da Bola de Fogo
         self._fireball_frames: "list[pygame.Surface] | None" = None
+        # Sheet da flecha espiritual (None = ainda não tentou; [] = sem arquivo)
+        self._spirit_bolt_frames: "list[pygame.Surface] | None" = None
 
     def spawn(self, x: float, y: float, attacker_id: int, target_id: int,
              **kwargs) -> PlayerProjectileEntry:
@@ -839,17 +859,25 @@ class PlayerProjectileSystem(System):
         hoje, mas é o mesmo campo que `flecha_reiterada`/`tiro_multiplo`
         usam, então o guard já nasce certo se um dia houver bola de fogo
         com delay)."""
+        lights = {
+            "bola_de_fogo": (self.FIREBALL_LIGHT_INTENSITY_PCT,
+                             self.FIREBALL_LIGHT_RADIUS_TILES,
+                             self.FIREBALL_LIGHT_COLOR),
+            SPIRIT_BOLT_ID: (self.SPIRIT_BOLT_LIGHT_INTENSITY_PCT,
+                             self.SPIRIT_BOLT_LIGHT_RADIUS_TILES,
+                             self.SPIRIT_BOLT_LIGHT_COLOR),
+        }
         result = []
         for entry in self._entries:
-            if entry.spell_id != "bola_de_fogo" or entry.launch_delay > 0:
+            light = lights.get(entry.spell_id)
+            if light is None or entry.launch_delay > 0:
                 continue
             result.append({
                 "screen_x": entry.x - camera_offset_x,
                 "screen_y": entry.y - camera_offset_y,
-                "light_source": (0, 0, 0, 0, self.FIREBALL_LIGHT_INTENSITY_PCT,
-                                 self.FIREBALL_LIGHT_RADIUS_TILES),
+                "light_source": (0, 0, 0, 0, light[0], light[1]),
                 "player_light": True,
-                "glow_color": self.FIREBALL_LIGHT_COLOR,
+                "glow_color": light[2],
             })
         return result
 
@@ -919,7 +947,7 @@ class PlayerProjectileSystem(System):
             proj, proj_pos = entry, entry   # aliases curtos — corpo do laço idêntico ao de antes
 
             # Incrementa timer de animação para projéteis com spritesheet
-            if proj.spell_id == "bola_de_fogo":
+            if proj.spell_id in ("bola_de_fogo", SPIRIT_BOLT_ID):
                 entry.fireball_anim_t += dt
 
             # ── Delay de lançamento (ex: segunda flecha de Flecha Reiterada) ──
@@ -991,7 +1019,9 @@ class PlayerProjectileSystem(System):
             # Mantido para skills com projétil de verdade (Bola de Fogo etc.)
             # — alvo pode se esconder atrás de parede DURANTE o voo, cenário
             # que o outcome já resolvido no lançamento não cobre.
-            if proj.spell_id != "arrow":
+            # Flecha espiritual (auto-attack do Xamã) segue a flecha: o
+            # servidor já validou LOS no disparo.
+            if proj.spell_id not in ("arrow", SPIRIT_BOLT_ID):
                 from ui.systems import get_tilemap as _get_tm, EnemyAISystem as _EAIS
                 from engine.tileset import TILE_SIZE as _TS
                 _tmap = _get_tm()
@@ -1165,10 +1195,60 @@ class PlayerProjectileSystem(System):
         else:
             LOG.add("Tiro Repulsivo! Alvo repelido.", (120, 200, 255))
 
+    _AVOID_LABELS_OH = {"miss": "Errou!", "dodge": "Desviou!",
+                        "parry": "Aparou!", "block": "Bloqueou!", "immune": "Imune"}
+
+    def _show_deferred_result(self, proj: PlayerProjectileEntry) -> "str | None":
+        """Mostra o FLT do resultado que o servidor prendeu NESTE projétil
+        (`deferred_result`, gravado no COMBAT_RESULT — nunca fila por alvo,
+        §44): dano/crítico/bloqueio/esquiva no alvo (ou na última posição
+        conhecida). Ponto único da flecha do arqueiro e da flecha espiritual
+        do Xamã. Devolve o outcome (None sem resultado)."""
+        _entry = proj.deferred_result
+        if _entry is None:
+            return None
+        _out  = _entry["outcome"] if isinstance(_entry, dict) else _entry
+        _dmg  = _entry.get("damage", 0) if isinstance(_entry, dict) else 0
+        _isab = _entry.get("is_ability", False) if isinstance(_entry, dict) else False
+        _isplr = _entry.get("is_player_target", False) if isinstance(_entry, dict) else False
+        _tpos = self.world.get_component(proj.target_id, Position)
+        if _tpos is None and (proj.target_last_x or proj.target_last_y):
+            class _FakePos:
+                x = proj.target_last_x
+                y = proj.target_last_y
+            _tpos = _FakePos()
+        if not _tpos:
+            return _out
+        if _dmg > 0:
+            if _isplr:
+                # Dano em player (PvP): vermelho, padrão de "player foi atacado"
+                FLT.add(str(_dmg), _tpos.x, _tpos.y, (220, 80, 80),
+                        target_id=proj.target_id, is_crit=(_out == "crit"))
+            elif _out == "crit":
+                _col = (255, 220, 50) if _isab else (255, 255, 255)
+                FLT.add(str(_dmg), _tpos.x, _tpos.y, _col, target_id=proj.target_id, is_crit=True)
+            elif _out == "block":
+                FLT.add(str(_dmg), _tpos.x, _tpos.y, (160, 160, 160), "normal",
+                        target_id=proj.target_id)
+            else:
+                _col = (255, 220, 0) if _isab else (220, 220, 220)
+                FLT.add(str(_dmg), _tpos.x, _tpos.y, _col, "normal", target_id=proj.target_id)
+        elif _out in self._AVOID_LABELS_OH:
+            _col = (255, 220, 0) if _isab else (220, 220, 220)
+            FLT.add(self._AVOID_LABELS_OH[_out], _tpos.x, _tpos.y, _col, "small",
+                    target_id=proj.target_id)
+        return _out
+
     def _on_hit(self, proj: PlayerProjectileEntry,
                 impact_x: float = None, impact_y: float = None) -> None:
         attacker_cs = self.world.get_component(proj.attacker_id, CombatStats)
         target_cs   = self.world.get_component(proj.target_id,   CombatStats)
+
+        # Flecha espiritual (ataque básico do Xamã com cajado): só mostra o
+        # resultado que o servidor já resolveu — sem som de flecha.
+        if proj.spell_id == SPIRIT_BOLT_ID:
+            self._show_deferred_result(proj)
+            return
 
         # Som de impacto de flecha com falloff por distância até o jogador local.
         _lpos_oh = self._player_world_pos()
@@ -1239,48 +1319,7 @@ class PlayerProjectileSystem(System):
                     return
 
                 if _entry is not None:
-                    _out_oh  = _entry["outcome"]  if isinstance(_entry, dict) else _entry
-                    _dmg_oh  = _entry.get("damage",     0)     if isinstance(_entry, dict) else 0
-                    _isab_oh = _entry.get("is_ability",  False) if isinstance(_entry, dict) else False
-                    _isplr_oh = _entry.get("is_player_target", False) if isinstance(_entry, dict) else False
-
-                    # FLT na posição atual do alvo; fallback para target_last quando já despawnado
-                    _tpos_oh = self.world.get_component(proj.target_id, Position)
-                    if _tpos_oh is None and (proj.target_last_x or proj.target_last_y):
-                        class _FakePos:
-                            x = proj.target_last_x
-                            y = proj.target_last_y
-                        _tpos_oh = _FakePos()
-                    if _tpos_oh:
-                        _AVOID_LABELS_OH = {
-                            "miss":  "Errou!",
-                            "dodge": "Desviou!",
-                            "parry": "Aparou!",
-                            "block": "Bloqueou!",
-                        }
-                        if _dmg_oh > 0:
-                            if _isplr_oh:
-                                # Dano em player (PvP): vermelho, igual ao padrão
-                                # de "Player local/remoto foi atacado".
-                                FLT.add(str(_dmg_oh), _tpos_oh.x, _tpos_oh.y,
-                                        (220, 80, 80), target_id=proj.target_id,
-                                        is_crit=(_out_oh == "crit"))
-                            elif _out_oh == "crit":
-                                _col_oh = (255, 220, 50) if _isab_oh else (255, 255, 255)
-                                FLT.add(str(_dmg_oh), _tpos_oh.x, _tpos_oh.y,
-                                        _col_oh, target_id=proj.target_id, is_crit=True)
-                            elif _out_oh == "block":
-                                FLT.add(str(_dmg_oh), _tpos_oh.x, _tpos_oh.y,
-                                        (160, 160, 160), "normal", target_id=proj.target_id)
-                            else:
-                                _col_oh = (255, 220, 0) if _isab_oh else (220, 220, 220)
-                                FLT.add(str(_dmg_oh), _tpos_oh.x, _tpos_oh.y,
-                                        _col_oh, "normal", target_id=proj.target_id)
-                        elif _out_oh in _AVOID_LABELS_OH:
-                            _txt_oh  = _AVOID_LABELS_OH[_out_oh]
-                            _col_oh  = (255, 220, 0) if _isab_oh else (220, 220, 220)
-                            FLT.add(_txt_oh, _tpos_oh.x, _tpos_oh.y,
-                                    _col_oh, "small", target_id=proj.target_id)
+                    _out_oh = self._show_deferred_result(proj)
 
                     # HP não é mais diferido pro impacto visual (12-13/08/2026,
                     # ver PROBLEMAS_ARQUITETURA.md §44) — já foi aplicado direto
@@ -1603,10 +1642,62 @@ class PlayerProjectileSystem(System):
                 else:
                     _fade_color = tuple(int(c * fade) for c in proj.color)
                     pygame.draw.circle(self.world_surf, _fade_color, (int(sx), int(sy)), 6)
+            elif proj.spell_id == SPIRIT_BOLT_ID:
+                self._render_spirit_bolt(proj, sx, sy, fade)
             else:
                 # ── Outros projéteis mágicos: círculo ───────────────────────
                 _fade_color = tuple(int(c * fade) for c in proj.color)
                 pygame.draw.circle(self.world_surf, _fade_color, (int(sx), int(sy)), 6)
+
+    def _load_spirit_bolt_frames(self) -> None:
+        """Sheet horizontal opcional da flecha espiritual (quadros QUADRADOS,
+        contagem = largura // altura). Arquivo ausente → [] (linha azul)."""
+        import os
+        self._spirit_bolt_frames = []
+        if not os.path.exists(self.SPIRIT_BOLT_SHEET):
+            return
+        try:
+            from ui.asset_cache import get_image
+            raw = get_image(self.SPIRIT_BOLT_SHEET)
+            fh = raw.get_height()
+            n = raw.get_width() // fh if fh > 0 else 0
+            self._spirit_bolt_frames = [raw.subsurface((i * fh, 0, fh, fh)) for i in range(n)]
+        except Exception as e:
+            print(f"[WARN] Spirit bolt sheet: {e}")
+            self._spirit_bolt_frames = []
+
+    def _render_spirit_bolt(self, proj: PlayerProjectileEntry, sx: float, sy: float,
+                            fade: float) -> None:
+        """Sheet animado e rotacionado (mesma técnica da Bola de Fogo) se
+        existir; senão linha azul a 50% de opacidade na direção do voo."""
+        if self._spirit_bolt_frames is None:
+            self._load_spirit_bolt_frames()
+        ddx = proj.x - proj.prev_x
+        ddy = proj.y - proj.prev_y
+        if abs(ddx) < 0.001 and abs(ddy) < 0.001:
+            ddx = proj.target_last_x - proj.x
+            ddy = proj.target_last_y - proj.y
+        frames = self._spirit_bolt_frames
+        if frames:
+            fi = int(proj.fireball_anim_t * self.FIREBALL_FPS) % len(frames)
+            angle_deg = (-math.degrees(math.atan2(ddy, ddx))
+                         if abs(ddx) > 0.001 or abs(ddy) > 0.001 else 0.0)
+            # rotate() sempre devolve Surface NOVA — set_alpha não toca o cache
+            rotated = pygame.transform.rotate(frames[fi], angle_deg)
+            rotated.set_alpha(round(255 * fade))
+            fw, fh = rotated.get_size()
+            self.world_surf.blit(rotated, (int(sx) - fw // 2, int(sy) - fh // 2))
+            return
+        dlen = math.sqrt(ddx * ddx + ddy * ddy) or 1.0
+        nx, ny = ddx / dlen, ddy / dlen
+        L = self.SPIRIT_BOLT_LINE_LEN
+        size = L * 2 + 4
+        surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        c = size / 2
+        alpha = round(self.SPIRIT_BOLT_ALPHA * fade)
+        pygame.draw.line(surf, (*self.SPIRIT_BOLT_COLOR, alpha),
+                         (round(c - nx * L), round(c - ny * L)), (round(c), round(c)), 3)
+        self.world_surf.blit(surf, (int(sx - c), int(sy - c)))
 
 
 # ---------------------------------------------------------------------------

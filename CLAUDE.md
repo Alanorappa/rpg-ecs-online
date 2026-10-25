@@ -377,6 +377,14 @@ padrão a quebrar, não só os bugs individuais.
   painel) → `stats_system.class_resource(char)`; **"essa classe engaja
   como conjurador?"** → `stats_system.CASTER_CLASSES` — NUNCA um
   `if class_id == "mago"` novo pra nenhum dos dois.
+- **"O ataque básico desta entidade é à distância? De que tipo, com que
+  alcance?"** → `world_systems.ranged_auto_attack(world, eid)` (`"arrow"`
+  arco / `"spirit"` cajado do Xamã / `""` corpo a corpo) — servidor e
+  perseguição do cliente usam a mesma; NUNCA checar `subtype == "Bow"` ou
+  `class_id` num call site novo. Perseguir+disparar à distância no cliente
+  → `PlayerInputSystem._process_ranged_chase_and_fire` (ganchos por tipo);
+  FLT do resultado preso num projétil → `PlayerProjectileSystem.
+  _show_deferred_result`. Ver HISTORICO_FEATURES.md §89.
 - **Efeito que muda velocidade, dano recebido, absorve dano ou impede
   camuflagem** → campo no `EffectDef` (`speed_mult`/`damage_taken_mult`/
   `absorbs`/`blocks_stealth`, `content/status_effects_data.py`) — NUNCA

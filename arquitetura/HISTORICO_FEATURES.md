@@ -6412,3 +6412,48 @@ acerto, regra de talento.
   e verde/vermelho pela mesma regra de equipar (`is_weapon_allowed_for_
   class`) — só escudo/armadura tinham cor; arma mostrava o subtype cru em
   inglês, cinza. Troca/correio continuam neutros (não passam a classe).
+
+## 89. Xamã — ataque básico à distância com cajado (flecha espiritual), bloco 2 (25/10/2026)
+
+Pedido do usuário (`classe_xama.md`): com cajado (Staff/Scepter) o ataque
+básico do Xamã é à distância. Decisões do usuário: dano SÓ de SP
+(10 + 80% SP); visual provisório = linha azul a 50% de opacidade com luz,
+"igual a bola de fogo", trocado sozinho pela sprite quando existir.
+
+- **Ponto único "o ataque básico é à distância?"** →
+  `engine/world_systems.py::ranged_auto_attack(world, eid)` → `("arrow",
+  n)` (arqueiro com arco, exige aljava), `("spirit", n)` (Xamã com
+  cajado, sem munição) ou `("", 1)` (corpo a corpo). Alcance = `cast_range`
+  da arma ou `RANGED_AUTO_DEFAULT_RANGE` (6). Usado pelo servidor
+  (`combat_processor._resolve_auto_attack`/`_ranged_weapon_range`) e pela
+  perseguição do cliente (`PlayerInputSystem`).
+- **Servidor**: `CombatProcessorMixin._server_spirit_bolt` — dano mágico
+  escola "espirito" pelo caminho mágico de sempre (`_server_apply_magic_
+  damage` → `apply_damage_core`, crítico rolado ali), +1 XP de Magic por
+  disparo. Mesmas regras do arco pra alcance (Euclidiana), linha de visão
+  (bloqueia o tiro inteiro) e atraso do 1º tiro. +25 de Espírito no
+  acerto (mesmo ponto de antes). COMBAT_RESULT ganha `ranged_kind`.
+- **Cliente — perseguição/disparo**: `_process_archer_combat` virou
+  despacho por tipo; o miolo comum (parar no alcance, LOS, cooldown,
+  combate) é `_process_ranged_chase_and_fire`, com ganchos — o arco
+  pluga encaixe/aljava/som, a flecha espiritual não usa nenhum.
+- **Cliente — projétil**: `remote_entity_handlers._resolve_archer_attack`
+  reconhece `ranged_kind == "spirit"` (qualquer classe, sem `class_id`);
+  `_spawn_archer_auto_arrow(kind="spirit")` cria o projétil
+  `SPIRIT_BOLT_ID` ("flecha_espiritual", `ui/spell_system.py`) sem sons
+  de arco e sem atraso de soltura. Resultado do servidor preso no próprio
+  projétil (`deferred_result`, §44); FLT na colisão via
+  `PlayerProjectileSystem._show_deferred_result` (extraído do ramo da
+  flecha — ponto único dos dois). Não some por LOS em voo (servidor já
+  validou no disparo, igual à flecha).
+- **Visual**: se existir `assets/effects/skill_flecha_espiritual.png`
+  (sheet horizontal de quadros QUADRADOS, contagem = largura ÷ altura,
+  12 fps, girado na direção do voo) usa o sheet; senão linha azul
+  `SPIRIT_BOLT_COLOR` a alpha 128. Luz azul via `get_fireball_light_
+  sources` (tabela por spell_id, mesma pipeline da Bola de Fogo).
+- `CASTER_CLASSES` volta a ser só `{"mago"}` — o Xamã engaja pelo
+  ataque básico (cajado à distância, maça/machado corpo a corpo).
+
+Testes: `tests/test_xama.py` (55) — tipo por arma, arqueiro sem
+regressão, disparo de longe sem aljava com dano/Espírito, sem cajado não
+alcança, render da linha + luz.

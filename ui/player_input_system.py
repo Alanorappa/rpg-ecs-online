@@ -663,18 +663,18 @@ class PlayerInputSystem(System):
         # arqueiro sem arco só recebia o aviso "Precisa de um arco
         # equipado" e ficava parado, sem NENHUMA opção de ataque. Ver
         # PROBLEMAS_ARQUITETURA.md.
-        _archer_has_bow = False
-        if is_archer:
-            _equip_ac    = self.world.get_component(entity_id, Equipment)
-            _mainhand_ac = _equip_ac.slots.get("mainhand") if _equip_ac else None
-            _archer_has_bow = (_mainhand_ac is not None
-                               and getattr(_mainhand_ac, "subtype", "") == "Bow")
+        # Ataque básico à distância (arco do arqueiro OU cajado do Xamã) —
+        # ponto único engine.world_systems.ranged_auto_attack (25/10/2026),
+        # o MESMO que o servidor usa pra decidir o alcance/disparo.
+        from engine.world_systems import ranged_auto_attack as _ranged_auto
+        _ranged_kind, _ranged_range = _ranged_auto(self.world, entity_id)
 
-        if is_archer and _archer_has_bow:
+        if _ranged_kind:
             self._process_archer_combat(
                 entity_id, position, tile_movement, combat_stats, combat_state,
                 auto_move, can_act, can_move, target_id, tgt_tile_x, tgt_tile_y, dt,
-                _px_chase, _melee_chase_px, dist_attack=dist_attack)
+                _px_chase, _melee_chase_px, dist_attack=dist_attack,
+                ranged_kind=_ranged_kind, ranged_range=_ranged_range)
         elif is_mage:
             # Skill específica apertada (CombatState.pursuit_skill_range,
             # ver docstring lá) tem prioridade sobre o mínimo genérico —
@@ -793,7 +793,82 @@ class PlayerInputSystem(System):
                                can_act, can_move, target_id, tgt_tile_x, tgt_tile_y, dt,
                                px_chase: float = 0.0,
                                melee_chase_px: float = float("inf"),
-                               dist_attack: int = -1):
+                               dist_attack: int = -1,
+                               ranged_kind: str = "arrow",
+                               ranged_range: int = 0):
+        """Auto-attack ranged: arqueiro (arco+aljava, flecha) ou Xamã com
+        cajado (`ranged_kind="spirit"`: sem munição/som de encaixar flecha).
+
+        Nome mantido por histórico — vale pra qualquer ataque básico à
+        distância de `engine.world_systems.ranged_auto_attack`."""
+        if ranged_kind == "spirit":
+            self._process_ranged_chase_and_fire(
+                entity_id, tile_movement, combat_stats, combat_state, auto_move,
+                can_act, can_move, position, target_id, tgt_tile_x, tgt_tile_y, dt,
+                ranged_range)
+            return
+        self._process_bow_combat(entity_id, position, tile_movement, combat_stats,
+                                 combat_state, auto_move, can_act, can_move,
+                                 target_id, tgt_tile_x, tgt_tile_y, dt, dist_attack)
+
+    def _process_ranged_chase_and_fire(self, entity_id, tile_movement, combat_stats,
+                                       combat_state, auto_move, can_act, can_move,
+                                       position, target_id, tgt_tile_x, tgt_tile_y,
+                                       dt, attack_range: int, *, on_in_range=None,
+                                       can_fire=None, on_fired=None, adbg=None) -> None:
+        """Parte COMUM do ataque básico à distância (arco E cajado, 25/10/2026):
+        para em alcance (in_range — mesma métrica do servidor, ver §135),
+        confere LOS ANTES de qualquer custo otimista, avança o cooldown local
+        (só UI — o disparo real e o projétil vêm do COMBAT_RESULT do
+        servidor) ou persegue até o alcance.
+
+        Ganchos (arqueiro): `on_in_range()` a cada frame em alcance (som de
+        encaixar); `can_fire()` -> bool antes de disparar (aljava vazia avisa
+        e devolve False); `on_fired()` depois; `adbg` = logger de debug do
+        arqueiro (opcional). `chase_suppressed` bloqueia só o reposicionamento,
+        nunca o disparo."""
+        pl_tile_x = tile_movement.current_tile_x
+        pl_tile_y = tile_movement.current_tile_y
+        if in_range(pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, attack_range):
+            # Limpa perseguição só sem ground_target (_process_ground_move cuida dele)
+            if auto_move and not auto_move.ground_target:
+                auto_move.path.clear()
+                auto_move.active = False
+            if on_in_range is not None:
+                on_in_range()
+            if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
+                if can_fire is not None and not can_fire():
+                    return
+                _tmap_los = get_tilemap()
+                _has_los = (not _tmap_los) or EnemyAISystem._has_line_of_sight(
+                    _tmap_los, pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, projectile=True)
+                if adbg is not None:
+                    adbg.log_los(entity_id, target_id, _has_los,
+                                 p_tile=(pl_tile_x, pl_tile_y), t_tile=(tgt_tile_x, tgt_tile_y))
+                if not _has_los:
+                    WARN.add("Há obstáculos no caminho")
+                    combat_stats.attack_cooldown_timer = 0.5  # throttle do aviso
+                    if adbg is not None:
+                        adbg.log_block(entity_id, target_id, "los_blocked")
+                    return
+                if adbg is not None:
+                    adbg.log_fire_ok(entity_id)
+                combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
+                if on_fired is not None:
+                    on_fired()
+                enter_combat(combat_state)
+        elif (can_move and combat_state.is_pursuing and auto_move
+                and not tile_movement.is_moving and not combat_state.chase_suppressed):
+            auto_move.active = True
+            self._auto_move_step(entity_id, position, tile_movement,
+                                 pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y,
+                                 auto_move, dt, attack_range=attack_range,
+                                 target_eid=target_id)
+
+    def _process_bow_combat(self, entity_id, position, tile_movement,
+                            combat_stats, combat_state, auto_move,
+                            can_act, can_move, target_id, tgt_tile_x, tgt_tile_y, dt,
+                            dist_attack: int = -1):
         """Auto-attack ranged do arqueiro: verifica arco+aljava e dispara flecha.
 
         `combat_state.chase_suppressed` (28/07/2026): bloqueia só o
@@ -837,18 +912,9 @@ class PlayerInputSystem(System):
             return
 
         _PRE_DRAW_THRESHOLD = 1.0   # segundos antes do disparo para tocar o nock
+        from debug.archer_debug import ADBG_CLIENT as _ADBG_c
 
-        # in_range() (Euclidiana), igual ao gate real do servidor
-        # (server/combat_processor.py::_resolve_auto_attack pro arco) — não
-        # chebyshev() (`dist`, ainda usado abaixo só como fallback de
-        # dist_attack). Ver §135.
-        if in_range(pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y, bow_range):
-            # Limpa perseguição apenas quando não há ground_target — se houver,
-            # _process_ground_move cuida do movimento e active deve permanecer True.
-            if auto_move and not auto_move.ground_target:
-                auto_move.path.clear()
-                auto_move.active = False
-
+        def _nock():
             # Pré-tensionamento: toca ~1s antes do próximo disparo (uma vez por ciclo)
             if (combat_state.is_pursuing and can_act
                     and 0 < combat_stats.attack_cooldown_timer <= _PRE_DRAW_THRESHOLD
@@ -856,70 +922,32 @@ class PlayerInputSystem(System):
                 combat_stats.arrow_pre_draw_ready = False
                 if random.random() < 0.30:
                     SOUNDS.play_random(["arrow_nock_1", "arrow_nock_2"], channel_group=(6, 7))
-                    from debug.archer_debug import ADBG_CLIENT as _ADBG_c_nock
-                    _ADBG_c_nock.log("SOUND", entity_id, target_id, which="nock")
+                    _ADBG_c.log("SOUND", entity_id, target_id, which="nock")
 
-            if combat_state.is_pursuing and can_act and combat_stats.attack_cooldown_timer <= 0:
-                if quiver.arrow_count <= 0:
-                    from ui.combat_log import LOG as _LOG
-                    _LOG.add("Aljava vazia! Use Recarregar.", (220, 80, 80))
-                    combat_stats.attack_cooldown_timer = 1.0
-                    from debug.archer_debug import ADBG_CLIENT as _ADBG_c_empty
-                    _ADBG_c_empty.log_block(entity_id, target_id, "quiver_empty",
-                                            quiver_item_id=getattr(quiver, "item_id", None),
-                                            quiver_obj_id=id(quiver),
-                                            max_arrows=getattr(quiver, "max_arrows", -1))
-                    return
+        def _has_arrows() -> bool:
+            if quiver.arrow_count > 0:
+                return True
+            from ui.combat_log import LOG as _LOG
+            _LOG.add("Aljava vazia! Use Recarregar.", (220, 80, 80))
+            combat_stats.attack_cooldown_timer = 1.0
+            _ADBG_c.log_block(entity_id, target_id, "quiver_empty",
+                              quiver_item_id=getattr(quiver, "item_id", None),
+                              quiver_obj_id=id(quiver),
+                              max_arrows=getattr(quiver, "max_arrows", -1))
+            return False
 
-                # LOS: bloqueia ANTES de descontar flecha/cooldown otimisticamente
-                # — mesmo padrão já usado pra Bola de Fogo (ver bloco
-                # "_skill_has_proj" acima). Sem isso, um tiro com parede na
-                # frente do alvo tocava som + descontava aljava no cliente
-                # mesmo quando o servidor ia bloquear o disparo (bug real
-                # reportado pelo usuário — ver
-                # server/spell_completion_processor.py::_server_apply_ranged_physical,
-                # ARQUITETURA_ONLINE.md).
-                from debug.archer_debug import ADBG_CLIENT as _ADBG_c_los
-                _tmap_arch_los = get_tilemap()
-                _has_los_c = (not _tmap_arch_los) or EnemyAISystem._has_line_of_sight(
-                        _tmap_arch_los, pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y,
-                        projectile=True)
-                _ADBG_c_los.log_los(entity_id, target_id, _has_los_c,
-                                    p_tile=(pl_tile_x, pl_tile_y), t_tile=(tgt_tile_x, tgt_tile_y))
-                if not _has_los_c:
-                    WARN.add("Há obstáculos no caminho")
-                    combat_stats.attack_cooldown_timer = 0.5  # throttle do aviso
-                    _ADBG_c_los.log_block(entity_id, target_id, "los_blocked")
-                    return
+        def _fired():
+            combat_stats.arrow_pre_draw_ready = True
 
-                # Flecha 100% server-driven — nasce em _apply_combat_result
-                # ao chegar o COMBAT_RESULT (source="auto"), igual Bola de Fogo nasce
-                # no is_completion. O desconto da aljava TAMBÉM só acontece lá
-                # (mesmo evento que cria a flecha visual) — NUNCA aqui antecipado.
-                # Bug real (10/07/2026): este cooldown LOCAL não congela do mesmo
-                # jeito que o do servidor (server/combat_processor.py congela o
-                # tick INTEIRO enquanto bloqueado por LOS/alcance/perseguição; aqui
-                # só decrementa sem parar, então zera mais cedo sempre que há
-                # bloqueio) — o cliente "atirava" (descontava flecha) bem mais vezes
-                # que o servidor de verdade disparava. Aqui só avançamos
-                # cooldown/pré-tensionamento locais (feel de UI); ver
-                # client/remote_entity_handlers.py::_apply_combat_result pro
-                # desconto real. O bloco offline (criava PlayerProjectile local +
-                # descontava aljava + som) foi REMOVIDO junto do modo offline
-                # (15/07/2026, item A2 §11 — offline vive só no master).
-                _ADBG_c_los.log_fire_ok(entity_id)
-                combat_stats.attack_cooldown_timer = combat_stats.get_attack_cooldown()
-                combat_stats.arrow_pre_draw_ready  = True
-                enter_combat(combat_state)
-        elif (can_move and combat_state.is_pursuing and auto_move
-                and not tile_movement.is_moving and not combat_state.chase_suppressed):
-            # Persegue o mob apenas quando is_pursuing=True e chase_suppressed
-            # não foi ligado por movimento manual (ver docstring do método).
-            auto_move.active = True
-            self._auto_move_step(entity_id, position, tile_movement,
-                                 pl_tile_x, pl_tile_y, tgt_tile_x, tgt_tile_y,
-                                 auto_move, dt, attack_range=bow_range,
-                                 target_eid=target_id)
+        # Flecha 100% server-driven — nasce (e desconta aljava) em
+        # client/remote_entity_handlers.py::_apply_combat_result quando chega
+        # o COMBAT_RESULT; aqui só cooldown/pré-tensionamento locais (feel de
+        # UI). LOS bloqueia ANTES de qualquer custo otimista (ver parte comum).
+        self._process_ranged_chase_and_fire(
+            entity_id, tile_movement, combat_stats, combat_state, auto_move,
+            can_act, can_move, position, target_id, tgt_tile_x, tgt_tile_y, dt,
+            bow_range, on_in_range=_nock, can_fire=_has_arrows, on_fired=_fired,
+            adbg=_ADBG_c)
 
     def _ranged_stop_tile(self, pl_x: int, pl_y: int,
                           tgt_x: int, tgt_y: int, attack_range: int) -> tuple:

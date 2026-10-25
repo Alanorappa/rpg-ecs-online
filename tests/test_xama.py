@@ -530,6 +530,109 @@ class TestEspiritoNoAtaqueBasico(_XamaDuelBase):
         self.assertAlmostEqual(self.char.espirito, 25 if hit else 0, delta=0.01)
 
 
+class TestFlechaEspiritual(_XamaDuelBase):
+    """Bloco 2: ataque básico à distância do Xamã com cajado."""
+    def setUp(self):
+        super().setUp()
+        from engine.components import Equipment
+        from content.item_table import ITEMS
+        self.char.espirito = 0
+        self.eq = self.ws.world.get_component(self.xama, Equipment)
+        self.eq.slots["mainhand"] = ITEMS["mystic_staff"]()
+        self.eq.slots["offhand"] = None
+        # 4 tiles (com linha de visão livre): fora do corpo a corpo, dentro
+        # do alcance padrão (6)
+        self.v = spawn_player(self.ws, "x_vfe", 130, 378, class_id="guerreiro", hp=5000)
+        self.assertIsNone(self.ws.request_duel(self.xama, self.v))
+        self.ws.respond_duel_invite(self.v, accept=True)
+
+    def _atirar(self):
+        cst = self.ws.world.get_component(self.xama, CombatState)
+        cst.target_entity_id = self.v
+        cst.is_pursuing = True
+        return self.ws._resolve_auto_attack(
+            self.xama, self.v, "x_xama", 1.0, self.xcs,   # passa o atraso do 1º tiro
+            self.ws.world.get_component(self.xama, TileMovement),
+            self.ws.world.get_component(self.v, CombatStats),
+            self.ws.world.get_component(self.v, TileMovement))
+
+    def test_tipo_por_arma(self):
+        from engine.world_systems import ranged_auto_attack
+        from content.item_table import ITEMS
+        self.assertEqual(ranged_auto_attack(self.ws.world, self.xama)[0], "spirit")
+        self.eq.slots["mainhand"] = ITEMS["lich_scepter"]()
+        self.assertEqual(ranged_auto_attack(self.ws.world, self.xama)[0], "spirit")
+        self.eq.slots["mainhand"] = None
+        self.assertEqual(ranged_auto_attack(self.ws.world, self.xama), ("", 1))
+
+    def test_arqueiro_com_arco_continua_flecha(self):
+        from engine.components import Equipment
+        from engine.world_systems import ranged_auto_attack
+        from content.item_table import ITEMS
+        arq = spawn_player(self.ws, "x_arq", 130, 380, class_id="arqueiro", hp=300)
+        bow = next(k for k, f in ITEMS.items() if getattr(f(), "subtype", "") == "Bow")
+        self.ws.world.get_component(arq, Equipment).slots["mainhand"] = ITEMS[bow]()
+        self.assertEqual(ranged_auto_attack(self.ws.world, arq)[0], "arrow")
+
+    def test_dispara_de_longe_sem_aljava_com_dano_de_sp(self):
+        from engine.components import SkillLevels
+        skl = self.ws.world.get_component(self.xama, SkillLevels)
+        xp_antes = skl.xp.get("magic", 0) if skl and hasattr(skl, "xp") else None
+        vcs = self.ws.world.get_component(self.v, CombatStats)
+        hp0 = vcs.current_hp
+        res = self._atirar()
+        self.assertIsNotNone(res, "flecha espiritual não disparou")
+        self.assertEqual(res["ranged_kind"], "spirit")
+        self.assertTrue(res["is_ranged"])
+        self.assertIn(res["outcome"], ("hit", "crit", "immune"))
+        if res["outcome"] != "immune":
+            self.assertGreater(res["damage"], 0)
+            self.assertEqual(hp0 - vcs.current_hp, res["damage"])
+            self.assertAlmostEqual(self.char.espirito, 25, delta=0.01)
+        if xp_antes is not None:
+            self.assertGreater(skl.xp.get("magic", 0), xp_antes)
+
+    def test_sem_cajado_nao_alcanca_de_longe(self):
+        self.eq.slots["mainhand"] = None
+        self.assertIsNone(self._atirar())
+
+    def test_mago_nao_e_mais_conjurador_de_auto_ataque_do_xama(self):
+        from engine.stats_system import CASTER_CLASSES
+        self.assertNotIn("xama", CASTER_CLASSES)
+
+
+class TestFlechaEspiritualCliente(unittest.TestCase):
+    """Projétil visual: linha azul enquanto não existe o sheet; luz azul."""
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        pygame.init()
+        pygame.display.set_mode((1, 1))
+
+    def _sistema(self):
+        from engine.world import World
+        from ui.spell_system import PlayerProjectileSystem
+        surf = pygame.Surface((200, 200))
+        return PlayerProjectileSystem(World(), surf, 0), surf
+
+    def test_render_linha_e_luz(self):
+        from ui.spell_system import SPIRIT_BOLT_ID, PlayerProjectileSystem as P
+        pps, surf = self._sistema()
+        pps._spirit_bolt_frames = []          # sem sheet → linha
+        e = pps.spawn(100.0, 100.0, 1, 2, spell_id=SPIRIT_BOLT_ID,
+                      target_last_x=180.0, target_last_y=100.0)
+        e.spawn_x = 0.0                       # já "viajou": opacidade plena
+        surf.fill((0, 0, 0))
+        pps.render(0, 0)
+        r, g, b, _ = surf.get_at((95, 100))
+        self.assertGreater(b, r)
+        self.assertGreater(b, 0)
+        self.assertLess(b, P.SPIRIT_BOLT_COLOR[2])   # 50% de transparência
+        luzes = pps.get_fireball_light_sources(0, 0)
+        self.assertEqual(len(luzes), 1)
+        self.assertEqual(luzes[0]["glow_color"], P.SPIRIT_BOLT_LIGHT_COLOR)
+
+
 class TestTalentoExigeHabilidade(_XamaDuelBase):
     def test_sussurros_exige_toque_aprendido(self):
         from engine.components import PlayerSkills, TalentTree
