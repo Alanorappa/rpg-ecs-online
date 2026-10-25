@@ -47,11 +47,15 @@ class EffectDef(NamedTuple):
     #   heals             — cura por tick: cada tick cura `magnitude` via
     #                       core_systems.apply_heal (HoT de skill, ex: corredor
     #                       do Toque Ancestral). Nunca dano.
+    #   reduces_damage    — reduz o dano recebido em `magnitude` (fração, ex:
+    #                       0.09 = −9%) — força vem de quem aplicou (talento),
+    #                       não fixa no catálogo (core_systems.apply_damage_core)
     speed_mult:        float = 1.0
     damage_taken_mult: float = 1.0
     absorbs:           bool  = False
     blocks_stealth:    bool  = False
     heals:             bool  = False
+    reduces_damage:    bool  = False
 
 
 EFFECT_DEFS: dict[str, EffectDef] = {
@@ -189,4 +193,11 @@ EFFECT_DEFS: dict[str, EffectDef] = {
     "marca_do_gaviao":  EffectDef("Marca do Gavião",  (220, 170,  60), False, 0.0,
                                   damage_taken_mult=1.05, blocks_stealth=True,
                                   description="Recebe 5% a mais de dano e não pode se camuflar."),
+    # Talentos da Raiz (bloco B) — aplicados por apply_heal
+    "pele_de_raiz":     EffectDef("Pele de Raiz",     (130, 170,  90), True, 0.0,
+                                  reduces_damage=True,
+                                  description="Recebe menos dano por um curto período."),
+    "dadiva_antecipada": EffectDef("Dádiva Antecipada", (200, 230, 140), True, 0.0,
+                                   absorbs=True,
+                                   description="Escudo formado pela cura que passou da vida máxima."),
 }

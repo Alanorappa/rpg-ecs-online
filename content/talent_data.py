@@ -1044,6 +1044,61 @@ TALENTS: dict[str, dict] = {
              "formula": lambda pts: 10 * pts},
         ],
     },
+    # ── Raiz — Fase 3, bloco B (25/10/2026) — efeitos em core_systems.
+    # _heal_talent_effects (via apply_heal) ────────────────────────────────
+    "raiz_pele_de_raiz": {
+        "name":           "Pele de Raiz",
+        "description":    "Quem você cura recebe {v}% a menos de dano por 6s.",
+        "build":          "raiz",
+        "col": 2, "row": 1,
+        "max_points":     3,
+        "requires":       {"raiz_raizes_profundas": 1},
+        "effects":        None,
+        "unlocks_skill":  None,
+        "icon":           None,
+        "skill_def":      None,
+        "preview_formula": lambda d: d * 3,
+        "cs_flags": [
+            {"field": "pele_de_raiz_reducao", "reset": 0.0,
+             "formula": lambda pts: 0.03 * pts},
+        ],
+    },
+    "raiz_dadiva_antecipada": {
+        "name":           "Dádiva Antecipada",
+        "description":    "Cura que passa da vida máxima vira escudo de {v}% do excesso "
+                          "por 8s (acumula até 30% da vida máxima).",
+        "build":          "raiz",
+        "col": 2, "row": 2,
+        "max_points":     3,
+        "requires":       {"raiz_pele_de_raiz": 1},
+        "effects":        None,
+        "unlocks_skill":  None,
+        "icon":           None,
+        "skill_def":      None,
+        "preview_formula": lambda d: d * 15,
+        "cs_flags": [
+            {"field": "dadiva_pct", "reset": 0.0,
+             "formula": lambda pts: 0.15 * pts},
+        ],
+    },
+    "raiz_rastros_de_alma": {
+        "name":           "Rastros de Alma",
+        "description":    "O corredor do Toque Ancestral passa a ter 7 tiles de largura "
+                          "(3 para cada lado) em vez de 5.",
+        "build":          "raiz",
+        "col": 2, "row": 3,
+        "max_points":     1,
+        "requires":       {"raiz_dadiva_antecipada": 1},
+        "requires_skill": "toque_ancestral",
+        "effects":        None,
+        "unlocks_skill":  None,
+        "icon":           None,
+        "skill_def":      None,
+        "cs_flags": [
+            {"field": "corredor_meia_largura_bonus", "reset": 0,
+             "formula": lambda pts: 1 if pts > 0 else 0},
+        ],
+    },
 }
 
 # ---------------------------------------------------------------------------

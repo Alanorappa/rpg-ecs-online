@@ -95,6 +95,20 @@ def _effects_product(sfx, field: str) -> float:
     return mult
 
 
+def _magnitude_reduction(sfx) -> float:
+    """Fator de dano recebido dos efeitos com EffectDef.reduces_damage —
+    cada um reduz `magnitude` (fração); nunca abaixo de 0."""
+    if sfx is None or not sfx.effects:
+        return 1.0
+    from content.status_effects_data import EFFECT_DEFS
+    mult = 1.0
+    for et, eff in sfx.effects.items():
+        d = EFFECT_DEFS.get(et)
+        if d is not None and d.reduces_damage:
+            mult *= max(0.0, 1.0 - float(eff.magnitude))
+    return mult
+
+
 def has_effect_flag(world, eid: int, field: str) -> bool:
     """True se algum efeito ativo de `eid` tem a flag booleana `field` de
     EffectDef ligada (ex: "blocks_stealth")."""
@@ -210,7 +224,36 @@ def apply_heal(world, healer_eid: int, target_eid: int, amount: int, sid: str = 
     cs.current_hp += healed
     if healed > 0 and _heal_event_sink is not None:
         _heal_event_sink(healer_eid, target_eid, healed, cs.current_hp, sid)
+    if healer_cs is not None:
+        _heal_talent_effects(world, healer_cs, cs, target_eid, int(amount) - healed)
     return healed
+
+
+# Dádiva Antecipada: o escudo acumulado nunca passa desta fração da vida máxima
+DADIVA_SHIELD_CAP_PCT = 0.30
+DADIVA_DURATION_S     = 8.0
+PELE_DE_RAIZ_DURATION_S = 6.0
+
+
+def _heal_talent_effects(world, healer_cs, target_cs, target_eid: int, overheal: int) -> None:
+    """Efeitos que a cura de quem tem talento da Raiz deixa no alvo:
+    Pele de Raiz (menos dano recebido por 6s) e Dádiva Antecipada (o
+    excesso da cura vira escudo, soma até 30% da vida máxima, renova 8s)."""
+    if healer_cs.pele_de_raiz_reducao > 0:
+        apply_effect(world, target_eid, "pele_de_raiz", PELE_DE_RAIZ_DURATION_S,
+                     magnitude=healer_cs.pele_de_raiz_reducao)
+    if healer_cs.dadiva_pct > 0 and overheal > 0:
+        from engine.components import StatusEffects
+        add = overheal * healer_cs.dadiva_pct
+        cap = target_cs.max_hp * DADIVA_SHIELD_CAP_PCT
+        sfx = world.get_component(target_eid, StatusEffects)
+        cur = sfx.get("dadiva_antecipada") if sfx is not None else None
+        if cur is not None:
+            cur.magnitude = min(cap, cur.magnitude + add)
+            cur.duration = DADIVA_DURATION_S
+        else:
+            apply_effect(world, target_eid, "dadiva_antecipada", DADIVA_DURATION_S,
+                         magnitude=min(cap, add))
 
 
 def corridor_heal_shares(enemy_tile: tuple, caster_tile: tuple, candidates: dict,
@@ -357,7 +400,8 @@ def apply_damage_core(world, target_id: int, dmg: int, *,
     if dmg > 0:
         _sfx_mod = world.get_component(target_id, StatusEffects)
         if _sfx_mod is not None and _sfx_mod.effects:
-            dmg = int(round(dmg * _effects_product(_sfx_mod, "damage_taken_mult")))
+            dmg = int(round(dmg * _effects_product(_sfx_mod, "damage_taken_mult")
+                            * _magnitude_reduction(_sfx_mod)))
             dmg = absorb_damage(world, target_id, dmg)
 
     cs.current_hp -= dmg  # overkill preservado por contrato

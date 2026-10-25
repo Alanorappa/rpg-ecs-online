@@ -6490,3 +6490,31 @@ tempo restante.
 Testes: `tests/test_xama.py` (64) — bônus de cura (com e sem dono), HoT
 em nome do dono, Pulso, Eco (sorteio fixado), Purificar (maior tempo /
 sem talento), Maré pelo servidor e ao desalocar, requisito de habilidade.
+
+## 91. Xamã — talentos da Raiz, bloco B (25/10/2026)
+
+Decisão do usuário: o escudo da Dádiva SOMA entre curas, com teto de 30%
+da vida máxima do alvo, e renova pra 8s.
+
+- **Pele de Raiz** (3 pts, −3%/pt) e **Dádiva Antecipada** (3 pts,
+  15%/pt do excesso): `core_systems._heal_talent_effects`, chamado por
+  `apply_heal` (ponto único de cura) com o CombatStats de QUEM cura
+  (`pele_de_raiz_reducao`, `dadiva_pct`). Vale pra qualquer cura do Xamã
+  (todas são da Raiz), inclusive tick de HoT — o tick já cura em nome do
+  dono (§90). Pele aplica a cada cura (inclusive em quem está cheio);
+  Dádiva só com excesso > 0.
+- **Redução de dano por força do efeito**: campo novo `EffectDef.
+  reduces_damage` — reduz o dano recebido em `magnitude` (fração vinda de
+  quem aplicou). Lido em `apply_damage_core` (`_magnitude_reduction`),
+  junto do `damage_taken_mult`. Como o resto da mitigação por efeito,
+  DoT não passa ali.
+- Efeitos novos: `pele_de_raiz` (reduces_damage) e `dadiva_antecipada`
+  (absorbs — mesmo consumo de escudo da Pele do Urso, "Absorveu(X)").
+  Constantes `DADIVA_SHIELD_CAP_PCT`/`DADIVA_DURATION_S`/
+  `PELE_DE_RAIZ_DURATION_S` em `core_systems.py`.
+- **Rastros de Alma** (1 pt): `corredor_meia_largura_bonus = 1` (campo do
+  bloco 1), `requires_skill: toque_ancestral`.
+
+Testes: `tests/test_xama.py` (71) — redução de dano de quem foi curado,
+sem talento sem efeito, escudo soma/teto/renova, escudo absorve, talentos
+pelo servidor.

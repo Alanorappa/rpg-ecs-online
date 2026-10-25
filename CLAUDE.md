@@ -387,7 +387,8 @@ padrão a quebrar, não só os bugs individuais.
   _show_deferred_result`. Ver HISTORICO_FEATURES.md §89.
 - **Efeito que muda velocidade, dano recebido, absorve dano ou impede
   camuflagem** → campo no `EffectDef` (`speed_mult`/`damage_taken_mult`/
-  `absorbs`/`blocks_stealth`, `content/status_effects_data.py`) — NUNCA
+  `reduces_damage` (força = magnitude)/`absorbs`/`blocks_stealth`,
+  `content/status_effects_data.py`) — NUNCA
   um `if sfx.has("<efeito>")` novo num sistema; os leitores genéricos
   já existem (`apply_damage_core`, `sync_status_derived_state`,
   `has_effect_flag`). Ver HISTORICO_FEATURES.md §86.

@@ -434,6 +434,62 @@ class TestRaizBlocoA(_XamaDuelBase):
             {"raiz_sussurros_constantes": 1, "raiz_alma_generosa": 1, "raiz_sopro_da_coruja": 1}))
 
 
+class TestRaizBlocoB(_XamaDuelBase):
+    def setUp(self):
+        super().setUp()
+        self.ally = spawn_player(self.ws, "x_rb", 133, 374, class_id="guerreiro", hp=500)
+        self.acs = self.ws.world.get_component(self.ally, CombatStats)
+        self.acs.max_hp = 500
+
+    def _sfx(self):
+        from engine.components import StatusEffects
+        return self.ws.world.get_component(self.ally, StatusEffects)
+
+    def test_pele_de_raiz_reduz_dano_de_quem_foi_curado(self):
+        self.xcs.pele_de_raiz_reducao = 0.09
+        self.acs.current_hp = 300
+        core_systems.apply_heal(self.ws.world, self.xama, self.ally, 10)
+        eff = self._sfx().get("pele_de_raiz")
+        self.assertIsNotNone(eff)
+        self.assertAlmostEqual(eff.duration, 6.0)
+        hp = self.acs.current_hp
+        core_systems.apply_damage_core(self.ws.world, self.ally, 100)
+        self.assertEqual(hp - self.acs.current_hp, 91)
+
+    def test_sem_talento_sem_pele_de_raiz(self):
+        self.acs.current_hp = 300
+        core_systems.apply_heal(self.ws.world, self.xama, self.ally, 10)
+        self.assertFalse(self._sfx() and self._sfx().has("pele_de_raiz"))
+
+    def test_dadiva_vira_escudo_do_excesso_soma_com_teto(self):
+        self.xcs.dadiva_pct = 0.45
+        self.acs.current_hp = 480
+        core_systems.apply_heal(self.ws.world, self.xama, self.ally, 120)   # 100 de excesso
+        eff = self._sfx().get("dadiva_antecipada")
+        self.assertAlmostEqual(eff.magnitude, 45.0)
+        core_systems.apply_heal(self.ws.world, self.xama, self.ally, 200)   # +90
+        self.assertAlmostEqual(eff.magnitude, 135.0)
+        core_systems.apply_heal(self.ws.world, self.xama, self.ally, 200)   # teto 150
+        self.assertAlmostEqual(eff.magnitude, 150.0)
+        self.assertAlmostEqual(eff.duration, 8.0)
+
+    def test_dadiva_absorve_dano(self):
+        self.xcs.dadiva_pct = 0.45
+        self.acs.current_hp = 500
+        core_systems.apply_heal(self.ws.world, self.xama, self.ally, 100)    # escudo 45
+        core_systems.apply_damage_core(self.ws.world, self.ally, 60)
+        self.assertEqual(self.acs.current_hp, 485)
+        self.assertFalse(self._sfx().has("dadiva_antecipada"))
+
+    def test_rastros_de_alma_alarga_corredor_pelo_servidor(self):
+        alloc = {"raiz_raizes_profundas": 1, "raiz_pele_de_raiz": 1,
+                 "raiz_dadiva_antecipada": 3, "raiz_rastros_de_alma": 1}
+        self.ws._apply_talent_modifiers(self.xama, alloc)
+        self.assertEqual(self.xcs.corredor_meia_largura_bonus, 1)
+        self.assertAlmostEqual(self.xcs.dadiva_pct, 0.45)
+        self.assertAlmostEqual(self.xcs.pele_de_raiz_reducao, 0.03)
+
+
 # ── Fase 2: mecânicas por dado no catálogo de efeitos ─────────────────────────
 
 class TestEfeitosPorDado(unittest.TestCase):
