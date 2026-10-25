@@ -237,7 +237,11 @@ class CombatStats:
         self.corredor_cura_bonus:       float = 0.0   # raiz_sussurros_constantes: +X × cura base do corredor do Toque
         self.corredor_meia_largura_bonus: int = 0     # raiz_rastros_de_alma (futuro): +tiles de cada lado do corredor
         self.cura_custo_reducao:        int   = 0     # raiz_alma_generosa: desconto fixo no custo de Espírito das curas
-        self.espirito_max_bonus:        int   = 0     # bônus de Espírito máximo (talentos futuros da Raiz)
+        self.espirito_max_bonus:        int   = 0     # raiz_mare_espiritual: +Espírito máximo
+        self.cura_poder_bonus:          float = 0.0   # raiz_raizes_profundas: +X × toda cura que ESTE personagem faz (apply_heal)
+        self.sopro_eco_chance:          float = 0.0   # raiz_eco_restaurador: chance do Sopro curar +50%
+        self.sopro_pulso_vital:         bool  = False # raiz_pulso_vital: Sopro +40% em alvo <35% de vida
+        self.sopro_purifica:            bool  = False # raiz_purificar_o_espirito: Sopro remove 1 efeito negativo
 
         # ── Bônus derivados de SkillLevels (ver stats_system.apply_skill_bonuses_to_combat) ──
         # Recalculados sob demanda (level-up de skill ou spawn/login), nunca via Modifier —
@@ -1838,6 +1842,7 @@ class ActiveEffect:
         "effect_type", "duration", "magnitude",
         "tick_interval", "tick_timer",
         "on_expire_effect", "on_expire_duration", "on_expire_magnitude",
+        "source_eid",
     )
 
     def __init__(
@@ -1858,6 +1863,8 @@ class ActiveEffect:
         self.on_expire_effect:    str   = on_expire_effect
         self.on_expire_duration:  float = on_expire_duration
         self.on_expire_magnitude: float = on_expire_magnitude
+        # Quem aplicou (-1 = sem dono) — HoT cura "em nome" dele (apply_heal)
+        self.source_eid:          int   = -1
 
 
 class StatusEffects:

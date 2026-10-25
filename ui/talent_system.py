@@ -330,6 +330,9 @@ class TalentSystem(UIScaleMixin):
                 continue
             for flag in t.get("cs_flags", []):
                 setattr(cs, flag["field"], flag["formula"](points))
+        # Recurso que depende de cs_flag (Maré Espiritual → Espírito máximo)
+        from engine.stats_system import sync_espirito_max
+        sync_espirito_max(char, cs)
 
     # -----------------------------------------------------------------------
     # Eventos

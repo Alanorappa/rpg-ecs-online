@@ -413,7 +413,11 @@ padrão a quebrar, não só os bugs individuais.
   checagem do cliente e hotbar usam a mesma).
 - **Cura ao longo do tempo de skill** → efeito com `EffectDef.heals`
   (cura `magnitude` por tick via `apply_heal`) — NUNCA um tick de cura
-  próprio num sistema novo.
+  próprio num sistema novo. Aplicar com `apply_effect(..., source_eid=
+  quem_cura)`: o tick cura em nome dele, e bônus de cura/efeitos de quem
+  cura (talentos) valem sozinhos. Ver HISTORICO_FEATURES.md §90.
+- **Espírito máximo** → `stats_system.sync_espirito_max(char, cs)` —
+  chamar também depois de aplicar cs_flags de talento.
 - **"Este talento pode receber ponto?" quanto à habilidade que ele
   melhora** → `world_systems.talent_skill_requirement_met` (campo
   `requires_skill` do talento) — tela de talentos e servidor usam a mesma.

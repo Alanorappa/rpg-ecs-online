@@ -202,6 +202,10 @@ def apply_heal(world, healer_eid: int, target_eid: int, amount: int, sid: str = 
     cs = world.get_component(target_eid, _CSheal)
     if cs is None or cs.current_hp <= 0 or amount <= 0:
         return 0
+    # Poder de cura de quem cura (Raízes Profundas)
+    healer_cs = world.get_component(healer_eid, _CSheal) if healer_eid >= 0 else None
+    if healer_cs is not None and healer_cs.cura_poder_bonus:
+        amount = int(round(amount * (1.0 + healer_cs.cura_poder_bonus)))
     healed = max(0, min(int(amount), cs.max_hp - cs.current_hp))
     cs.current_hp += healed
     if healed > 0 and _heal_event_sink is not None:
@@ -589,9 +593,11 @@ def apply_effect(
     on_expire_effect: str = "",
     on_expire_duration: float = 0.0,
     on_expire_magnitude: float = 0.0,
+    source_eid: int = -1,
 ) -> None:
     """
     Aplica ou atualiza um efeito de estado em uma entidade.
+    - source_eid: quem aplicou (HoT cura em nome dele via apply_heal).
 
     - Se o efeito não existir: cria e adiciona.
     - Se já existir: refresh pelo maior valor (duração e magnitude).
@@ -645,6 +651,8 @@ def apply_effect(
     if existing is not None:
         existing.duration  = max(existing.duration, duration)
         existing.magnitude = max(existing.magnitude, magnitude)
+        if source_eid != -1:
+            existing.source_eid = source_eid
         return
 
     resolved_tick = tick_interval if tick_interval is not None else defn.tick_interval
@@ -657,6 +665,7 @@ def apply_effect(
         on_expire_duration=on_expire_duration,
         on_expire_magnitude=on_expire_magnitude,
     )
+    sfx.effects[effect_type].source_eid = source_eid
     # Ordem de ativação pra buff bar (01/09/2026) — ponto único: todo
     # buff/debuff que passa por aqui ganha ordenação de graça, sem
     # precisar de call site novo em cada skill/talento/proc. Ver
@@ -868,7 +877,7 @@ class StatusEffectSystem:
         # Cura por tick de skill (EffectDef.heals, ex: corredor do Toque
         # Ancestral) — pelo ponto único de cura (limita ao máximo + "+X HP").
         if defn is not None and defn.heals:
-            apply_heal(self.world, -1, eid, dmg, sid=effect.effect_type)
+            apply_heal(self.world, effect.source_eid, eid, dmg, sid=effect.effect_type)
             return
 
         if effect.effect_type == "regen":

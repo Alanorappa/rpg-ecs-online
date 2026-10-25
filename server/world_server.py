@@ -5548,6 +5548,9 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
                 for eff in (t.get("effects") or []):
                     mod = Modifier(eff["attribute"], eff["value"] * points, eff["type"], source="talent")
                     add_modifier(cs, mod)
+            # Recurso que depende de cs_flag (Maré Espiritual → Espírito máximo)
+            from engine.stats_system import sync_espirito_max
+            sync_espirito_max(char, cs)
 
         # Preserva a PORCENTAGEM de HP (não o absoluto) em torno de TODA a
         # sequência acima — mesmo lugar único de verdade dos outros 4 pontos

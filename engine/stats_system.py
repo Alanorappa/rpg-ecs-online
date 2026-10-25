@@ -304,11 +304,19 @@ def apply_char_stats_to_combat(char_stats: CharacterStats,
         char_stats.max_concentration = new_max_conc
         char_stats.concentration     = new_max_conc  # inicia cheia
 
-    # Espírito (Xamã) — mesmo princípio da Concentração, inicia cheio
-    new_max_esp = CLASS_ESPIRITO.get(char_stats.class_id, 0) \
-        + int(getattr(combat_stats, "espirito_max_bonus", 0))
+    sync_espirito_max(char_stats, combat_stats)
+
+
+def sync_espirito_max(char_stats: CharacterStats, combat_stats: CombatStats) -> None:
+    """Espírito máximo = base da classe + `espirito_max_bonus` (Maré
+    Espiritual). Chamado também DEPOIS de aplicar os cs_flags de talento
+    (servidor e cliente), já que o bônus vem deles. Nunca enche a barra:
+    o Espírito começa em 0 e só corta se passar do novo máximo."""
+    if char_stats is None or combat_stats is None:
+        return
+    base = CLASS_ESPIRITO.get(char_stats.class_id, 0)
+    new_max_esp = base + int(getattr(combat_stats, "espirito_max_bonus", 0)) if base else 0
     if char_stats.max_espirito != new_max_esp:
-        # Começa em 0 (nunca enche ao ganhar o recurso) — 25/10/2026.
         char_stats.max_espirito = new_max_esp
         char_stats.espirito = min(char_stats.espirito, new_max_esp)
 

@@ -546,6 +546,12 @@ SKILL_CATALOG: dict[str, dict] = {
             "heal_sp_coeff": 1.20,
             "espirito_cost": 40,
             "min_cost":      15,  # Alma Generosa nunca baixa o custo além disso
+            # Talentos da Raiz
+            "pulso_hp_pct":  0.35,  # Pulso Vital: alvo abaixo disso
+            "pulso_bonus":   0.40,
+            "eco_bonus":     0.50,  # Eco Restaurador: somado na mesma cura
+            # Purificar o Espírito: remove o de maior tempo restante entre estes
+            "purify_effects": ("poison", "bleed", "burn", "fear", "slow"),
         },
     },
     # Skills base de treinador (Fase 2, 24/10/2026). Gavião/Bisão são "quest"

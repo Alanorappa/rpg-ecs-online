@@ -1216,7 +1216,8 @@ class SpellCompletionMixin:
             # +0.05: garante o último tick antes da expiração (tick e expiração
             # caem no mesmo passo do StatusEffectSystem).
             apply_effect(self.world, eid, "corredor_ancestral", dur + 0.05,
-                         magnitude=amount / ticks, tick_interval=dur / ticks)
+                         magnitude=amount / ticks, tick_interval=dur / ticks,
+                         source_eid=player_eid)
 
     def _server_investida_do_bisao(self, player_eid: int, target_id: int, _entry: dict) -> None:
         """Fim da arrancada: dano FÍSICO (80% da arma + 60% AP, via
@@ -1248,20 +1249,38 @@ class SpellCompletionMixin:
 
     def _server_sopro_da_coruja(self, player_eid: int, target_id: int, _entry: dict) -> None:
         """Cura 60 + 120% SP no alvo escolhido no início do cast (aliado ou o
-        próprio Xamã). Escrita de HP via apply_heal (ponto único)."""
-        from engine.components import CombatStats
+        próprio Xamã). Escrita de HP via apply_heal (ponto único).
+        Talentos da Raiz: Pulso Vital (+40% em alvo com pouca vida), Eco
+        Restaurador (chance de +50% na MESMA cura) e Purificar o Espírito
+        (remove o efeito negativo com mais tempo restante)."""
+        import random as _rnd_sc
+        from engine.components import CombatStats, StatusEffects
         from engine.core_systems import apply_heal
         from content.skill_config import SKILL_CATALOG as _SC_sc
         _p = _SC_sc.get("sopro_da_coruja", {}).get("params", {})
 
         if target_id == -1:
             return
+        target_cs = self.world.get_component(target_id, CombatStats)
+        if target_cs is None:
+            return
         player_cs = self.world.get_component(player_eid, CombatStats)
         sp = player_cs.spell_power if player_cs else 0
-        amount = _p.get("base_heal", 60) + int(sp * _p.get("heal_sp_coeff", 1.20))
-        if self.world.get_component(target_id, CombatStats) is not None:
-            apply_heal(self.world, player_eid, target_id, amount, sid="sopro_da_coruja")
-            _entry["_landed"] = True
+        amount = _p.get("base_heal", 60) + sp * _p.get("heal_sp_coeff", 1.20)
+        if player_cs is not None:
+            if (player_cs.sopro_pulso_vital and target_cs.max_hp > 0
+                    and target_cs.current_hp / target_cs.max_hp < _p.get("pulso_hp_pct", 0.35)):
+                amount *= 1.0 + _p.get("pulso_bonus", 0.40)
+            if player_cs.sopro_eco_chance and _rnd_sc.random() < player_cs.sopro_eco_chance:
+                amount *= 1.0 + _p.get("eco_bonus", 0.50)
+        apply_heal(self.world, player_eid, target_id, int(amount), sid="sopro_da_coruja")
+        _entry["_landed"] = True
+        if player_cs is not None and player_cs.sopro_purifica:
+            sfx = self.world.get_component(target_id, StatusEffects)
+            if sfx is not None:
+                bad = [k for k in _p.get("purify_effects", ()) if k in sfx.effects]
+                if bad:
+                    sfx.remove(max(bad, key=lambda k: sfx.effects[k].duration))
 
     def _server_nova_congelante(self, player_eid: int, target_id: int, entry: dict) -> None:
         from engine.components import CombatStats, TileMovement

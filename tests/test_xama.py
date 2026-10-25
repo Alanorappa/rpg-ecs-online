@@ -331,6 +331,109 @@ class TestSoproDaCoruja(_XamaDuelBase):
         self.assertGreaterEqual(self.char.espirito, 10)
 
 
+# ── Fase 3, bloco A: talentos da Raiz ────────────────────────────────────────
+
+class TestRaizBlocoA(_XamaDuelBase):
+    def setUp(self):
+        super().setUp()
+        self.ally = spawn_player(self.ws, "x_ra", 133, 374, class_id="guerreiro", hp=500)
+        self.acs = self.ws.world.get_component(self.ally, CombatStats)
+        self.acs.max_hp = 500
+
+    def _base(self):
+        return 60 + self.xcs.spell_power * 1.20
+
+    def _sopro(self):
+        self.ws._server_sopro_da_coruja(self.xama, self.ally, {})
+
+    def test_raizes_profundas_aumenta_toda_cura_do_xama(self):
+        self.acs.current_hp = 100
+        self.xcs.cura_poder_bonus = 0.12
+        core_systems.apply_heal(self.ws.world, self.xama, self.ally, 100)
+        self.assertEqual(self.acs.current_hp, 212)
+        # sem dono (-1) não ganha bônus de ninguém
+        core_systems.apply_heal(self.ws.world, -1, self.ally, 100)
+        self.assertEqual(self.acs.current_hp, 312)
+
+    def test_cura_ao_longo_do_tempo_cura_em_nome_de_quem_aplicou(self):
+        from engine.components import StatusEffects
+        self.acs.current_hp = 100
+        self.xcs.cura_poder_bonus = 0.10
+        core_systems.apply_effect(self.ws.world, self.ally, "corredor_ancestral", 1.05,
+                                  magnitude=50, tick_interval=1.0, source_eid=self.xama)
+        eff = self.ws.world.get_component(self.ally, StatusEffects).get("corredor_ancestral")
+        self.assertEqual(eff.source_eid, self.xama)
+        core_systems.StatusEffectSystem(self.ws.world)._apply_tick(self.ally, eff)
+        self.assertEqual(self.acs.current_hp, 155)
+
+    def test_pulso_vital_so_em_alvo_com_pouca_vida(self):
+        self.xcs.sopro_pulso_vital = True
+        self.acs.current_hp = 100            # 20%
+        self._sopro()
+        self.assertEqual(self.acs.current_hp, 100 + int(self._base() * 1.4))
+        self.acs.current_hp = 300            # 60%
+        self._sopro()
+        self.assertEqual(self.acs.current_hp, min(500, 300 + int(self._base())))
+
+    def test_eco_soma_50_na_mesma_cura(self):
+        from unittest import mock
+        self.xcs.sopro_eco_chance = 0.20
+        self.acs.current_hp = 100
+        with mock.patch("random.random", return_value=0.10):
+            self._sopro()
+        self.assertEqual(self.acs.current_hp, min(500, 100 + int(self._base() * 1.5)))
+        self.acs.current_hp = 100
+        with mock.patch("random.random", return_value=0.90):
+            self._sopro()
+        self.assertEqual(self.acs.current_hp, 100 + int(self._base()))
+
+    def test_purificar_remove_o_de_maior_tempo_restante(self):
+        from engine.components import StatusEffects
+        self.xcs.sopro_purifica = True
+        self.acs.current_hp = 100
+        core_systems.apply_effect(self.ws.world, self.ally, "poison", 4.0, magnitude=1)
+        core_systems.apply_effect(self.ws.world, self.ally, "slow", 9.0, magnitude=0.5)
+        self._sopro()
+        sfx = self.ws.world.get_component(self.ally, StatusEffects)
+        self.assertFalse(sfx.has("slow"))
+        self.assertTrue(sfx.has("poison"))
+
+    def test_sem_talento_nao_purifica(self):
+        from engine.components import StatusEffects
+        self.acs.current_hp = 100
+        core_systems.apply_effect(self.ws.world, self.ally, "poison", 4.0, magnitude=1)
+        self._sopro()
+        self.assertTrue(self.ws.world.get_component(self.ally, StatusEffects).has("poison"))
+
+    def test_mare_espiritual_aumenta_espirito_maximo_pelo_servidor(self):
+        alloc = {"raiz_alma_generosa": 1, "raiz_sopro_da_coruja": 1,
+                 "raiz_sussurros_constantes": 1, "raiz_eco_restaurador": 1,
+                 "raiz_pulso_vital": 1, "raiz_mare_espiritual": 3}
+        self.ws._apply_talent_modifiers(self.xama, alloc)
+        self.assertEqual(self.char.max_espirito, 130)
+        self.assertTrue(self.xcs.sopro_pulso_vital)
+        self.assertAlmostEqual(self.xcs.sopro_eco_chance, 0.04)
+
+    def test_mare_desalocada_corta_o_espirito(self):
+        from engine.stats_system import sync_espirito_max
+        self.xcs.espirito_max_bonus = 30
+        sync_espirito_max(self.char, self.xcs)
+        self.char.espirito = 125
+        self.xcs.espirito_max_bonus = 0
+        sync_espirito_max(self.char, self.xcs)
+        self.assertEqual((self.char.max_espirito, self.char.espirito), (100, 100))
+
+    def test_eco_exige_sopro_aprendido(self):
+        from engine.world_systems import talent_skill_requirement_met
+        from content.talent_data import TALENTS
+        t = TALENTS["raiz_eco_restaurador"]
+        self.assertFalse(talent_skill_requirement_met(
+            self.ws.world, self.xama, t, {"raiz_sussurros_constantes": 1}))
+        self.assertTrue(talent_skill_requirement_met(
+            self.ws.world, self.xama, t,
+            {"raiz_sussurros_constantes": 1, "raiz_alma_generosa": 1, "raiz_sopro_da_coruja": 1}))
+
+
 # ── Fase 2: mecânicas por dado no catálogo de efeitos ─────────────────────────
 
 class TestEfeitosPorDado(unittest.TestCase):

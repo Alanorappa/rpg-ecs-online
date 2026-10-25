@@ -6457,3 +6457,36 @@ básico do Xamã é à distância. Decisões do usuário: dano SÓ de SP
 Testes: `tests/test_xama.py` (55) — tipo por arma, arqueiro sem
 regressão, disparo de longe sem aljava com dano/Espírito, sem cajado não
 alcança, render da linha + luz.
+
+## 90. Xamã — talentos da Raiz, bloco A (25/10/2026)
+
+5 nós de `classe_xama.md` (Rastros de Alma ficou pro bloco B porque exige
+a Dádiva Antecipada). Decisões do usuário: Eco Restaurador soma +50% NA
+MESMA cura (um número só); Purificar remove o efeito negativo com MAIOR
+tempo restante.
+
+- **Raízes Profundas** (3 pts, +4%/pt): `CombatStats.cura_poder_bonus` de
+  quem CURA, aplicado dentro de `core_systems.apply_heal` (ponto único) —
+  vale pra toda cura do Xamã, inclusive tick de HoT.
+- **HoT cura em nome de quem aplicou**: `ActiveEffect.source_eid` (novo,
+  -1 = sem dono) + `apply_effect(..., source_eid=)`; o tick de
+  `EffectDef.heals` passa o dono pro `apply_heal` (antes ia -1). O
+  corredor do Toque já passa o Xamã. Base pros talentos do bloco B
+  (Pele de Raiz/Dádiva também dependem de quem curou).
+- **Eco Restaurador** (5 pts, 4%/pt), **Pulso Vital** (+40% em alvo <35%)
+  e **Purificar o Espírito** (remove 1 de veneno/sangramento/queimadura/
+  medo/lentidão): flags no CombatStats lidas só por
+  `_server_sopro_da_coruja`; números e lista de efeitos nos `params` do
+  Sopro (`skill_config.py`). Remoção sincroniza sozinha (snapshot de
+  efeitos por tick).
+- **Maré Espiritual** (3 pts, +10/pt): `espirito_max_bonus` (já existia).
+  Novo `stats_system.sync_espirito_max(char, cs)` — chamado por
+  `apply_char_stats_to_combat` E depois dos cs_flags de talento (servidor
+  `_apply_talent_modifiers`, cliente `apply_talent_effects`), já que o
+  bônus vem de cs_flag aplicado DEPOIS do recálculo de atributos. Nunca
+  enche a barra; desalocar corta o excesso.
+- Eco, Pulso e Purificar têm `requires_skill: "sopro_da_coruja"`.
+
+Testes: `tests/test_xama.py` (64) — bônus de cura (com e sem dono), HoT
+em nome do dono, Pulso, Eco (sorteio fixado), Purificar (maior tempo /
+sem talento), Maré pelo servidor e ao desalocar, requisito de habilidade.
