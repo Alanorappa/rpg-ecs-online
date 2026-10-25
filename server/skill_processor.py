@@ -635,7 +635,15 @@ class SkillProcessorMixin:
             # Envia SKILL_RESULT sempre: sucesso (com dano/efeitos) OU falha (failed=True).
             # Cliente usa failed=True para restaurar carga consumida localmente + limpar pending.
             if results_targets or _skill_ok:
-                _eff_cd    = getattr(skill_obj, "current_cooldown", skill_obj.cooldown) if skill_obj else None
+                # O cliente recebe o MESMO cooldown que acabou de ser
+                # registrado acima (_eff_cd_store) — nunca o current_cooldown
+                # cru do objeto: handler que não o escreve (skills instantâneas
+                # do Xamã) mandava 0, o cliente zerava a barra e o cooldown só
+                # aparecia quando o servidor recusava o uso seguinte.
+                if _skill_ok:
+                    _eff_cd = _eff_cd_store
+                else:
+                    _eff_cd = getattr(skill_obj, "current_cooldown", skill_obj.cooldown) if skill_obj else None
                 _has_cast  = getattr(skill_obj, "cast_time", 0.0) > 0
                 _result_entry = {
                     "caster_eid": player_eid,

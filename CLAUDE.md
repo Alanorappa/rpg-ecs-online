@@ -409,6 +409,11 @@ padrão a quebrar, não só os bugs individuais.
   **empurrão server-side** → `_server_knockback`
   (`server/spell_completion_processor.py`) — NUNCA copiar o laço de
   Bresenham/colisão de novo numa skill nova.
+- **Cooldown que o cliente recebe ao usar uma skill** → o SKILL_RESULT de
+  sucesso (`server/skill_processor.py`) manda o cooldown REGISTRADO pelo
+  servidor, nunca o `current_cooldown` cru do handler — handler novo não
+  precisa escrever `current_cooldown` (só se quiser reduzir o cooldown).
+  Ver HISTORICO_BUGS.md §104.
 - **Custo de Espírito** → `SkillHandlers._espirito_cost` (handler,
   checagem do cliente e hotbar usam a mesma).
 - **Cura ao longo do tempo de skill** → efeito com `EffectDef.heals`

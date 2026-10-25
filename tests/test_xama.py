@@ -533,6 +533,17 @@ class TestSkillsBaseFase2(_XamaDuelBase):
         self.assertTrue(self._sfx(self.ally).has("espirito_do_lobo"))
         self.assertAlmostEqual(self.char.espirito, 85, delta=0.6)
 
+    def test_skill_instantanea_manda_o_cooldown_real_ao_cliente(self):
+        # Bug real: handler instantâneo que não escreve current_cooldown fazia
+        # o SKILL_RESULT de sucesso levar cooldown=0 (barra sumia no cliente).
+        self.ws._skill_results_this_tick.clear()
+        self.ws.queue_skill("x_xama", "espirito_do_lobo", tid=-1, dir_x=0.0, dir_y=0.0, ts=0)
+        run_ticks(self.ws, 1, dt=0.05)
+        ok = [r for r in self.ws._skill_results_this_tick
+              if r.get("sid") == "espirito_do_lobo" and not r.get("failed")]
+        self.assertTrue(ok, "sem SKILL_RESULT de sucesso")
+        self.assertEqual(ok[0]["cooldown"], 30.0)
+
     def test_lobo_sem_aliado_vai_em_si(self):
         self._cast("espirito_do_lobo", -1, 2)
         self.assertTrue(self._sfx(self.xama).has("espirito_do_lobo"))
@@ -664,6 +675,8 @@ class TestFlechaEspiritual(_XamaDuelBase):
         from content.item_table import ITEMS
         self.assertEqual(ranged_auto_attack(self.ws.world, self.xama)[0], "spirit")
         self.eq.slots["mainhand"] = ITEMS["lich_scepter"]()
+        self.assertEqual(ranged_auto_attack(self.ws.world, self.xama)[0], "spirit")
+        self.eq.slots["mainhand"] = ITEMS["starter_staff"]()   # Cajado do Iniciante
         self.assertEqual(ranged_auto_attack(self.ws.world, self.xama)[0], "spirit")
         self.eq.slots["mainhand"] = None
         self.assertEqual(ranged_auto_attack(self.ws.world, self.xama), ("", 1))

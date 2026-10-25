@@ -6834,3 +6834,27 @@ Testes: `tests/test_mob_return_trail.py` (passos/laço/empurrão em unidade;
 integração arrastando o mob pela rota real e voltando com o A* QUEBRADO de
 propósito — só a trilha leva pra casa).
 
+## 104. Cooldown de skill instantânea do Xamã não aparecia na barra até tentar usar de novo (25/10/2026)
+
+Relato do usuário: no mundo aberto, com o Xamã, o cooldown sumia depois
+de usar a skill e só aparecia ao tentar usar de novo. Suspeita dele: ter
+subido o nível pelo God Mode. **Não era isso** — mesmo sintoma do §174
+(PROBLEMAS_ARQUITETURA.md), mas causa diferente.
+
+**Causa**: `server/skill_processor.py` mandava no SKILL_RESULT de SUCESSO
+de skill instantânea o `current_cooldown` CRU do objeto Skill do servidor
+— só preenchido pelos handlers que o escrevem. Os 4 instantâneos do Xamã
+(Espírito do Lobo, Pele do Urso, Marca do Gavião, Investida do Bisão) não
+escrevem → `cooldown: 0` → cliente zerava a barra. O servidor, por outro
+lado, registrava o cooldown certo (fallback pro catálogo) e recusava o
+uso seguinte com o tempo restante — só aí a barra aparecia.
+
+**Fix**: o SKILL_RESULT de sucesso manda o MESMO valor que acabou de ser
+registrado (`_eff_cd_store`) — genérico, vale pra qualquer handler
+instantâneo atual ou futuro (nenhum handler precisa lembrar de escrever
+`current_cooldown`).
+
+Teste: `tests/test_xama.py::TestSkillsBaseFase2::
+test_skill_instantanea_manda_o_cooldown_real_ao_cliente` — revert-to-
+confirm: sem o fix, `cooldown` volta 0 e o teste falha.
+
