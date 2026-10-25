@@ -2631,6 +2631,8 @@ class EnemyAISystem(System):
     MAX_LEASH_RADIUS_DMG = 25  # tiles: raio maior quando aggroed por dano (evita reset por 1 hit + recuo)
     MAX_PATHFINDS_PER_FRAME = 10  # limite de chamadas A* por frame (evita travamento com muitos inimigos)
     UNREACHABLE_GIVE_UP_S   = 3.0  # alvo sem caminho por tanto tempo seguido → desiste (RETURNING), §102
+    FREE_CHASE_RADIUS_TILES = 8    # dentro deste raio do spawn, passos não contam (§103)
+    MAX_CHASE_STEPS_OUTSIDE = 12   # passos fora do raio livre → desiste (8 + 12 ≈ 20 tiles)
     # Orçamento por tick pro CORPO do loop_mobs (06/09/2026,
     # PROBLEMAS_ARQUITETURA.md §121) — mesmo princípio de
     # MAX_PATHFINDS_PER_FRAME (nunca descarta, só adia pro próximo tick),
@@ -2863,6 +2865,85 @@ class EnemyAISystem(System):
             _emit = _svc.get("emit_ai_event")
             if _emit:
                 _emit(enemy_id, kind)
+
+    # ── Trilha de volta + coleira por passos (§103) ─────────────────────────
+
+    @staticmethod
+    def _line_tiles(a, b):
+        """Tiles de a até b (Bresenham, inclui os dois) — preenche saltos
+        de mais de 1 tile (empurrão) na trilha."""
+        (x0, y0), (x1, y1) = a, b
+        dx, dy = abs(x1 - x0), -abs(y1 - y0)
+        sx, sy = (1 if x0 < x1 else -1), (1 if y0 < y1 else -1)
+        err, out = dx + dy, [(x0, y0)]
+        while (x0, y0) != (x1, y1):
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy; x0 += sx
+            if e2 <= dx:
+                err += dx; y0 += sy
+            out.append((x0, y0))
+        return out
+
+    def _record_trail(self, ai_ctrl, tm, spawn_tile) -> None:
+        """Anota o tile atual na trilha (só em briga). Cruzar a própria
+        trilha corta o laço; cada tile novo fora do raio livre conta passo."""
+        cur = (tm.current_tile_x, tm.current_tile_y)
+        trail = ai_ctrl.return_trail
+        if not trail:
+            trail.append(cur)
+            return
+        if cur == trail[-1]:
+            return
+        for t in self._line_tiles(trail[-1], cur)[1:]:
+            if t in trail:
+                del trail[trail.index(t) + 1:]
+            else:
+                trail.append(t)
+            if chebyshev(t[0], t[1], spawn_tile[0], spawn_tile[1]) > self.FREE_CHASE_RADIUS_TILES:
+                ai_ctrl.steps_outside += 1
+
+    def _leash_reason(self, ai_ctrl, dist_from_spawn: int) -> str:
+        """"" se pode continuar perseguindo; senão o motivo da coleira:
+        distância do spawn (20/25) ou passos fora do raio livre (12)."""
+        _r = self.MAX_LEASH_RADIUS_DMG if ai_ctrl.aggroed_by_damage else self.MAX_LEASH_RADIUS
+        if dist_from_spawn > _r:
+            return "distancia"
+        if ai_ctrl.steps_outside >= self.MAX_CHASE_STEPS_OUTSIDE:
+            return "passos"
+        return ""
+
+    def _follow_return_trail(self, enemy_pos, ai_ctrl, tm) -> bool:
+        """Volta pra casa refazendo a trilha ao contrário, ATRAVESSANDO
+        criaturas (mob evadindo não colide — decisão do usuário). True =
+        tratado (andou ou esperando o passo terminar); False = sem trilha
+        utilizável → o chamador usa a volta antiga por A*."""
+        trail = ai_ctrl.return_trail
+        if not trail:
+            return False
+        if tm.is_moving:
+            return True
+        cur = (tm.current_tile_x, tm.current_tile_y)
+        if cur != trail[-1]:
+            if cur in trail:
+                del trail[trail.index(cur) + 1:]
+            elif chebyshev(cur[0], cur[1], trail[-1][0], trail[-1][1]) <= 2:
+                # Passo dado no mesmo tick em que desistiu (ainda não anotado)
+                trail.extend(self._line_tiles(trail[-1], cur)[1:])
+            else:
+                trail.clear()
+                return False
+        if len(trail) < 2:
+            trail.clear()
+            return False
+        nx, ny = trail[-2]
+        tmap = self._get_tilemap()
+        if tmap is not None and tmap.tile_matrix[ny][nx].is_solid:
+            trail.clear()          # mapa mudou (ex: F10) — cai no A*
+            return False
+        start_tile_movement(enemy_pos, tm, nx, ny)
+        trail.pop()
+        return True
 
     @staticmethod
     def _ignored_as_unreachable(ai_ctrl, cand_eid: int, cand_tm) -> bool:
@@ -3386,6 +3467,14 @@ class EnemyAISystem(System):
             if ai_control.target_eid != -1 and ai_control.state in self._ENGAGED_STATES:
                 ai_control._fx_last_target = ai_control.target_eid
 
+            # Trilha de volta + passos (§103): anota em briga, zera em repouso.
+            if ai_control.state in self._ENGAGED_STATES:
+                self._record_trail(ai_control, tile_movement,
+                                   (int(initial_pos.x / TILE_SIZE), int(initial_pos.y / TILE_SIZE)))
+            elif ai_control.state == "IDLE" and (ai_control.return_trail or ai_control.steps_outside):
+                ai_control.return_trail.clear()
+                ai_control.steps_outside = 0
+
             # Identidade para debug (lookup lazy — custo zero quando MCL desativado)
             if _MCL and _MCL.DBG_ENABLED:
                 _dbg_ident = self.world.get_component(enemy_id, EntityIdentity)
@@ -3504,6 +3593,9 @@ class EnemyAISystem(System):
                     # nem voltavam pro spawn; só um restart do servidor, que recria
                     # AIControlled do zero, "curava" os mobs já travados).
                     ai_control.is_blocked = False
+                    # Volta pela trilha (§103) — só cai no A* abaixo sem trilha.
+                    if self._follow_return_trail(enemy_pos, ai_control, tile_movement):
+                        continue
                     # Recalcula só quando o timer expira — se a busca falhar (path
                     # vazio), o timer já foi renovado e evita recálculo a cada tick
                     # (com muitos mobs retornando ao mesmo tempo, isso saturava o
@@ -3773,13 +3865,11 @@ class EnemyAISystem(System):
                     tile_movement.current_tile_x, tile_movement.current_tile_y,
                     _early_spawn_tile_x, _early_spawn_tile_y
                 )
-                _early_leash_radius = (self.MAX_LEASH_RADIUS_DMG
-                                        if ai_control.aggroed_by_damage
-                                        else self.MAX_LEASH_RADIUS)
-                if _early_dist_from_spawn > _early_leash_radius:
+                _early_leash = self._leash_reason(ai_control, _early_dist_from_spawn)
+                if _early_leash:
                     if _MCL: _MCL.log("LEASH", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
                                       dist_spawn=f"{_early_dist_from_spawn}t",
-                                      leash_r=_early_leash_radius,
+                                      motivo=_early_leash, passos=ai_control.steps_outside,
                                       prev=_dbg_prev_state, early="attacking")
                     from engine.core_systems import force_mob_give_up_target as _early_give_up
                     _early_give_up(self.world, enemy_id, ai_control.target_eid)
@@ -4032,11 +4122,13 @@ class EnemyAISystem(System):
                              if ai_control.aggroed_by_damage
                              else self.MAX_LEASH_RADIUS)
 
-            if ai_control.state in ("CHASING", "ATTACKING") and \
-                    _dist_from_spawn > _leash_radius:
+            _leash = (self._leash_reason(ai_control, _dist_from_spawn)
+                      if ai_control.state in ("CHASING", "ATTACKING") else "")
+            if _leash:
                 if _MCL: _MCL.log("LEASH", enemy_id, _dbg_name, _dbg_race, _dbg_cls,
                                   dist_spawn=f"{_dist_from_spawn}t",
-                                  leash_r=_leash_radius,
+                                  leash_r=_leash_radius, motivo=_leash,
+                                  passos=ai_control.steps_outside,
                                   prev=_dbg_prev_state)
                 from engine.core_systems import force_mob_give_up_target
                 force_mob_give_up_target(self.world, enemy_id, target_eid)
@@ -4313,6 +4405,9 @@ class EnemyAISystem(System):
                     # RETURNING)" ter virado False; sem o reset, a mesma classe de
                     # bug (mob travado pra sempre) também acontecia por este lado.
                     ai_control.is_blocked = False
+                    # Volta pela trilha (§103) — só cai no A* abaixo sem trilha.
+                    if self._follow_return_trail(enemy_pos, ai_control, tile_movement):
+                        continue
                     if should_recalculate_path:
                         # Reaproveita `all_occupied_tiles` — ver `_tile_of` (05/08/2026).
                         dynamic_obstacles_for_return = all_occupied_tiles - {self._tile_of(tile_movement)}

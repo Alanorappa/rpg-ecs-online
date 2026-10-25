@@ -6802,3 +6802,35 @@ Teste: `tests/test_mob_unreachable_target.py` (falha no código antigo:
   → desiste". O alvo andar apaga a memória. Agro por dano e puxão de
   grupo não passam pela aquisição, então continuam valendo.
 
+## 103. Mob dava evade longe do spawn e ficava parado (e imune) pra sempre (24/10/2026)
+
+**Sintoma (playtest do usuário)**: mob puxado pra longe do spawn de
+propósito pra forçar o evade — em vez de voltar, ficou parado. Log: LEASH
+a 21 tiles do spawn, nada depois.
+
+**Causa**: a volta pra casa (os 2 blocos de RETURNING em
+`EnemyAISystem.update`) usava o MESMO A* limitado da perseguição
+(retângulo + folga, 300 nós, Manhattan ≤ 60). Medido: ~4–8% das voltas a
+~21 tiles falham (a folga 8 ou 12 não muda nada). Sem caminho, o mob fica
+em RETURNING — imune — tentando de novo pra sempre. Pré-existente; não
+foi causado pelas mudanças do §102.
+
+**Correção (desenho do usuário)**:
+- **Trilha de volta** (`AIControlled.return_trail`): enquanto briga, o mob
+  anota cada tile pisado (`_record_trail`; cruzar a própria trilha corta o
+  laço; empurrão preenche os tiles intermediários por Bresenham). A volta
+  (`_follow_return_trail`) refaz a trilha ao contrário, ATRAVESSANDO
+  criaturas (decisão do usuário). Sem trilha utilizável (mapa editado,
+  posição fora da trilha) → volta antiga por A*.
+- **Coleira por passos** (`AIControlled.steps_outside`,
+  `_leash_reason`): passos fora do raio livre de 8 tiles do spawn
+  (`FREE_CHASE_RADIUS_TILES`) contam; 12 (`MAX_CHASE_STEPS_OUTSIDE`) →
+  desiste pelo mesmo `force_mob_give_up_target` da coleira. A coleira de
+  distância (20/25) continua como teto extra. Mudança de comportamento:
+  mob desiste bem mais cedo quando o alvo o leva pra longe (≈20 tiles
+  andados no máximo).
+
+Testes: `tests/test_mob_return_trail.py` (passos/laço/empurrão em unidade;
+integração arrastando o mob pela rota real e voltando com o A* QUEBRADO de
+propósito — só a trilha leva pra casa).
+

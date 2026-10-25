@@ -389,6 +389,10 @@ padrão a quebrar, não só os bugs individuais.
 - **Coleta (harvestable) exclusiva de quest nunca é sólida** — quem não
   tem a quest não a vê; colisão explícita via `"solid"` no JSON do
   mapa. Ver HISTORICO_BUGS.md §101.
+- **Mob voltando pra casa** → `EnemyAISystem._follow_return_trail`
+  (refaz a trilha anotada) antes de qualquer A*; **"pode continuar
+  perseguindo?"** → `_leash_reason` (distância + passos fora do raio
+  livre) — NUNCA um 3º critério de coleira solto. Ver HISTORICO_BUGS.md §103.
 - **Reagir a mudança de estado de IA de mob (aggro/evade/etc.)** →
   `EnemyAISystem._emit_ai_state_fx` (compara com `AIControlled.
   _fx_last_state`, ponto único) — NUNCA um aviso novo em cada ponto que

@@ -496,6 +496,15 @@ class AIControlled:
     # vier: proximidade, dano, puxão de grupo, leash, desistência...).
     _fx_last_state: str = "IDLE"
     _fx_last_target: int = -1
+    # Trilha de volta + coleira por passos (24/10/2026, desenho do usuário,
+    # HISTORICO_BUGS.md §103): tiles que o mob pisou desde que entrou em
+    # briga (laço cortado quando ele cruza a própria trilha); a volta pra
+    # casa refaz a trilha ao contrário (nunca falha por parede, ao
+    # contrário do A* limitado). steps_outside conta os tiles novos pisados
+    # FORA de EnemyAISystem.FREE_CHASE_RADIUS_TILES do spawn; chegou em
+    # MAX_CHASE_STEPS_OUTSIDE → desiste (mesma desistência da coleira).
+    return_trail: list = field(default_factory=list)
+    steps_outside: int = 0
 
 @dataclass
 class InitialPosition:
