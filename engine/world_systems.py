@@ -2837,6 +2837,33 @@ class EnemyAISystem(System):
             return self._pathfinding.find_path(start, end, dynamic_obstacles=dynamic_obstacles)
         return find_path(start, end, dynamic_obstacles=dynamic_obstacles)
 
+    # Estados em que o mob está brigando (sair de IDLE pra um deles = "Aggro";
+    # sair de um deles pra RETURNING = "Evadiu").
+    _ENGAGED_STATES = frozenset({"AGGRO_DELAY", "CHASING", "ATTACKING",
+                                 "KITING", "BLOCKED_BY_PLAYER"})
+
+    def _emit_ai_state_fx(self, enemy_id: int, ai_ctrl) -> None:
+        """Avisa (via _svc["emit_ai_event"], registrado pelo servidor) a
+        transição IDLE→briga ("aggro") e briga→RETURNING ("evade"). Volta
+        pra casa porque o alvo MORREU não é evade. Atualiza o último estado
+        avisado."""
+        prev, cur = ai_ctrl._fx_last_state, ai_ctrl.state
+        kind = None
+        # prev RETURNING também conta: o último estado avisado pode ter
+        # ficado velho se o mob dormiu (longe de player) no meio da volta.
+        if prev not in self._ENGAGED_STATES and cur in self._ENGAGED_STATES:
+            kind = "aggro"
+        elif prev in self._ENGAGED_STATES and cur == "RETURNING":
+            _old_cs = self.world.get_component(ai_ctrl._fx_last_target, CombatStats) \
+                if ai_ctrl._fx_last_target != -1 else None
+            if _old_cs is not None and _old_cs.current_hp > 0:
+                kind = "evade"
+        ai_ctrl._fx_last_state = cur
+        if kind is not None:
+            _emit = _svc.get("emit_ai_event")
+            if _emit:
+                _emit(enemy_id, kind)
+
     @staticmethod
     def _ignored_as_unreachable(ai_ctrl, cand_eid: int, cand_tm) -> bool:
         """True se `cand_eid` é o alvo do qual este mob desistiu por não
@@ -3350,6 +3377,14 @@ class EnemyAISystem(System):
             # pouco — sem isto, um mob que nasce adjacente ao alvo nunca
             # puxava os vizinhos do grupo.
             _was_idle_this_tick = (ai_control.state == "IDLE")
+
+            # Texto "Aggro"/"Evadiu" (24/10/2026, pedido do usuário) — ponto
+            # único: compara o estado atual com o último já avisado, então
+            # pega a transição de QUALQUER origem (até 1 tick depois).
+            if ai_control.state != ai_control._fx_last_state:
+                self._emit_ai_state_fx(enemy_id, ai_control)
+            if ai_control.target_eid != -1 and ai_control.state in self._ENGAGED_STATES:
+                ai_control._fx_last_target = ai_control.target_eid
 
             # Identidade para debug (lookup lazy — custo zero quando MCL desativado)
             if _MCL and _MCL.DBG_ENABLED:

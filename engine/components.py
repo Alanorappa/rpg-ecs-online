@@ -490,6 +490,12 @@ class AIControlled:
     # desiste → vê de novo → agra" entra em loop. O alvo andar libera.
     unreachable_target_eid: int = -1
     unreachable_target_tile: tuple = (-1, -1)
+    # Último estado/alvo já avisados ao cliente como texto "Aggro"/"Evadiu"
+    # (24/10/2026) — EnemyAISystem compara com o estado atual no início do
+    # tick do mob (ponto único de detecção da transição, venha ela de onde
+    # vier: proximidade, dano, puxão de grupo, leash, desistência...).
+    _fx_last_state: str = "IDLE"
+    _fx_last_target: int = -1
 
 @dataclass
 class InitialPosition:

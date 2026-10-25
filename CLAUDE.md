@@ -389,6 +389,10 @@ padrão a quebrar, não só os bugs individuais.
 - **Coleta (harvestable) exclusiva de quest nunca é sólida** — quem não
   tem a quest não a vê; colisão explícita via `"solid"` no JSON do
   mapa. Ver HISTORICO_BUGS.md §101.
+- **Reagir a mudança de estado de IA de mob (aggro/evade/etc.)** →
+  `EnemyAISystem._emit_ai_state_fx` (compara com `AIControlled.
+  _fx_last_state`, ponto único) — NUNCA um aviso novo em cada ponto que
+  escreve `ai.state`. Ver HISTORICO_FEATURES.md §87.
 - **Arrancada até o alvo** → `SkillHandlers._begin_dash_adjacent`;
   **empurrão server-side** → `_server_knockback`
   (`server/spell_completion_processor.py`) — NUNCA copiar o laço de

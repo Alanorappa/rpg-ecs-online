@@ -989,6 +989,22 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         from engine.core_systems import register_absorb_event_sink as _reg_abs_sink
         _reg_abs_sink(_on_absorb_event)
 
+        # Mob/NPC saiu de IDLE pra briga ("aggro") ou desistiu e voltou pra
+        # casa ("evade") — EnemyAISystem._emit_ai_state_fx. Só o texto no
+        # cliente; vai pela mesma lista de combate (filtro por AOI de graça).
+        def _on_ai_event(mob_eid: int, kind: str) -> None:
+            from engine.components import CombatStats as _CSai
+            _cs_ai = _srv_ref.world.get_component(mob_eid, _CSai)
+            _srv_ref._combat_this_tick.append({
+                "attacker": mob_eid,
+                "target":   mob_eid,
+                "damage":   0,
+                "outcome":  kind,
+                "hp_after": max(0, _cs_ai.current_hp) if _cs_ai else 0,
+                "source":   "ai",
+            })
+        _sys_svc["emit_ai_event"] = _on_ai_event
+
         # P4: injeção direta de serviços por bundle — elimina dependência no global _svc.
         # `perf_push=self._perf_push, perf_pop=self._perf_pop` (Fase 4.5,
         # 12/08/2026, atualizado Fase 4.7 — ver PROBLEMAS_ARQUITETURA.md

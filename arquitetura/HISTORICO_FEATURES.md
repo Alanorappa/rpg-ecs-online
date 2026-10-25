@@ -6322,3 +6322,27 @@ Regressão: 41 arquivos que tocam Interceptar/Tiro Repulsivo/Camuflagem/
 dano/efeitos — só as falhas pré-existentes já listadas no §85 (+2 de
 `test_minions.py` e 1 de `test_npc_service_unlock.py`, também
 pré-existentes, conferidas num worktree do commit anterior).
+
+## 87. Texto "Aggro"/"Evadiu" sobre mob e NPC (24/10/2026)
+
+Pedido do usuário (validar visualmente quando um mob/NPC agra e quando
+desiste — a correção de alvo inalcançável, HISTORICO_BUGS.md §102, não
+tinha nada visível). Decisões do usuário: "Aggro" sempre que sai do
+repouso pra briga, "Evadiu" sempre, texto curto (sem nome do alvo).
+
+- **Ponto único de detecção**: `EnemyAISystem._emit_ai_state_fx`, chamado
+  no início do tick de cada mob quando `AIControlled.state` difere do
+  último avisado (`_fx_last_state`) — pega a transição de QUALQUER
+  origem (proximidade, dano, puxão de grupo, leash, invisibilidade,
+  inalcançável) sem um aviso por call site. Repouso (IDLE ou RETURNING)
+  → briga = "aggro"; briga → RETURNING = "evade", exceto quando o alvo
+  da briga (`_fx_last_target`, atualizado todo tick) morreu.
+- **Rede**: `_svc["emit_ai_event"]` (WorldServer) → resultado de combate
+  outcome `"aggro"`/`"evade"` na mesma lista de combate (filtro de AOI de
+  graça, sem mensagem nova; torre/minion ignoram, `source="ai"`).
+  Cliente (`client/remote_entity_handlers.py::_apply_combat_result`)
+  mostra "Aggro" (laranja) / "Evadiu" (cinza) sobre o mob.
+- Vale pra mob hostil e NPC de combate (usam o mesmo EnemyAISystem).
+
+Testes: `tests/test_mob_ai_fx_events.py` (aggro + evade quando o alvo
+some; alvo morto não é evade).

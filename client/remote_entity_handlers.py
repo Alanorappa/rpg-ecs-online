@@ -267,6 +267,18 @@ class RemoteEntityHandlers:
         # DoT/HoT ticks: source != "auto"/"skill" — sem som (bleed, poison, burn, regen…)
         _is_dot_hot     = source not in ("auto", "skill")
 
+        # Mob/NPC saiu do repouso pra briga ("aggro") ou desistiu e voltou
+        # pra casa ("evade") — só texto sobre ele (24/10/2026, pedido do usuário).
+        if outcome in ("aggro", "evade"):
+            _ai_eid = self._resolve_server_eid(server_target)
+            _ai_pos = self.world.get_component(_ai_eid, Position) if _ai_eid != -1 else None
+            if _ai_pos is not None:
+                if outcome == "aggro":
+                    FLT.add("Aggro", _ai_pos.x, _ai_pos.y, (255, 120, 60), "small", target_id=_ai_eid)
+                else:
+                    FLT.add("Evadiu", _ai_pos.x, _ai_pos.y, (170, 170, 170), "small", target_id=_ai_eid)
+            return
+
         # Escudo absorveu dano (24/10/2026, Pele do Urso — pedido do usuário):
         # só o texto "Absorveu(X)" no alvo; HP chega pelo canal normal.
         if outcome == "absorb":
