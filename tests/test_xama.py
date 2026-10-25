@@ -614,6 +614,13 @@ class TestArmasDoXama(unittest.TestCase):
             self.assertTrue(ok(self._item("weapon", st), "xama"), st)
         self.assertTrue(ok(self._item("shield"), "xama"))
 
+    def test_todo_cajado_e_de_duas_maos(self):
+        from content.item_table import ITEMS
+        for key, f in ITEMS.items():
+            it = f()
+            if getattr(it, "subtype", "") in ("Staff", "Scepter"):
+                self.assertTrue(it.two_handed, key)
+
     def test_proibidas(self):
         from engine.stats_system import is_weapon_allowed_for_class as ok
         for st in ("Wand", "Sword", "Dagger", "Bow"):

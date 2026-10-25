@@ -113,11 +113,11 @@ _RAW_ITEMS = {
         damage_min=2, damage_max=3, attack_speed=2.2, subtype="Club"),
 
     # Arma inicial do Xamã (25/10/2026) — entregue pela quest de introdução
-    # da classe (futura). Uma mão: o Xamã iniciante pode usar escudo.
+    # da classe (futura). Cajado é SEMPRE de duas mãos (sem escudo).
     "starter_staff": lambda: Item(
         "Cajado do Iniciante", "weapon", "mainhand",
         modifiers=[], rarity="common", value=10,
-        damage_min=1, damage_max=3, attack_speed=2.1, subtype="Staff",
+        damage_min=1, damage_max=3, attack_speed=2.1, two_handed=True, subtype="Staff",
         description="Esse cajado foi esculpido e abençoado por Maelor e seu lobo ancestral."),
 
     "wood_wand": lambda: Item(
