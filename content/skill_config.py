@@ -755,9 +755,9 @@ INITIAL_SKILLS_BY_CLASS: dict[str, list] = {
     # (quests_data.py) e SKILL_LEVEL_REQUIREMENTS/SKILL_COSTS acima.
     "mago":      [],
     "arqueiro":  [],
-    # Xamã: Toque Ancestral é o ataque principal e ainda não existe treinador
-    # de Xamã no mapa — nasce aprendida (trocar pra treinador quando houver NPC).
-    "xama":      ["toque_ancestral"],
+    # Xamã: Toque Ancestral vem da quest "ecos_do_cajado" (Maelor), como o
+    # Recarregar do arqueiro — não nasce aprendida (26/10/2026).
+    "xama":      [],
 }
 
 # ---------------------------------------------------------------------------

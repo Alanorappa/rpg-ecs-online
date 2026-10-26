@@ -12,6 +12,9 @@ Tipos de objetivo (ObjectiveDef.type):
                       (isso é "use_skill"). Só PvE (mob) por enquanto, mesmo
                       escopo de "kill". Disparado em
                       server/combat_processor.py::_process_player_attacks.
+                      params={"ranged_kind": "spirit"} (opcional) só conta
+                      acerto da flecha espiritual (cajado do Xamã); "arrow"
+                      = arco.
     collect_item      Coletar N de loot_item de target. Drop condicional via loot_chance.
                       loot_item = item_id (chave de ITEMS/MATERIALS/RECIPES/
                       QUEST_ITEMS, não mais o nome de exibição — ver débito C2,
@@ -651,6 +654,62 @@ QUESTS: dict[str, QuestDef] = {
         completion="Viu como é simples? Um segundo de atenção agora economiza sua vida depois. "
                     "Guarde esse hábito: recarregue ANTES da batalha — no meio dela, você não vai "
                     "ter esse segundo.",
+    ),
+
+    # ── Quests Xamã (26/10/2026 — textos em rascunho, revisar) ───────────────
+
+    "bem_vindo_xama": QuestDef(
+        title="Bem-vindo!",
+        description="Bem-vindo, {player_name}. Gente como você o povo da vila chama de "
+                    "necromante pelas costas — não ligue, eles chamam de bruxaria tudo o que não "
+                    "entendem. Os guerreiros confiam no aço, os magos no fogo; você vai confiar nos "
+                    "que vieram antes. Vá falar com Maelor Lobo Alfa, o Xamã Ancião. Ele escuta os "
+                    "espíritos há mais tempo do que esta vila existe, e vai te dar o que precisa pra "
+                    "começar.",
+        objectives=(
+            ObjectiveDef(type="talk_to_npc", target="Maelor Lobo Alfa", count=1),
+        ),
+        reward=QuestReward(xp=10, items=("starter_staff",)),
+        class_req="xama",
+        completion="Então os ancestrais te mandaram até mim. Meu lobo sentiu você antes de você "
+                    "chegar. Toma este cajado — eu mesmo o esculpi, e ele foi abençoado à luz da lua. "
+                    "Ainda não é muita coisa, mas os espíritos ouvem melhor quem chama através dele.",
+    ),
+
+    "ecos_do_cajado": QuestDef(
+        title="Ecos do Cajado",
+        description="Um cajado na mão não faz de você um xamã. Equipe-o e chame os espíritos "
+                    "através dele: cada golpe que você lança com o cajado é um eco dos que vieram "
+                    "antes. Vá até o boneco de treino e acerte-o cinco vezes com esses ecos. Quero "
+                    "ver se os espíritos atendem quando você chama.",
+        objectives=(
+            ObjectiveDef(type="auto_attack_hit", target="Boneco de treino", count=5,
+                         params={"ranged_kind": "spirit"}),
+        ),
+        reward=QuestReward(xp=15, skill="toque_ancestral"),
+        class_req="xama",
+        requires=("bem_vindo_xama",),
+        completion="Eles atenderam. Fracos, tímidos, mas atenderam. Agora preste atenção: isto é o "
+                    "Toque Ancestral. Você toca o espírito do inimigo, e o que ele perde volta como "
+                    "cura para os seus — mais forte para quem está perto dele. Curar, para nós, é "
+                    "uma troca. Nunca esqueça disso.",
+    ),
+
+    "o_corredor_ancestral": QuestDef(
+        title="O Corredor Ancestral",
+        description="Conhecer o Toque é uma coisa; sentir a troca é outra. Use o Toque Ancestral "
+                    "no boneco de treino três vezes e repare no caminho que a cura faz entre ele e "
+                    "você. É por esse corredor que os ancestrais vão proteger quem lutar ao seu lado.",
+        objectives=(
+            ObjectiveDef(type="use_skill", target="toque_ancestral", count=3,
+                         params={"on_dummy": True}),
+        ),
+        reward=QuestReward(xp=25),
+        class_req="xama",
+        requires=("ecos_do_cajado",),
+        completion="Sentiu? É assim que um xamã luta: nunca sozinho. Os espíritos vão te cobrar "
+                    "por cada favor, então use bem o que eles te dão. Agora vá — a floresta está "
+                    "doente, e os ancestrais têm pressa.",
     ),
 
     # ── Equipamento ───────────────────────────────────────────────────────────

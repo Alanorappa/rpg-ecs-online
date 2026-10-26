@@ -6581,3 +6581,27 @@ Negociação com alcance 6 (igual ao Toque); raios de área em Chebyshev
 Testes: `tests/test_xama.py` (81) — Abraço (HoT, dono, custo, só 1 alvo),
 Vínculo (metade no mais ferido), Matilha (perto cura, longe não, custo),
 Negociação (dano, stun, cura dividida, custo), skills exigem o talento.
+
+## 94. Xamã — quests de introdução (26/10/2026)
+
+Estrutura definida pelo usuário (textos em rascunho meu, pra revisão):
+1. `bem_vindo_xama` — Caterina Alisarf dá; falar com Maelor Lobo Alfa →
+   Cajado do Iniciante (`starter_staff`).
+2. `ecos_do_cajado` — Maelor; 5 acertos de ataque básico COM O CAJADO no
+   boneco de treino → skill Toque Ancestral.
+3. `o_corredor_ancestral` — Maelor; usar o Toque Ancestral no boneco 3x → XP.
+
+- **"Com o cajado"**: parâmetro opcional novo no objetivo `auto_attack_hit`
+  — `params={"ranged_kind": "spirit"}` (`engine/quest_logic.py::
+  match_objective`); o evento do servidor (`combat_processor`) passa a
+  levar `ranged_kind` (o mesmo que já vai no COMBAT_RESULT). Objetivo sem o
+  parâmetro continua aceitando qualquer ataque básico.
+- Toque Ancestral **deixa de nascer aprendido** (`INITIAL_SKILLS_BY_CLASS
+  ["xama"] = []`) — vem da 2ª quest, como o Recarregar do arqueiro.
+  Personagens que já existem continuam com ele.
+- NPCs no `maps/map_1_entities.json`: Caterina ganhou `bem_vindo_xama`;
+  Maelor dá as 2 seguintes e recebe as 3.
+
+Testes: `tests/test_xama_intro_quests.py` — filtro do cajado (espírito
+conta, flecha/corpo a corpo não; objetivo antigo sem filtro intacto),
+cadeia/recompensas, Toque fora do inicial, NPCs do mapa.

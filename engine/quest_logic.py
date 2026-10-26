@@ -68,6 +68,11 @@ def match_objective(event_type: str, data: dict, obj: ObjectiveDef) -> bool:
     if obj.type == "kill":
         return t in ("*", data.get("name", ""), data.get("race", ""))
     if obj.type == "auto_attack_hit":
+        # params["ranged_kind"] opcional: só conta o acerto feito com aquele
+        # tipo de ataque básico ("spirit" = flecha espiritual do cajado).
+        _rk = obj.params.get("ranged_kind")
+        if _rk is not None and data.get("ranged_kind", "") != _rk:
+            return False
         return t in ("*", data.get("name", ""), data.get("race", ""))
     if obj.type == "collect_item":
         # "item_id" (não "item_name") desde a normalização de QUEST_ITEMS

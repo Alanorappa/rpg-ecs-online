@@ -437,7 +437,8 @@ class CombatProcessorMixin:
                 _ident_aa = self.world.get_component(target_eid, _EI_aa)
                 if _ident_aa:
                     _qfire_aa("auto_attack_hit", player_eid=player_eid,
-                              name=_ident_aa.name, race=_ident_aa.race)
+                              name=_ident_aa.name, race=_ident_aa.race,
+                              ranged_kind=result.get("ranged_kind", ""))
 
             if result["dead"]:
                 # deal_damage (melee) adiciona PendingDeath sozinho;

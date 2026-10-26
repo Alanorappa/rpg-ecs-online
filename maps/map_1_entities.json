@@ -126,7 +126,7 @@
       "name": "Caterina Alisarf",
       "level": 60,
       "profession": "Anfitriã",
-      "quest_ids": ["bem_vindo_guerreiro", "bem_vindo_arqueiro"],
+      "quest_ids": ["bem_vindo_guerreiro", "bem_vindo_arqueiro", "bem_vindo_xama"],
       "turn_in_ids": ["artefato_misterioso"]
     },
     {
@@ -186,7 +186,9 @@
       "name": "Maelor Lobo Alfa",
       "class_id": "xama",
       "level": 60,
-      "profession": "Xamã Ancião"
+      "profession": "Xamã Ancião",
+      "quest_ids": ["ecos_do_cajado", "o_corredor_ancestral"],
+      "turn_in_ids": ["bem_vindo_xama", "ecos_do_cajado", "o_corredor_ancestral"]
     }
   ],
   "training_dummies": [
