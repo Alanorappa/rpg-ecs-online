@@ -6858,3 +6858,20 @@ Teste: `tests/test_xama.py::TestSkillsBaseFase2::
 test_skill_instantanea_manda_o_cooldown_real_ao_cliente` — revert-to-
 confirm: sem o fix, `cooldown` volta 0 e o teste falha.
 
+## 105. Ícones novos do Xamã não apareciam (25/10/2026)
+
+Relato do usuário: `assets/icons/investida_do_bisao.png` (e outros
+recém-desenhados) não eram reconhecidos. Duas causas:
+1. Arquivo sem o prefixo — o jogo procura `skill_<id>.png`
+   (`IconManager._load_raw`, chave montada em `PlayerSkills._make_skill`:
+   `icon_name = "skill_<id>"`). Renomeados: Investida do Bisão, Sopro da
+   Coruja, Abraço do Urso.
+2. O atlas tem prioridade sobre o arquivo solto — a célula EMPRESTADA de
+   outra skill cadastrada como "provisória" pro Sopro (e pelas 3 skills do
+   bloco C) esconderia a arte nova mesmo com o nome certo. Removidas; skill
+   sem arte fica no fallback até ter a própria (decisão do usuário).
+Os PNGs novos nem estavam no git (cliente empacotado não os teria) —
+commitados. `tests/test_talent_node_icon.py` passou a aceitar atlas OU
+arquivo solto (mesma ordem do carregador), com lista explícita de arte
+pendente (Matilha, Negociação).
+

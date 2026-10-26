@@ -118,8 +118,15 @@ class TestTalentNodeIconLockedDimming(unittest.TestCase):
 
 class TestUnlocksSkillTalentsHaveCatalogedIcon(unittest.TestCase):
 
+    # Skills cuja arte ainda não foi desenhada (decisão do usuário 25/10/2026:
+    # sem ícone emprestado de outra skill — fica o fallback até pintar).
+    # Tirar daqui assim que existir assets/icons/skill_<id>.png.
+    ARTE_PENDENTE = {"matilha_ancestral", "negociacao_ancestral"}
+
     def test_todo_talento_que_desbloqueia_skill_tem_icon_da_propria_skill_catalogado(self):
         from ui.icon_atlas_catalog import ICON_ATLAS
+        icon_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "assets", "icons")
         for talent_id, t in TALENTS.items():
             unlocks = t.get("unlocks_skill")
             if not unlocks:
@@ -127,8 +134,12 @@ class TestUnlocksSkillTalentsHaveCatalogedIcon(unittest.TestCase):
             expected_icon = f"skill_{unlocks}"
             self.assertEqual(t.get("icon"), expected_icon,
                              f"{talent_id} desbloqueia {unlocks} mas 'icon' não bate")
-            self.assertIn(expected_icon, ICON_ATLAS,
-                          f"{expected_icon} (usado por {talent_id}) não está catalogado no atlas")
+            if unlocks in self.ARTE_PENDENTE:
+                continue
+            # Mesma ordem do IconManager._load_raw: atlas OU arquivo solto
+            self.assertTrue(expected_icon in ICON_ATLAS
+                            or os.path.isfile(os.path.join(icon_dir, expected_icon + ".png")),
+                            f"{expected_icon} (usado por {talent_id}) não existe nem no atlas nem em assets/icons")
 
 
 if __name__ == "__main__":

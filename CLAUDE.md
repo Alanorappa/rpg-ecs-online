@@ -2089,6 +2089,10 @@ padrão a quebrar, não só os bugs individuais.
   campo de texto (9,4)–(11,4) pra qualquer valor que o jogador define);
   peça nova/uso novo → atualizar o catálogo no mesmo commit. Ver
   HISTORICO_FEATURES.md §65–§73.
+- **Ícone de skill** → `assets/icons/skill_<id>.png` (ou célula própria no
+  atlas). NUNCA cadastrar no atlas a célula de OUTRA skill como
+  "provisória": o atlas tem prioridade e esconde a arte nova. Sem arte →
+  fallback. Ver HISTORICO_BUGS.md §105.
 - **Ícone ANIMADO acima da cabeça de uma entidade, no MUNDO** (marcador
   de quest, ou categoria futura parecida) → `ui/world_icon_animator.py::
   get_frame(name, size, now_ms)` — spritesheet horizontal em
