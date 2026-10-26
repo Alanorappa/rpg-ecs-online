@@ -149,13 +149,13 @@ EFFECT_DEFS: dict[str, EffectDef] = {
     # timed_modifiers continua empilhando normalmente — só a representação
     # visual simplifica, StatusEffects só tem 1 slot por chave).
     "jungle_boss_buff_jungle_boss_ancestral":             EffectDef("Bênção do Ancestral", (150,  40,  40), True, 0.0,
-        description="Aumenta Poder de Ataque e/ou Velocidade de Ataque — o bônus muda a cada abate do Ancestral."),
+        description="Aumenta Poder de Ataque e/ou Velocidade de Ataque, o bônus muda a cada abate do Ancestral."),
     "jungle_boss_buff_jungle_boss_guardiao_de_pedra":     EffectDef("Bênção do Guardião",  (110, 110, 120), True, 0.0,
-        description="Aumenta Armadura e/ou Vida Máxima — o bônus muda a cada abate do Guardião de Pedra."),
+        description="Aumenta Armadura e/ou Vida Máxima, o bônus muda a cada abate do Guardião de Pedra."),
     "jungle_boss_buff_jungle_boss_dragao_jovem":          EffectDef("Bênção do Dragão",    (180,  40, 150), True, 0.0,
-        description="Aumenta Poder de Magia e/ou chance de crítico — o bônus muda a cada abate do Dragão Jovem."),
+        description="Aumenta Poder de Magia e/ou chance de crítico, o bônus muda a cada abate do Dragão Jovem."),
     "jungle_boss_buff_jungle_boss_horror_das_profundezas": EffectDef("Bênção do Horror",   ( 40,  90,  60), True, 0.0,
-        description="Aumenta Poder de Ataque e/ou chance de crítico — o bônus muda a cada abate do Horror das Profundezas."),
+        description="Aumenta Poder de Ataque e/ou chance de crítico, o bônus muda a cada abate do Horror das Profundezas."),
     # Bônus de crítico do Lapso Elemental — mesmo proc de "elemental_lapse"
     # (a queima, debuff, continua com a própria chave/ícone), só que a
     # parte de crit_rating (timed_modifiers, label "lapso_elemental")

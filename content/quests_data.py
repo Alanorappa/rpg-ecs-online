@@ -307,13 +307,13 @@ QUESTS: dict[str, QuestDef] = {
         # pré-requisito itera letra por letra ('p','r','o'...) — nunca passa.
         requires=("prova_valor",),
         next_quest="survivor",
-        completion="Sabia que você conseguiria. Todo guerreiro começa com o primeiro sangue — "
+        completion="Sabia que você conseguiria. Todo guerreiro começa com o primeiro sangue, "
                    "o resto é só questão de prática. Continue assim.",
     ),
 
     "survivor": QuestDef(
         title="Sobrevivente",
-        description="Sobreviver não basta — você precisa crescer. "
+        description="Sobreviver não basta, você precisa crescer. "
                     "Cada batalha deve te deixar mais forte. Alcance o Nível 3.",
         objectives=(
             ObjectiveDef(type="reach_level", count=3),
@@ -321,7 +321,7 @@ QUESTS: dict[str, QuestDef] = {
         reward=QuestReward(xp=120, gold=5),
         requires=("first_blood",),
         completion="Nível 3 já! Você está evoluindo mais rápido do que eu esperava. "
-                   "Tome essa recompensa — vai precisar dela nas batalhas que estão por vir.",
+                   "Tome essa recompensa, vai precisar dela nas batalhas que estão por vir.",
     ),
 
     # ── Caça ─────────────────────────────────────────────────────────────────
@@ -354,7 +354,7 @@ QUESTS: dict[str, QuestDef] = {
         reward=QuestReward(xp=150, gold=15),
         requires=("bear_hunter",),
         completion="Perfeitos. Esses pelos vão render bem no mercado. "
-                   "Aqui está sua parte — você merece.",
+                   "Aqui está sua parte. Você merece.",
     ),
 
     "wolf_fangs": QuestDef(
@@ -404,7 +404,7 @@ QUESTS: dict[str, QuestDef] = {
         reward=QuestReward(xp=300, gold=20),
         requires=("first_blood",),
         level_req=5,
-        completion="Dez feras! Você é uma força da natureza. A floresta está em paz graças a você — "
+        completion="Dez feras! Você é uma força da natureza. A floresta está em paz graças a você... "
                    "por enquanto, pelo menos.",
     ),
 
@@ -430,10 +430,10 @@ QUESTS: dict[str, QuestDef] = {
 
     "bem_vindo_guerreiro": QuestDef(
         title="Bem-vindo!",
-        description="Bem-vindo, {player_name}. Chega de mamar nas tetas da vila — lá fora tem gente " \
+        description="Bem-vindo, {player_name}. Chega de mamar nas tetas da vila, lá fora tem gente " \
                     "morrendo por muito menos que um pedaço de pão, e o Império não vai mandar ninguém pra te proteger. " \
                     "Guerreiro que se preza aprende rápido: os magos queimam à distância, os arqueiros furam de longe, " \
-                    "mas quem segura a linha e leva o corte primeiro é você. E vai precisar de companhia — sozinho, " \
+                    "mas quem segura a linha e leva o corte primeiro é você. E vai precisar de companhia, porque sozinho " \
                     "essa terra come qualquer um vivo. Vá falar com Avido Faseo, ele é treinador dos que sobrevivem " \
                     "ao primeiro ano. Ele te dá o que precisa pra começar.",
         objectives=(
@@ -442,7 +442,7 @@ QUESTS: dict[str, QuestDef] = {
         reward=QuestReward( xp=10, 
                             choice=("training_sword", "training_mace", "training_axe")),
         class_req=  "guerreiro",
-        completion= "Bem-vindo ao lado cruel da vida, pirralho. Daqui pra frente esquece conforto — " \
+        completion= "Bem-vindo ao lado cruel da vida, pirralho. Daqui pra frente esquece conforto, " \
                     "aqui a gente sangra antes de aprender a sorrir. Escolha uma arma. " \
                     "Com ela você vai dar seus primeiros golpes... e, se tiver sorte, " \
                     "vai sobreviver o suficiente pra dar os segundos.",
@@ -451,10 +451,10 @@ QUESTS: dict[str, QuestDef] = {
     "primeiros_golpes": QuestDef(
         title="Primeiros Golpes",
         description="Agora que já empunha uma arma, escuta bem, porque eu não repito. "
-                    "No começo, tudo parece fácil — mas não se acostume. "
+                    "No começo, tudo parece fácil, mas não se acostume. "
                     "À medida que você evolui, os desafios crescem junto: o medo, o sangue, "
                     "as mortes vão te consumindo aos poucos. Pra não desistir no meio do caminho, "
-                    "você vai precisar de foco — sem desviar o olhar. "
+                    "você vai precisar de foco, sem desviar o olhar. "
                     "Mas antes de qualquer coisa: eu não ensino golpe nenhum pra quem nem sabe "
                     "segurar essa arma direito. Vai até o boneco ali na frente e desfira uns "
                     "golpes básicos. Quero ver se seu braço aguenta o peso do aço.",
@@ -468,7 +468,7 @@ QUESTS: dict[str, QuestDef] = {
         completion= "Não foi elegante, mas serviu. Seu braço já não treme tanto quanto antes. "
                     "Acho que está na hora de te ensinar algo de verdade: preste atenção, "
                     "porque não vou repetir o movimento duas vezes. Isso aqui é o Golpe "
-                    "Poderoso — um golpe que evolui junto com você, conforme fica mais forte. "
+                    "Poderoso, um golpe que evolui junto com você conforme fica mais forte. "
                     "Guarde bem essa lição.",
     ),    
 
@@ -486,7 +486,7 @@ QUESTS: dict[str, QuestDef] = {
         reward=QuestReward(xp=25),
         class_req="guerreiro",
         completion= "Sua arma não foi desperdício, isso eu reconheço. "
-                    "O problema é que eu não sabia que você já batia tão forte — "
+                    "O problema é que eu não sabia que você já batia tão forte, "
                     "o boneco de treino ficou irreconhecível. "
                     "Bom... pelo menos agora sei que não vou perder tempo com você.",
     ),
@@ -607,9 +607,9 @@ QUESTS: dict[str, QuestDef] = {
         title="Bem-vindo!",
         description="Bem-vindo, {player_name}. Por aqui, quem erra o primeiro tiro raramente "
                     "vive pro segundo. Os guerreiros levam o corte na cara, os magos queimam o "
-                    "que veem — você vai ficar longe, atirar rápido, e nunca deixar ninguém chegar "
+                    "que veem. Você vai ficar longe, atirar rápido e nunca deixar ninguém chegar "
                     "perto o bastante pra te tocar. Pelo menos essa é a teoria. Vá falar com André "
-                    "Von Han'Duch, o Mestre Arqueiro — ele te dá o que precisa pra não morrer na "
+                    "Von Han'Duch, o Mestre Arqueiro, ele te dá o que precisa pra não morrer na "
                     "primeira semana.",
         objectives=(
             ObjectiveDef(type="talk_to_npc", target="Andre Von Han'Duch", count=1),
@@ -617,13 +617,13 @@ QUESTS: dict[str, QuestDef] = {
         reward=QuestReward(xp=10, items=("short_bow", "basic_quiver")),
         class_req="arqueiro",
         completion="Então é você que a Caterina mandou. Vamos ver se aguenta. Toma esse arco "
-                    "curto e essa aljava básica — não é grande coisa, mas já separa quem atira de "
+                    "curto e essa aljava básica. Não é grande coisa, mas já separa quem atira de "
                     "quem só segura um arco. Volte quando souber usar os dois.",
     ),
 
     "primeiros_tiros": QuestDef(
         title="Primeiros Tiros",
-        description="Um arco na mão não faz de você um arqueiro — só faz de você alguém "
+        description="Um arco na mão não faz de você um arqueiro, só faz de você alguém "
                     "segurando um arco. Antes de ensinar qualquer coisa, quero ver se você "
                     "consegue acertar um alvo PARADO. Vai até o boneco de treino ali na frente e "
                     "desfira uns tiros básicos. Dez acertos. Sem desculpa.",
@@ -633,7 +633,7 @@ QUESTS: dict[str, QuestDef] = {
         reward=QuestReward(xp=15, items=(("arrow", 100),), skill="recarregar"),
         class_req="arqueiro",
         requires=("bem_vindo_arqueiro",),
-        completion="Não foi perfeito, mas acertou mais do que errou — o suficiente pra eu não "
+        completion="Não foi perfeito, mas acertou mais do que errou, o suficiente pra eu não "
                     "me arrepender. Toma essas cem flechas, vai precisar. E aprenda isso agora, "
                     "porque vou cobrar depois: Recarregar. Sua aljava não é infinita, e descobrir "
                     "isso no meio de uma luta é a última coisa que você descobre na vida.",
@@ -643,7 +643,7 @@ QUESTS: dict[str, QuestDef] = {
         title="Antes da Batalha",
         description="Flechas acabam. Sempre acabam. E não importa o quão bom seu olho seja, um "
                     "arqueiro sem munição é só um alvo parado esperando a vez dele. Por isso: use "
-                    "Recarregar AGORA, só pra eu ver que entendeu — e nunca mais esqueça de "
+                    "Recarregar AGORA, só pra eu ver que entendeu. E nunca mais esqueça de "
                     "recarregar ANTES de entrar numa luta de verdade, nunca no meio dela.",
         objectives=(
             ObjectiveDef(type="use_skill", target="recarregar", count=1),
@@ -652,19 +652,19 @@ QUESTS: dict[str, QuestDef] = {
         class_req="arqueiro",
         requires=("primeiros_tiros",),
         completion="Viu como é simples? Um segundo de atenção agora economiza sua vida depois. "
-                    "Guarde esse hábito: recarregue ANTES da batalha — no meio dela, você não vai "
+                    "Guarde esse hábito: recarregue ANTES da batalha, porque no meio dela você não vai "
                     "ter esse segundo.",
     ),
 
-    # ── Quests Xamã (26/10/2026 — textos em rascunho, revisar) ───────────────
+    # ── Quests Xamã (26/10/2026, textos em rascunho pra revisão) ─────────────
 
     "bem_vindo_xama": QuestDef(
         title="Bem-vindo!",
         description="Bem-vindo, {player_name}. Gente como você o povo da vila chama de "
-                    "necromante pelas costas — não ligue, eles chamam de bruxaria tudo o que não "
-                    "entendem. Os guerreiros confiam no aço, os magos no fogo; você vai confiar nos "
+                    "necromante pelas costas. Não ligue, eles chamam de bruxaria tudo o que não "
+                    "entendem. Os guerreiros confiam no aço, os magos no fogo, e você vai confiar nos "
                     "que vieram antes. Vá falar com Maelor Lobo Alfa, o Xamã Ancião. Ele escuta os "
-                    "espíritos há mais tempo do que esta vila existe, e vai te dar o que precisa pra "
+                    "espíritos há mais tempo do que esta vila existe e vai te dar o que precisa pra "
                     "começar.",
         objectives=(
             ObjectiveDef(type="talk_to_npc", target="Maelor Lobo Alfa", count=1),
@@ -672,7 +672,7 @@ QUESTS: dict[str, QuestDef] = {
         reward=QuestReward(xp=10, items=("starter_staff",)),
         class_req="xama",
         completion="Então os ancestrais te mandaram até mim. Meu lobo sentiu você antes de você "
-                    "chegar. Toma este cajado — eu mesmo o esculpi, e ele foi abençoado à luz da lua. "
+                    "chegar. Toma este cajado, eu mesmo esculpi e abençoei ele à luz da lua. "
                     "Ainda não é muita coisa, mas os espíritos ouvem melhor quem chama através dele.",
     ),
 
@@ -691,13 +691,13 @@ QUESTS: dict[str, QuestDef] = {
         requires=("bem_vindo_xama",),
         completion="Eles atenderam. Fracos, tímidos, mas atenderam. Agora preste atenção: isto é o "
                     "Toque Ancestral. Você toca o espírito do inimigo, e o que ele perde volta como "
-                    "cura para os seus — mais forte para quem está perto dele. Curar, para nós, é "
+                    "cura pros seus, mais forte pra quem está perto dele. Curar, pra nós, é "
                     "uma troca. Nunca esqueça disso.",
     ),
 
     "o_corredor_ancestral": QuestDef(
         title="O Corredor Ancestral",
-        description="Conhecer o Toque é uma coisa; sentir a troca é outra. Use o Toque Ancestral "
+        description="Conhecer o Toque é uma coisa, sentir a troca é outra. Use o Toque Ancestral "
                     "no boneco de treino três vezes e repare no caminho que a cura faz entre ele e "
                     "você. É por esse corredor que os ancestrais vão proteger quem lutar ao seu lado.",
         objectives=(
@@ -708,7 +708,7 @@ QUESTS: dict[str, QuestDef] = {
         class_req="xama",
         requires=("ecos_do_cajado",),
         completion="Sentiu? É assim que um xamã luta: nunca sozinho. Os espíritos vão te cobrar "
-                    "por cada favor, então use bem o que eles te dão. Agora vá — a floresta está "
+                    "por cada favor, então use bem o que eles te dão. Agora vá, a floresta está "
                     "doente, e os ancestrais têm pressa.",
     ),
 
@@ -735,7 +735,7 @@ QUESTS: dict[str, QuestDef] = {
     # ainda não configurado.
     "artefato_misterioso": QuestDef(
         title="O Artefato Misterioso",
-        description="Você encontrou algo estranho — um artefato que não "
+        description="Você encontrou algo estranho, um artefato que não "
                     "parece ter vindo daqui. Talvez valha a pena perguntar "
                     "a alguém que já viu muita coisa esquisita por aí.",
         objectives=(

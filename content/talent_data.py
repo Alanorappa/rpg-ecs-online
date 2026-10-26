@@ -641,7 +641,7 @@ TALENTS: dict[str, dict] = {
     "bardo_so_um_gole": {
         "name":          "Só um Gole",
         "description":   "Desbloqueia Só um Gole: o arqueiro bebe e fica mais "
-                         "afiado — habilidades de Concentração ficam grátis e "
+                         "afiado: habilidades de Concentração ficam grátis e "
                          "acerto vai a 100% por 10s. CD: 120s.",
         "build":         "bardo",
         "col": 0, "row": 1,
@@ -1011,8 +1011,8 @@ TALENTS: dict[str, dict] = {
     "raiz_purificar_o_espirito": {
         "name":           "Purificar o Espírito",
         "description":    "Sopro da Coruja remove 1 efeito negativo do alvo (veneno, "
-                          "sangramento, queimadura, medo ou lentidão) — o que ainda "
-                          "duraria mais.",
+                          "sangramento, queimadura, medo ou lentidão), sempre o que "
+                          "ainda duraria mais.",
         "build":          "raiz",
         "col": 1, "row": 2,
         "max_points":     1,

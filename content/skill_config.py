@@ -310,7 +310,7 @@ SKILL_CATALOG: dict[str, dict] = {
     },
     "calcinar": {
         "name":             "Calcinar",
-        "desc":             "0.6s cast — pode ser lançada em movimento. 50 + 25% SP. Sem cooldown.",
+        "desc":             "0.6s cast, pode ser lançada em movimento. 50 + 25% SP. Sem cooldown.",
         "cooldown":         0.0,
         "mana_cost":        25,
         "cast_time":        0.6,
