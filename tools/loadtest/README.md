@@ -44,6 +44,17 @@ histórico).
    hoje. Bots nunca miram no jogador real (só em mobs e, dentro de
    arena/BG, uns nos outros).
 
+## Aliados de treino (`aliados_treino.py`)
+
+3 jogadores parados perto dos bonecos de treino pra testar cura/buff de
+suporte (contas JÁ existentes `loadbot0000/0003/0006`, nunca cria conta).
+Os 2 primeiros duelam em ciclos (duelo nunca mata — fica 1 de vida) pra
+ficarem machucados; `--sem-duelo` deixa todos parados.
+
+```
+py -3.10 tools/loadtest/aliados_treino.py --host 5.161.104.174 --tls
+```
+
 ## Opções (`swarm.py`)
 
 | Flag | Default | Descrição |
