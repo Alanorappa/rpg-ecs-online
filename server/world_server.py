@@ -7321,14 +7321,19 @@ class WorldServer(SkillProcessorMixin, CombatProcessorMixin, RespawnMixin, LootP
         detectar "efeitos zeraram").
         """
         from engine.components import StatusEffects as _SE, PlayerControlled as _PC
+        from content.status_effects_data import EFFECT_DEFS as _ED
         result: dict[int, list] = {}
         for eid, sfx in self.world.get_entities_with(_SE):
             if not self.world.get_component(eid, _PC):
                 continue
-            result[eid] = [
-                {"type": k, "duration": round(v.duration, 2)}
-                for k, v in sfx.effects.items()
-            ]
+            lst = []
+            for k, v in sfx.effects.items():
+                e = {"type": k, "duration": round(v.duration, 2)}
+                # Escudo: quanto ainda absorve (tooltip "Absorvendo X de dano")
+                if getattr(_ED.get(k), "absorbs", False):
+                    e["magnitude"] = int(v.magnitude)
+                lst.append(e)
+            result[eid] = lst
         return result
 
     def _collect_deltas(self) -> dict:

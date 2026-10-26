@@ -177,6 +177,20 @@ class SkillSystem(System, SkillHandlers):
         return self._use_skill_visual_only(_idx, skill)
 
     # ------------------------------------------------------------------
+    def _mouseover_friendly_target(self) -> int:
+        """Player aliado (ou o próprio jogador) sob o mouse agora, ou -1 —
+        alvo das skills de suporte por mouseover."""
+        if not self.world_surf or not self.hud_surf:
+            return -1
+        from ui.click_rect_helpers import friendly_target_at_world_pos
+        cam_x, cam_y = get_camera_offset(self.world, self.world_surf.get_width(),
+                                         self.world_surf.get_height())
+        scale = self.world_surf.get_width() / max(1, self.hud_surf.get_width())
+        mx, my = pygame.mouse.get_pos()
+        return friendly_target_at_world_pos(self.world, self.player_entity_id,
+                                            mx * scale + cam_x, my * scale + cam_y)
+
+    # ------------------------------------------------------------------
     def _use_skill_visual_only(self, _idx: int, skill) -> bool:
         """Replica client-side as verificações que o servidor vai fazer de
         verdade (autoritativo), pra dar feedback local imediato (som,
@@ -504,6 +518,12 @@ class SkillSystem(System, SkillHandlers):
         if self._net:
             from shared.messages import MsgType as _MT
             _tid_local  = getattr(combat_state, "target_entity_id", -1) if combat_state else -1
+            # Skill de SUPORTE: aliado sob o mouse tem prioridade sobre o alvo
+            # selecionado (mouseover) — cura/buffa sem trocar o alvo de combate.
+            if not _is_offensive:
+                _mo = self._mouseover_friendly_target()
+                if _mo != -1:
+                    _tid_local = _mo
             _tid_server = -1
             if _tid_local != -1:
                 from engine.components import RemoteEntityMeta as _REM_cast

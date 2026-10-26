@@ -6518,3 +6518,33 @@ da vida máxima do alvo, e renova pra 8s.
 Testes: `tests/test_xama.py` (71) — redução de dano de quem foi curado,
 sem talento sem efeito, escudo soma/teto/renova, escudo absorve, talentos
 pelo servidor.
+
+## 92. Ajustes do playtest da Raiz: Espírito sem regen, tooltip de escudo, mouseover (25/10/2026)
+
+Playtest do usuário: 2 ursos ao mesmo tempo (difícil pras outras classes)
+ficou "safe" demais pro Xamã — Espírito nunca faltava.
+
+- **Espírito sem regeneração em combate** (decisão do usuário):
+  `stats_system.ESPIRITO_REGEN_IC = 0.0` — só o ataque básico gera (25 por
+  acerto), como a Raiva. O mecanismo de degraus continua
+  (`_tick_espirito_regen` sai cedo com 0); >0 religa. Próximo passo se
+  ainda sobrar: baixar o ganho por golpe (15–20, previsto no desenho).
+- **Tooltip "Absorvendo X de dano"** em todo efeito de escudo
+  (`EffectDef.absorbs` — Pele do Urso, Dádiva Antecipada): o snapshot de
+  efeitos do jogador (`WorldServer._collect_player_effects`) passa a levar
+  `magnitude` SÓ dos escudos; o cliente guarda em `ActiveEffect.magnitude`
+  (`_sync_player_effects`, só exibição) e `ui/buff_bar.py::check_hover`
+  escreve a linha.
+- **Mouseover nas skills de suporte** (`offensive=False` — Sopro, Lobo,
+  Urso e futuras): ao enviar o CAST_SKILL, o PLAYER aliado sob o mouse (ou
+  o próprio jogador) tem prioridade sobre o alvo selecionado —
+  `ui/click_rect_helpers.py::friendly_target_at_world_pos` (mesma área de
+  clique de `_entity_click_rect`), chamado por `SkillSystem.
+  _mouseover_friendly_target`. Só players: o servidor só aceita player
+  como alvo de suporte (`_server_support_tid`) — NPC aliado sob o mouse
+  faria o servidor recusar o cast. Servidor continua revalidando aliado e
+  alcance.
+
+Testes: `tests/test_xama.py` (sem regen; regen religada por mock; escudo
+no snapshot; mouseover aliado/próprio/inimigo/nada) e
+`tests/test_buff_bar_tooltip.py` (linha de absorção só em escudo).

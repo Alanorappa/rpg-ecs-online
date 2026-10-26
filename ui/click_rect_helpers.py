@@ -86,6 +86,32 @@ def _entity_click_rect(world: World, entity_id: int, pos,
     return pos.x - hw, pos.y - hh, pos.x + hw, pos.y + hh
 
 
+def friendly_target_at_world_pos(world: World, player_entity_id: int,
+                                 world_x: float, world_y: float) -> int:
+    """PLAYER aliado vivo sob o ponto (player remoto que o jogador não pode
+    atacar, ou o PRÓPRIO jogador), ou -1. Usado pelo "mouseover" das skills
+    de suporte (SkillSystem): quem está sob o mouse recebe a skill sem
+    precisar trocar o alvo de combate. Só players — o servidor só aceita
+    player como alvo de suporte (`skill_processor._server_support_tid`).
+    Mesma área clicável de `_entity_click_rect`; o servidor revalida."""
+    from engine.faction_system import can_engage
+    for entity_id, pos, renderable, _, _rc in world.get_entities_with(
+            Position, Renderable, Visible, RemoteControlled):
+        if entity_id == player_entity_id or _rc.hp <= 0:
+            continue
+        left, top, right, bottom = _entity_click_rect(world, entity_id, pos, renderable)
+        if left <= world_x <= right and top <= world_y <= bottom \
+                and not can_engage(world, player_entity_id, entity_id):
+            return entity_id
+    pos = world.get_component(player_entity_id, Position)
+    ren = world.get_component(player_entity_id, Renderable)
+    if pos is not None and ren is not None:
+        left, top, right, bottom = _entity_click_rect(world, player_entity_id, pos, ren)
+        if left <= world_x <= right and top <= world_y <= bottom:
+            return player_entity_id
+    return -1
+
+
 def _live_target_at_world_pos(world: World, player_entity_id: int,
                               world_x: float, world_y: float) -> bool:
     """True se há um inimigo vivo OU player remoto vivo na posição mundo

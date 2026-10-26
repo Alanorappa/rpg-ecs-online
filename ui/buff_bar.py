@@ -175,7 +175,8 @@ class BuffBar(UIScaleMixin):
         # _build_effects_row() na MESMA ordem/tamanho de `buffs` (nenhum
         # efeito de buff bar é um "efeito de chão" filtrado lá dentro).
         self._last_icon_rects = [
-            (eff.effect_type, local_rect.move(blit_x, bar_top_y), eff.duration)
+            (eff.effect_type, local_rect.move(blit_x, bar_top_y), eff.duration,
+             getattr(eff, "magnitude", 0.0))
             for eff, (_et, local_rect) in zip(buffs, local_rects)
         ]
 
@@ -187,7 +188,9 @@ class BuffBar(UIScaleMixin):
         item/skill já usam. `lines` é uma lista de `(texto, cor)`.
         Devolve `None` se o mouse não está sobre nenhum ícone."""
         from math import ceil as _ceil
-        for effect_type, rect, duration in self._last_icon_rects:
+        for entry in self._last_icon_rects:
+            effect_type, rect, duration = entry[:3]
+            magnitude = entry[3] if len(entry) > 3 else 0.0
             if not rect.collidepoint(mx, my):
                 continue
             defn = EFFECT_DEFS.get(effect_type)
@@ -196,6 +199,8 @@ class BuffBar(UIScaleMixin):
             lines: list = []
             if defn.description:
                 lines.append((defn.description, (220, 220, 220)))
+            if defn.absorbs and magnitude > 0:
+                lines.append((f"Absorvendo {int(magnitude)} de dano.", (200, 230, 140)))
             if duration > 0:
                 lines.append((f"{max(1, _ceil(duration))}s restantes", (170, 170, 170)))
             return defn.label, lines

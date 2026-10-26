@@ -827,6 +827,9 @@ class RemoteEntityHandlers:
                 _mark_eo(self.world, self.player_entity, etype)
             else:
                 sfx.effects[etype].duration = dur
+            # Escudo: quanto ainda absorve (só exibição — tooltip da buff bar)
+            if "magnitude" in e:
+                sfx.effects[etype].magnitude = float(e["magnitude"])
 
         # Recalcula slow_mult/is_rooted/is_crowd_controlled a partir do
         # StatusEffects atual — sem isso, um efeito removido acima (pop

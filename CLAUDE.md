@@ -430,7 +430,9 @@ padrão a quebrar, não só os bugs individuais.
 - **Skill de suporte (`offensive=False`) mirando um player aliado** →
   o alvo chega no handler por `TileMovement._server_support_tid`
   (`server/skill_processor.py`), nunca como `target_entity_id` (que é
-  alvo de COMBATE do caster).
+  alvo de COMBATE do caster). No cliente, o player aliado sob o mouse tem
+  prioridade sobre o selecionado (`ui/click_rect_helpers.py::
+  friendly_target_at_world_pos`, ver HISTORICO_FEATURES.md §92).
 - **STATS_UPDATE privado (servidor→dono)** → `WorldServer.queue_stats_update()`
   (schema na docstring; valida player_eid na origem). Mudança de
   `current_hp`/`max_hp` do PRÓPRIO player nunca precisa de chamada nova

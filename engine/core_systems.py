@@ -1140,7 +1140,8 @@ class BaseCombatStateSystem:
         server-side (combat_processor). Morto nunca regenera — o "em
         combate" continua ligado um tempo depois da morte (bug real do
         playtest: cliente seguia subindo o Espírito do personagem morto)."""
-        if char.max_espirito <= 0:
+        from engine.stats_system import ESPIRITO_REGEN_IC
+        if char.max_espirito <= 0 or ESPIRITO_REGEN_IC <= 0:
             return
         _dead = combat_stats is not None and combat_stats.current_hp <= 0
         if cs is None or not cs.in_combat or _dead or char.espirito >= char.max_espirito:
@@ -1150,7 +1151,6 @@ class BaseCombatStateSystem:
         # usuário — antes subia um pouco a cada tick e parecia mais rápido).
         char.espirito_regen_timer += dt
         if char.espirito_regen_timer >= 1.0:
-            from engine.stats_system import ESPIRITO_REGEN_IC
             steps = int(char.espirito_regen_timer)
             char.espirito_regen_timer -= steps
             char.espirito = min(char.max_espirito, char.espirito + ESPIRITO_REGEN_IC * steps)

@@ -103,6 +103,20 @@ class TestBuffBarCheckHover(unittest.TestCase):
         ]
         self.assertIsNone(self.bb.check_hover(0, 0))
 
+    def test_escudo_mostra_quanto_ainda_absorve(self):
+        self.bb._last_icon_rects = [
+            ("dadiva_antecipada", pygame.Rect(0, 0, 32, 32), 6.0, 87.0),
+        ]
+        _title, lines = self.bb.check_hover(5, 5)
+        self.assertIn("Absorvendo 87 de dano.", [l[0] for l in lines])
+
+    def test_efeito_sem_escudo_nao_mostra_absorcao(self):
+        self.bb._last_icon_rects = [
+            ("espirito_do_lobo", pygame.Rect(0, 0, 32, 32), 6.0, 0.0),
+        ]
+        _title, lines = self.bb.check_hover(5, 5)
+        self.assertFalse(any("Absorvendo" in l[0] for l in lines))
+
     def test_proc_sem_duracao_nao_mostra_linha_de_tempo(self):
         self.bb._last_icon_rects = [
             ("chama_interna", pygame.Rect(0, 0, 32, 32), 0.0),

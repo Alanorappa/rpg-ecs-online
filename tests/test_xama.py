@@ -18,6 +18,7 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import unittest
+from unittest import mock
 import pygame
 pygame.init()
 
@@ -99,7 +100,18 @@ class TestEspirito(unittest.TestCase):
             run_ticks(self.ws, 2, dt=0.05)
         self.assertAlmostEqual(self.char.espirito, 50, delta=0.01)
 
-    def test_regen_em_combate(self):
+    def test_sem_regen_em_combate(self):
+        """Playtest 25/10/2026: regen desligada — só o ataque básico gera."""
+        self.char.espirito = 50
+        cst = self.ws.world.get_component(self.eid, CombatState)
+        from engine.stat_fns import enter_combat
+        enter_combat(cst)
+        for _ in range(20):
+            run_ticks(self.ws, 2, dt=0.05)
+        self.assertAlmostEqual(self.char.espirito, 50, delta=0.01)
+
+    @mock.patch("engine.stats_system.ESPIRITO_REGEN_IC", 5.0)
+    def test_regen_em_combate_se_religada(self):
         self.char.espirito = 50
         cst = self.ws.world.get_component(self.eid, CombatState)
         from engine.stat_fns import enter_combat
@@ -118,6 +130,7 @@ class TestEspirito(unittest.TestCase):
         self.ws._handle_player_death(self.eid)
         self.assertEqual(self.char.espirito, 0)
 
+    @mock.patch("engine.stats_system.ESPIRITO_REGEN_IC", 5.0)
     def test_morto_nao_regenera_mesmo_em_combate(self):
         """Bug do playtest: morto continuava 'em combate' e o Espírito subia."""
         from engine.stat_fns import enter_combat
@@ -131,6 +144,7 @@ class TestEspirito(unittest.TestCase):
             BaseCombatStateSystem._tick_espirito_regen(cst, self.char, 0.05, cs)
         self.assertEqual(self.char.espirito, 0)
 
+    @mock.patch("engine.stats_system.ESPIRITO_REGEN_IC", 5.0)
     def test_regen_sobe_em_degraus_de_1s(self):
         from engine.stat_fns import enter_combat
         self.char.espirito = 50
@@ -432,6 +446,46 @@ class TestRaizBlocoA(_XamaDuelBase):
         self.assertTrue(talent_skill_requirement_met(
             self.ws.world, self.xama, t,
             {"raiz_sussurros_constantes": 1, "raiz_alma_generosa": 1, "raiz_sopro_da_coruja": 1}))
+
+
+class TestEscudoNoSnapshotDeEfeitos(_XamaDuelBase):
+    def test_escudo_leva_o_valor_restante_ao_cliente(self):
+        core_systems.apply_effect(self.ws.world, self.xama, "pele_do_urso", 8.0, magnitude=120)
+        core_systems.apply_effect(self.ws.world, self.xama, "espirito_do_lobo", 8.0)
+        effs = {e["type"]: e for e in self.ws._collect_player_effects()[self.xama]}
+        self.assertEqual(effs["pele_do_urso"]["magnitude"], 120)
+        self.assertNotIn("magnitude", effs["espirito_do_lobo"])
+
+
+class TestMouseoverDeSuporte(unittest.TestCase):
+    """friendly_target_at_world_pos: player aliado ou o próprio sob o mouse."""
+    def setUp(self):
+        from engine.world import World
+        from engine.components import Position, Renderable, Visible, RemoteControlled
+        self.w = World()
+        self.me = self.w.create_entity()
+        self.w.add_component(self.me, Position(100, 100))
+        self.w.add_component(self.me, Renderable((0, 0, 0), 24, 24))
+        self.ally = self.w.create_entity()
+        self.w.add_component(self.ally, Position(300, 100))
+        self.w.add_component(self.ally, Renderable((0, 0, 0), 24, 24))
+        self.w.add_component(self.ally, Visible())
+        self.w.add_component(self.ally, RemoteControlled(server_eid=7, hp=50))
+
+    def _at(self, x, y, hostile=False):
+        from ui.click_rect_helpers import friendly_target_at_world_pos
+        with mock.patch("engine.faction_system.can_engage", return_value=hostile):
+            return friendly_target_at_world_pos(self.w, self.me, x, y)
+
+    def test_aliado_sob_o_mouse(self):
+        self.assertEqual(self._at(302, 98), self.ally)
+
+    def test_proprio_jogador_sob_o_mouse(self):
+        self.assertEqual(self._at(100, 100), self.me)
+
+    def test_inimigo_ou_nada_sob_o_mouse(self):
+        self.assertEqual(self._at(302, 98, hostile=True), -1)
+        self.assertEqual(self._at(600, 600), -1)
 
 
 class TestRaizBlocoB(_XamaDuelBase):

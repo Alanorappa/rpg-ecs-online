@@ -169,7 +169,10 @@ CLASS_CONCENTRATION: dict[str, int] = {
 CLASS_ESPIRITO: dict[str, int] = {
     "xama": 100,
 }
-ESPIRITO_REGEN_IC: float = 5.0
+# Regen em combate DESLIGADA (25/10/2026, playtest: recurso sobrava, o
+# Xamã se curava à vontade) — Espírito só vem do ataque básico, como a
+# Raiva. O mecanismo continua (degraus de 1s); >0 religa.
+ESPIRITO_REGEN_IC: float = 0.0
 ESPIRITO_PER_BASIC_HIT: int = 25
 
 
