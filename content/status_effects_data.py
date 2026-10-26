@@ -193,6 +193,9 @@ EFFECT_DEFS: dict[str, EffectDef] = {
     "marca_do_gaviao":  EffectDef("Marca do Gavião",  (220, 170,  60), False, 0.0,
                                   damage_taken_mult=1.05, blocks_stealth=True,
                                   description="Recebe 5% a mais de dano e não pode se camuflar."),
+    "abraco_do_urso":   EffectDef("Abraço do Urso",   (190, 140,  90), True, 1.0,
+                                  heals=True,
+                                  description="Recebe cura espiritual a cada segundo."),
     # Talentos da Raiz (bloco B) — aplicados por apply_heal
     "pele_de_raiz":     EffectDef("Pele de Raiz",     (130, 170,  90), True, 0.0,
                                   reduces_damage=True,

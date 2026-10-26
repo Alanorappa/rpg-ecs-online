@@ -1099,6 +1099,66 @@ TALENTS: dict[str, dict] = {
              "formula": lambda pts: 1 if pts > 0 else 0},
         ],
     },
+    # ── Raiz — Fase 3, bloco C (25/10/2026): skills de talento ─────────────
+    "raiz_abraco_do_urso": {
+        "name":          "Abraço do Urso",
+        "description":   "Desbloqueia Abraço do Urso: cura um aliado (ou você) a até 8 tiles "
+                         "em 40 + 160% do Poder Mágico ao longo de 10s. 45 de Espírito, recarga 10s.",
+        "build":         "raiz",
+        "col": 1, "row": 3,
+        "max_points":    1,
+        "requires":      {"raiz_purificar_o_espirito": 1},
+        "effects":       None,
+        "unlocks_skill": "abraco_do_urso",
+        "icon":          "skill_abraco_do_urso",
+        "skill_def":     None,
+    },
+    "raiz_matilha_ancestral": {
+        "name":          "Matilha Ancestral",
+        "description":   "Desbloqueia Matilha Ancestral: cura até 5 aliados a até 4 tiles de um "
+                         "aliado (ou de você) em 40 + 80% do Poder Mágico cada. Cast 2s, 80 de "
+                         "Espírito, recarga 20s.",
+        "build":         "raiz",
+        "col": 0, "row": 4,
+        "max_points":    1,
+        "requires":      {"raiz_mare_espiritual": 1},
+        "effects":       None,
+        "unlocks_skill": "matilha_ancestral",
+        "icon":          "skill_matilha_ancestral",
+        "skill_def":     None,
+    },
+    "raiz_vinculo_duplo": {
+        "name":           "Vínculo Duplo",
+        "description":    "Abraço do Urso também cura um segundo aliado a até 3 tiles do "
+                          "primeiro (o com menos vida), com 50% da cura.",
+        "build":          "raiz",
+        "col": 1, "row": 4,
+        "max_points":     1,
+        "requires":       {"raiz_abraco_do_urso": 1},
+        "requires_skill": "abraco_do_urso",
+        "effects":        None,
+        "unlocks_skill":  None,
+        "icon":           None,
+        "skill_def":      None,
+        "cs_flags": [
+            {"field": "abraco_vinculo", "reset": False,
+             "formula": lambda pts: pts > 0},
+        ],
+    },
+    "raiz_negociacao_ancestral": {
+        "name":          "Negociação Ancestral",
+        "description":   "Desbloqueia Negociação Ancestral: 100 + 150% do Poder Mágico num "
+                         "inimigo e o atordoa por 3s; os aliados a até 6 tiles dividem uma cura "
+                         "igual ao dano. 65 de Espírito, recarga 90s.",
+        "build":         "raiz",
+        "col": 1, "row": 5,
+        "max_points":    1,
+        "requires":      {"raiz_vinculo_duplo": 1},
+        "effects":       None,
+        "unlocks_skill": "negociacao_ancestral",
+        "icon":          "skill_negociacao_ancestral",
+        "skill_def":     None,
+    },
 }
 
 # ---------------------------------------------------------------------------

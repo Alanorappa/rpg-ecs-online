@@ -1688,6 +1688,67 @@ class SkillHandlers:
             enter_combat(combat_state)
         return True
 
+    def _queue_raiz_completion(self, skill, combat_stats, target_id: int, cost: int) -> bool:
+        """Enfileira a conclusão server-side das skills de talento da Raiz
+        (Abraço/Matilha/Negociação) — o servidor escolhe os aliados do
+        mesmo mapa. Instantânea = timer 0 (resolve no tick seguinte)."""
+        _server_pending = self._server_pending_spells
+        if _server_pending is None:
+            return False   # sem modo offline: só o servidor resolve
+        _server_pending.append({
+            "player_eid":    self.player_entity_id,
+            "spell_id":      skill.skill_id,
+            "target_id":     target_id,
+            "timer":         skill.cast_time,
+            "mana_cost":     0,
+            "espirito_cost": cost,
+            "cooldown":      skill.cooldown,
+        })
+        return True
+
+    def _skill_abraco_do_urso(self, skill, combat_stats, combat_state, tile_move):
+        """Instantânea — cura ao longo do tempo num aliado (ou em si); com
+        Vínculo Duplo, também num 2º aliado (server/spell_completion_processor.py)."""
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        cost = self._espirito_cost(skill, combat_stats)
+        if not self._check_espirito(char_stats, cost):
+            return False
+        target_id = self._resolve_support_target(tile_move, skill.cast_range)
+        if target_id == -1:
+            return False
+        return self._queue_raiz_completion(skill, combat_stats, target_id, cost)
+
+    def _skill_matilha_ancestral(self, skill, combat_stats, combat_state, tile_move):
+        """2s cast — cura até 5 aliados em volta de um aliado (ou de si)."""
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        cost = self._espirito_cost(skill, combat_stats)
+        if not self._check_espirito(char_stats, cost):
+            return False
+        target_id = self._resolve_support_target(tile_move, skill.cast_range)
+        if target_id == -1:
+            return False
+        return self._queue_raiz_completion(skill, combat_stats, target_id, cost)
+
+    def _skill_negociacao_ancestral(self, skill, combat_stats, combat_state, tile_move):
+        """Instantânea — dano + atordoamento num inimigo; os aliados em volta
+        do Xamã dividem uma cura igual ao dano."""
+        char_stats = self.world.get_component(self.player_entity_id, CharacterStats)
+        cost = self._espirito_cost(skill, combat_stats)
+        if not self._check_espirito(char_stats, cost):
+            return False
+        target_id = self._resolve_target(combat_state, tile_move, skill.cast_range)
+        if target_id == -1:
+            self._warn("Nenhum alvo")
+            return False
+        if not self._target_alive(target_id):
+            self._warn("Alvo inválido")
+            return False
+        if not self._queue_raiz_completion(skill, combat_stats, target_id, cost):
+            return False
+        if combat_state:
+            enter_combat(combat_state)
+        return True
+
     # ------------------------------------------------------------------
     def _is_concentration_free(self) -> bool:
         """Retorna True se o buff 'Só um Gole' está ativo (Concentração grátis)."""

@@ -69,4 +69,8 @@ ICON_ATLAS: "dict[str, tuple[str, int, int]]" = {
     # PROVISÓRIO (24/10/2026): reaproveita a célula da Canção de Inspiração
     # até existir arte própria — trocar pra uma célula livre quando pintar.
     'skill_sopro_da_coruja': ('atlas_skills.png', 6, 0),
+    # PROVISÓRIOS (25/10/2026, skills da Raiz bloco C) — mesma regra acima.
+    'skill_abraco_do_urso':       ('atlas_skills.png', 7, 1),   # célula do Só um Gole
+    'skill_matilha_ancestral':    ('atlas_skills.png', 7, 0),   # célula da Canção de Ninar
+    'skill_negociacao_ancestral': ('atlas_skills.png', 3, 1),   # célula da Polimorfia
 }

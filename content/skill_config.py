@@ -554,6 +554,69 @@ SKILL_CATALOG: dict[str, dict] = {
             "purify_effects": ("poison", "bleed", "burn", "fear", "slow"),
         },
     },
+    # Skills de talento da Raiz (Fase 3, bloco C, 25/10/2026) — resolvidas
+    # na fila de conclusão do servidor (server/spell_completion_processor.py),
+    # que escolhe os aliados do MESMO mapa; instantâneas usam timer 0.
+    "abraco_do_urso": {
+        "name":       "Abraço do Urso",
+        "desc":       "Cura um aliado (ou você) a até 8 tiles em 40 + 160% SP ao longo de 10s. 45 Espírito.",
+        "cooldown":   10.0,
+        "cast_time":  0.0,
+        "cast_range": 8,
+        "class_id":   "xama",
+        "school":     "espirito",
+        "offensive":  False,
+        "needs_target": False,
+        "params": {
+            "base_heal":     40,
+            "heal_sp_coeff": 1.60,
+            "duration":      10.0,
+            "ticks":         10,
+            "espirito_cost": 45,
+            "min_cost":      15,
+            # Vínculo Duplo: 2º aliado a até N tiles do 1º, com X% da cura
+            "vinculo_range": 3,
+            "vinculo_pct":   0.50,
+        },
+    },
+    "matilha_ancestral": {
+        "name":       "Matilha Ancestral",
+        "desc":       "Cura até 5 aliados a até 4 tiles de um aliado (ou de você) em 40 + 80% SP cada. Cast 2s. 80 Espírito.",
+        "cooldown":   20.0,
+        "cast_time":  2.0,
+        "cast_range": 8,
+        "class_id":   "xama",
+        "school":     "espirito",
+        "offensive":  False,
+        "needs_target": False,
+        "params": {
+            "base_heal":     40,
+            "heal_sp_coeff": 0.80,
+            "radius":        4,
+            "max_targets":   5,   # mais que isso: os com menos vida (%)
+            "espirito_cost": 80,
+            "min_cost":      15,
+        },
+    },
+    "negociacao_ancestral": {
+        "name":       "Negociação Ancestral",
+        "desc":       ("Vira o espírito de um inimigo a até 6 tiles contra ele: 100 + 150% SP e "
+                       "atordoa por 3s. Os aliados a até 6 tiles de você dividem uma cura igual ao dano. "
+                       "65 Espírito."),
+        "cooldown":   90.0,
+        "cast_time":  0.0,
+        "cast_range": 6,
+        "class_id":   "xama",
+        "school":     "espirito",
+        "params": {
+            "base_dmg":      100,
+            "dmg_sp_coeff":  1.50,
+            "stun_duration": 3.0,
+            "heal_radius":   6,
+            "heal_pct":      1.0,   # cura total = 100% do dano causado
+            "espirito_cost": 65,
+        },
+    },
     # Skills base de treinador (Fase 2, 24/10/2026). Gavião/Bisão são "quest"
     # no desenho — no treinador até existir a quest line (decisão do usuário).
     "espirito_do_lobo": {
@@ -724,5 +787,6 @@ INSTANCE_SKILL_UNLOCK_ORDER: dict[str, list] = {
     "xama": [
         "toque_ancestral", "sopro_da_coruja", "espirito_do_lobo",
         "pele_do_urso", "marca_do_gaviao", "investida_do_bisao",
+        "abraco_do_urso", "matilha_ancestral", "negociacao_ancestral",
     ],
 }

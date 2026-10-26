@@ -244,6 +244,7 @@ class CombatStats:
         self.sopro_purifica:            bool  = False # raiz_purificar_o_espirito: Sopro remove 1 efeito negativo
         self.pele_de_raiz_reducao:      float = 0.0   # raiz_pele_de_raiz: quem ESTE cura recebe −X dano por 6s
         self.dadiva_pct:                float = 0.0   # raiz_dadiva_antecipada: fração do excesso de cura que vira escudo
+        self.abraco_vinculo:            bool  = False # raiz_vinculo_duplo: Abraço do Urso cura um 2º aliado
 
         # ── Bônus derivados de SkillLevels (ver stats_system.apply_skill_bonuses_to_combat) ──
         # Recalculados sob demanda (level-up de skill ou spawn/login), nunca via Modifier —

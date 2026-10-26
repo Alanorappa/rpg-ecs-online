@@ -6548,3 +6548,36 @@ ficou "safe" demais pro Xamã — Espírito nunca faltava.
 Testes: `tests/test_xama.py` (sem regen; regen religada por mock; escudo
 no snapshot; mouseover aliado/próprio/inimigo/nada) e
 `tests/test_buff_bar_tooltip.py` (linha de absorção só em escudo).
+
+## 93. Xamã — Raiz bloco C: Abraço do Urso, Vínculo Duplo, Matilha, Negociação (25/10/2026)
+
+Últimos 4 nós da árvore da Raiz (15/15 completos). Decisões anteriores do
+usuário: Negociação divide a cura em partes IGUAIS entre os aliados a até
+6 tiles, Xamã incluso. Decisões tomadas sem desenho explícito (registradas
+pra revisão): Vínculo Duplo e Matilha escolhem por MENOR vida (%) quando
+há mais candidatos; Abraço/Negociação sem cast (o desenho não cita);
+Negociação com alcance 6 (igual ao Toque); raios de área em Chebyshev
+(regra de AoE do projeto).
+
+- As 3 skills vão pela fila de conclusão do servidor (`_queue_raiz_
+  completion` em `engine/skill_handlers.py`; instantâneas com timer 0, igual
+  ao Bisão já adjacente) — só o servidor sabe filtrar "mesmo mapa".
+- **Ponto único de "aliados curáveis do Xamã"**: `SpellCompletionProcessor
+  ._raiz_ally_tiles(player_eid)` (players + NPCs vivos não atacáveis, mesmo
+  mapa, o Xamã incluso) — extraído do corredor do Toque, usado também por
+  Abraço/Vínculo, Matilha e Negociação.
+- **Abraço do Urso**: HoT `abraco_do_urso` (EffectDef.heals, 10 ticks),
+  `source_eid` = Xamã (vale Raízes Profundas/Pele/Dádiva). **Vínculo
+  Duplo** (`CombatStats.abraco_vinculo`): 2º aliado a até 3 tiles do 1º,
+  50%.
+- **Matilha Ancestral**: cast 2s, cura direta via `apply_heal` em até 5
+  aliados a até 4 tiles do alvo.
+- **Negociação Ancestral**: `_server_apply_magic_damage` escola Espírito +
+  `stun` 3s (se sobreviveu) + `apply_heal` igual pra todos do grupo.
+- Ícones PROVISÓRIOS reaproveitando células (mesma regra do Sopro):
+  `ui/icon_atlas_catalog.py` — trocar quando houver arte.
+- `INSTANCE_SKILL_UNLOCK_ORDER["xama"]` ganhou as 3 (BG).
+
+Testes: `tests/test_xama.py` (81) — Abraço (HoT, dono, custo, só 1 alvo),
+Vínculo (metade no mais ferido), Matilha (perto cura, longe não, custo),
+Negociação (dano, stun, cura dividida, custo), skills exigem o talento.

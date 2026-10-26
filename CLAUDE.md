@@ -422,6 +422,10 @@ padrão a quebrar, não só os bugs individuais.
   próprio num sistema novo. Aplicar com `apply_effect(..., source_eid=
   quem_cura)`: o tick cura em nome dele, e bônus de cura/efeitos de quem
   cura (talentos) valem sozinhos. Ver HISTORICO_FEATURES.md §90.
+- **"Quem o Xamã pode curar agora?" (cura em área/grupo/2º alvo)** →
+  `SpellCompletionProcessor._raiz_ally_tiles(player_eid)` (mesmo mapa,
+  aliados vivos, ele incluso) — NUNCA refiltrar aliados num handler novo.
+  Ver HISTORICO_FEATURES.md §93.
 - **Espírito máximo** → `stats_system.sync_espirito_max(char, cs)` —
   chamar também depois de aplicar cs_flags de talento.
 - **"Este talento pode receber ponto?" quanto à habilidade que ele

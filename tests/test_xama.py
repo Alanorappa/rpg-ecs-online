@@ -488,6 +488,86 @@ class TestMouseoverDeSuporte(unittest.TestCase):
         self.assertEqual(self._at(600, 600), -1)
 
 
+class TestRaizBlocoC(_XamaDuelBase):
+    def setUp(self):
+        super().setUp()
+        for sid in ("abraco_do_urso", "matilha_ancestral", "negociacao_ancestral"):
+            authorize_skill(self.ws, self.xama, sid)
+        self.ally = spawn_player(self.ws, "x_rc1", 133, 374, class_id="guerreiro", hp=500)
+        self.ally2 = spawn_player(self.ws, "x_rc2", 134, 375, class_id="guerreiro", hp=500)
+        for e in (self.ally, self.ally2, self.xama):
+            self.ws.world.get_component(e, CombatStats).max_hp = 1000
+        self.a1 = self.ws.world.get_component(self.ally, CombatStats)
+        self.a2 = self.ws.world.get_component(self.ally2, CombatStats)
+
+    def _sfx(self, eid):
+        from engine.components import StatusEffects
+        return self.ws.world.get_component(eid, StatusEffects)
+
+    def test_abraco_vira_cura_ao_longo_do_tempo_e_cobra_45(self):
+        self._cast("abraco_do_urso", self.ally, 2)
+        eff = self._sfx(self.ally).get("abraco_do_urso")
+        self.assertIsNotNone(eff)
+        total = 40 + self.xcs.spell_power * 1.60
+        self.assertAlmostEqual(eff.magnitude, total / 10, places=3)
+        self.assertEqual(eff.source_eid, self.xama)
+        self.assertAlmostEqual(self.char.espirito, 55, delta=0.01)
+        self.assertFalse(self._sfx(self.ally2) and self._sfx(self.ally2).has("abraco_do_urso"))
+
+    def test_vinculo_duplo_cura_o_segundo_com_metade(self):
+        self.xcs.abraco_vinculo = True
+        self.xcs.current_hp = self.xcs.max_hp
+        self.a1.current_hp = self.a1.max_hp
+        self.a2.current_hp = 200          # menos vida → é o escolhido
+        self._cast("abraco_do_urso", self.ally, 2)
+        e1 = self._sfx(self.ally).get("abraco_do_urso")
+        e2 = self._sfx(self.ally2).get("abraco_do_urso")
+        self.assertIsNotNone(e2)
+        self.assertAlmostEqual(e2.magnitude, e1.magnitude * 0.5, places=3)
+
+    def test_matilha_cura_quem_esta_perto_do_alvo(self):
+        far = spawn_player(self.ws, "x_rc3", 145, 374, class_id="guerreiro", hp=500)
+        fcs = self.ws.world.get_component(far, CombatStats)
+        fcs.max_hp = 1000
+        self.a1.current_hp = self.a2.current_hp = fcs.current_hp = 300
+        self._cast("matilha_ancestral", self.ally, 50)    # 2s cast
+        amount = int(40 + self.xcs.spell_power * 0.80)
+        self.assertEqual(self.a1.current_hp, 300 + amount)
+        self.assertEqual(self.a2.current_hp, 300 + amount)
+        self.assertLessEqual(fcs.current_hp, 301)
+        self.assertAlmostEqual(self.char.espirito, 20, delta=0.01)
+
+    def test_negociacao_dano_atordoa_e_cura_o_grupo(self):
+        foe = spawn_player(self.ws, "x_rcf", 130, 377, class_id="guerreiro", hp=5000)
+        self.assertIsNone(self.ws.request_duel(self.xama, foe))
+        self.ws.respond_duel_invite(foe, accept=True)
+        fcs = self.ws.world.get_component(foe, CombatStats)
+        fcs.max_hp = 5000
+        fcs.current_hp = 5000
+        self.a1.current_hp = self.a2.current_hp = 200
+        self.xcs.current_hp = 200
+        self._cast("negociacao_ancestral", foe, 2)
+        dealt = 5000 - fcs.current_hp
+        self.assertGreater(dealt, 0)
+        self.assertTrue(self._sfx(foe).has("stun"))
+        share = int(dealt / 3)
+        self.assertEqual(self.a1.current_hp, 200 + share)
+        self.assertEqual(self.a2.current_hp, 200 + share)
+        self.assertAlmostEqual(self.char.espirito, 35, delta=0.01)
+
+    def test_skills_exigem_o_talento(self):
+        from engine.world_systems import is_skill_authorized
+        from engine.components import TalentTree
+        outro = spawn_player(self.ws, "x_rcx", 130, 380, class_id="xama", hp=300)
+        for sid in ("abraco_do_urso", "matilha_ancestral", "negociacao_ancestral"):
+            ok = is_skill_authorized(self.ws.world, outro, sid)
+            self.assertFalse(ok[0] if isinstance(ok, tuple) else ok, sid)
+        tt = self.ws.world.get_component(outro, TalentTree)
+        tt.allocated["raiz_negociacao_ancestral"] = 1
+        ok = is_skill_authorized(self.ws.world, outro, "negociacao_ancestral")
+        self.assertTrue(ok[0] if isinstance(ok, tuple) else ok)
+
+
 class TestRaizBlocoB(_XamaDuelBase):
     def setUp(self):
         super().setUp()

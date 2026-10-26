@@ -164,6 +164,9 @@ class SpellCompletionMixin:
                 "toque_ancestral":  self._server_toque_ancestral,
                 "sopro_da_coruja":  self._server_sopro_da_coruja,
                 "investida_do_bisao": self._server_investida_do_bisao,
+                "abraco_do_urso":   self._server_abraco_do_urso,
+                "matilha_ancestral": self._server_matilha_ancestral,
+                "negociacao_ancestral": self._server_negociacao_ancestral,
             }
             from server.spell_debug_log import splog as _splog2
             _tiro_multiplo_targets: list = []
@@ -1188,20 +1191,7 @@ class SpellCompletionMixin:
             return
         enemy_tile  = (e_tm.current_tile_x, e_tm.current_tile_y)
         caster_tile = (x_tm.current_tile_x, x_tm.current_tile_y)
-        caster_map  = self.get_entity_map(player_eid)
-
-        candidates = {}
-        for eid, cs_c, tm_c in self.world.get_entities_with(CombatStats, TileMovement):
-            if cs_c.current_hp <= 0:
-                continue
-            if eid != player_eid:
-                is_ally = (self.world.get_component(eid, PlayerControlled) is not None
-                           or self.world.get_component(eid, NPC) is not None)
-                if not is_ally or can_engage(self.world, player_eid, eid):
-                    continue
-                if self.get_entity_map(eid) != caster_map:
-                    continue
-            candidates[eid] = (tm_c.current_tile_x, tm_c.current_tile_y)
+        candidates = self._raiz_ally_tiles(player_eid)
 
         half_w = _p.get("corridor_half_width", 2) + int(getattr(player_cs, "corredor_meia_largura_bonus", 0))
         total = (_p.get("corridor_heal", 20) + sp * _p.get("corridor_sp_coeff", 0.30)) \
@@ -1218,6 +1208,126 @@ class SpellCompletionMixin:
             apply_effect(self.world, eid, "corredor_ancestral", dur + 0.05,
                          magnitude=amount / ticks, tick_interval=dur / ticks,
                          source_eid=player_eid)
+
+    def _raiz_ally_tiles(self, player_eid: int) -> dict:
+        """Aliados curáveis do Xamã — ponto único das curas em área/grupo da
+        Raiz: {eid: (tx, ty)} de players e NPCs vivos que ele NÃO pode
+        atacar, no MESMO mapa (o próprio Xamã sempre entra)."""
+        from engine.components import (CombatStats, TileMovement,
+                                       PlayerControlled, NPC)
+        from engine.faction_system import can_engage
+        caster_map = self.get_entity_map(player_eid)
+        out = {}
+        for eid, cs_c, tm_c in self.world.get_entities_with(CombatStats, TileMovement):
+            if cs_c.current_hp <= 0:
+                continue
+            if eid != player_eid:
+                is_ally = (self.world.get_component(eid, PlayerControlled) is not None
+                           or self.world.get_component(eid, NPC) is not None)
+                if not is_ally or can_engage(self.world, player_eid, eid):
+                    continue
+                if self.get_entity_map(eid) != caster_map:
+                    continue
+            out[eid] = (tm_c.current_tile_x, tm_c.current_tile_y)
+        return out
+
+    def _hp_frac(self, eid: int) -> float:
+        from engine.components import CombatStats
+        cs = self.world.get_component(eid, CombatStats)
+        return cs.current_hp / cs.max_hp if cs and cs.max_hp > 0 else 1.0
+
+    def _server_abraco_do_urso(self, player_eid: int, target_id: int, entry: dict) -> None:
+        """HoT 40 + 160% SP em 10s (efeito abraco_do_urso, cura em nome do
+        Xamã). Vínculo Duplo: 2º aliado a até 3 tiles do 1º (o com menos
+        vida %), 50% da cura."""
+        from engine.components import CombatStats
+        from engine.core_systems import apply_effect
+        from engine.utils import chebyshev
+        from content.skill_config import SKILL_CATALOG as _SC_ab
+        _p = _SC_ab.get("abraco_do_urso", {}).get("params", {})
+        if target_id == -1 or self.world.get_component(target_id, CombatStats) is None:
+            return
+        pcs = self.world.get_component(player_eid, CombatStats)
+        sp = pcs.spell_power if pcs else 0
+        total = _p.get("base_heal", 40) + sp * _p.get("heal_sp_coeff", 1.60)
+        dur = float(_p.get("duration", 10.0))
+        ticks = max(1, int(_p.get("ticks", 10)))
+
+        def _hot(eid, amount):
+            apply_effect(self.world, eid, "abraco_do_urso", dur + 0.05,
+                         magnitude=amount / ticks, tick_interval=dur / ticks,
+                         source_eid=player_eid)
+
+        _hot(target_id, total)
+        entry["_landed"] = True
+        if pcs is not None and pcs.abraco_vinculo:
+            allies = self._raiz_ally_tiles(player_eid)
+            t_tile = allies.get(target_id)
+            if t_tile is not None:
+                rng = _p.get("vinculo_range", 3)
+                near = [e for e, (tx, ty) in allies.items()
+                        if e != target_id and chebyshev(tx, ty, *t_tile) <= rng]
+                if near:
+                    second = min(near, key=self._hp_frac)
+                    _hot(second, total * _p.get("vinculo_pct", 0.50))
+
+    def _server_matilha_ancestral(self, player_eid: int, target_id: int, entry: dict) -> None:
+        """Cura 40 + 80% SP em até 5 aliados a até 4 tiles do alvo (o próprio
+        alvo incluso); passando de 5, os com menos vida (%)."""
+        from engine.components import CombatStats
+        from engine.core_systems import apply_heal
+        from engine.utils import chebyshev
+        from content.skill_config import SKILL_CATALOG as _SC_ma
+        _p = _SC_ma.get("matilha_ancestral", {}).get("params", {})
+        if target_id == -1:
+            return
+        allies = self._raiz_ally_tiles(player_eid)
+        center = allies.get(target_id)
+        if center is None:
+            return
+        pcs = self.world.get_component(player_eid, CombatStats)
+        sp = pcs.spell_power if pcs else 0
+        amount = int(_p.get("base_heal", 40) + sp * _p.get("heal_sp_coeff", 0.80))
+        rad = _p.get("radius", 4)
+        inside = [e for e, (tx, ty) in allies.items() if chebyshev(tx, ty, *center) <= rad]
+        inside.sort(key=self._hp_frac)
+        for eid in inside[:int(_p.get("max_targets", 5))]:
+            apply_heal(self.world, player_eid, eid, amount, sid="matilha_ancestral")
+        entry["_landed"] = True
+
+    def _server_negociacao_ancestral(self, player_eid: int, target_id: int, entry: dict) -> None:
+        """100 + 150% SP (escola Espírito) + atordoamento de 3s no inimigo; os
+        aliados a até 6 tiles do Xamã (ele incluso) dividem em partes iguais
+        uma cura de 100% do dano causado."""
+        from engine.components import CombatStats
+        from engine.core_systems import apply_effect, apply_heal, LAST_DAMAGE_AMOUNTS
+        from engine.utils import chebyshev
+        from content.skill_config import SKILL_CATALOG as _SC_ng
+        _p = _SC_ng.get("negociacao_ancestral", {}).get("params", {})
+        if target_id == -1:
+            return
+        tcs = self.world.get_component(target_id, CombatStats)
+        if tcs is None or tcs.current_hp <= 0 or self._is_evading(target_id):
+            return
+        pcs = self.world.get_component(player_eid, CombatStats)
+        sp = pcs.spell_power if pcs else 0
+        dmg = _p.get("base_dmg", 100) + int(sp * _p.get("dmg_sp_coeff", 1.50))
+        self._server_apply_magic_damage(player_eid, target_id, dmg, roll_crit=True,
+                                        school="espirito")
+        dealt = LAST_DAMAGE_AMOUNTS.get(target_id, 0)
+        if dealt <= 0:
+            return
+        if tcs.current_hp > 0:
+            apply_effect(self.world, target_id, "stun", _p.get("stun_duration", 3.0))
+        allies = self._raiz_ally_tiles(player_eid)
+        me = allies.get(player_eid)
+        if me is None:
+            return
+        rad = _p.get("heal_radius", 6)
+        group = [e for e, (tx, ty) in allies.items() if chebyshev(tx, ty, *me) <= rad]
+        share = int(dealt * _p.get("heal_pct", 1.0) / max(1, len(group)))
+        for eid in group:
+            apply_heal(self.world, player_eid, eid, share, sid="negociacao_ancestral")
 
     def _server_investida_do_bisao(self, player_eid: int, target_id: int, _entry: dict) -> None:
         """Fim da arrancada: dano FÍSICO (80% da arma + 60% AP, via
